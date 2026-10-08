@@ -1,0 +1,102 @@
+{
+  "checked_at": "2026-10-08T12:07:19.909Z",
+  "real_database": true,
+  "synthetic_sources": true,
+  "real_model_calls": true,
+  "real_author_and_review": true,
+  "real_grading": false,
+  "checks": [
+    {
+      "name": "concurrent starts reuse exactly one chain",
+      "passed": true
+    },
+    {
+      "name": "first content round and source evidence persist",
+      "passed": true
+    },
+    {
+      "name": "in-flight budget is unchanged by project edits",
+      "passed": true
+    },
+    {
+      "name": "step configuration snapshot also preserves pre-edit settings",
+      "passed": true
+    },
+    {
+      "name": "concurrent same-key reservation makes one invocation",
+      "passed": true
+    },
+    {
+      "name": "uncertain request retains quota and unknown state",
+      "passed": true
+    },
+    {
+      "name": "call limit prevents a third invocation and isolates",
+      "passed": true
+    },
+    {
+      "name": "authentication creates a waiting chain without content revision",
+      "passed": true
+    },
+    {
+      "name": "explicit recovery preserves content count and consumes one technical retry",
+      "passed": true
+    },
+    {
+      "name": "terminal interrupted invocation is reconciled with conservative elapsed time",
+      "passed": true
+    },
+    {
+      "name": "reconciliation cannot count the interrupted call twice",
+      "passed": true
+    },
+    {
+      "name": "changed input cannot resume an old chain",
+      "passed": true
+    },
+    {
+      "name": "generated attempt deletion removes dependent revision records",
+      "passed": true
+    },
+    {
+      "name": "revision tick queues a new score bound to its round",
+      "passed": true
+    },
+    {
+      "name": "real queue consumer persists a valid injected score",
+      "passed": true
+    },
+    {
+      "name": "score revision closes as accepted with one recorded invocation",
+      "passed": true
+    },
+    {
+      "name": "completed round keeps actual versions and model score",
+      "passed": true
+    },
+    {
+      "name": "terminal chain is not dispatched again",
+      "passed": true
+    },
+    {
+      "name": "reused successful score advances without another invocation",
+      "passed": true
+    },
+    {
+      "name": "rubric repair queues authoring and preserves completed answers",
+      "passed": true
+    },
+    {
+      "name": "rubric repair publishes a independently reviewed successor",
+      "passed": true
+    },
+    {
+      "name": "unchanged question inherits prior answers without leaking reference answer",
+      "passed": true
+    },
+    {
+      "name": "rubric revision closes without a second paid answer",
+      "passed": true
+    }
+  ]
+}

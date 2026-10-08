@@ -1,0 +1,63 @@
+{
+  "model": "glm-ocr",
+  "reviewer": "glm-5.3-flash low",
+  "scope": "first six pages compared visually against original source; model review, not human ground truth",
+  "samples": [
+    {
+      "page": 1,
+      "page_type": "dense_text",
+      "critical_errors": 2,
+      "omissions": 0,
+      "privacy_residues": 0,
+      "uncertain": false
+    },
+    {
+      "page": 2,
+      "page_type": "sparse",
+      "critical_errors": 0,
+      "omissions": 0,
+      "privacy_residues": 0,
+      "uncertain": false
+    },
+    {
+      "page": 3,
+      "page_type": "dense_text",
+      "critical_errors": 0,
+      "omissions": 0,
+      "privacy_residues": 0,
+      "uncertain": false
+    },
+    {
+      "page": 4,
+      "page_type": "dense_text",
+      "critical_errors": 1,
+      "omissions": 0,
+      "privacy_residues": 0,
+      "uncertain": false
+    },
+    {
+      "page": 5,
+      "page_type": "dense_text",
+      "critical_errors": 0,
+      "omissions": 0,
+      "privacy_residues": 0,
+      "uncertain": false
+    },
+    {
+      "page": 6,
+      "page_type": "dense_text",
+      "critical_errors": 0,
+      "omissions": 0,
+      "privacy_residues": 0,
+      "uncertain": false
+    }
+  ],
+  "material_sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7",
+  "checked_at": "2026-10-08T09:58:25.241Z",
+  "aggregate": {
+    "critical_errors": 3,
+    "omissions": 0,
+    "privacy_residues": 0,
+    "uncertain_pages": 0
+  }
+}

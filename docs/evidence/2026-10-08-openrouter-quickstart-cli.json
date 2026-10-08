@@ -1,0 +1,11 @@
+{
+  "checked_at": "2026-10-08",
+  "request_attempted": true,
+  "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+  "requested_model": "~openai/gpt-sol-latest",
+  "credential_env_name": "OPEN_ROUTER_KEY",
+  "input_kind": "synthetic_prompt",
+  "http_status": 401,
+  "provider_message": "User not found.",
+  "secret_logged": false
+}

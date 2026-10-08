@@ -1,0 +1,106 @@
+{
+  "checked_at": "2026-10-08T11:43:26.387Z",
+  "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+  "credential_env_name": "OPEN_ROUTER_KEY",
+  "input_kind": "synthetic_prompt_via_application_adapter",
+  "secret_logged": false,
+  "runs": [
+    {
+      "provider": "openrouter",
+      "requested_model": "z-ai/glm-5.3-flash",
+      "actual_model": "z-ai/glm-5.3-flash",
+      "status": "succeeded",
+      "request_id": null,
+      "completion_id": "gen-1791459797-VrcWKkELmj4gx8UjhhXL",
+      "duration_ms": 5495,
+      "usage": {
+        "prompt_tokens": 23,
+        "completion_tokens": 70,
+        "total_tokens": 93,
+        "cost": 0.00003592,
+        "cost_details": {
+          "upstream_inference_cost": 0.00003592,
+          "upstream_inference_prompt_cost": 9.2e-7,
+          "upstream_inference_completions_cost": 0.000035
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 78,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "reply_is_ok": true
+    },
+    {
+      "provider": "openrouter",
+      "requested_model": "qwen/qwen-plus",
+      "actual_model": "qwen/qwen-plus",
+      "status": "succeeded",
+      "request_id": null,
+      "completion_id": "gen-1791459802-lj0zZyJZtyFTEOhmwrKm",
+      "duration_ms": 1354,
+      "usage": {
+        "prompt_tokens": 19,
+        "completion_tokens": 2,
+        "total_tokens": 21,
+        "cost": 0.0000065,
+        "cost_details": {
+          "upstream_inference_cost": 0.0000065,
+          "upstream_inference_prompt_cost": 0.00000494,
+          "upstream_inference_completions_cost": 0.00000156
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 0,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "reply_is_ok": false
+    },
+    {
+      "provider": "openrouter",
+      "requested_model": "moonshotai/kimi-k2.5",
+      "actual_model": "moonshotai/kimi-k2.5",
+      "status": "succeeded",
+      "request_id": null,
+      "completion_id": "gen-1791459803-T4yEkR7rLQiUSudP6i1M",
+      "duration_ms": 3814,
+      "usage": {
+        "prompt_tokens": 21,
+        "completion_tokens": 43,
+        "total_tokens": 64,
+        "cost": 0.0001062,
+        "cost_details": {
+          "upstream_inference_cost": 0.0001062,
+          "upstream_inference_prompt_cost": 0.00000945,
+          "upstream_inference_completions_cost": 0.00009675
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0,
+          "audio_tokens": 0,
+          "video_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 42,
+          "image_tokens": 0,
+          "audio_tokens": 0
+        }
+      },
+      "reply_is_ok": true
+    }
+  ],
+  "total_reported_cost_usd": 0.00014862000000000002
+}

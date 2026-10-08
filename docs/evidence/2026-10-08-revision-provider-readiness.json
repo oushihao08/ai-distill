@@ -1,0 +1,11 @@
+{
+  "checked_at": "2026-10-08T12:28:37.322Z",
+  "request_attempted": true,
+  "status": "passed",
+  "input_kind": "synthetic_question",
+  "provider": "qwen",
+  "requested_model": "qwen/qwen-plus",
+  "endpoint_host": "openrouter.ai",
+  "actual_model": "qwen/qwen-plus",
+  "answer_received": true
+}

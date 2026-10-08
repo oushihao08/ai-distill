@@ -1,0 +1,40 @@
+{
+  "checked_at": "2026-10-08T07:45:03.332Z",
+  "scope": "local CLI sandbox subprocesses; model execution and native tool enforcement not covered",
+  "model_calls": 0,
+  "checks": [
+    {
+      "name": "Codex executable is available",
+      "passed": true
+    },
+    {
+      "name": "sandbox can read its own staged input",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "sandbox can write only its output directory",
+      "passed": true,
+      "exit_code": 0
+    },
+    {
+      "name": "another role material is unreadable",
+      "passed": true,
+      "exit_code": 1
+    },
+    {
+      "name": "input files cannot be overwritten",
+      "passed": true,
+      "exit_code": 1
+    },
+    {
+      "name": "writes outside the output directory are blocked",
+      "passed": true,
+      "exit_code": 1
+    },
+    {
+      "name": "database and provider credentials are not inherited",
+      "passed": true
+    }
+  ]
+}

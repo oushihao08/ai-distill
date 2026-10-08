@@ -1,0 +1,74 @@
+{
+  "checked_at": "2026-10-08T06:04:33.087Z",
+  "scope": "real complete PDF",
+  "checks": [
+    {
+      "name": "Neon authenticated query",
+      "passed": true
+    },
+    {
+      "name": "HTTP health and DB connectivity",
+      "passed": true
+    },
+    {
+      "name": "create project",
+      "passed": true
+    },
+    {
+      "name": "concurrent intake idempotency",
+      "passed": true
+    },
+    {
+      "name": "saved source hash and file count",
+      "passed": true
+    },
+    {
+      "name": "stage availability",
+      "passed": true
+    },
+    {
+      "name": "exact original PDF download",
+      "passed": true
+    },
+    {
+      "name": "project list counts",
+      "passed": true
+    },
+    {
+      "name": "project detail workflow index",
+      "passed": true
+    },
+    {
+      "name": "missing workflow error",
+      "passed": true
+    },
+    {
+      "name": "cross-origin write rejection",
+      "passed": true
+    },
+    {
+      "name": "persistent extraction queue",
+      "passed": true
+    },
+    {
+      "name": "extraction queue idempotency",
+      "passed": true
+    },
+    {
+      "name": "synchronous timeout keeps the same pending task",
+      "passed": true
+    },
+    {
+      "name": "prompt snapshot stored",
+      "passed": true
+    },
+    {
+      "name": "targeted worker claim",
+      "passed": true
+    },
+    {
+      "name": "extraction completed successfully",
+      "passed": false
+    }
+  ]
+}

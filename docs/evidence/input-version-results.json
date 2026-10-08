@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-08T06:17:56.941Z",
+  "scope": "real PostgreSQL and API orchestration with synthetic PDF fixtures; no OCR or provider call",
+  "checks": [
+    {
+      "name": "project creation in isolated schema",
+      "passed": true
+    },
+    {
+      "name": "concurrent folder uploads share one workflow",
+      "passed": true
+    },
+    {
+      "name": "claimed attempt reads its exact input revision",
+      "passed": true
+    },
+    {
+      "name": "changed source updates the same workflow identity",
+      "passed": true
+    },
+    {
+      "name": "only current materials appear in workflow detail",
+      "passed": true
+    },
+    {
+      "name": "late old result cannot publish into current steps",
+      "passed": true
+    },
+    {
+      "name": "old input records remain traceable",
+      "passed": true
+    },
+    {
+      "name": "new revision gets a new extraction attempt",
+      "passed": true
+    },
+    {
+      "name": "unchanged reimport preserves current queue",
+      "passed": true
+    },
+    {
+      "name": "project current-material count excludes historical revisions",
+      "passed": true
+    },
+    {
+      "name": "failed entity check publishes no text or public artifact",
+      "passed": true
+    },
+    {
+      "name": "failed extraction persists a private cache that cannot be downloaded",
+      "passed": true
+    },
+    {
+      "name": "retry creates a new attempt rather than rewriting failed history",
+      "passed": true
+    },
+    {
+      "name": "retry reuses failed attempt OCR with source and config fingerprints intact",
+      "passed": true
+    },
+    {
+      "name": "recovery keeps the failed attempt and publishes only checked public outputs",
+      "passed": true
+    }
+  ]
+}

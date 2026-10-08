@@ -1,0 +1,18 @@
+{
+  "recorded_at": "2026-10-08",
+  "project": "豆包高经济价值 · 第五期",
+  "scope": "local project copy and internal workflow",
+  "authorization": "The project owner explicitly authorized AI-assisted authoring and material redaction for this project.",
+  "source_document": "/Users/jack/Documents/codes/lvgou/豆包高经/附件脱敏不可使用AI.md",
+  "source_sha256": "bb3e57204f14963c29254a02be83cf95424e058a934d10dd5cb227ade0052a61",
+  "source_file_modified": false,
+  "active_copy_removed": "projects/豆包高经济价值-第五期/materials/附件脱敏不可使用AI.md",
+  "local_policy": {
+    "ai_assisted_authoring": "allowed",
+    "ai_assisted_redaction": "allowed",
+    "blocks_internal_workflow": false
+  },
+  "external_platform_eligibility": "unverified",
+  "external_platform_eligibility_blocks_local_workflow": false,
+  "note": "This is a user-authorized local project override. It is not evidence that an external platform permits AI use or will accept submissions."
+}

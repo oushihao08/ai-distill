@@ -1,0 +1,27 @@
+{
+  "name": "ai-distill",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --cwd web dev",
+    "server": "bun server/index.ts",
+    "worker": "bun server/worker.ts",
+    "migrate": "bun server/migrate.ts",
+    "build": "bun run --cwd web build",
+    "check": "bun run --cwd web check && tsc --noEmit",
+    "test:backend": "bun test server",
+    "start:iterm": "bash scripts/start-iterm.sh"
+  },
+  "dependencies": {
+    "hono": "4.13.13",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/pg": "8.23.1",
+    "typescript": "5.9.3"
+  },
+  "workspaces": [
+    "web"
+  ]
+}

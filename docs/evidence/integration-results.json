@@ -1,0 +1,110 @@
+{
+  "checked_at": "2026-10-08T05:52:27.865Z",
+  "scope": "real PDF first page; full-volume extraction not covered",
+  "checks": [
+    {
+      "name": "Neon authenticated query",
+      "passed": true
+    },
+    {
+      "name": "HTTP health and DB connectivity",
+      "passed": true
+    },
+    {
+      "name": "create project",
+      "passed": true
+    },
+    {
+      "name": "concurrent intake idempotency",
+      "passed": true
+    },
+    {
+      "name": "saved source hash and file count",
+      "passed": true
+    },
+    {
+      "name": "stage availability",
+      "passed": true
+    },
+    {
+      "name": "exact original PDF download",
+      "passed": true
+    },
+    {
+      "name": "project list counts",
+      "passed": true
+    },
+    {
+      "name": "project detail workflow index",
+      "passed": true
+    },
+    {
+      "name": "missing workflow error",
+      "passed": true
+    },
+    {
+      "name": "cross-origin write rejection",
+      "passed": true
+    },
+    {
+      "name": "upload extracted first page",
+      "passed": true
+    },
+    {
+      "name": "persistent extraction queue",
+      "passed": true
+    },
+    {
+      "name": "extraction queue idempotency",
+      "passed": true
+    },
+    {
+      "name": "synchronous timeout keeps the same pending task",
+      "passed": true
+    },
+    {
+      "name": "prompt snapshot stored",
+      "passed": true
+    },
+    {
+      "name": "targeted worker claim",
+      "passed": true
+    },
+    {
+      "name": "extraction completed successfully",
+      "passed": true
+    },
+    {
+      "name": "source page coverage",
+      "passed": true
+    },
+    {
+      "name": "completed attempt is readable without another execution",
+      "passed": true
+    },
+    {
+      "name": "public artifact list",
+      "passed": true
+    },
+    {
+      "name": "download redacted_index",
+      "passed": true
+    },
+    {
+      "name": "download redacted_markdown",
+      "passed": true
+    },
+    {
+      "name": "nonempty masked text without generated headers",
+      "passed": true
+    },
+    {
+      "name": "private mapping access denied",
+      "passed": true
+    },
+    {
+      "name": "completed extraction not recomputed",
+      "passed": true
+    }
+  ]
+}

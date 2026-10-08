@@ -1,0 +1,110 @@
+{
+  "at": "2026-10-08T12:15:55.858Z",
+  "scope": "isolated PostgreSQL; injected step completions; no OCR/Codex/provider invocation",
+  "checks": [
+    {
+      "name": "all migrations including dispatch gate apply to isolated schema",
+      "passed": true
+    },
+    {
+      "name": "same workflow cannot enter concurrent active batches",
+      "passed": true
+    },
+    {
+      "name": "horizontal creates one ingestion extraction attempt per member",
+      "passed": true
+    },
+    {
+      "name": "two fresh scheduler processes reuse persisted waiting work without duplicate calls",
+      "passed": true
+    },
+    {
+      "name": "horizontal success subset advances to redaction without waiting for another ingestion",
+      "passed": true
+    },
+    {
+      "name": "paused batch blocks queued claim",
+      "passed": true
+    },
+    {
+      "name": "resumed batch permits remaining work",
+      "passed": true
+    },
+    {
+      "name": "pause waits for an already-started claim transaction",
+      "passed": true
+    },
+    {
+      "name": "pause completes once in-flight claim transaction exits",
+      "passed": true
+    },
+    {
+      "name": "cancel marks in-flight attempts inactive",
+      "passed": true
+    },
+    {
+      "name": "late publication cannot transition a cancelled attempt",
+      "passed": true
+    },
+    {
+      "name": "resume retains completed ingestion and requeues cancelled redaction",
+      "passed": true
+    },
+    {
+      "name": "project pause blocks all claimable work",
+      "passed": true
+    },
+    {
+      "name": "project resume does not duplicate successful work",
+      "passed": true
+    },
+    {
+      "name": "persisted authentication block survives new tick",
+      "passed": true
+    },
+    {
+      "name": "explicit executor recovery permits retry",
+      "passed": true
+    },
+    {
+      "name": "project cancel terminates its batches",
+      "passed": true
+    },
+    {
+      "name": "new batch retains cancelled batch member history",
+      "passed": true
+    },
+    {
+      "name": "historical batch cannot take workflows from newer batch",
+      "passed": true
+    },
+    {
+      "name": "repeated historical cancellation cannot cancel the newer batch tasks",
+      "passed": true
+    },
+    {
+      "name": "vertical waits for active earlier-stage member",
+      "passed": true
+    },
+    {
+      "name": "failed subset does not block vertical successful member",
+      "passed": true
+    },
+    {
+      "name": "input changes block stale batch membership",
+      "passed": true
+    },
+    {
+      "name": "missing skill queues once and both members wait on shared project generation",
+      "passed": true
+    },
+    {
+      "name": "validated injected skill candidate is adopted frozen and rules loading resumes",
+      "passed": true
+    },
+    {
+      "name": "cancelled internal OCR maps to logical ingestion and can resume without a stuck running step",
+      "passed": true
+    }
+  ]
+}

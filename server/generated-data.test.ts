@@ -1,0 +1,15 @@
+import {test,expect,afterEach} from 'bun:test';
+import {mkdtemp,mkdir,writeFile,readFile,rm,stat,symlink} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import type {Pool} from 'pg';
+import {clearGeneratedData} from './generated-data';
+const roots:string[]=[];const id='11111111-1111-4111-8111-111111111111',attempt='22222222-2222-4222-8222-222222222222';
+afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
+async function fixture(){const root=await mkdtemp(join(tmpdir(),'clear-generated-'));roots.push(root);await mkdir(join(root,id,attempt),{recursive:true});await writeFile(join(root,id,'source.pdf'),'original');await writeFile(join(root,id,attempt,'materials.md'),'generated');await mkdir(join(root,'.extraction-checkpoints',id),{recursive:true});await writeFile(join(root,'.extraction-checkpoints',id,'page.json'),'private');const calls:string[]=[];let running=false,fail=false;
+ const query=async(sql:string)=>{calls.push(sql);if(sql.startsWith('SELECT w.'))return{rows:[{id}],rowCount:1};if(sql.startsWith('SELECT id,status'))return{rows:[{id:attempt,status:running?'running':'failed',ordinal:2}],rowCount:1};if(fail&&sql.startsWith('DELETE'))throw new Error('fixture DB failure');return{rows:[],rowCount:0};};return{root,calls,pool:{query,connect:async()=>({query,release(){}})}as unknown as Pool,running:()=>running=true,fail:()=>fail=true};}
+test('clearing a question removes generated attempts/checkpoints but preserves original PDFs',async()=>{const f=await fixture();expect((await clearGeneratedData(f.pool,f.root,id)).cleared).toBe(true);expect(await readFile(join(f.root,id,'source.pdf'),'utf8')).toBe('original');expect(await Bun.file(join(f.root,id,attempt,'materials.md')).exists()).toBe(false);expect(await Bun.file(join(f.root,'.extraction-checkpoints',id,'page.json')).exists()).toBe(false);expect(f.calls.some(s=>s.includes('DELETE FROM ai_distill.artifacts'))).toBe(true);});
+test('a running task cannot be cleared',async()=>{const f=await fixture();f.running();await expect(clearGeneratedData(f.pool,f.root,id)).rejects.toThrow('运行');expect(await Bun.file(join(f.root,id,attempt,'materials.md')).exists()).toBe(true);expect(f.calls.some(s=>s.startsWith('DELETE'))).toBe(false);});
+test('database failure restores staged generated files',async()=>{const f=await fixture();f.fail();await expect(clearGeneratedData(f.pool,f.root,id)).rejects.toThrow();expect(await Bun.file(join(f.root,id,attempt,'materials.md')).exists()).toBe(true);expect(f.calls).toContain('ROLLBACK');});
+
+test('a generated directory symlink cannot delete another question data',async()=>{const f=await fixture();const other=join(f.root,'other-question');await mkdir(other);await writeFile(join(other,'keep.md'),'retain');await rm(join(f.root,id,attempt),{recursive:true});await symlink(other,join(f.root,id,attempt));await expect(clearGeneratedData(f.pool,f.root,id)).rejects.toThrow('目录');expect(await readFile(join(other,'keep.md'),'utf8')).toBe('retain');});

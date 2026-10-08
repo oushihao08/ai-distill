@@ -1,0 +1,42 @@
+{
+  "checked_at": "2026-10-08T08:33:24.086Z",
+  "scope": "real PostgreSQL HTTP local files; synthetic question data",
+  "checks": [
+    {
+      "name": "generated deletion API succeeds",
+      "passed": true
+    },
+    {
+      "name": "original PDF file retained",
+      "passed": true
+    },
+    {
+      "name": "generated file removed",
+      "passed": true
+    },
+    {
+      "name": "other question output preserved",
+      "passed": true
+    },
+    {
+      "name": "generated database rows removed",
+      "passed": true
+    },
+    {
+      "name": "original material row retained",
+      "passed": true
+    },
+    {
+      "name": "generated stages reset and intake retained",
+      "passed": true
+    },
+    {
+      "name": "running task cannot be cleared",
+      "passed": true
+    },
+    {
+      "name": "blocked cleanup retains generated files",
+      "passed": true
+    }
+  ]
+}

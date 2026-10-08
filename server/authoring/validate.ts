@@ -1,0 +1,42 @@
+export interface Draft {
+ question:string;attachment_ids:string[];
+ rubric:{id:string;criterion:string;max_score:number}[];
+ reference_answer:string;
+ answer_requirements:{input_mode:'text'|'image';output_mode:'text'|'file';tools:string[]};
+}
+export const qualityChecks=['material_grounding','question_complete','rubric_consistent','reference_answer_complete','deliverables_complete'] as const;
+export interface QualityReport {
+ passed:boolean;checks:Record<typeof qualityChecks[number],boolean>;
+ issues:{code:string;detail:string;blocking:boolean}[];
+}
+const record=(raw:unknown):Record<string,any>=>{
+ if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('出题或质检结果结构无效');
+ return raw as Record<string,any>;
+};
+const text=(value:unknown,max=2_000_000):value is string=>typeof value==='string'&&!!value.trim()&&value.length<=max;
+export function validateDraft(raw:unknown,materials:{id:string;text:string}[]):Draft{
+ const value=record(raw);
+ if(!materials.length||materials.length>100||materials.some(m=>!text(m.id,160)||!text(m.text,8_000_000))||new Set(materials.map(m=>m.id)).size!==materials.length)throw new Error('出题附件输入无效');
+ if(!text(value.question)||!text(value.reference_answer)||!Array.isArray(value.attachment_ids)||!value.attachment_ids.length||value.attachment_ids.length>100||value.attachment_ids.some((id:unknown)=>!text(id,160)||!materials.some(m=>m.id===id))||new Set(value.attachment_ids).size!==value.attachment_ids.length)throw new Error('题面、完整标答或附件引用无效');
+ if(!Array.isArray(value.rubric)||!value.rubric.length||value.rubric.length>500)throw new Error('评分标准缺失或过大');
+ const rubric=value.rubric.map((rawItem:unknown)=>{
+  const item=record(rawItem);
+  if(!text(item.id,160)||!text(item.criterion)||typeof item.max_score!=='number'||!Number.isFinite(item.max_score)||item.max_score<=0)throw new Error('评分条目无效');
+  return {id:item.id as string,criterion:item.criterion as string,max_score:item.max_score as number};
+ });
+ if(new Set(rubric.map((r:{id:string})=>r.id)).size!==rubric.length||!Number.isFinite(rubric.reduce((sum:number,r:{max_score:number})=>sum+r.max_score,0)))throw new Error('评分条目重复或满分无效');
+ const requirements=record(value.answer_requirements);
+ if(!['text','image'].includes(requirements.input_mode)||!['text','file'].includes(requirements.output_mode)||!Array.isArray(requirements.tools)||requirements.tools.length>100||requirements.tools.some((tool:unknown)=>!text(tool,160))||new Set(requirements.tools).size!==requirements.tools.length)throw new Error('作答能力声明无效');
+ return {question:value.question,attachment_ids:[...value.attachment_ids],rubric,reference_answer:value.reference_answer,answer_requirements:{input_mode:requirements.input_mode,output_mode:requirements.output_mode,tools:[...requirements.tools]}};
+}
+export function validateQuality(raw:unknown):{valid:boolean;report:QualityReport}{
+ const value=record(raw),checks=record(value.checks);
+ if(typeof value.passed!=='boolean'||qualityChecks.some(key=>typeof checks[key]!=='boolean')||!Array.isArray(value.issues)||value.issues.length>500)throw new Error('独立质检结果无效');
+ const issues=value.issues.map((rawIssue:unknown)=>{
+  const issue=record(rawIssue);
+  if(!text(issue.code,160)||!text(issue.detail)||typeof issue.blocking!=='boolean')throw new Error('独立质检问题无效');
+  return {code:issue.code as string,detail:issue.detail as string,blocking:issue.blocking as boolean};
+ });
+ const report:QualityReport={passed:value.passed,checks:Object.fromEntries(qualityChecks.map(key=>[key,checks[key]])) as QualityReport['checks'],issues};
+ return {valid:report.passed&&qualityChecks.every(key=>report.checks[key])&&!issues.some((issue:{blocking:boolean})=>issue.blocking),report};
+}

@@ -1,0 +1,107 @@
+{
+  "checked_at": "2026-10-08T06:16:04.281Z",
+  "scope": "real PostgreSQL, HTTP and local files",
+  "provider_calls": 0,
+  "checks": [
+    {
+      "name": "inventory includes rules, whole skill references and binary assets",
+      "passed": true
+    },
+    {
+      "name": "workspace metadata carries unresolved qualifications",
+      "passed": true
+    },
+    {
+      "name": "different projects do not share rule paths or digests",
+      "passed": true
+    },
+    {
+      "name": "unchanged registration reuses the same durable draft",
+      "passed": true
+    },
+    {
+      "name": "concurrent freeze reuses one version and one complete snapshot",
+      "passed": true
+    },
+    {
+      "name": "snapshot preserves binary template exactly",
+      "passed": true
+    },
+    {
+      "name": "internal freeze does not certify official eligibility",
+      "passed": true
+    },
+    {
+      "name": "read returns current text and fingerprint for safe editing",
+      "passed": true
+    },
+    {
+      "name": "binary download preserves bytes and sets an attachment header",
+      "passed": true
+    },
+    {
+      "name": "edit after freeze creates the next draft and leaves the old snapshot unchanged",
+      "passed": true
+    },
+    {
+      "name": "stale edits are rejected without changing current bytes",
+      "passed": true
+    },
+    {
+      "name": "workspace edit is marked different from the frozen version",
+      "passed": true
+    },
+    {
+      "name": "old workspace digest cannot freeze newer source files",
+      "passed": true
+    },
+    {
+      "name": "new text rule is added to the same draft",
+      "passed": true
+    },
+    {
+      "name": "binary rule upload is stored without invoking recognition",
+      "passed": true
+    },
+    {
+      "name": "deletion removes the working file and retains frozen history",
+      "passed": true
+    },
+    {
+      "name": "reject protected or escaping path skill/SKILL.md",
+      "passed": true
+    },
+    {
+      "name": "reject protected or escaping path materials/../skill/SKILL.md",
+      "passed": true
+    },
+    {
+      "name": "reject protected or escaping path ../escaped.md",
+      "passed": true
+    },
+    {
+      "name": "second freeze retains the previous version and captures current files",
+      "passed": true
+    },
+    {
+      "name": "published fingerprints remain valid after PostgreSQL JSONB round trip",
+      "passed": true
+    },
+    {
+      "name": "database manifests contain no rule or skill bodies",
+      "passed": true
+    },
+    {
+      "name": "tampered existing snapshot prevents reuse",
+      "passed": true
+    },
+    {
+      "name": "missing skill references block freeze for that project",
+      "passed": true
+    },
+    {
+      "name": "another project never receives the first project versions",
+      "passed": true
+    }
+  ]
+}

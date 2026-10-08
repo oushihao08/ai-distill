@@ -1,0 +1,29 @@
+{
+  "tested_at": "2026-10-08T07:22:49.106Z",
+  "method": "terminal curl, official example shape; local image Base64 Data URL",
+  "model": "glm-5.3-flash",
+  "pdf_page": 26,
+  "image_bytes": 1378012,
+  "thinking": {
+    "type": "enabled"
+  },
+  "reasoning_effort": "omitted as in user example",
+  "http_status": 200,
+  "elapsed_ms": 54654,
+  "finish_reason": "stop",
+  "content_chars": 768,
+  "reasoning_chars": 7715,
+  "usage": {
+    "completion_tokens": 3249,
+    "completion_tokens_details": {
+      "reasoning_tokens": 2790
+    },
+    "prompt_tokens": 2489,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    },
+    "total_tokens": 5738
+  },
+  "provider_error_code": null,
+  "raw_content_saved": false
+}

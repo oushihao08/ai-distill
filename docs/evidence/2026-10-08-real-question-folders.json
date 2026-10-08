@@ -1,0 +1,157 @@
+{
+  "started_at": "2026-10-08T09:28:34.955Z",
+  "checked_at": "2026-10-08T10:08:09.173Z",
+  "scope": "two real question folders through available production workflow steps",
+  "complete": false,
+  "original_downloads_preserved": true,
+  "records": [
+    {
+      "question": "题目1",
+      "workflow_id": "8e9840ac-2e7d-490c-b81c-f24c89e4b4f4",
+      "attempt_id": "cfe1bff7-58d0-4458-b9b4-156d9eea4bba",
+      "source_directory": "/Users/jack/Downloads/题目1",
+      "project_directory": "projects/豆包高经济价值-第五期/questions/题目1",
+      "files": [
+        {
+          "name": "(2021)渝0104民初1596号.pdf",
+          "sha256": "5668037cfe777117c7e17281070bb6bbff17a31507bbe0e219743e5f83a1c702"
+        },
+        {
+          "name": "(2021)渝0104民初1597号.pdf",
+          "sha256": "953458b7d7ad8e8aa4d25a2951f0594f8cff43320b67d8a64813b0a3524249cc"
+        }
+      ],
+      "steps": [
+        {
+          "ordinal": 1,
+          "status": "succeeded",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 2,
+          "status": "running",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 3,
+          "status": "waiting",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 4,
+          "status": "waiting",
+          "implemented": false,
+          "error": null
+        },
+        {
+          "ordinal": 5,
+          "status": "waiting",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 6,
+          "status": "waiting",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 7,
+          "status": "waiting",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 8,
+          "status": "waiting",
+          "implemented": false,
+          "error": null
+        }
+      ],
+      "ocr_cached_pages": 22,
+      "extracted_pages": null,
+      "issues": [],
+      "markdown": [],
+      "next_step": null,
+      "generated_cleanup_endpoint": "DELETE /api/workflows/8e9840ac-2e7d-490c-b81c-f24c89e4b4f4/generated",
+      "cleanup_running_guard_verified": true
+    },
+    {
+      "question": "题目3",
+      "workflow_id": "37c316ac-fe11-44d4-b328-6b0f226a98cc",
+      "attempt_id": "73b10d51-717c-4e1f-bfcb-d323775db1f3",
+      "source_directory": "/Users/jack/Downloads/题目3",
+      "project_directory": "projects/豆包高经济价值-第五期/questions/题目3",
+      "files": [
+        {
+          "name": "(2024)渝0104执312号.pdf",
+          "sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7"
+        },
+        {
+          "name": "(2023)渝0104民初3725号.pdf",
+          "sha256": "950e32e861d4c02666e6c1f13f1a550f046a6903c6de0d9880f5db08e47bc2db"
+        }
+      ],
+      "steps": [
+        {
+          "ordinal": 1,
+          "status": "succeeded",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 2,
+          "status": "running",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 3,
+          "status": "waiting",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 4,
+          "status": "waiting",
+          "implemented": false,
+          "error": null
+        },
+        {
+          "ordinal": 5,
+          "status": "waiting",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 6,
+          "status": "waiting",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 7,
+          "status": "waiting",
+          "implemented": true,
+          "error": null
+        },
+        {
+          "ordinal": 8,
+          "status": "waiting",
+          "implemented": false,
+          "error": null
+        }
+      ],
+      "ocr_cached_pages": 31,
+      "extracted_pages": null,
+      "issues": [],
+      "markdown": [],
+      "next_step": null,
+      "generated_cleanup_endpoint": "DELETE /api/workflows/37c316ac-fe11-44d4-b328-6b0f226a98cc/generated",
+      "cleanup_running_guard_verified": true
+    }
+  ]
+}

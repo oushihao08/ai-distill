@@ -1,0 +1,11 @@
+{
+  "at": "2026-10-08T08:45:12.409Z",
+  "question": "题目3",
+  "reason": "first attempt HTTP 500 after 99 cached pages",
+  "retry_limit": 1,
+  "http": 202,
+  "task": {
+    "id": "62f69c94-52e1-47f9-877e-40194ede04a6",
+    "reused": false
+  }
+}

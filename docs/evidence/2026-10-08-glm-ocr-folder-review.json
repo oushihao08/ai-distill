@@ -1,0 +1,459 @@
+{
+  "reviewer": "glm-5.3-flash high",
+  "method": "source image compared with GLM-OCR page layout content",
+  "scope": "first, middle and last PDF pages for each of four source files",
+  "samples": [
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1596号.pdf",
+      "total_pages": 59,
+      "page": 1,
+      "issues": [
+        {
+          "severity": "minor",
+          "kind": "omission",
+          "source_quote": "备注：",
+          "ocr_quote": "",
+          "location": "表格最后一行右侧",
+          "explanation": "最后一行右侧的“备注：”栏目在OCR文本中缺失，属非关键空白栏，影响较小",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "免交（）元",
+          "ocr_quote": "免交（）元元",
+          "location": "受理费区域第三子行",
+          "explanation": "免交一行OCR多输出一个“元”单元格，图中该行仅见一个“元”，属表格结构还原差异，不影响金额事实",
+          "confidence": "low"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1596号.pdf",
+      "total_pages": 59,
+      "page": 30,
+      "issues": [
+        {
+          "severity": "serious",
+          "kind": "omission",
+          "source_quote": "审判员 廖光洁",
+          "ocr_quote": "",
+          "location": "页面下部签章区",
+          "explanation": "图片中落款处有'审判员 廖光洁'一行（部分被印章遮盖但仍可辨认），OCR文本完全缺失该审判员署名行，影响文书签署主体信息的完整性",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "二〇二一年三月",
+          "ocr_quote": "二O二一年三月五日",
+          "location": "页面下部日期",
+          "explanation": "图片中日期的具体'日'字被红色印章遮挡，无法直接确认'五日'，OCR补出了被遮挡的日期数字",
+          "confidence": "low"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "法官助理",
+          "ocr_quote": "助理",
+          "location": "页面下部签章区",
+          "explanation": "图片署名区为'法官助理 李春梅'（'官'字部分被印章遮挡），OCR仅识别为'助理'，职务名称不完整",
+          "confidence": "low"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1596号.pdf",
+      "total_pages": 59,
+      "page": 59,
+      "issues": [
+        {
+          "severity": "serious",
+          "kind": "wrong_text",
+          "source_quote": "可在公告期满后1日内",
+          "ocr_quote": "可在公告期满后15日内",
+          "location": "正文第3行，上诉期限处",
+          "explanation": "图片中显示上诉期限为“1日内”，OCR识别为“15日内”，上诉期限是重要法律义务期限，数字差异会改变当事人的法律权利义务。",
+          "confidence": "low"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1597号.pdf",
+      "total_pages": 67,
+      "page": 1,
+      "issues": [
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "免交( ) 元",
+          "ocr_quote": "免交( )...免交( )...元",
+          "location": "受理费区域第三行（减交/缓交/免交列）",
+          "explanation": "图片中该行仅有左侧一个'免交( )'和右侧金额空栏'元'，OCR将'免交( )'重复识别了两次，多出一个'免交( )'标签，属重复/多余文字，不改变金额或法律事实",
+          "confidence": "high"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1597号.pdf",
+      "total_pages": 67,
+      "page": 34,
+      "issues": [
+        {
+          "severity": "serious",
+          "kind": "omission",
+          "source_quote": "审判长…人民陪审员…法官助理…书记员（含各自姓名）",
+          "ocr_quote": "（完全缺失）",
+          "location": "页面下部落款区域",
+          "explanation": "原图在落款处列有审判长、两名人民陪审员、法官助理、书记员等合议庭/工作人员署名，OCR文字全部遗漏，属于整段漏识，影响对审判组织构成的确认。",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "二〇二一年五月[?]日",
+          "ocr_quote": "二〇二一年五月十六日",
+          "location": "落款日期",
+          "explanation": "原图落款日期的'日'数字部分被红色印章遮盖，仅能确认'二〇二一年五月'，OCR给出'十六'无法从图中直接核实，存在臆测可能。",
+          "confidence": "low"
+        },
+        {
+          "severity": "minor",
+          "kind": "omission",
+          "source_quote": "- 2 -",
+          "ocr_quote": "（缺失）",
+          "location": "左下角页码",
+          "explanation": "页码'- 2 -'未被识别，属不影响法律事实的细小遗漏。",
+          "confidence": "high"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2023)渝0104民初3725号.pdf",
+      "total_pages": 77,
+      "page": 1,
+      "issues": [
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "60个工作日内付原告80%货款",
+          "ocr_quote": "60个工作台内付原告 80%货款",
+          "location": "事实与理由段第二句",
+          "explanation": "OCR将「工作日内」误识为「工作台内」，付款期限表述出现错字",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "计算至付清之日止",
+          "ocr_quote": "计算至清之日止",
+          "location": "诉讼请求第2项括号内",
+          "explanation": "OCR漏识「付」字，利息计算截止日的表述不完整",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "[手写签名]",
+          "ocr_quote": "美 15",
+          "location": "被告基本信息段之后、诉讼请求之前右侧",
+          "explanation": "原图此处为手写签名/批注，OCR识别为「美 15」，属无法确认内容的臆识别",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "[印章及数字]",
+          "ocr_quote": "重庆翔获商贸有限公司 131713729",
+          "location": "页尾具状人落款及公章区域",
+          "explanation": "OCR将公章上的文字及印章编号识别为正文文本混入落款处，原图正文落款仅有「具状人：」及手写日期",
+          "confidence": "high"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2023)渝0104民初3725号.pdf",
+      "total_pages": 77,
+      "page": 39,
+      "issues": [
+        {
+          "severity": "serious",
+          "kind": "omission",
+          "source_quote": "项目部：重庆钢铁集团建设工程有限公司长安汽车碰撞实验室项目部",
+          "ocr_quote": "",
+          "location": "表格上方表头第一行",
+          "explanation": "OCR完全漏识表头'项目部'一行，涉及责任主体信息缺失",
+          "confidence": "high"
+        },
+        {
+          "severity": "serious",
+          "kind": "omission",
+          "source_quote": "项目名称：碰撞实验室能力升级建设项目建安工程",
+          "ocr_quote": "",
+          "location": "表格上方表头第二行",
+          "explanation": "OCR漏识'项目名称'整行，工程所属项目信息缺失",
+          "confidence": "high"
+        },
+        {
+          "severity": "serious",
+          "kind": "omission",
+          "source_quote": "供应商名称：重庆钢获商贸有限公司",
+          "ocr_quote": "重庆明获商贸有限公司",
+          "location": "表格上方表头第三行/中部印章处",
+          "explanation": "表头'供应商名称'行漏识；且OCR将公司名误识为'明获'，与图中'钢获'不符，主体名称错误",
+          "confidence": "medium"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "结算金额（万元）",
+          "ocr_quote": "计税金额（万元）",
+          "location": "表格表头第二列",
+          "explanation": "表头第二列OCR识别为'计税金额'，与图中'结算金额'类字样不符（图片较模糊）",
+          "confidence": "low"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "结算金额（万元）",
+          "ocr_quote": "招贷金额（万元）",
+          "location": "表格表头第三列",
+          "explanation": "表头第三列OCR识别为'招贷金额'，属明显误识（图片较模糊）",
+          "confidence": "low"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "项目部经理：",
+          "ocr_quote": "王永君 项目组织经理办人：",
+          "location": "表格下方签章区",
+          "explanation": "签字为手写体难以确认内容，OCR将手写签名识为'王永君'并误拼职务名称'项目组织经理办人'，图中应为'项目部经理''项目部结算经办人'等字样",
+          "confidence": "low"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "制表时间：",
+          "ocr_quote": "好水好肥好菜 好产好销 510719000000",
+          "location": "页面上方左上角及下方制表时间附近",
+          "explanation": "OCR出现图中不存在的成句文字'好水好肥好菜 好产好销'及数字串'510719000000'，应为对手写签名和印章编号的误识/幻觉内容",
+          "confidence": "high"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1597号.pdf",
+      "total_pages": 67,
+      "page": 67,
+      "issues": [
+        {
+          "severity": "serious",
+          "kind": "wrong_text",
+          "source_quote": "【2021】渝0106民初2344号王书东",
+          "ocr_quote": "【2021】谝0106民初2344号王书东",
+          "location": "右栏上部，重庆市涪陵区人民法院公告首句",
+          "explanation": "案号中『渝』被误识为『谝』，案号是关键事实信息，错字导致案号无法准确对应",
+          "confidence": "high"
+        },
+        {
+          "severity": "serious",
+          "kind": "wrong_text",
+          "source_quote": "原告渝中区和贵五金经营部",
+          "ocr_quote": "原告审中区和我五金经营部",
+          "location": "右栏中部，何燕洁等人财产损害赔偿纠纷公告",
+          "explanation": "原告主体名称『渝中区和贵』误识为『审中区和我』，影响当事人主体认定；因图片较模糊，具体字形存在一定不确定性",
+          "confidence": "low"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "重庆市大渡口区人民法院",
+          "ocr_quote": "重庆市大渡口区人民法庭",
+          "location": "中栏公告标题",
+          "explanation": "法院名称『法院』误作『法庭』",
+          "confidence": "medium"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "渝0107民初27579号",
+          "ocr_quote": "渝 0107民韧 27579号",
+          "location": "右下角，重庆市渝中区人民法院公告",
+          "explanation": "案号中『民初』误作『民韧』，案号用字错误",
+          "confidence": "medium"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "重庆市渝中区人民法院",
+          "ocr_quote": "重庆布渝中区人民法院",
+          "location": "右栏中部及右下公告标题（两处）",
+          "explanation": "『市』误作『布』，法院名称出现错字",
+          "confidence": "medium"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "经过60日即视为送达",
+          "ocr_quote": "经过60日，即为送达",
+          "location": "中栏，大渡口区法院曹广林、曾燕琼公告及程波公告",
+          "explanation": "漏『视』字，『视为送达』是法律拟制表述，语义略有削弱（该错误在多处重复出现）",
+          "confidence": "medium"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "逾期视为其自行放弃了依法享有的举证、质证、辩论等诉讼权利",
+          "ocr_quote": "逾期为其自行放弃了依法享有的举证、质证、辩论等诉讼权利",
+          "location": "右栏上部，涪陵区法院王书东公告",
+          "explanation": "漏『视』字，法律拟制表述不完整",
+          "confidence": "low"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "重庆市渝中区人民政府解放碑街道办事处",
+          "ocr_quote": "重庆市渝中区人民政府解鼎碑街道办事处",
+          "location": "右栏中部，财产损害赔偿纠纷公告",
+          "explanation": "街道名『解放碑』误作『解鼎碑』；因图模糊，仅能部分辨认",
+          "confidence": "low"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "本院受理[敏感值]诉你们民间借贷纠纷一案",
+          "ocr_quote": "本院受理刑事案件你们民间借贷纠纷一案",
+          "location": "中栏，大渡口区法院曹广林、曾燕琼公告首句",
+          "explanation": "原文应为某原告人名『诉你们民间借贷纠纷』，OCR误作『刑事案件你们』，句子不通且可能丢失原告主体信息；该处被圈注且较模糊",
+          "confidence": "low"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2023)渝0104民初3725号.pdf",
+      "total_pages": 77,
+      "page": 77,
+      "issues": [
+        {
+          "severity": "minor",
+          "kind": "structure",
+          "source_quote": "送 达 回 证",
+          "ocr_quote": "# 送 ... 重庆市大渡口区人民法院 ... # 证",
+          "location": "页面上部标题",
+          "explanation": "标题“送达回证”被红色公章覆盖，OCR将公章文字“重庆市大渡口区人民法院”单独识别为一行，且标题拆分为“送”和“证”两行，缺“达回”二字（该二字被印章遮挡）。属印章干扰导致的结构差异，不影响关键事实。",
+          "confidence": "high"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2024)渝0104执312号.pdf",
+      "total_pages": 29,
+      "page": 15,
+      "issues": [
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "委托人（盖章）：",
+          "ocr_quote": "委托人（盖章）重庆钢获商贸有限公司 5003817013726 2023年8月16日",
+          "location": "落款区域",
+          "explanation": "OCR将红色印章上的单位名称及编号识别为正文文字并插入落款行与日期之间，正文原文此处仅有'委托人（盖章）：'及日期；印章文字被当作正文转录，造成版面结构差异，但不改变事实含义。",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "委托人（盖章）：",
+          "ocr_quote": "委托人（盖章）",
+          "location": "落款区域",
+          "explanation": "原文'委托人（盖章）'后带冒号，OCR漏识冒号，属标点小差异。",
+          "confidence": "high"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2024)渝0104执312号.pdf",
+      "total_pages": 29,
+      "page": 29,
+      "issues": [
+        {
+          "severity": "serious",
+          "kind": "wrong_text",
+          "source_quote": "买卖合同纠纷",
+          "ocr_quote": "头买合同纠纷",
+          "location": "表格第一行“案由”栏",
+          "explanation": "案由“买卖合同纠纷”被误识为“头买合同纠纷”，改变了案件性质这一关键事实信息",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "重庆市大渡口区人民法院",
+          "ocr_quote": "重庆市大渡口区人民法院（标题外重复出现一次）",
+          "location": "标题区域",
+          "explanation": "标题下方因红色印章文字与标题重叠，OCR将印章/标题文字额外重复输出一行，属冗余识别，不影响关键事实",
+          "confidence": "medium"
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2024)渝0104执312号.pdf",
+      "total_pages": 29,
+      "page": 1,
+      "issues": [
+        {
+          "severity": "serious",
+          "kind": "wrong_text",
+          "source_quote": "重庆市大渡口区人民法院",
+          "ocr_quote": "重庆市大渡区人民法院",
+          "location": "此致 后的受文法院名称",
+          "explanation": "OCR漏掉“口”字，将受文法院名称写错为“大渡区”，主体名称错误",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "wrong_text",
+          "source_quote": "迟延履行债务利息",
+          "ocr_quote": "迟还履行债务利息",
+          "location": "执行请求第2项",
+          "explanation": "“延”误识为“还”，法律术语“迟延履行债务利息”用字错误",
+          "confidence": "high"
+        },
+        {
+          "severity": "minor",
+          "kind": "invented",
+          "source_quote": "此致",
+          "ocr_quote": "此致\nO",
+          "location": "结尾“此致”之后",
+          "explanation": "OCR在“此致”后多识别出一个“O”，图上该处为手写标记，非印刷文字",
+          "confidence": "low"
+        }
+      ],
+      "uncertain": false
+    }
+  ],
+  "complete": true,
+  "checked_at": "2026-10-08T10:35:18.917Z"
+}

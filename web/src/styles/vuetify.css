@@ -1,0 +1,21 @@
+/* Component-library adapter: all values come from the shared theme. */
+.v-application .v-btn {
+  font-size: var(--theme-control-font-size);
+  letter-spacing: normal;
+  border-radius: var(--theme-control-radius);
+}
+.v-application .v-field {
+  font-size: var(--theme-control-font-size);
+  border-radius: var(--theme-control-radius);
+}
+.v-application .v-input--density-compact:not(.v-textarea) {
+  --v-input-control-height: var(--theme-control-height);
+}
+
+.v-application .v-input--density-compact:not(.v-textarea) .v-field {
+  --v-input-control-height: var(--theme-control-height);
+}
+.v-application .v-input--density-compact:not(.v-textarea) .v-field__input {
+  min-height: var(--theme-control-height);
+  line-height: var(--theme-control-line-height);
+}

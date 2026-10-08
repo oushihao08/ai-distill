@@ -1,0 +1,8 @@
+{
+  "checked_at": "2026-10-08T07:44:06.732Z",
+  "kind": "local source archive; no Git commit created",
+  "archive": ".storage/source-baselines/2026-10-08-remediation.tar.gz",
+  "sha256": "5d8bed08159204e9a97d82dc007ca7e7a9124b8409482ef2c1c0b7d52c54d42a",
+  "file_count": 157,
+  "excluded": "Git ignored files including .env, node_modules and .storage"
+}

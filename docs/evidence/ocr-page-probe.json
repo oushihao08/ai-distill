@@ -1,0 +1,23 @@
+{
+  "checked_at": "2026-10-08T07:36:15.505Z",
+  "page": 53,
+  "checks": [
+    {
+      "phase": "ocr",
+      "chars": 902,
+      "elapsed_ms": 11705
+    },
+    {
+      "phase": "entities",
+      "http": 200,
+      "entities": 16,
+      "invalid_values": []
+    },
+    {
+      "phase": "entities",
+      "passed": true,
+      "count": 15
+    }
+  ],
+  "raw_content_saved": false
+}

@@ -1,0 +1,16 @@
+{
+  "checked_at": "2026-10-08T11:08:37.617Z",
+  "status": "failed",
+  "request_attempted": true,
+  "called_provider": true,
+  "input_kind": "synthetic_question_and_text_material",
+  "requested_model": "qwen/qwen-plus",
+  "endpoint_host": "openrouter.ai",
+  "error": {
+    "kind": "authentication",
+    "retryable": false,
+    "http_status": 401,
+    "provider_code": "401",
+    "request_id": null
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "model": "glm-ocr vs glm-5.3-flash max",
+  "question": "题目3",
+  "material_id": "6ad197f3-3dae-49f4-97e1-8820c8793e09",
+  "source_sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7",
+  "pages_compared": 13,
+  "mean_normalized_similarity": 0.6722,
+  "page_metrics": [
+    {
+      "page": 1,
+      "max_chars": 730,
+      "glm_ocr_chars": 730,
+      "normalized_similarity": 0.7997,
+      "max_issue_count": 0
+    },
+    {
+      "page": 2,
+      "max_chars": 149,
+      "glm_ocr_chars": 225,
+      "normalized_similarity": 0.5325,
+      "max_issue_count": 0
+    },
+    {
+      "page": 3,
+      "max_chars": 471,
+      "glm_ocr_chars": 486,
+      "normalized_similarity": 0.6242,
+      "max_issue_count": 0
+    },
+    {
+      "page": 4,
+      "max_chars": 730,
+      "glm_ocr_chars": 682,
+      "normalized_similarity": 0.9061,
+      "max_issue_count": 0
+    },
+    {
+      "page": 5,
+      "max_chars": 741,
+      "glm_ocr_chars": 644,
+      "normalized_similarity": 0.8022,
+      "max_issue_count": 0
+    },
+    {
+      "page": 6,
+      "max_chars": 504,
+      "glm_ocr_chars": 273,
+      "normalized_similarity": 0.4857,
+      "max_issue_count": 0
+    },
+    {
+      "page": 7,
+      "max_chars": 449,
+      "glm_ocr_chars": 463,
+      "normalized_similarity": 0.9021,
+      "max_issue_count": 0
+    },
+    {
+      "page": 8,
+      "max_chars": 439,
+      "glm_ocr_chars": 430,
+      "normalized_similarity": 0.8325,
+      "max_issue_count": 0
+    },
+    {
+      "page": 9,
+      "max_chars": 404,
+      "glm_ocr_chars": 441,
+      "normalized_similarity": 0.7823,
+      "max_issue_count": 0
+    },
+    {
+      "page": 10,
+      "max_chars": 400,
+      "glm_ocr_chars": 394,
+      "normalized_similarity": 0.8984,
+      "max_issue_count": 0
+    },
+    {
+      "page": 11,
+      "max_chars": 604,
+      "glm_ocr_chars": 624,
+      "normalized_similarity": 0.4059,
+      "max_issue_count": 0
+    },
+    {
+      "page": 12,
+      "max_chars": 496,
+      "glm_ocr_chars": 392,
+      "normalized_similarity": 0.1916,
+      "max_issue_count": 0
+    },
+    {
+      "page": 13,
+      "max_chars": 95,
+      "glm_ocr_chars": 120,
+      "normalized_similarity": 0.575,
+      "max_issue_count": 0
+    }
+  ],
+  "interpretation": "文本相似度衡量两份OCR的一致程度，不是准确率/正确率；前6页另经模型原图抽查，发现3项关键错误。不是人工金标准。原文与个人信息未输出。"
+}

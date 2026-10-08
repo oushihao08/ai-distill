@@ -1,0 +1,566 @@
+{
+  "started_at": "2026-10-08T09:51:59.408Z",
+  "complete": true,
+  "model": "glm-5.3-flash",
+  "scope": "same-page low versus cached max; source-image model review, not human ground truth",
+  "samples": [
+    {
+      "effort": "low",
+      "question": "题目1",
+      "page": 1,
+      "material_id": "ad58c689-2c3b-42f0-bd5f-02c1c044405f",
+      "source_sha256": "5668037cfe777117c7e17281070bb6bbff17a31507bbe0e219743e5f83a1c702",
+      "max_ms": 147644,
+      "ocr_ms": 11969,
+      "max_usage": {
+        "completion_tokens": 8371,
+        "completion_tokens_details": {
+          "reasoning_tokens": 7564
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 10860
+      },
+      "ocr_usage": {
+        "completion_tokens": 594,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 3083
+      },
+      "max_chars": 1185,
+      "ocr_chars": 919,
+      "issues": [],
+      "page_type": "form",
+      "ocr_review": {
+        "critical_errors": 3,
+        "omissions": 1,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 1,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目1",
+      "page": 2,
+      "material_id": "ad58c689-2c3b-42f0-bd5f-02c1c044405f",
+      "source_sha256": "5668037cfe777117c7e17281070bb6bbff17a31507bbe0e219743e5f83a1c702",
+      "max_ms": 137515,
+      "ocr_ms": 10115,
+      "max_usage": {
+        "completion_tokens": 7472,
+        "completion_tokens_details": {
+          "reasoning_tokens": 6838
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 9961
+      },
+      "ocr_usage": {
+        "completion_tokens": 601,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 3090
+      },
+      "max_chars": 859,
+      "ocr_chars": 1082,
+      "issues": [],
+      "page_type": "form",
+      "ocr_review": {
+        "critical_errors": 1,
+        "omissions": 1,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目1",
+      "page": 3,
+      "material_id": "ad58c689-2c3b-42f0-bd5f-02c1c044405f",
+      "source_sha256": "5668037cfe777117c7e17281070bb6bbff17a31507bbe0e219743e5f83a1c702",
+      "max_ms": 96703,
+      "ocr_ms": 14181,
+      "max_usage": {
+        "completion_tokens": 5693,
+        "completion_tokens_details": {
+          "reasoning_tokens": 4882
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 8182
+      },
+      "ocr_usage": {
+        "completion_tokens": 733,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 3222
+      },
+      "max_chars": 1069,
+      "ocr_chars": 1168,
+      "issues": [],
+      "page_type": "table",
+      "ocr_review": {
+        "critical_errors": 2,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目1",
+      "page": 4,
+      "material_id": "ad58c689-2c3b-42f0-bd5f-02c1c044405f",
+      "source_sha256": "5668037cfe777117c7e17281070bb6bbff17a31507bbe0e219743e5f83a1c702",
+      "max_ms": 46464,
+      "ocr_ms": 7014,
+      "max_usage": {
+        "completion_tokens": 2138,
+        "completion_tokens_details": {
+          "reasoning_tokens": 1769
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 4627
+      },
+      "ocr_usage": {
+        "completion_tokens": 398,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2887
+      },
+      "max_chars": 615,
+      "ocr_chars": 633,
+      "issues": [],
+      "page_type": "dense_text",
+      "ocr_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 4,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目1",
+      "page": 5,
+      "material_id": "ad58c689-2c3b-42f0-bd5f-02c1c044405f",
+      "source_sha256": "5668037cfe777117c7e17281070bb6bbff17a31507bbe0e219743e5f83a1c702",
+      "max_ms": 136806,
+      "ocr_ms": 6962,
+      "max_usage": {
+        "completion_tokens": 5359,
+        "completion_tokens_details": {
+          "reasoning_tokens": 5043
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 7848
+      },
+      "ocr_usage": {
+        "completion_tokens": 241,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2730
+      },
+      "max_chars": 547,
+      "ocr_chars": 418,
+      "issues": [],
+      "page_type": "form",
+      "ocr_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 2
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目1",
+      "page": 6,
+      "material_id": "ad58c689-2c3b-42f0-bd5f-02c1c044405f",
+      "source_sha256": "5668037cfe777117c7e17281070bb6bbff17a31507bbe0e219743e5f83a1c702",
+      "max_ms": 130965,
+      "ocr_ms": 7150,
+      "max_usage": {
+        "completion_tokens": 5696,
+        "completion_tokens_details": {
+          "reasoning_tokens": 5207
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 8185
+      },
+      "ocr_usage": {
+        "completion_tokens": 407,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2896
+      },
+      "max_chars": 801,
+      "ocr_chars": 694,
+      "issues": [],
+      "page_type": "dense_text",
+      "ocr_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目3",
+      "page": 1,
+      "material_id": "6ad197f3-3dae-49f4-97e1-8820c8793e09",
+      "source_sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7",
+      "max_ms": 131425,
+      "ocr_ms": 8846,
+      "max_usage": {
+        "completion_tokens": 7446,
+        "completion_tokens_details": {
+          "reasoning_tokens": 7005
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 9935
+      },
+      "ocr_usage": {
+        "completion_tokens": 445,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2934
+      },
+      "max_chars": 730,
+      "ocr_chars": 724,
+      "issues": [],
+      "page_type": "dense_text",
+      "ocr_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 1
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目3",
+      "page": 2,
+      "material_id": "6ad197f3-3dae-49f4-97e1-8820c8793e09",
+      "source_sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7",
+      "max_ms": 32210,
+      "ocr_ms": 3267,
+      "max_usage": {
+        "completion_tokens": 1480,
+        "completion_tokens_details": {
+          "reasoning_tokens": 1397
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 3969
+      },
+      "ocr_usage": {
+        "completion_tokens": 87,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2576
+      },
+      "max_chars": 149,
+      "ocr_chars": 155,
+      "issues": [],
+      "page_type": "form",
+      "ocr_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": true
+    },
+    {
+      "effort": "low",
+      "question": "题目3",
+      "page": 3,
+      "material_id": "6ad197f3-3dae-49f4-97e1-8820c8793e09",
+      "source_sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7",
+      "max_ms": 94778,
+      "ocr_ms": 6508,
+      "max_usage": {
+        "completion_tokens": 4630,
+        "completion_tokens_details": {
+          "reasoning_tokens": 4380
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 7119
+      },
+      "ocr_usage": {
+        "completion_tokens": 231,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2720
+      },
+      "max_chars": 471,
+      "ocr_chars": 414,
+      "issues": [],
+      "page_type": "dense_text",
+      "ocr_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目3",
+      "page": 4,
+      "material_id": "6ad197f3-3dae-49f4-97e1-8820c8793e09",
+      "source_sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7",
+      "max_ms": 76504,
+      "ocr_ms": 5926,
+      "max_usage": {
+        "completion_tokens": 3810,
+        "completion_tokens_details": {
+          "reasoning_tokens": 3344
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 6299
+      },
+      "ocr_usage": {
+        "completion_tokens": 443,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2932
+      },
+      "max_chars": 730,
+      "ocr_chars": 733,
+      "issues": [],
+      "page_type": "dense_text",
+      "ocr_review": {
+        "critical_errors": 1,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目3",
+      "page": 5,
+      "material_id": "6ad197f3-3dae-49f4-97e1-8820c8793e09",
+      "source_sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7",
+      "max_ms": 138332,
+      "ocr_ms": 5997,
+      "max_usage": {
+        "completion_tokens": 7113,
+        "completion_tokens_details": {
+          "reasoning_tokens": 6659
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 9602
+      },
+      "ocr_usage": {
+        "completion_tokens": 377,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2866
+      },
+      "max_chars": 741,
+      "ocr_chars": 638,
+      "issues": [],
+      "page_type": "dense_text",
+      "ocr_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 6
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    },
+    {
+      "effort": "low",
+      "question": "题目3",
+      "page": 6,
+      "material_id": "6ad197f3-3dae-49f4-97e1-8820c8793e09",
+      "source_sha256": "1df59c60632b48eddb27e3295a49f6096936e247756c78d1b15184b37a8df6d7",
+      "max_ms": 47487,
+      "ocr_ms": 3427,
+      "max_usage": {
+        "completion_tokens": 2406,
+        "completion_tokens_details": {
+          "reasoning_tokens": 2087
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 4895
+      },
+      "ocr_usage": {
+        "completion_tokens": 161,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_tokens": 2489,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 2650
+      },
+      "max_chars": 504,
+      "ocr_chars": 286,
+      "issues": [],
+      "page_type": "dense_text",
+      "ocr_review": {
+        "critical_errors": 1,
+        "omissions": 1,
+        "privacy_residues": 0
+      },
+      "max_review": {
+        "critical_errors": 0,
+        "omissions": 0,
+        "privacy_residues": 0
+      },
+      "uncertain": false
+    }
+  ],
+  "ocr_ms": 91362,
+  "max_ms": 1216833,
+  "speed_reduction": 0.9249182098118641,
+  "quality_non_regression": false,
+  "meets_sample_target": false,
+  "checked_at": "2026-10-08T09:55:34.310Z"
+}

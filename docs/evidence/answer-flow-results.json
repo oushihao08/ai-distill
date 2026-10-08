@@ -1,0 +1,146 @@
+{
+  "checked_at": "2026-10-08T08:28:52.799Z",
+  "scope": "isolated PostgreSQL schema; synthetic authoring and injected answer provider; one real Codex grading call",
+  "checks": [
+    {
+      "name": "step 5 configuration saved via API",
+      "passed": true
+    },
+    {
+      "name": "concurrent enqueue creates exactly one attempt",
+      "passed": true
+    },
+    {
+      "name": "provider receives only exact question and redacted attachments",
+      "passed": true
+    },
+    {
+      "name": "worker consumes queued answer",
+      "passed": true
+    },
+    {
+      "name": "answer and usage persisted",
+      "passed": true
+    },
+    {
+      "name": "download returns saved answer",
+      "passed": true
+    },
+    {
+      "name": "score checks bind persisted answer and rubric",
+      "passed": true
+    },
+    {
+      "name": "incorrect score total is rejected",
+      "passed": true
+    },
+    {
+      "name": "stage six explicit Codex config saved",
+      "passed": true
+    },
+    {
+      "name": "stage six API queues persistent grade",
+      "passed": true
+    },
+    {
+      "name": "duplicate grading enqueue is reused",
+      "passed": true
+    },
+    {
+      "name": "grading worker consumes queued attempt",
+      "passed": true
+    },
+    {
+      "name": "grade report and validation persisted",
+      "passed": true
+    },
+    {
+      "name": "grade download contains exact binding",
+      "passed": true
+    },
+    {
+      "name": "rubric only change schedules regrade on same answer",
+      "passed": true
+    },
+    {
+      "name": "late grade cannot publish changed rubric",
+      "passed": true
+    },
+    {
+      "name": "new question does not reuse old answer",
+      "passed": true
+    },
+    {
+      "name": "provider receives only exact question and redacted attachments",
+      "passed": true
+    },
+    {
+      "name": "changed question blocks late answer publication",
+      "passed": true
+    },
+    {
+      "name": "unpublished answer files removed",
+      "passed": true
+    },
+    {
+      "name": "old-version score cannot validate as current",
+      "passed": true
+    },
+    {
+      "name": "kimi configuration API accepted",
+      "passed": true
+    },
+    {
+      "name": "provider receives only exact question and redacted attachments",
+      "passed": true
+    },
+    {
+      "name": "kimi immutable provider and default mode persisted",
+      "passed": true
+    },
+    {
+      "name": "deepseek configuration API accepted",
+      "passed": true
+    },
+    {
+      "name": "provider receives only exact question and redacted attachments",
+      "passed": true
+    },
+    {
+      "name": "deepseek immutable provider and default mode persisted",
+      "passed": true
+    },
+    {
+      "name": "doubao configuration API accepted",
+      "passed": true
+    },
+    {
+      "name": "provider receives only exact question and redacted attachments",
+      "passed": true
+    },
+    {
+      "name": "doubao immutable provider and default mode persisted",
+      "passed": true
+    },
+    {
+      "name": "missing monitor returns unavailable and no-store",
+      "passed": true
+    },
+    {
+      "name": "low memory blocks new dispatch",
+      "passed": true
+    },
+    {
+      "name": "monitor API publishes paused state",
+      "passed": true
+    },
+    {
+      "name": "memory recovery resumes dispatch",
+      "passed": true
+    },
+    {
+      "name": "monitor API publishes stopped state",
+      "passed": true
+    }
+  ]
+}

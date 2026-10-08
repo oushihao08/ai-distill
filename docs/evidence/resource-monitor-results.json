@@ -1,0 +1,36 @@
+{
+  "scope": "real local macOS sampling; current process only; worker/Codex integration not exercised",
+  "snapshot": {
+    "sampled_at": "2026-10-08T07:57:16.489Z",
+    "system": {
+      "status": "known",
+      "value": {
+        "total_bytes": 38654705664,
+        "available_bytes_estimate": 14302241095,
+        "available_percent": 37,
+        "method": "macos_memory_pressure_percentage"
+      }
+    },
+    "processes": [
+      {
+        "pid": 29821,
+        "rss_bytes": {
+          "status": "known",
+          "value": 32473088
+        }
+      }
+    ],
+    "tasks": {
+      "status": "unknown"
+    }
+  },
+  "example_thresholds": {
+    "min_available_percent": 10
+  },
+  "advice": {
+    "decision": "unknown",
+    "reasons": [
+      "executor_status_unknown"
+    ]
+  }
+}

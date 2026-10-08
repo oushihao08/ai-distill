@@ -1,0 +1,62 @@
+{
+  "checked_at": "2026-10-08T08:45:55.467Z",
+  "scope": "isolated PostgreSQL + synthetic source/template + injected generation; no real model call",
+  "checks": [
+    {
+      "name": "concurrent enqueues reuse one persistent project task",
+      "passed": true
+    },
+    {
+      "name": "exactly one active project generation",
+      "passed": true
+    },
+    {
+      "name": "list API returns queued attempt",
+      "passed": true
+    },
+    {
+      "name": "other project cannot see this generation",
+      "passed": true
+    },
+    {
+      "name": "worker receives frozen inputs",
+      "passed": true
+    },
+    {
+      "name": "worker uses snapshot and saves candidate result",
+      "passed": true
+    },
+    {
+      "name": "unresolved candidate remains recorded without publication",
+      "passed": true
+    },
+    {
+      "name": "project current skill is untouched",
+      "passed": true
+    },
+    {
+      "name": "changed rules create new immutable attempt",
+      "passed": true
+    },
+    {
+      "name": "candidate adoption creates a new draft",
+      "passed": true
+    },
+    {
+      "name": "adopted skill freezes with generation lineage",
+      "passed": true
+    },
+    {
+      "name": "old published snapshot is retained",
+      "passed": true
+    },
+    {
+      "name": "duplicate adoption reuses published version",
+      "passed": true
+    },
+    {
+      "name": "deleted project blocks late result",
+      "passed": true
+    }
+  ]
+}

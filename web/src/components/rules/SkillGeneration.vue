@@ -1,0 +1,17 @@
+<script setup lang="ts">
+import {api} from '../../api/client';
+import {useResource} from '../../composables/useResource';
+import {dateLabel} from '../../utils/format';
+const props=defineProps<{projectId:string}>();
+const emit=defineEmits<{adopted:[]}>();
+interface Generation {id:string;status:string;error:string|null;created_at:string;config:{model:string;reasoning_effort:string};result:{candidate_path:string;publishable:boolean;issues:string[];unresolved:{id:string;detail:string;blocking?:boolean}[];summary:string}|null}
+const {data,error,refresh}=useResource<Generation[]>(`/projects/${props.projectId}/skill/attempts`);
+const model=shallowRef(''),effort=shallowRef('medium'),busy=shallowRef(false);
+const active=computed(()=>data.value?.some(a=>['waiting','running'].includes(a.status))??false);
+const labels:Record<string,string>={waiting:'排队',running:'生成中',succeeded:'候选已生成',failed:'失败',skipped:'已失效'};
+async function generate(){try{busy.value=true;await api(`/projects/${props.projectId}/skill/generate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model.value,reasoning_effort:effort.value})});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'生成提交失败';}finally{busy.value=false;}}
+async function adopt(id:string){try{busy.value=true;await api(`/projects/${props.projectId}/skill/attempts/${id}/adopt`,{method:'POST'});emit('adopted');await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'采用失败';}finally{busy.value=false;}}
+let timer:ReturnType<typeof setInterval>|undefined;
+onMounted(()=>{timer=setInterval(refresh,5000);});onUnmounted(()=>clearInterval(timer));
+</script>
+<template><Column class="surface-card p-16" :gap="12"><h2 class="section-title">生成项目 skill</h2><p class="text-sm text-muted">以完整基础模板和本期资料生成独立候选，保留 references/assets，当前 skill 和冻结版本保留。</p><Row wrap :gap="12"><v-text-field v-model="model" label="Codex 模型 ID" hide-details :disabled="busy||active" /><v-select v-model="effort" label="推理强度" :items="['low','medium','high','xhigh','max','ultra']" hide-details :disabled="busy||active" /><v-btn color="primary" :loading="busy" :disabled="busy||active||!model.trim()" @click="generate">生成候选</v-btn></Row><v-alert v-if="error" type="error">{{ error }}</v-alert><Column v-for="attempt in data" :key="attempt.id" class="border-t border-line-subtle pt-12" :gap="8"><Row wrap :gap="8"><strong class="text-sm">{{ labels[attempt.status]??attempt.status }}</strong><span class="text-xs text-muted">{{ dateLabel(attempt.created_at) }} · {{ attempt.config.model }}</span></Row><p v-if="attempt.error" class="text-sm text-danger">{{ attempt.error }}</p><template v-if="attempt.result"><p class="text-sm text-muted">{{ attempt.result.summary }}</p><code class="text-xs text-muted break-all">{{ attempt.result.candidate_path }}</code><p class="text-xs text-muted">{{ attempt.result.publishable?'入口和引用检查通过，可核对后采用并冻结新版本。':'存在未决规则或引用问题，暂不能发布。' }}</p><v-btn v-if="attempt.result.publishable" color="primary" :loading="busy" :disabled="busy||active" @click="adopt(attempt.id)">采用候选并登记草稿</v-btn><p v-for="issue in attempt.result.issues" :key="issue" class="text-sm text-danger">{{ issue }}</p><p v-for="issue in attempt.result.unresolved" :key="issue.id" class="text-sm text-danger">{{ issue.blocking===false?'待确认':'阻断' }} · {{ issue.id }}：{{ issue.detail }}</p></template></Column></Column></template>

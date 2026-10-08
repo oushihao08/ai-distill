@@ -1,0 +1,106 @@
+{
+  "checked_at": "2026-10-08T10:25:04.938Z",
+  "scope": "isolated PostgreSQL schema; synthetic step-two material and frozen rules; real Codex author and independent reviewer; step-five enqueue only; failure cases injected",
+  "status": "passed",
+  "execution": {
+    "question_version": "68089cb071a57f5b1fdfbc0bd5bf45815ea9d00a2e6c8adeef36d306fd7ba225",
+    "rubric_version": "3abb3955f612b5af8218b3e0ffaf7e92cf6909e33a621e575597eb81cc447242",
+    "quality_check": {
+      "checks": {
+        "question_complete": true,
+        "rubric_consistent": true,
+        "material_grounding": true,
+        "deliverables_complete": true,
+        "reference_answer_complete": true
+      },
+      "issues": [],
+      "passed": true
+    },
+    "codex": {
+      "author": {
+        "usage": {
+          "input_tokens": 71562,
+          "output_tokens": 384,
+          "cached_input_tokens": 47104,
+          "reasoning_output_tokens": 45,
+          "cache_write_input_tokens": 0
+        },
+        "session_id": "01a11b0a-b2ca-7b43-a554-e5d9edd839c0",
+        "duration_ms": 27712
+      },
+      "review": {
+        "usage": {
+          "input_tokens": 71548,
+          "output_tokens": 138,
+          "cached_input_tokens": 46848,
+          "reasoning_output_tokens": 15,
+          "cache_write_input_tokens": 0
+        },
+        "session_id": "01a11b0b-1f2d-7e62-997e-08cd1f303f5a",
+        "duration_ms": 20491
+      }
+    }
+  },
+  "checks": [
+    {
+      "name": "current frozen rules loaded through step-three API",
+      "passed": true
+    },
+    {
+      "name": "explicit step-four Codex configuration saved",
+      "passed": true
+    },
+    {
+      "name": "concurrent API submissions deduplicate the same frozen input",
+      "passed": true
+    },
+    {
+      "name": "real worker executes authoring and independent review",
+      "passed": true
+    },
+    {
+      "name": "both real Codex sessions are distinct and quality passes",
+      "passed": true
+    },
+    {
+      "name": "database result excludes private reference answer",
+      "passed": true
+    },
+    {
+      "name": "workflow history publishes question and rubric without reference",
+      "passed": true
+    },
+    {
+      "name": "published public artifact downloads without reference",
+      "passed": true
+    },
+    {
+      "name": "private reference answer is retained in role output",
+      "passed": true
+    },
+    {
+      "name": "private author result has complete reference answer",
+      "passed": true
+    },
+    {
+      "name": "private role files have no download index",
+      "passed": true
+    },
+    {
+      "name": "step-five accepts the genuine step-four result without rubric/reference",
+      "passed": true
+    },
+    {
+      "name": "quality rejection is retained as failed with no published artifact",
+      "passed": true
+    },
+    {
+      "name": "late result cannot publish after material revision changes",
+      "passed": true
+    },
+    {
+      "name": "temporary database schema cleaned",
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,183 @@
+{
+  "checked_at": "2026-10-08T10:21:42.983Z",
+  "scope": "actual production max OCR checkpoints from project question folders",
+  "inventory": [
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1596号.pdf",
+      "total_pages": 59,
+      "recognized_pages": 22,
+      "attempt_status": "running",
+      "empty_pages": [],
+      "issues": []
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1597号.pdf",
+      "total_pages": 67,
+      "recognized_pages": 0,
+      "attempt_status": "running",
+      "empty_pages": [],
+      "issues": []
+    },
+    {
+      "question": "题目3",
+      "file": "(2023)渝0104民初3725号.pdf",
+      "total_pages": 77,
+      "recognized_pages": 2,
+      "attempt_status": "running",
+      "empty_pages": [],
+      "issues": []
+    },
+    {
+      "question": "题目3",
+      "file": "(2024)渝0104执312号.pdf",
+      "total_pages": 29,
+      "recognized_pages": 29,
+      "attempt_status": "running",
+      "empty_pages": [],
+      "issues": []
+    }
+  ],
+  "reviews": [
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1596号.pdf",
+      "page": 1,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [
+        {
+          "kind": "wrong_text",
+          "severity": "minor",
+          "source_quote": "生活困难接受国家救济的人",
+          "ocr_quote": "生活困难受国家救济的人",
+          "location": "司法救助对象—自然人一行",
+          "explanation": "OCR遗漏了'接受国家救济'中的'接'字，写作'受国家救济'，属文字漏字，不改变法律含义",
+          "confidence": "high",
+          "ocr_quote_valid": true
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1596号.pdf",
+      "page": 12,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [
+        {
+          "kind": "omission",
+          "severity": "minor",
+          "source_quote": "13",
+          "ocr_quote": "",
+          "location": "页眉右上角",
+          "explanation": "图片右上角印有页码“13”，OCR的页面元素说明中未提及该页码，属于结构性信息遗漏，不影响案件事实或法律含义",
+          "confidence": "high",
+          "ocr_quote_valid": true
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1596号.pdf",
+      "page": 23,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [
+        {
+          "kind": "wrong_text",
+          "severity": "minor",
+          "source_quote": "大写捌万元正",
+          "ocr_quote": "大写捌**元整",
+          "location": "手写借条第二行",
+          "explanation": "图片手写金额大写末字为「正」（捌万元正），OCR写作「元整」。「万」字按脱敏要求星号处理可接受，但「正/整」为可见文字的用字差异，虽不影响金额大小（捌万元），与借条原文书写不符。",
+          "confidence": "low",
+          "ocr_quote_valid": true
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2023)渝0104民初3725号.pdf",
+      "page": 1,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [
+        {
+          "kind": "wrong_text",
+          "severity": "minor",
+          "source_quote": "付原告80%货款",
+          "ocr_quote": "支付原告80%货款",
+          "location": "事实与理由部分第一段，付款约定处",
+          "explanation": "图片原文为'收到发票60个工作日内付原告80%货款'，OCR写作'支付原告80%货款'，多了'支'字。不影响金额及付款义务的实质含义。",
+          "confidence": "low",
+          "ocr_quote_valid": true
+        },
+        {
+          "kind": "wrong_text",
+          "severity": "serious",
+          "source_quote": "2023年1？月29日",
+          "ocr_quote": "2023年12月29日",
+          "location": "文末具状日期（手写）",
+          "explanation": "落款日期月份为手写，字迹被修改笔迹覆盖，难以确认是'11月'还是'12月'。若实际为11月29日而OCR作12月29日，则构成日期差异，可能影响起诉时间认定。",
+          "confidence": "low",
+          "ocr_quote_valid": true
+        }
+      ],
+      "uncertain": true
+    },
+    {
+      "question": "题目3",
+      "file": "(2023)渝0104民初3725号.pdf",
+      "page": 2,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2024)渝0104执312号.pdf",
+      "page": 1,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [
+        {
+          "kind": "wrong_text",
+          "severity": "minor",
+          "source_quote": "本案案件受量费3724元",
+          "ocr_quote": "本案案件受理费 3**4 元",
+          "location": "执行请求第3项",
+          "explanation": "图片原件写的是“受量费”（原件笔误），OCR转写为规范用语“受理费”，虽更正了笔误但与原文逐字不一致；金额3724元已按脱敏要求星号处理，不视为错误。",
+          "confidence": "high",
+          "ocr_quote_valid": true
+        }
+      ],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2024)渝0104执312号.pdf",
+      "page": 15,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [],
+      "uncertain": false
+    },
+    {
+      "question": "题目1",
+      "file": "(2021)渝0104民初1596号.pdf",
+      "page": 4,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [],
+      "uncertain": false
+    },
+    {
+      "question": "题目3",
+      "file": "(2024)渝0104执312号.pdf",
+      "page": 29,
+      "reviewer": "glm-5.3-flash high",
+      "issues": [],
+      "uncertain": false
+    }
+  ],
+  "complete": true,
+  "limit": "Evidence-backed model spot check, not full-page human validation. Unrecognized pages cannot be evaluated."
+}

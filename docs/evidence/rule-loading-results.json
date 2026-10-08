@@ -1,0 +1,43 @@
+{
+  "checked_at": "2026-10-08T08:09:43.789Z",
+  "scope": "real PostgreSQL, HTTP and local snapshots; synthetic upstream success",
+  "provider_calls": 0,
+  "checks": [
+    {
+      "name": "register rules",
+      "passed": true
+    },
+    {
+      "name": "freeze rules",
+      "passed": true
+    },
+    {
+      "name": "batch loads only extraction-ready question",
+      "passed": true
+    },
+    {
+      "name": "loaded rules are reused",
+      "passed": true
+    },
+    {
+      "name": "one current attempt persisted",
+      "passed": true
+    },
+    {
+      "name": "workflow binds the published version",
+      "passed": true
+    },
+    {
+      "name": "new draft blocks first-time binding",
+      "passed": true
+    },
+    {
+      "name": "material revision retains originally bound rules",
+      "passed": true
+    },
+    {
+      "name": "tampered snapshot prevents reuse",
+      "passed": true
+    }
+  ]
+}

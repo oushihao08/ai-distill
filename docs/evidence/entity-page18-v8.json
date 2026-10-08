@@ -1,0 +1,8 @@
+{
+  "checked_at": "2026-10-08T08:06:20.746Z",
+  "scope": "v7 failed page 18 cached OCR with v8 entity validation",
+  "passed": true,
+  "ocr_calls": 0,
+  "entity_count": 4,
+  "elapsed_ms": 6820
+}

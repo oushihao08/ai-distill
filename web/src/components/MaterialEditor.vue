@@ -1,0 +1,13 @@
+<script setup lang="ts">
+import { api } from '../api/client';
+const props=defineProps<{workflowId:string;replaceId?:string;replaceName?:string}>();
+const emit=defineEmits<{saved:[];close:[]}>();
+const files=shallowRef<File[]>([]);const busy=shallowRef(false);const error=shallowRef('');
+async function save(){
+ try{
+  busy.value=true;error.value='';const form=new FormData();for(const file of files.value)form.append('files',file);if(props.replaceId)form.append('replace_id',props.replaceId);
+  await api(`/workflows/${props.workflowId}/materials`,{method:'POST',body:form});emit('saved');emit('close');
+ }catch(cause){error.value=cause instanceof Error?cause.message:'保存失败';}finally{busy.value=false;}
+}
+</script>
+<template><v-form class="surface-card p-20" @submit.prevent="save"><Column :gap="16"><Row x="between"><h2 class="section-title">{{ replaceId?'替换材料':'增加材料' }}</h2><v-btn icon="$close" aria-label="关闭材料编辑" variant="text" :disabled="busy" @click="emit('close')" /></Row><p v-if="replaceName" class="text-sm text-muted break-all">替换：{{ replaceName }}</p><p class="text-xs text-muted">保留历史版本。材料变化会使后续结果失效，需要重新提取；本地来源文件夹中的原件不修改。</p><v-file-input v-model="files" accept=".pdf,application/pdf" :label="replaceId?'选择一份替换 PDF':'选择 PDF'" multiple chips :disabled="busy" /><v-alert v-if="error" type="error">{{ error }}</v-alert><Row x="end" :gap="8"><v-btn :disabled="busy" @click="emit('close')">取消</v-btn><v-btn type="submit" color="primary" variant="flat" :loading="busy" :disabled="busy||!files.length||(!!replaceId&&files.length!==1)">保存材料</v-btn></Row></Column></v-form></template>

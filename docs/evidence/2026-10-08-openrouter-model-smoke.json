@@ -1,0 +1,54 @@
+{
+  "checked_at": "2026-10-08T19:30:07+08:00",
+  "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+  "credential_env_name": "OPEN_ROUTER_KEY",
+  "key_metadata": {
+    "http_status": 200,
+    "is_management_key": false,
+    "is_provisioning_key": false,
+    "is_free_tier": false
+  },
+  "input_kind": "synthetic_prompt",
+  "secret_logged": false,
+  "requests": [
+    {
+      "model": "z-ai/glm-5.3-flash",
+      "http_status": 200,
+      "max_tokens": 12,
+      "reply": null,
+      "reasoning_tokens": 12,
+      "cost_usd": 0.00000855,
+      "note": "Output budget was consumed by reasoning; no visible text returned."
+    },
+    {
+      "model": "qwen/qwen-plus",
+      "http_status": 200,
+      "max_tokens": 12,
+      "reply": "OK",
+      "prompt_tokens": 13,
+      "completion_tokens": 1,
+      "cost_usd": 0.00000416
+    },
+    {
+      "model": "moonshotai/kimi-k2.5",
+      "http_status": 200,
+      "max_tokens": 12,
+      "reply": "OK",
+      "prompt_tokens": 13,
+      "completion_tokens": 81,
+      "cost_usd": 0.0001881
+    },
+    {
+      "model": "z-ai/glm-5.3-flash",
+      "http_status": 200,
+      "max_tokens": 128,
+      "reply": "OK",
+      "finish_reason": "stop",
+      "prompt_tokens": 17,
+      "completion_tokens": 35,
+      "cost_usd": 0.00002005
+    }
+  ],
+  "total_cost_usd": 0.00022086,
+  "conclusion": "The current standard inference API key successfully called all three models with synthetic prompts."
+}

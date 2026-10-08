@@ -1,0 +1,36 @@
+{
+  "checked_at": "2026-10-08T10:58:52.642Z",
+  "fixture": "synthetic data in temporary real PostgreSQL rows",
+  "real_database": true,
+  "migrations": [
+    "008_acceptance_reporting.sql",
+    "009_stale_exports.sql",
+    "011_publication_step.sql"
+  ],
+  "acceptance": true,
+  "prices": true,
+  "export_failure_isolated": true,
+  "export_retry": true,
+  "export": true,
+  "repeated_export": true,
+  "download": true,
+  "metrics": true,
+  "nonaccepted_gate": true,
+  "stale_export": true,
+  "unpublished_gate": true,
+  "publication": true,
+  "publication_reused": true,
+  "publication_download": true,
+  "decision": "accepted",
+  "api_cost": {
+    "known_calls": 1,
+    "known_amount_by_currency": {
+      "CNY": 0.00036
+    },
+    "unknown_calls": 0,
+    "unknown_reasons": {}
+  },
+  "export_sha256": "91c4a6f210ce769df0b1c7b8091b2c93941828b0b0f60c26c291737eb9a2b090",
+  "workbook_bytes": 3333,
+  "cleanup_complete": true
+}

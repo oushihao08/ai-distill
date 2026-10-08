@@ -1,0 +1,149 @@
+{
+  "checked_at": "2026-10-08T12:28:00.400Z",
+  "real_database": true,
+  "synthetic_sources": true,
+  "real_model_calls": true,
+  "real_author_and_review": true,
+  "real_author_scope": "rubric_chain_only",
+  "real_grading": true,
+  "real_material_calls": false,
+  "checks": [
+    {
+      "name": "concurrent starts reuse exactly one chain",
+      "passed": true
+    },
+    {
+      "name": "first content round and source evidence persist",
+      "passed": true
+    },
+    {
+      "name": "in-flight budget is unchanged by project edits",
+      "passed": true
+    },
+    {
+      "name": "step configuration snapshot also preserves pre-edit settings",
+      "passed": true
+    },
+    {
+      "name": "concurrent same-key reservation makes one invocation",
+      "passed": true
+    },
+    {
+      "name": "uncertain request retains quota and unknown state",
+      "passed": true
+    },
+    {
+      "name": "call limit prevents a third invocation and isolates",
+      "passed": true
+    },
+    {
+      "name": "authentication creates a waiting chain without content revision",
+      "passed": true
+    },
+    {
+      "name": "explicit recovery preserves content count and consumes one technical retry",
+      "passed": true
+    },
+    {
+      "name": "terminal interrupted invocation is reconciled with conservative elapsed time",
+      "passed": true
+    },
+    {
+      "name": "reconciliation cannot count the interrupted call twice",
+      "passed": true
+    },
+    {
+      "name": "changed input cannot resume an old chain",
+      "passed": true
+    },
+    {
+      "name": "generated attempt deletion removes dependent revision records",
+      "passed": true
+    },
+    {
+      "name": "revision tick queues a new score bound to its round",
+      "passed": true
+    },
+    {
+      "name": "queue consumer persists actual Codex grading",
+      "passed": true
+    },
+    {
+      "name": "score revision closes as accepted with one recorded invocation",
+      "passed": true
+    },
+    {
+      "name": "completed round keeps actual versions and model score",
+      "passed": true
+    },
+    {
+      "name": "terminal chain is not dispatched again",
+      "passed": true
+    },
+    {
+      "name": "reused successful score advances without another invocation",
+      "passed": true
+    },
+    {
+      "name": "rubric repair queues authoring and preserves completed answers",
+      "passed": true
+    },
+    {
+      "name": "rubric repair publishes a independently reviewed successor",
+      "passed": true
+    },
+    {
+      "name": "two failed rubric ancestors preserve original answers without leaking reference answer",
+      "passed": true
+    },
+    {
+      "name": "rubric revision closes without a second paid answer",
+      "passed": true
+    },
+    {
+      "name": "material anomaly queues exactly the evidenced PDF in a revision round",
+      "passed": true
+    },
+    {
+      "name": "repaired material queues bound independent redaction before authoring",
+      "passed": true
+    },
+    {
+      "name": "material invocation consumes chain quota once",
+      "passed": true
+    },
+    {
+      "name": "material repair actually consumes and publishes independently validated redaction",
+      "passed": true
+    },
+    {
+      "name": "redaction invocation consumes a second chain call",
+      "passed": true
+    },
+    {
+      "name": "material repair authoring freezes the new redacted attachment in the same round",
+      "passed": true
+    },
+    {
+      "name": "fresh answer receives repaired redacted material",
+      "passed": true
+    },
+    {
+      "name": "answer dispatch preserves independently redacted materials",
+      "passed": true
+    },
+    {
+      "name": "material repair closes accepted after redaction author review new answer and score",
+      "passed": true
+    },
+    {
+      "name": "complete material chain retains valid independent redaction",
+      "passed": true
+    },
+    {
+      "name": "rule-change scenario queues a task under its original frozen rule version",
+      "passed": false
+    }
+  ],
+  "failure": "rule-change scenario queues a task under its original frozen rule version"
+}

@@ -1,0 +1,61 @@
+{
+  "checked_at": "2026-10-08T08:20:26.649Z",
+  "input_kind": "synthetic anonymous question/material/answer",
+  "real_codex_call": true,
+  "status": "passed",
+  "session_id": "01a11a99-7463-7470-be58-e6258b467556",
+  "duration_ms": 20017,
+  "usage": {
+    "input_tokens": 46615,
+    "cached_input_tokens": 0,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 172,
+    "reasoning_output_tokens": 0
+  },
+  "validation": {
+    "valid": true,
+    "total": 1,
+    "max_score": 1,
+    "issues": []
+  },
+  "report": {
+    "binding": {
+      "question_version": "fixture-v1",
+      "input_revision": 1,
+      "input_digest": "092b6c5fe457a50538f12defa6a27bbe9b2a686550495cb71787f7fae241e669",
+      "rubric_version": "fixture-r1",
+      "rubric_digest": "94bfb22b109b2987020157b154ef4734b682724d3f5dc2a042882dfa2391e3e1",
+      "answer_attempt_id": "d6a427aa-2dd1-4284-a66e-0508736ac6b2",
+      "answer_sha256": "fac9b4d64fa6372e401c90babc98f7940a8f48925097f220b29a86bd26ff24d3"
+    },
+    "assessment_valid": true,
+    "items": [
+      {
+        "id": "amount",
+        "score": 1,
+        "reason": "答案明确回答欠款100元，与附件一致，且不存在金额错误或缺失。",
+        "missing": false,
+        "evidence": [
+          {
+            "source": "answer",
+            "quote": "欠款100元。",
+            "material_index": null
+          },
+          {
+            "source": "material",
+            "quote": "合同记载甲公司尚欠乙公司100元。",
+            "material_index": 0
+          },
+          {
+            "source": "rubric",
+            "quote": "回答欠款金额100元；金额错误或缺失为0分。",
+            "material_index": null
+          }
+        ]
+      }
+    ],
+    "total": 1,
+    "max_score": 1,
+    "disputes": []
+  }
+}

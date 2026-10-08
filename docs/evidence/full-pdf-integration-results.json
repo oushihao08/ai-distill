@@ -1,0 +1,145 @@
+{
+  "checked_at": "2026-10-08T08:29:41.598Z",
+  "scope": "real complete PDF",
+  "processor_version": "pdf-redaction-v8",
+  "elapsed_ms": 1391973,
+  "provider_metrics": {
+    "page_ocr": {
+      "calls": 0,
+      "elapsed_ms": 0,
+      "failed": 0
+    },
+    "entity_check": {
+      "calls": 201,
+      "elapsed_ms": 1384626,
+      "failed": 0
+    }
+  },
+  "verification_cache": "private .storage/.verification-ocr-cache keyed by source and OCR config; reusable across verification retries",
+  "extraction": {
+    "status": "failed",
+    "error": "识别或脱敏检查存在待核项，暂不可用于出题",
+    "page_count": 66,
+    "expected_pages": 66,
+    "issues": [
+      {
+        "page_index": 10,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 12,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 13,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 24,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 25,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 41,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 42,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 43,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 51,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 53,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 60,
+        "kind": "entity_residue"
+      },
+      {
+        "page_index": 63,
+        "kind": "entity_residue"
+      }
+    ]
+  },
+  "checks": [
+    {
+      "name": "Neon authenticated query",
+      "passed": true
+    },
+    {
+      "name": "HTTP health and DB connectivity",
+      "passed": true
+    },
+    {
+      "name": "create project",
+      "passed": true
+    },
+    {
+      "name": "concurrent intake idempotency",
+      "passed": true
+    },
+    {
+      "name": "saved source hash and file count",
+      "passed": true
+    },
+    {
+      "name": "stage availability",
+      "passed": true
+    },
+    {
+      "name": "exact original PDF download",
+      "passed": true
+    },
+    {
+      "name": "project list counts",
+      "passed": true
+    },
+    {
+      "name": "project detail workflow index",
+      "passed": true
+    },
+    {
+      "name": "missing workflow error",
+      "passed": true
+    },
+    {
+      "name": "cross-origin write rejection",
+      "passed": true
+    },
+    {
+      "name": "persistent extraction queue",
+      "passed": true
+    },
+    {
+      "name": "extraction queue idempotency",
+      "passed": true
+    },
+    {
+      "name": "synchronous timeout keeps the same pending task",
+      "passed": true
+    },
+    {
+      "name": "prompt snapshot stored",
+      "passed": true
+    },
+    {
+      "name": "targeted worker claim",
+      "passed": true
+    },
+    {
+      "name": "extraction completed successfully",
+      "passed": false
+    }
+  ]
+}

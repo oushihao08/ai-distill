@@ -1,0 +1,18 @@
+{
+  "checked_at": "2026-10-08",
+  "backend": {
+    "pass": 459,
+    "fail": 0,
+    "assertions": 1074,
+    "files": 18
+  },
+  "build_exit_code": 0,
+  "typecheck_exit_code": 0,
+  "full_pdf_v7": "failed_single_character_entity_page18",
+  "qwen_real_call": "blocked_management_key_401",
+  "full_pdf_v8": "running_cached_ocr",
+  "rule_loading": {
+    "unit_pass": 5,
+    "postgres_http_pass": 9
+  }
+}

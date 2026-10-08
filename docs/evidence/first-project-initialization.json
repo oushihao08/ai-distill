@@ -1,0 +1,31 @@
+{
+  "checked_at": "2026-10-08T05:41:04.898Z",
+  "scope": "ai_distill business tables and repository managed .storage only",
+  "before": {
+    "artifacts": 6,
+    "step_attempts": 6,
+    "steps": 24,
+    "materials": 3,
+    "workflows": 3,
+    "rule_versions": 0,
+    "project_step_configs": 0,
+    "projects": 2
+  },
+  "after": {
+    "artifacts": 0,
+    "step_attempts": 0,
+    "steps": 0,
+    "materials": 0,
+    "workflows": 0,
+    "rule_versions": 1,
+    "project_step_configs": 0,
+    "projects": 1
+  },
+  "project_id": "b5041cbb-0e67-410c-92d2-02bc97837f52",
+  "rule_files": 9,
+  "skill_files": 8,
+  "rule_status": "draft",
+  "old_managed_storage_removed": true,
+  "schema_migrations_preserved": 4,
+  "provider_calls": 0
+}

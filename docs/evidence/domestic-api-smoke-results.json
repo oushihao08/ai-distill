@@ -1,0 +1,42 @@
+{
+  "checked_at": "2026-10-08T07:55:49.652Z",
+  "mode": "configuration_only",
+  "checks": [
+    {
+      "provider": "kimi",
+      "status": "unverified",
+      "request_attempted": false,
+      "called_provider": false,
+      "input_kind": "synthetic_question_and_text_material",
+      "missing": [
+        "KIMI_API_KEY or MOONSHOT_API_KEY",
+        "KIMI_MODEL"
+      ],
+      "reason": "未配置直连模型或可用凭证"
+    },
+    {
+      "provider": "deepseek",
+      "status": "unverified",
+      "request_attempted": false,
+      "called_provider": false,
+      "input_kind": "synthetic_question_and_text_material",
+      "missing": [
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_MODEL"
+      ],
+      "reason": "未配置直连模型或可用凭证"
+    },
+    {
+      "provider": "doubao",
+      "status": "unverified",
+      "request_attempted": false,
+      "called_provider": false,
+      "input_kind": "synthetic_question_and_text_material",
+      "missing": [
+        "DOUBAO_API_KEY or ARK_API_KEY",
+        "DOUBAO_MODEL"
+      ],
+      "reason": "未配置直连模型或可用凭证"
+    }
+  ]
+}
