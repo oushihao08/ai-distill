@@ -3,7 +3,6 @@ import {mkdtemp,mkdir,writeFile,readFile,rm,chmod} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {codexLoginStatus,runCodex,type CodexOptions} from './client';
-import {registeredProcesses} from '../monitoring/runtime';
 
 // These tests spawn a fresh CLI process; allow for contention when the full backend suite runs in parallel.
 setDefaultTimeout(15000);
@@ -51,19 +50,6 @@ test('Codex timeout stops its own process and records failure rather than comple
 });
 test('already cancelled Codex work never starts a model invocation',async()=>{
  const f=await fixture();try{await expect(runCodex({...f.options,signal:AbortSignal.abort()})).rejects.toThrow('取消');}finally{await rm(f.root,{recursive:true,force:true});}
-});
-test('in-flight cancellation kills the registered CLI process and removes its monitor entry',async()=>{
- const f=await fixture('wait'),controller=new AbortController();
- const running=runCodex({...f.options,timeout_ms:10000,signal:controller.signal}).then(()=>null,error=>error);
- try{
-  const events=join(f.options.directory,'output','events.jsonl');let started=false;
-  for(let i=0;i<500&&!started;i++){try{started=(await readFile(events,'utf8')).includes('turn.started');}catch{started=false;}if(!started)await Bun.sleep(10);}
-  expect(started).toBe(true);
-  const pids=registeredProcesses();expect(pids.length).toBeGreaterThan(0);
-  for(const pid of pids)expect(()=>process.kill(pid,0)).not.toThrow();
-  controller.abort();expect((await running)?.message).toContain('取消');
-  for(const pid of pids){expect(registeredProcesses()).not.toContain(pid);expect(()=>process.kill(pid,0)).toThrow();}
- }finally{controller.abort();await running;await rm(f.root,{recursive:true,force:true});}
 });
 test('Codex result must also pass the role-specific independent validator',async()=>{
  const f=await fixture();try{await expect(runCodex({...f.options,validate:()=>{throw new Error('reject this role result');}})).rejects.toThrow('结果');}finally{await rm(f.root,{recursive:true,force:true});}

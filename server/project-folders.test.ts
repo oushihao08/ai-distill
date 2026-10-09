@@ -1,10 +1,10 @@
 import {validateCodexModel} from './codex/models';
-import type { PoolClient } from 'pg';
+import type { Pool,PoolClient } from 'pg';
 import { test, expect, afterEach } from 'bun:test';
 import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanProjectFolder, validateFolder, validateStepConfig, registerQuestionFolders } from './project-folders';
+import { scanProjectFolder, validateFolder, validateStepConfig, registerQuestionFolders,projectStepSummary } from './project-folders';
 const roots: string[] = [];
 afterEach(async () => { try { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); } catch (error) { throw error; } });
 test('folder is required, absolute and readable', async () => {
@@ -51,6 +51,32 @@ test('Codex settings use actual advertised model efforts rather than a global ef
  expect(()=>validateCodexModel('gpt-6-luna','ultra',catalog)).toThrow('推理强度');
  expect(()=>validateCodexModel('unknown-model','low',catalog)).toThrow('模型');
  expect(()=>validateCodexModel('gpt-6-luna','low',[])).toThrow('模型清单');
+});
+test('unsaved Codex project steps inherit the system model and reasoning defaults',async()=>{
+ const pool={query:async(sql:string)=>{
+  if(sql.startsWith('SELECT w.id AS workflow_id'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
+  if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-system',reasoning_effort:'high'}],rowCount:1};
+  throw new Error(`Unexpected query: ${sql}`);
+ }} as unknown as Pool;
+ const steps=await projectStepSummary(pool,'project');
+ expect(steps.find(step=>step.ordinal===4)).toMatchObject({config:{provider:'codex',model:'gpt-system',reasoning_effort:'high'},config_source:'system'});
+ expect(steps.find(step=>step.ordinal===6)).toMatchObject({config:{provider:'codex',model:'gpt-system',reasoning_effort:'high'},config_source:'system'});
+ expect(steps.find(step=>step.ordinal===9)?.config).toMatchObject({provider:'codex',model:'gpt-system',reasoning_effort:'high',prompt:expect.any(String)});
+});
+test('project Codex defaults feed steps while an explicit step config remains highest priority',async()=>{
+ const pool={query:async(sql:string)=>{
+  if(sql.startsWith('SELECT w.id AS workflow_id'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[{ordinal:4,config:{provider:'codex',model:'gpt-step',reasoning_effort:'low'}}],rowCount:1};
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:'gpt-project',codex_reasoning_effort:'high'}],rowCount:1};
+  if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-system',reasoning_effort:'medium'}],rowCount:1};
+  throw new Error(`Unexpected query: ${sql}`);
+ }} as unknown as Pool;
+ const steps=await projectStepSummary(pool,'project');
+ expect(steps.find(step=>step.ordinal===4)).toMatchObject({config:{model:'gpt-step',reasoning_effort:'low'},config_source:'step'});
+ expect(steps.find(step=>step.ordinal===6)).toMatchObject({config:{model:'gpt-project',reasoning_effort:'high'},config_source:'project'});
+ expect(steps.find(step=>step.ordinal===9)).toMatchObject({config:{model:'gpt-project',reasoning_effort:'high'},config_source:'project'});
 });
 test('PDF model settings reject unverified model protocols',()=>{
  expect(()=>validateStepConfig(2,{model:'unknown-vision-model',reasoning_effort:'low'})).toThrow('模型');

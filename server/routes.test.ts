@@ -43,10 +43,10 @@ test('project listing and project detail return persisted rows',async()=>{
 });
 test.each(['/api/projects/'+id,'/api/workflows/'+id,'/api/materials/'+id+'/download','/api/artifacts/'+id+'/download'])('missing record returns 404: %s',async path=>{expect((await setup(()=>empty).request(path)).status).toBe(404);});
 test.each(['/api/projects/x','/api/workflows/x','/api/materials/x/download','/api/artifacts/x/download'])('malformed ID never reaches database: %s',async path=>{let calls=0;expect((await setup(()=>{calls++;return empty;}).request(path)).status).toBe(400);expect(calls).toBe(0);});
-test('workflow detail retains eight stages and converts byte count to a number',async()=>{
+test('workflow detail hides internal rule binding and extraction stages',async()=>{
  const app=setup(sql=>{
-  const rows=sql.includes('FROM ai_distill.workflows')?[{id,project_id:id}]:sql.includes('FROM ai_distill.materials')?[{id,size_bytes:'123'}]:sql.includes('FROM ai_distill.steps')?Array.from({length:8},(_,i)=>({ordinal:i+1,implemented:i<2,status:i?'waiting':'succeeded'})):sql.includes('FROM ai_distill.artifacts')?[{id,kind:'redacted_index'}]:[{id}];return{rows,rowCount:rows.length};
- });const d=await(await app.request(`/api/workflows/${id}`)).json()as any;expect(d.steps).toHaveLength(8);expect(d.steps.slice(2).every((s:any)=>!s.implemented&&s.status==='waiting')).toBe(true);expect(d.materials[0].size_bytes).toBe(123);expect(d.artifacts[0].kind).toBe('redacted_index');
+  const positions:Record<number,number>={1:1,2:99,3:3,4:4,5:5,6:6,7:7,8:8,9:2};const rows=sql.includes('FROM ai_distill.workflows')?[{id,project_id:id}]:sql.includes('FROM ai_distill.materials')?[{id,size_bytes:'123'}]:sql.includes('FROM ai_distill.steps')?[1,2,3,4,5,6,7,8,9].map(ordinal=>({ordinal,display_position:positions[ordinal],implemented:ordinal===1,status:ordinal===1?'succeeded':'waiting'})).sort((a,b)=>a.display_position-b.display_position):sql.includes('FROM ai_distill.artifacts')?[{id,kind:'redacted_index'}]:[{id}];return{rows,rowCount:rows.length};
+ });const d=await(await app.request(`/api/workflows/${id}`)).json()as any;expect(d.steps).toHaveLength(7);expect(d.steps.map((s:any)=>s.ordinal)).toEqual([1,9,4,5,6,7,8]);expect(d.steps.slice(2).every((s:any)=>!s.implemented&&s.status==='waiting')).toBe(true);expect(d.steps.map((s:any)=>s.display_position)).toEqual([1,2,3,4,5,6,7]);expect(d.materials[0].size_bytes).toBe(123);expect(d.artifacts[0].kind).toBe('redacted_index');
 });
 test('downloads stream exact bytes and correctly encode source names',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'route-test-'));dirs.push(dir);await writeFile(join(dir,'source.pdf'),'%PDF-test');await writeFile(join(dir,'materials.md'),'脱敏文本');
@@ -65,14 +65,20 @@ test('extraction API rejects missing workflow and incomplete intake',async()=>{
  const app=setup(sql=>sql.startsWith('SELECT input_revision')?{rows:[{input_revision:1}],rowCount:1}:sql.startsWith('SELECT ordinal')?{rows:[{status:'failed'}],rowCount:1}:empty);expect((await app.request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(409);
 });
 test('step four authoring route is wired and refuses incomplete current prerequisites',async()=>{
- const calls:string[]=[];const app=setup(sql=>{calls.push(sql);return sql.startsWith('SELECT w.input_revision')?{rows:[{input_revision:1,project_id:id,title:'问题',rule_version_id:'rules',extraction_status:'failed',rules_status:'succeeded'}],rowCount:1}:empty;});
+ const calls:string[]=[];const app=setup(sql=>{calls.push(sql);return sql.startsWith('SELECT w.* FROM ai_distill.workflows')?{rows:[{id,project_id:id,input_revision:1,rule_version_id:null}],rowCount:1}:sql.startsWith('SELECT ordinal,status')?{rows:[{ordinal:1,status:'succeeded'},{ordinal:3,status:'waiting'},{ordinal:9,status:'succeeded'}],rowCount:3}:empty;});
  const response=await app.request(`/api/workflows/${id}/author`,{method:'POST'});
- expect(response.status).toBe(409);expect(await response.json()).toMatchObject({error:'请先完成当前版本的材料提取与规则加载'});expect(calls.some(sql=>sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
+ expect(response.status).toBe(409);expect(await response.json()).toMatchObject({error:'请先冻结当前项目资料与skill版本'});expect(calls.some(sql=>sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
 });
 test('step four is accepted by the batch route and reports unready prerequisites',async()=>{
- const app=setup(sql=>sql.startsWith('SELECT id FROM ai_distill.projects')?{rows:[{id}],rowCount:1}:sql.startsWith('SELECT id,project_id FROM ai_distill.workflows')?{rows:[{id,project_id:id}],rowCount:1}:sql.startsWith('SELECT s.status,prev.status')?{rows:[{status:'waiting',previous_status:'succeeded'}],rowCount:1}:sql.startsWith('SELECT w.input_revision')?{rows:[{input_revision:1,project_id:id,title:'问题',rule_version_id:'rules',extraction_status:'failed',rules_status:'succeeded'}],rowCount:1}:empty);
+ const app=setup(sql=>sql.startsWith('SELECT id FROM ai_distill.projects')?{rows:[{id}],rowCount:1}:sql.startsWith('SELECT id,project_id FROM ai_distill.workflows')?{rows:[{id,project_id:id}],rowCount:1}:sql.startsWith('SELECT CASE WHEN s.ordinal=1')?{rows:[{status:'waiting',active:false,previous_status:'waiting'}],rowCount:1}:empty);
  const response=await app.request(`/api/projects/${id}/steps/4/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
- expect(response.status).toBe(202);expect(await response.json()).toMatchObject({results:[{workflow_id:id,status:'not_ready',reason:'请先完成当前版本的材料提取与规则加载'}]});
+ expect(response.status).toBe(202);expect(await response.json()).toMatchObject({results:[{workflow_id:id,status:'not_ready',reason:'此题目未就绪或此步骤已完成'}]});
+});
+test('rule binding is no longer exposed as a standalone workflow route or batch step',async()=>{
+ const app=setup(()=>empty);
+ expect((await app.request(`/api/workflows/${id}/load-rules`,{method:'POST'})).status).toBe(404);
+ const response=await app.request(`/api/projects/${id}/steps/3/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+ expect(response.status).toBe(400);
 });
 test('rule mutation parameters are validated before touching files or database',async()=>{
  let calls=0;const app=setup(()=>{calls++;return empty;});const request={method:'POST',headers:{'Content-Type':'application/json'}};

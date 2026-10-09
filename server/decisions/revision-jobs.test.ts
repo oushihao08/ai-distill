@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {startRevision} from './revision-jobs';
-function fixture(options:{previous?:boolean;active?:boolean;stale?:boolean;pending?:boolean}={}){
+function fixture(options:{previous?:boolean;active?:boolean;stale?:boolean;pending?:boolean;projectStepConfigs?:{ordinal:number;config:Record<string,unknown>}[]}={}){
  const calls:{sql:string;values:any[]}[]=[];
  const source={id:'source',ordinal:7,status:'succeeded',result:{decision:'repair',reasons:['below_model_threshold:model'],model_scores:{model:{score:2,max_score:10}}}};
  const db={release(){},async query(sql:string,values:any[]=[]){
@@ -8,6 +8,9 @@ function fixture(options:{previous?:boolean;active?:boolean;stale?:boolean;pendi
   if(sql.startsWith('SELECT w.input_revision'))return {rows:[{input_revision:1,project_id:'project'}]};
   if(sql.startsWith('SELECT * FROM ai_distill.step_attempts'))return {rows:[source]};
   if(sql.startsWith('SELECT * FROM ai_distill.revision_chains'))return {rows:options.previous?[{id:'existing'}]:[]};
+  if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return {rows:options.projectStepConfigs??[]};
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return {rows:[{codex_model:null,codex_reasoning_effort:null}]};
+  if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return {rows:[{credential_home:null,model:'system-model',reasoning_effort:'high'}]};
   if(sql.startsWith('SELECT id FROM ai_distill.revision_chains'))return {rows:options.active?[{id:'active'}]:[]};
   if(sql.includes('ORDER BY attempt DESC'))return {rows:[{id:options.stale?'newer':'source'}]};
   if(sql.includes("status IN ('waiting','running')"))return {rowCount:options.pending?1:0,rows:[]};
@@ -26,6 +29,16 @@ test('revision start stores source evidence, frozen budget and one content round
  const round=calls.find(call=>call.sql.startsWith('INSERT INTO ai_distill.revision_rounds'))!;
  expect(JSON.parse(round.values[4])).toEqual({reasons:['below_model_threshold:model']});
  expect(calls.at(-1)?.sql).toBe('COMMIT');
+});
+test('revision snapshot freezes system Codex defaults while preserving project overrides',async()=>{
+ const {pool,calls}=fixture({projectStepConfigs:[{ordinal:4,config:{provider:'codex',model:'project-model',reasoning_effort:'low'}},{ordinal:7,config:{revision_budget:{max_technical_retries:2,max_calls:20,max_duration_ms:10000}}}]});
+ await startRevision(pool,'workflow','source');
+ const snapshotCall=calls.find(call=>call.sql.startsWith('UPDATE ai_distill.revision_chains SET config_snapshot'))!;
+ const snapshot=JSON.parse(snapshotCall.values[1]);
+ expect(snapshot.configs['3']).toMatchObject({provider:'codex',model:'system-model',reasoning_effort:'high'});
+ expect(snapshot.configs['4']).toMatchObject({provider:'codex',model:'project-model',reasoning_effort:'low'});
+ expect(snapshot.configs['6']).toMatchObject({provider:'codex',model:'system-model',reasoning_effort:'high'});
+ expect(snapshot.configs['9']).toMatchObject({provider:'codex',model:'system-model',reasoning_effort:'high',prompt:expect.any(String)});
 });
 test('same source reuses its chain without increasing counters',async()=>{
  const {pool,calls}=fixture({previous:true});expect(await startRevision(pool,'workflow','source')).toMatchObject({id:'existing',reused:true});

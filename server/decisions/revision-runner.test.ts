@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {runRevisionTick} from './revision-runner';
-function fixture(options:{blocked?:boolean;stale?:boolean;pending?:boolean;failure?:boolean;rubric?:boolean;exhausted?:boolean;materialStage?:2|9}={}){
+function fixture(options:{stale?:boolean;pending?:boolean;failure?:boolean;rubric?:boolean;exhausted?:boolean;materialStage?:2|9}={}){
  const calls:{sql:string;values:any[]}[]=[];
  const chain={id:'chain',workflow_id:'workflow',input_revision:1,status:'running',content_revisions:options.exhausted?3:1,technical_retries:0,calls_reserved:1,spent_duration_ms:10,budget:{max_content_revisions:3,max_technical_retries:2,max_calls:20,max_duration_ms:10000}};
  const round={id:'round',chain_id:'chain',round:1,stage:options.materialStage??4,status:'running',issue_kind:options.rubric?'rubric':'question'};
@@ -9,7 +9,6 @@ function fixture(options:{blocked?:boolean;stale?:boolean;pending?:boolean;failu
   calls.push({sql,values});
   if(sql.startsWith('SELECT c.*'))return {rows:[chain]};
   if(sql.includes('pg_try_advisory_xact_lock'))return {rows:[{acquired:true}]};
-  if(sql.includes('dispatch_allowed'))return {rows:[{allowed:!options.blocked}]};
   if(sql.startsWith('SELECT input_revision'))return {rows:[{input_revision:options.stale?2:1}]};
   if(sql.startsWith('SELECT * FROM ai_distill.revision_rounds'))return {rows:[round]};
   if(sql.startsWith('SELECT * FROM ai_distill.step_attempts WHERE revision_round_id'))return {rows:[attempt]};
@@ -20,13 +19,6 @@ function fixture(options:{blocked?:boolean;stale?:boolean;pending?:boolean;failu
  };
  return {pool:{query,connect:async()=>({query,release(){}})} as any,calls};
 }
-test('paused or cancelled revision does not advance and releases its chain lock',async()=>{
- const {pool,calls}=fixture({blocked:true});await runRevisionTick(pool,'unused');
- expect(calls.some(call=>call.sql.startsWith('UPDATE'))).toBe(false);
- expect(calls.some(call=>call.sql.includes('pg_try_advisory_xact_lock('))).toBe(true);
- expect(calls.at(-1)?.sql).toBe('COMMIT');
- expect(calls.some(call=>call.sql.includes('pg_advisory_lock_shared'))).toBe(false);
-});
 test('pending round does not dispatch or advance again',async()=>{
  const {pool,calls}=fixture({pending:true});await runRevisionTick(pool,'unused');
  expect(calls.some(call=>call.sql.startsWith('UPDATE'))).toBe(false);

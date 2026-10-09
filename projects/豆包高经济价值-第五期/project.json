@@ -101,15 +101,6 @@
   },
   "unresolved": [
     {
-      "id": "delivery-format",
-      "sources": [
-        "materials/题目规范.md",
-        "materials/公司法务出题准则.md",
-        "skill/SKILL.md"
-      ],
-      "detail": "本地规范要求Markdown，指定skill默认Word。尚未执行出题，不改原文、不假称格式已统一。"
-    },
-    {
       "id": "source-date-and-industry",
       "sources": [
         "materials/高经济价值五期任务说明文档.md",
@@ -124,9 +115,20 @@
     "authorized_at": "2026-10-08",
     "ai_assisted_authoring": "allowed_for_this_local_project",
     "ai_assisted_redaction": "allowed_for_this_local_project",
+    "authoring_output": "plain_text_package_stored_in_database",
+    "authoring_output_authorized_at": "2026-10-09",
     "blocks_internal_workflow": false,
     "source_document": "/Users/jack/Documents/codes/lvgou/豆包高经/附件脱敏不可使用AI.md",
     "source_sha256": "bb3e57204f14963c29254a02be83cf95424e058a934d10dd5cb227ade0052a61",
     "external_platform_eligibility": "unverified"
-  }
+  },
+  "resolutions": [
+    {
+      "id": "delivery-format",
+      "resolved_at": "2026-10-09",
+      "authorized_by": "project_owner",
+      "decision": "本地工作台以纯文本题目包入库，不生成Word或Markdown成稿文件；保留规则要求的全部内容章节。",
+      "scope": "本地工作台交付载体，不代表外部平台接受该格式。"
+    }
+  ]
 }

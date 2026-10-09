@@ -1,4 +1,4 @@
-import {watchTaskCancellation} from '../automation/task-signal';
+import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {bindRevisionAttempt,readRevisionSettings} from '../decisions/revision-binding';
 import {runRevisionCall} from '../decisions/revision-calls';
@@ -10,6 +10,7 @@ import {readScoreContext} from './context';
 import {buildAnonymousInput,runIndependentScore} from './executor';
 import {validateScore,type ScoreContext} from './validate';
 import {validateStepConfig} from '../project-folders';
+import {mergeCodexDefaults,readProjectCodexDefaults} from '../codex/system-config';
 export function scoreContextDigest(context:ScoreContext){
  const b=context.binding;
  return createHash('sha256').update(JSON.stringify({binding:{question_version:b.question_version,input_revision:b.input_revision,input_digest:b.input_digest,rubric_version:b.rubric_version,rubric_digest:b.rubric_digest,answer_attempt_id:b.answer_attempt_id,answer_sha256:b.answer_sha256},input:buildAnonymousInput(context)})).digest('hex');
@@ -34,8 +35,7 @@ export async function enqueueScore(pool:Pool,id:string,revisionRoundId?:string){
   if(!answerIds.length)throw new HTTPException(409,{message:'当前模型集合没有成功答案可评分'});
   const settings=await readRevisionSettings(db,id,w.input_revision,revisionRoundId);
   const raw=settings?settings.configs?.['6']:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[w.project_id])).rows[0]?.config;
-  if(!raw)throw new HTTPException(409,{message:'请先保存第六步Codex模型设置'});
-  const config=validateStepConfig(6,raw),queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
+  const config=validateStepConfig(6,mergeCodexDefaults(raw,await readProjectCodexDefaults(db,w.project_id))),queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
   for(const answerId of answerIds){
    const context=await readScoreContext(db,id,answerId);buildAnonymousInput(context);
    const input={context,digest:scoreContextDigest(context)};
@@ -90,7 +90,7 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
   const stale=await db.query("SELECT a.id,a.workflow_id,a.input_revision FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=6 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED");
   for(const row of stale.rows){await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE id=$1",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=6 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1 AND w.input_revision=$2)",[row.workflow_id,row.input_revision]);}
-  job=(await db.query("SELECT a.* FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND a.status='waiting' AND ai_distill.dispatch_allowed(w.id,'codex') ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
+  job=(await db.query("SELECT a.* FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
   if(!job){await db.query('COMMIT');return false;}
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=6",[job.workflow_id]);await db.query('COMMIT');
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
@@ -106,7 +106,7 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
   const invocation=await runRevisionCall(pool,job.id,'score',remaining=>grade(job.input.context,{root:join(directory,'private'),model:config.model,reasoning_effort:config.reasoning_effort,signal,timeout_ms:Math.min(1800000,remaining??1800000)}));
   if(signal?.aborted)throw new Error('cancelled');
   const validation=validateScore(invocation.report,job.input.context);
-  const publication={question_version:job.input.context.binding.question_version,rubric_version:job.input.context.binding.rubric_version,report:invocation.report,validation,binding:job.input.context.binding,session_id:invocation.session_id,usage:invocation.usage,duration_ms:invocation.duration_ms,model:config.model,reasoning_effort:config.reasoning_effort};
+  const publication={question_version:job.input.context.binding.question_version,rubric_version:job.input.context.binding.rubric_version,project_rule_version_id:job.input.context.project_rules.version_id,project_rule_source_digest:job.input.context.project_rules.source_digest,project_rule_files:job.input.context.project_rules.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes})),report:invocation.report,validation,binding:job.input.context.binding,session_id:invocation.session_id,usage:invocation.usage,duration_ms:invocation.duration_ms,model:config.model,reasoning_effort:config.reasoning_effort};
   const bytes=Buffer.from(JSON.stringify(publication,null,2)+'\n'),path=join(directory,'score.json');await mkdir(directory,{recursive:true});wrote=true;await writeFile(path,bytes,{mode:0o600});
   const tx=await pool.connect();try{
    await tx.query('BEGIN');if(!await stillCurrent(tx,job)||!(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE",[job.id])).rowCount)throw new Error('obsolete');

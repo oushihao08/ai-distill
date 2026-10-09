@@ -1,17 +1,21 @@
-import {test,expect} from 'bun:test';
-import {mkdtemp,readdir,readFile,rm} from 'node:fs/promises';
+import {test,expect,beforeAll,afterAll} from 'bun:test';
+import {mkdtemp,mkdir,readdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {buildAnonymousInput,runIndependentScore} from './executor';
 import type {ScoreContext} from './validate';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
+const baseSnapshot=join(tmpdir(),`grading-base-rules-${process.pid}`);const baseRuleText='基础项目规则';
+const baseProjectRules={version_id:'rules-v1',source_digest:hash('base-rules'),snapshot_path:baseSnapshot,files:[{path:'skill/SKILL.md',sha256:hash(baseRuleText),size_bytes:Buffer.byteLength(baseRuleText)}]};
+beforeAll(async()=>{await mkdir(join(baseSnapshot,'skill'),{recursive:true});await writeFile(join(baseSnapshot,'skill','SKILL.md'),baseRuleText);});
+afterAll(async()=>{await rm(baseSnapshot,{recursive:true,force:true});});
 const rubric=[{id:'amount',criterion:'准确指出金额',max_score:1}];
-const context:ScoreContext={binding:{question_version:'v1',input_revision:1,input_digest:'a'.repeat(64),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'private-id',answer_sha256:hash('100元')},question:'金额多少',materials:[{name:'原模型名称',text:'金额100元'}],answer:'100元',rubric};
+const context:ScoreContext={binding:{question_version:'v1',input_revision:1,input_digest:'a'.repeat(64),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'private-id',answer_sha256:hash('100元')},question:'金额多少',materials:[{name:'原模型名称',text:'金额100元'}],answer:'100元',rubric,project_rules:baseProjectRules};
 const report={assessment_valid:true,items:[{id:'amount',score:1,reason:'金额正确',missing:false,evidence:[{source:'answer',quote:'100元',material_index:null}]}],total:1,max_score:1,disputes:[]};
 test('anonymous input whitelists fields, renames attachments and preserves exact answer',()=>{
  const input=buildAnonymousInput({...context,provider:'secret-provider',reference_answer:'secret-reference',target_score:0} as ScoreContext);
- expect(input).toEqual({question:'金额多少',materials:[{name:'附件1',text:'金额100元'}],rubric,answer:'100元'});
+ expect(input).toEqual({question:'金额多少',materials:[{name:'附件1',text:'金额100元'}],rubric,answer:'100元',project_rules:{version_id:'rules-v1',source_digest:baseProjectRules.source_digest,files:baseProjectRules.files}});
  expect(JSON.stringify(input)).not.toContain('private-id');
 });
 test('invalid answer hash or rubric hash cannot be graded',()=>{
@@ -23,7 +27,7 @@ test('independent session sees only anonymous input and output binding is suppli
  try{
   const execute=async(options:any)=>{
    directory=options.directory;
-   expect(await readdir(directory)).toEqual(['input.json']);
+   expect(await readdir(directory)).toEqual(['input','input.json']);
    const bytes=await readFile(join(directory,'input.json'),'utf8');expect(bytes).not.toContain('private-id');expect(bytes).not.toContain('原模型名称');
    expect(options.prompt).not.toContain(context.binding.answer_attempt_id);
    return {result:options.validate(report),session_id:'independent-session',usage:{input_tokens:12},events_path:join(directory,'output/events.jsonl'),duration_ms:10};
@@ -31,6 +35,21 @@ test('independent session sees only anonymous input and output binding is suppli
   const result=await runIndependentScore(context,{root,model:'fixture',reasoning_effort:'low',execute:execute as any});
   expect(result.report.binding).toEqual(context.binding);expect(result.validation.valid).toBe(true);expect(result.session_id).toBe('independent-session');
   const second=await runIndependentScore(context,{root,model:'fixture',reasoning_effort:'low',execute:execute as any});expect(second.directory).not.toBe(result.directory);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('independent scoring reads the pinned project rule files',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'grading-rules-'));const snapshot=join(root,'snapshot');await mkdir(join(snapshot,'materials'),{recursive:true});
+ const ruleText='本期评分要求：核对材料中的关键事实。';await writeFile(join(snapshot,'materials','grading.md'),ruleText);
+ const projectRules={version_id:'rules-v2',source_digest:hash('project-rules'),snapshot_path:snapshot,files:[{path:'materials/grading.md',sha256:hash(ruleText),size_bytes:Buffer.byteLength(ruleText)}]};
+ const ruleContext={...context,project_rules:projectRules} as unknown as ScoreContext;
+ try{
+  await runIndependentScore(ruleContext,{root,model:'fixture',reasoning_effort:'low',execute:(async(options:any)=>{
+   expect(await Bun.file(join(options.directory,'input','rules','materials','grading.md')).exists()).toBe(true);
+   expect(await Bun.file(join(options.directory,'input','rules','materials','grading.md')).text()).toBe(ruleText);
+   const input=JSON.parse(await readFile(join(options.directory,'input.json'),'utf8'));
+   expect(input.project_rules).toMatchObject({version_id:'rules-v2',source_digest:projectRules.source_digest,files:projectRules.files});
+   return{result:options.validate(report),session_id:'session',usage:null,events_path:'private',duration_ms:1};
+  }) as any});
  }finally{await rm(root,{recursive:true,force:true});}
 });
 test('invalid semantic assessment is retained as invalid, never represented as successful grading',async()=>{

@@ -6,13 +6,14 @@ import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
 import {mkdir,readFile,writeFile,rm,realpath} from 'node:fs/promises';
 import {join,resolve,relative,isAbsolute} from 'node:path';
-import {watchTaskCancellation} from '../automation/task-signal';
+import {watchTaskCancellation} from '../task-signal';
 import {validateStepConfig} from '../project-folders';
+import {mergeCodexDefaults,readProjectCodexDefaults} from '../codex/system-config';
 import {DEFAULT_REDACTION_PROMPT} from '../../shared/step-registry';
 import {redactExtractedMaterials,type ExtractedMaterial} from './redaction';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 export const redactionInputDigest=(revision:number,materials:{material_id:string;source_sha256:string;artifact_id:string;artifact_sha256:string}[])=>hash(JSON.stringify({input_revision:revision,materials:materials.map(item=>({material_id:item.material_id,source_sha256:item.source_sha256,artifact_id:item.artifact_id,artifact_sha256:item.artifact_sha256}))}));
-const defaultConfig={provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'medium',prompt:DEFAULT_REDACTION_PROMPT};
+const defaultConfig={provider:'codex',prompt:DEFAULT_REDACTION_PROMPT};
 
 async function currentSources(db:Pool|PoolClient,id:string,revision:number){
  const rows=await db.query("SELECT DISTINCT ON(m.id) m.id AS material_id,m.sha256 AS source_sha256,ar.id AS artifact_id,ar.sha256 AS artifact_sha256 FROM ai_distill.materials m JOIN ai_distill.artifacts ar ON ar.workflow_id=m.workflow_id AND ar.material_id=m.id AND ar.kind='private_extracted_pages' JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id AND a.input_revision=m.input_revision AND a.status='succeeded' WHERE m.workflow_id=$1 AND m.input_revision=$2 ORDER BY m.id,a.finished_at DESC NULLS LAST,ar.created_at DESC,ar.id DESC",[id,revision]);
@@ -31,8 +32,9 @@ export async function enqueueRedaction(pool:Pool,id:string,roundId?:string){
   if(gate.find(row=>row.ordinal===1)?.status!=='succeeded'||!['succeeded','skipped'].includes(gate.find(row=>row.ordinal===2)?.status))throw new HTTPException(409,{message:'原始文本尚未完成入库'});
   const sources=await currentSources(db,id,workflow.input_revision);
   const settings=await readRevisionSettings(db,id,workflow.input_revision,roundId);
-  const raw=settings?settings.configs?.['9']??defaultConfig:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=9',[workflow.project_id])).rows[0]?.config??defaultConfig;
-  const config=validateStepConfig(9,raw);
+  const frozen=settings?.configs?.['9'];
+  const raw=settings?{...defaultConfig,...(frozen??{})}:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=9',[workflow.project_id])).rows[0]?.config??defaultConfig;
+  const config=validateStepConfig(9,mergeCodexDefaults(raw,await readProjectCodexDefaults(db,workflow.project_id)));
   const input={input_revision:workflow.input_revision,materials:sources};
   const digest=redactionInputDigest(input.input_revision,input.materials);
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=9 AND input_revision=$2 AND input->>'digest'=$3 AND config=$4::jsonb AND status IN ('waiting','running','succeeded') ORDER BY attempt DESC LIMIT 1",[id,workflow.input_revision,digest,JSON.stringify(config)])).rows[0];
@@ -72,7 +74,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
   const stale=await db.query("SELECT a.id,a.workflow_id,a.input_revision FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=9 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' FOR UPDATE OF w,a SKIP LOCKED");
   for(const row of stale.rows){await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='脱敏进程中断，可重试',finished_at=now() WHERE id=$1",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='脱敏进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=9 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1 AND input_revision=$2)",[row.workflow_id,row.input_revision]);}
-  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 AND s.enabled WHERE a.ordinal=9 AND a.status='waiting' AND w.deleted_at IS NULL AND ai_distill.dispatch_allowed(w.id,'codex') ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
+  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 AND s.enabled WHERE a.ordinal=9 AND a.status='waiting' AND w.deleted_at IS NULL ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
   if(!job){await db.query('COMMIT');return false;}
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=9",[job.workflow_id]);

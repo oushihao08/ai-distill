@@ -1,0 +1,31 @@
+<script setup lang="ts">
+import {api} from '../api/client';
+interface ModelOption {slug:string;supported_reasoning_levels:{effort:string}[]}
+interface Settings {model:string;reasoning_effort:string;source:'project'|'system'}
+const props=defineProps<{projectId:string}>();
+const model=shallowRef(''),effort=shallowRef(''),source=shallowRef<'project'|'system'>('system');
+const options=shallowRef<ModelOption[]>([]),loading=shallowRef(true),busy=shallowRef(false),error=shallowRef('');
+const modelItems=computed(()=>options.value.map(item=>({title:item.slug,value:item.slug})));
+const effortItems=computed(()=>options.value.find(item=>item.slug===model.value)?.supported_reasoning_levels.map(level=>level.effort)??[]);
+const canSave=computed(()=>modelItems.value.some(item=>item.value===model.value)&&effortItems.value.includes(effort.value));
+watch(model,selected=>{const supported=options.value.find(item=>item.slug===selected)?.supported_reasoning_levels.map(level=>level.effort)??[];if(!supported.includes(effort.value))effort.value=supported.includes('medium')?'medium':supported[0]??'';});
+function apply(settings:Settings){model.value=settings.model;effort.value=settings.reasoning_effort;source.value=settings.source;}
+async function load(){
+ try{loading.value=true;error.value='';const [catalog,settings]=await Promise.all([api<{model_options:ModelOption[]}>('/codex/config'),api<Settings>(`/projects/${props.projectId}/codex-settings`)]);options.value=catalog.model_options??[];apply(settings);}
+ catch(cause){error.value=cause instanceof Error?cause.message:'读取项目Codex设置失败';}finally{loading.value=false;}
+}
+async function save(){
+ try{busy.value=true;error.value='';apply(await api<Settings>(`/projects/${props.projectId}/codex-settings`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model.value,reasoning_effort:effort.value})}));}
+ catch(cause){error.value=cause instanceof Error?cause.message:'保存项目Codex设置失败';}finally{busy.value=false;}
+}
+async function inherit(){
+ try{busy.value=true;error.value='';apply(await api<Settings>(`/projects/${props.projectId}/codex-settings`,{method:'DELETE'}));}
+ catch(cause){error.value=cause instanceof Error?cause.message:'恢复全局默认失败';}finally{busy.value=false;}
+}
+onMounted(load);
+</script>
+<template><section class="surface-card p-16"><Column :gap="10">
+ <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">项目 Codex 默认</h2><p class="text-xs text-muted">项目默认用于本项目的 Codex 步骤；步骤单独设置优先级更高。</p></Column><v-chip size="small" :color="source==='project'?'primary':'secondary'">{{ source==='project'?'项目默认':'跟随全局默认' }}</v-chip></Row>
+ <Row wrap :gap="10"><v-select v-model="model" label="默认模型" :items="modelItems" :loading="loading" :disabled="loading||busy||!modelItems.length" /><v-select v-model="effort" label="默认推理强度" :items="effortItems" :disabled="loading||busy||!effortItems.length" /><v-btn color="primary" variant="flat" :loading="busy" :disabled="loading||busy||!canSave" @click="save">保存项目默认</v-btn><v-btn v-if="source==='project'" :disabled="busy" @click="inherit">恢复全局默认</v-btn></Row>
+ <p v-if="!loading&&!modelItems.length" class="text-xs text-warning">本机 Codex 模型清单不可用，请先登录并刷新模型清单。</p><v-alert v-if="error" type="error">{{ error }}</v-alert>
+</Column></section></template>

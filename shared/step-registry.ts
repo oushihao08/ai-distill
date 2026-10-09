@@ -8,12 +8,13 @@ export const STEP_REGISTRY = [
   // Kept as an internal attempt identity for extraction history and retries.
   { key: 'extract_text', ordinal: 2, position: 99, name: 'PDF文本提取', handler: 'extract', defaultEnabled: false, required: false, visible: false },
   { key: 'redact_materials', ordinal: 9, position: 2, name: '脱敏与检查', handler: 'redact', defaultEnabled: true, required: false, visible: true },
-  { key: 'load_rules', ordinal: 3, position: 3, name: '加载本期规则', handler: 'rules', defaultEnabled: true, required: true, visible: true },
-  { key: 'author_quality', ordinal: 4, position: 4, name: '出题与质检', handler: 'author', defaultEnabled: true, required: false, visible: true },
-  { key: 'model_answer', ordinal: 5, position: 5, name: '模型作答', handler: 'answer', defaultEnabled: true, required: false, visible: true },
-  { key: 'independent_score', ordinal: 6, position: 6, name: '独立评分', handler: 'score', defaultEnabled: true, required: false, visible: true },
-  { key: 'accept_or_revise', ordinal: 7, position: 7, name: '达标或返修', handler: 'decision', defaultEnabled: true, required: false, visible: true },
-  { key: 'publish_export', ordinal: 8, position: 8, name: '发布成果与导出', handler: 'publish', defaultEnabled: true, required: false, visible: true },
+  // Stable internal identity retained for historical records; authoring binds it automatically.
+  { key: 'load_rules', ordinal: 3, position: 99, name: '项目规则版本绑定', handler: 'rules', defaultEnabled: true, required: true, visible: false },
+  { key: 'author_quality', ordinal: 4, position: 3, name: '出题与质检', handler: 'author', defaultEnabled: true, required: false, visible: true },
+  { key: 'model_answer', ordinal: 5, position: 4, name: '模型作答', handler: 'answer', defaultEnabled: true, required: false, visible: true },
+  { key: 'independent_score', ordinal: 6, position: 5, name: '独立评分', handler: 'score', defaultEnabled: true, required: false, visible: true },
+  { key: 'accept_or_revise', ordinal: 7, position: 6, name: '达标或返修', handler: 'decision', defaultEnabled: true, required: false, visible: true },
+  { key: 'publish_export', ordinal: 8, position: 7, name: '发布成果与导出', handler: 'publish', defaultEnabled: true, required: false, visible: true },
 ] as const;
 
 export type StepKey = typeof STEP_REGISTRY[number]['key'];

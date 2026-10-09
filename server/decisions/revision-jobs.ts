@@ -3,6 +3,8 @@ import {readProjectModelSet} from '../answer-models/model-set';
 import {HTTPException} from 'hono/http-exception';
 import {classifyRevisionSource,freezeRevisionBudget} from './revision-source';
 import {decideRevision} from './revision';
+import {mergeCodexDefaults,readProjectCodexDefaults} from '../codex/system-config';
+import {DEFAULT_REDACTION_PROMPT} from '../../shared/step-registry';
 
 // All mutation paths lock the workflow first, matching existing stage queues.
 export async function startRevision(pool:Pool,workflowId:string,sourceAttemptId:string){
@@ -26,7 +28,13 @@ export async function startRevision(pool:Pool,workflowId:string,sourceAttemptId:
   if(!classified)throw new HTTPException(409,{message:'来源没有可处理的失败或返修判定'});
   const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
   const settings=(await db.query('SELECT ordinal,config FROM ai_distill.project_step_configs WHERE project_id=$1 ORDER BY ordinal',[workflow.project_id])).rows;
-  const configSnapshot={rule_version_id:workflow.rule_version_id??null,configs:Object.fromEntries(settings.map(row=>[String(row.ordinal),row.config])),model_set:await readProjectModelSet(db,workflow.project_id)};
+  const configs=Object.fromEntries(settings.map(row=>[String(row.ordinal),row.config])) as Record<string,Record<string,unknown>>;
+  const codexDefaults=await readProjectCodexDefaults(db,workflow.project_id);
+  for(const ordinal of ['3','4','6','9']){
+   const base={provider:'codex',...(ordinal==='9'?{prompt:DEFAULT_REDACTION_PROMPT}:{}),...(configs[ordinal]??{})};
+   configs[ordinal]=mergeCodexDefaults(base,codexDefaults);
+  }
+  const configSnapshot={rule_version_id:workflow.rule_version_id??null,configs,model_set:await readProjectModelSet(db,workflow.project_id)};
   const budget=freezeRevisionBudget(raw?.revision_budget),decision=decideRevision(classified.kind,budget);
   const status=decision.action==='isolate'?'isolated':decision.action==='wait'?'blocked':'waiting';
   const question=(await db.query("SELECT result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND input_revision=$2 AND status='succeeded' ORDER BY attempt DESC LIMIT 1",[workflowId,workflow.input_revision])).rows[0]?.result;
@@ -51,18 +59,6 @@ export async function resumeRevision(pool:Pool,workflowId:string,chainId:string)
   if(chain.status!=='blocked')throw new HTTPException(409,{message:'只能恢复等待处理的返修链'});
   const round=(await db.query('SELECT * FROM ai_distill.revision_rounds WHERE chain_id=$1 ORDER BY round DESC LIMIT 1 FOR UPDATE',[chainId])).rows[0];
   if(!round)throw new HTTPException(409,{message:'缺少返修轮次'});
-  if(chain.reason==='batch_cancelled'||chain.reason==='project_cancelled'){
-   const cancelled=(await db.query("SELECT * FROM ai_distill.step_attempts WHERE revision_round_id=$1 AND status='skipped' AND error IN ('自动批次已取消','项目执行已取消') ORDER BY attempt DESC LIMIT 1",[round.id])).rows[0];
-   if(cancelled){
-    const decision=decideRevision('service_transient',{...chain.budget,content_revisions:chain.content_revisions,technical_retries:chain.technical_retries,calls:chain.calls_reserved,spent_duration_ms:Number(chain.spent_duration_ms)});
-    if(decision.action!=='retry')throw new HTTPException(409,{message:'取消后的恢复预算不足，请保留隔离记录'});
-    await db.query("UPDATE ai_distill.revision_rounds SET status='failed',finished_at=now() WHERE id=$1",[round.id]);
-    await db.query("INSERT INTO ai_distill.revision_rounds(id,chain_id,round,parent_round_id,source_attempt_id,issue_kind,evidence,decision,status,stage,before_versions,before_scores) VALUES($1,$2,$3,$4,$5,'service_transient',$6,$7,'waiting',$8,$9,$10)",[crypto.randomUUID(),chainId,round.round+1,round.id,cancelled.id,JSON.stringify({error:chain.reason}),JSON.stringify(decision),cancelled.ordinal,JSON.stringify(round.before_versions??{}),JSON.stringify(round.before_scores??{})]);
-    await db.query('UPDATE ai_distill.revision_chains SET technical_retries=$2 WHERE id=$1',[chainId,decision.technical_retries]);
-   }else await db.query("UPDATE ai_distill.revision_rounds SET status='waiting' WHERE id=$1",[round.id]);
-   await db.query("UPDATE ai_distill.revision_chains SET status='waiting',reason=NULL,updated_at=now() WHERE id=$1",[chainId]);
-   await db.query('COMMIT');return {id:chainId,status:'waiting'};
-  }
   if(round.issue_kind==='authentication'||round.issue_kind==='quota'){
    const decision=decideRevision('service_transient',{...chain.budget,content_revisions:chain.content_revisions,technical_retries:chain.technical_retries,calls:chain.calls_reserved,spent_duration_ms:Number(chain.spent_duration_ms)});
    if(decision.action!=='retry')throw new HTTPException(409,{message:'返修预算不足，不能恢复调用'});

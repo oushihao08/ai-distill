@@ -3,7 +3,7 @@ import { api } from '../api/client';
 import { dateLabel, fileSize } from '../utils/format';
 import type { Material, MaterialTextDetail } from '../types/api';
 
-const props = defineProps<{ workflowId: string; materials: Material[]; disabled?: boolean }>();
+const props = defineProps<{ workflowId: string; materials: Material[]; redactionStatus?: string; disabled?: boolean; readOnly?: boolean; preferRedacted?: boolean; redactionQueued?: boolean }>();
 const emit = defineEmits<{ add: []; edit: [material: Material]; delete: [material: Material] }>();
 const detailOpen = shallowRef(false);
 const detailBusy = shallowRef(false);
@@ -18,17 +18,31 @@ function statusLabel(status: string) {
  if (status === 'redacted') return '已脱敏';
  return status;
 }
+function redactionLabel(material: Material) {
+ if (material.processing_status === 'redacted') return '已脱敏';
+ if (props.redactionQueued) return '排队中';
+ if (props.redactionStatus === 'running') return '脱敏中';
+ if (props.redactionStatus === 'failed') return '脱敏失败';
+ return material.processing_status === 'received' ? '待提取' : '未脱敏';
+}
+function redactionColor(material: Material) {
+ if (material.processing_status === 'redacted') return 'success';
+ if (props.redactionStatus === 'failed') return 'error';
+ if (props.redactionQueued || props.redactionStatus === 'running') return 'info';
+ return 'warning';
+}
 
 async function viewFullText(material: Material) {
  if (detailBusy.value) return;
  selectedMaterial.value = material;
  detail.value = undefined;
  detailError.value = '';
- showingRedacted.value = false;
+ showingRedacted.value = Boolean(props.preferRedacted);
  detailOpen.value = true;
  try {
   detailBusy.value = true;
   detail.value = await api<MaterialTextDetail>(`/workflows/${props.workflowId}/materials/${material.id}/extracted-text`);
+  showingRedacted.value = Boolean(props.preferRedacted && detail.value.redaction_status === 'redacted' && detail.value.redacted_text !== undefined);
  } catch (cause) {
   detailError.value = cause instanceof Error ? cause.message : '读取附件全文失败';
  } finally {
@@ -42,7 +56,7 @@ async function viewFullText(material: Material) {
   <Column :gap="16">
    <Row x="between" wrap :gap="8">
     <h2 class="section-title">附件入库记录</h2>
-    <Row :gap="8"><v-chip color="secondary">{{ materials.length }} 份</v-chip><v-btn :disabled="disabled" @click="emit('add')">增加附件</v-btn></Row>
+    <Row :gap="8"><v-chip color="secondary">{{ materials.length }} 份</v-chip><v-btn v-if="!readOnly" :disabled="disabled" @click="emit('add')">增加附件</v-btn></Row>
    </Row>
    <Column v-if="!materials.length" class="surface-panel p-16" :gap="8">
     <span class="text-sm text-muted">当前材料版本还没有入库附件。</span>
@@ -65,15 +79,15 @@ async function viewFullText(material: Material) {
         </Column>
        </td>
        <td><v-chip :color="material.processing_status === 'received' ? 'warning' : 'success'">{{ statusLabel(material.processing_status) }}</v-chip></td>
-       <td><v-chip :color="material.processing_status === 'redacted' ? 'success' : 'warning'">{{ material.processing_status === 'redacted' ? '已脱敏' : material.processing_status === 'received' ? '待提取' : '未脱敏' }}</v-chip></td>
+       <td><v-chip :color="redactionColor(material)">{{ redactionLabel(material) }}</v-chip></td>
        <td class="whitespace-nowrap">{{ fileSize(material.size_bytes) }}</td>
        <td class="whitespace-nowrap">{{ dateLabel(material.created_at) }}</td>
        <td>
         <Row wrap :gap="4">
          <v-btn color="primary" variant="text" :disabled="disabled || detailBusy || material.processing_status === 'received'" :loading="detailBusy && selectedMaterial?.id === material.id" @click="viewFullText(material)">查看全文</v-btn>
          <v-btn color="secondary" variant="text" :href="`/api/materials/${material.id}/download`">下载原件</v-btn>
-         <v-btn variant="text" :disabled="disabled" @click="emit('edit', material)">替换</v-btn>
-         <v-btn color="error" variant="text" :disabled="disabled" @click="emit('delete', material)">删除</v-btn>
+         <v-btn v-if="!readOnly" variant="text" :disabled="disabled" @click="emit('edit', material)">替换</v-btn>
+         <v-btn v-if="!readOnly" color="error" variant="text" :disabled="disabled" @click="emit('delete', material)">删除</v-btn>
         </Row>
        </td>
       </tr>
@@ -91,18 +105,22 @@ async function viewFullText(material: Material) {
      </Column>
      <v-btn icon="$close" aria-label="关闭附件全文" variant="text" @click="detailOpen = false" />
     </Row>
-    <Row v-if="detail" wrap :gap="8">
+     <Row v-if="detail" wrap :gap="8">
      <v-chip :color="detail.redaction_status === 'redacted' ? 'success' : 'warning'">{{ detail.redaction_status === 'redacted' ? '已完成脱敏' : '尚未脱敏' }}</v-chip>
      <v-btn size="small" :variant="!showingRedacted ? 'flat' : 'text'" @click="showingRedacted = false">原始提取文本</v-btn>
-     <v-btn size="small" :disabled="detail.redaction_status !== 'redacted' || !detail.redacted_pages" :variant="showingRedacted ? 'flat' : 'text'" @click="showingRedacted = true">脱敏后文本</v-btn>
+     <v-btn size="small" :disabled="detail.redaction_status !== 'redacted' || detail.redacted_text === undefined" :variant="showingRedacted ? 'flat' : 'text'" @click="showingRedacted = true">脱敏后文本</v-btn>
     </Row>
     <v-alert v-if="detail && !showingRedacted" type="warning" density="compact">当前显示原始提取文本，包含未脱敏信息，请注意权限与使用范围。</v-alert>
-    <v-alert v-if="detail && showingRedacted && !detail.redacted_pages" type="info" density="compact">此记录已标记脱敏，但旧版索引没有保存附件级正文，当前无法在这里展示脱敏文本。可在工作流步骤产物中下载整卷脱敏文本。</v-alert>
+    <v-alert v-if="detail && showingRedacted && detail.redacted_text === undefined" type="info" density="compact">此记录已标记脱敏，但索引中没有附件级正文，当前无法在这里展示脱敏文本。可在工作流步骤产物中下载整卷脱敏文本。</v-alert>
     <v-alert v-if="detailError" type="error" role="alert">{{ detailError }}</v-alert>
     <span v-else-if="detailBusy" class="text-sm text-muted">正在读取已入库全文…</span>
     <Column v-else-if="detail" class="max-h-560px overflow-y-auto" :gap="16">
      <span class="text-xs text-muted">{{ detail.format.toUpperCase() }} · {{ detail.provider }} · {{ detail.pages.length }} 页</span>
-     <Column v-for="page in (showingRedacted ? detail.redacted_pages ?? [] : detail.pages)" :key="page.page" class="border-t border-line-subtle pt-12" :gap="8">
+     <template v-if="showingRedacted && detail.redacted_text !== undefined && !detail.redacted_pages?.length">
+      <span class="text-xs text-muted">脱敏后全文</span>
+      <pre class="surface-panel p-12 text-sm whitespace-pre-wrap break-words">{{ detail.redacted_text || '（脱敏文本为空）' }}</pre>
+     </template>
+     <Column v-else v-for="page in (showingRedacted ? detail.redacted_pages ?? [] : detail.pages)" :key="page.page" class="border-t border-line-subtle pt-12" :gap="8">
       <Row x="between" wrap :gap="8">
        <span class="text-sm font-medium">第 {{ page.page }} 页 · {{ page.method }}</span>
        <v-chip v-if="page.issues?.length" color="warning">{{ page.issues.length }} 项待核</v-chip>

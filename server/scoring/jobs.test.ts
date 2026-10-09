@@ -1,23 +1,28 @@
-import {test,expect} from 'bun:test';
+import {test,expect,beforeAll,afterAll} from 'bun:test';
 import {enqueueScore,runNextScore,scoreContextDigest} from './jobs';
 import type {Pool} from 'pg';
 import {createHash} from 'node:crypto';
 import {inputDigest} from '../answer-models/input';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
+const snapshot=join(tmpdir(),`score-job-rules-${process.pid}`),ruleText='本期评分规则';
+const projectRules={version_id:'rules-v1',source_digest:hash('project-rules'),snapshot_path:snapshot,files:[{path:'skill/SKILL.md',sha256:hash(ruleText),size_bytes:Buffer.byteLength(ruleText)}]};
+beforeAll(async()=>{await mkdir(join(snapshot,'skill'),{recursive:true});await writeFile(join(snapshot,'skill','SKILL.md'),ruleText);});
+afterAll(async()=>{await rm(snapshot,{recursive:true,force:true});});
 const rubric=[{id:'amount',criterion:'指出100元',max_score:1}];
 const input={question_version:'v1',input_revision:1,question:'多少',materials:[{name:'附件1',text:'欠款100元'}],attachments:[{id:'attachment',sha256:hash('欠款100元')}]};
-const context={question:input.question,materials:input.materials,answer:'100元',rubric,binding:{question_version:'v1',input_revision:1,input_digest:inputDigest(input),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'answer',answer_sha256:hash('100元')}};
+const context={question:input.question,materials:input.materials,answer:'100元',rubric,project_rules:projectRules,binding:{question_version:'v1',input_revision:1,input_digest:inputDigest(input),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'answer',answer_sha256:hash('100元')}};
 function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:boolean;inactive?:boolean;stale?:boolean;answers?:{id:string;text:string}[];bundle?:any[];scoreRows?:any[]}={}){
  const calls:{sql:string;values:any[]}[]=[];let claim=false;
  const job={id:'grade',workflow_id:'workflow',input_revision:1,input:{context:structuredClone(context),digest:scoreContextDigest(context)},config:{provider:'codex',model:'gpt-6-astra',reasoning_effort:'medium'}};
  const query=async(sql:string,values:any[]=[])=>{
   calls.push({sql,values});
-  if(sql.startsWith('SELECT w.input_revision'))return {rowCount:1,rows:[{input_revision:1,project_id:'project'}]};
+  if(sql.startsWith('SELECT w.input_revision'))return {rowCount:1,rows:[{input_revision:1,project_id:'project',rule_version_id:'rules-v1'}]};
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rowCount:1,rows:[{codex_model:null,codex_reasoning_effort:null}]};
   if(sql.startsWith('SELECT a.input,a.result')){const answerId=values[0]??'answer',text=options.answers?.find(answer=>answer.id===answerId)?.text??'100元';return {rowCount:1,rows:[{input:{...input,question_attempt_id:'author',input_digest:inputDigest(input)},result:{text,input_digest:inputDigest(input),answer_sha256:hash(text)}}]};}
-  if(sql.startsWith('SELECT a.id,a.result'))return {rowCount:1,rows:[{id:'author',result:{...input,attachment_ids:['attachment'],quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:options.late&&claim?'r2':'r1',rubric}}]};
+  if(sql.startsWith('SELECT a.id,a.input,a.result'))return {rowCount:1,rows:[{id:'author',input:{rule_version_id:projectRules.version_id,rule_source_digest:projectRules.source_digest,rule_snapshot_path:snapshot,rule_files:projectRules.files},result:{...input,attachment_ids:['attachment'],quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:options.late&&claim?'r2':'r1',rubric}}]};
   if(sql.includes('a.id=ANY($3::uuid[])'))return {rowCount:options.unready?0:(options.answers?.length??0),rows:options.unready?[]:(options.answers??[]).map(answer=>({id:answer.id}))};
   if(sql.startsWith('SELECT a.id FROM'))return {rowCount:options.unready?0:1,rows:options.unready?[]:[{id:'answer'}]};
   if(sql.startsWith('SELECT status,result FROM ai_distill.steps'))return {rowCount:1,rows:[{status:'succeeded',result:options.bundle?{models:options.bundle}:null}]};

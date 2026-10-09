@@ -10,12 +10,9 @@ import {runNextScore} from './scoring/jobs';
 import {runNextProjectSkill} from './skill-generation/jobs';
 import {runNextAuthoring} from './authoring/jobs';
 import {runRevisionTick} from './decisions/revision-runner';
-import {runAutomationTick} from './automation/jobs';
-import {configureRuntimeMonitor} from './monitoring/runtime';
 import {configureCodexCredentialsHome} from './codex/client';
 import {readCodexCredentialHome} from './codex/system-config';
 const pool = createPool();
-configureRuntimeMonitor(pool);
 configureCodexCredentialsHome(()=>readCodexCredentialHome(pool));
 const controller = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => controller.abort());
@@ -25,7 +22,7 @@ const monitor = createWorkerMonitor(pool, root, {min_available_percent:Number(pr
 console.log(`材料处理进程已启动，并发数 ${concurrency}。`);
 try {
  await monitor.start();
- await Promise.all([runWorkerPool(async()=>{try{await runRevisionTick(pool,root);await runAutomationTick(pool,root);return false;}catch(error){throw error;}},{concurrency:1,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>console.error('自动推进失败，稍后重试')}),runWorkerPool(
+ await Promise.all([runWorkerPool(async()=>{try{await runRevisionTick(pool,root);return false;}catch(error){throw error;}},{concurrency:1,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>console.error('返修接续失败，稍后重试')}),runWorkerPool(
   async worker => {
    try {
     const root=process.env.STORAGE_DIR ?? '.storage';

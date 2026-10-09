@@ -110,3 +110,47 @@ test('malformed ID and cross-origin mutations are rejected before DB access', as
   expect(calls).toHaveLength(0);
  } catch (error) { throw error; }
 });
+
+test('Codex settings API exposes local model options and rejects unsupported reasoning effort',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'codex-settings-api-'));directories.push(root);
+ const previousHome=process.env.CODEX_HOME;process.env.CODEX_HOME=root;
+ try{
+  await Bun.write(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]}));
+  let config={credential_home:null as string|null,model:'gpt-test',reasoning_effort:'low'};
+  const query=async(sql:string,values?:unknown[])=>{
+   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{...config}],rowCount:1};
+   if(sql.startsWith('INSERT INTO ai_distill.system_codex_config')){config={credential_home:values?.[0] as string|null,model:values?.[1] as string,reasoning_effort:values?.[2] as string};return{rows:[{...config}],rowCount:1};}
+   throw new Error(`Unexpected query: ${sql}`);
+  };
+  const pool={query,connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool;
+  const app=createApp(pool,root);
+  const loaded=await app.request('/api/codex/config');
+  expect(loaded.status).toBe(200);expect(await loaded.json()).toMatchObject({model:'gpt-test',reasoning_effort:'low',model_options:[{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]});
+  const invalid=await app.request('/api/codex/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:null,model:'gpt-test',reasoning_effort:'max'})});
+  expect(invalid.status).toBe(400);expect(config.reasoning_effort).toBe('low');
+  const saved=await app.request('/api/codex/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:null,model:'gpt-test',reasoning_effort:'high'})});
+  expect(saved.status).toBe(200);expect(await saved.json()).toMatchObject({model:'gpt-test',reasoning_effort:'high'});expect(config.reasoning_effort).toBe('high');
+ }finally{if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
+});
+test('project Codex settings inherit system defaults and can be overridden or reset',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'project-codex-settings-api-'));directories.push(root);
+ const previousHome=process.env.CODEX_HOME;process.env.CODEX_HOME=root;
+ try{
+  await Bun.write(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'gpt-project',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]}));
+  let project:{codex_model:string|null;codex_reasoning_effort:string|null}={codex_model:null,codex_reasoning_effort:null};
+  const query=async(sql:string,values?:unknown[])=>{
+   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{...project}],rowCount:1};
+   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-system',reasoning_effort:'low'}],rowCount:1};
+   if(sql.startsWith('UPDATE ai_distill.projects SET codex_model=$2')){project={codex_model:values?.[1] as string,codex_reasoning_effort:values?.[2] as string};return{rows:[{...project}],rowCount:1};}
+   if(sql.startsWith('UPDATE ai_distill.projects SET codex_model=NULL')){project={codex_model:null,codex_reasoning_effort:null};return{rows:[{id:'project'}],rowCount:1};}
+   throw new Error(`Unexpected query: ${sql}`);
+  };
+  const app=createApp({query,connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool,root);
+  const inherited=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/codex-settings');
+  expect(inherited.status).toBe(200);expect(await inherited.json()).toEqual({model:'gpt-system',reasoning_effort:'low',source:'system'});
+  const saved=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/codex-settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-project',reasoning_effort:'high'})});
+  expect(saved.status).toBe(200);expect(await saved.json()).toEqual({model:'gpt-project',reasoning_effort:'high',source:'project'});
+  const reset=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/codex-settings',{method:'DELETE'});
+  expect(reset.status).toBe(200);expect(await reset.json()).toEqual({model:'gpt-system',reasoning_effort:'low',source:'system'});
+ }finally{if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
+});

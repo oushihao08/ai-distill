@@ -1,7 +1,6 @@
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import {registerProcess} from '../monitoring/runtime';
-import {currentTaskSignal} from '../automation/task-signal';
+import {currentTaskSignal} from '../task-signal';
 import { join } from 'node:path';
 import type { VisionClient } from './vision';
 export interface Page { page: number; text: string; method: 'text' | 'ocr'; usage?: unknown; model?: string; reused?: boolean; issues?: string[]; attempts?: { effort:string; elapsed_ms:number; issue?:string; usage?:unknown }[]; }
@@ -34,14 +33,13 @@ export async function command(args: string[]): Promise<string> {
  try {
   const signal=currentTaskSignal();if(signal?.aborted)throw new Error('PDF 工具执行已取消');
   const child = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe' });
-  const unregister=registerProcess(child.pid,'materials');
   const abort=()=>child.kill();signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
   const timer = setTimeout(() => child.kill(), 30 * 60 * 1000);
   try {
    const [output, , code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
    if (code !== 0) throw new Error(`PDF 工具 ${args[0]} 执行失败，请检查文件损坏、加密或运行依赖`);
    return output;
-  } finally { signal?.removeEventListener('abort',abort);unregister();clearTimeout(timer); }
+  } finally { signal?.removeEventListener('abort',abort);clearTimeout(timer); }
  } catch (error) { if (error instanceof Error && error.message.startsWith('PDF 工具')) throw error; throw new Error('PDF 运行依赖缺失或不可用'); }
 }
 export async function extractPdf(path: string, vision: VisionClient, run = command, checkpoint?:PageCheckpoint): Promise<Page[]> {

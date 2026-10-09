@@ -2,15 +2,15 @@ import { readFile } from 'node:fs/promises';
 import { inflateRawSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { HTTPException } from 'hono/http-exception';
-import {blockExecutor} from '../monitoring/runtime';
 import type { Page } from './pdf';
+import type { PdfExtractionProvider } from './pdf-extraction/types';
 
 export class DocumentProviderError extends Error {
  readonly kind:string;readonly retryable:boolean;
  constructor(readonly http_status:number){super(`GLM-OCR返回HTTP ${http_status}`);this.kind=http_status===401||http_status===403?'authentication':[402,429].includes(http_status)?'quota':'service';this.retryable=[408,500,502,503,504].includes(http_status);}
 }
 
-export interface DocumentExtraction { format: 'pdf' | 'docx' | 'txt' | 'md'; pages: Page[]; provider: 'glm-ocr' | 'local'; sha256: string }
+export interface DocumentExtraction { format: 'pdf' | 'docx' | 'txt' | 'md'; pages: Page[]; provider: 'glm-ocr' | 'mineru-cli' | 'local'; sha256: string }
 export interface DocumentExtractor { extract(path: string, signal?: AbortSignal): Promise<DocumentExtraction> }
 
 function decodeXml(value: string) {
@@ -44,14 +44,15 @@ function responsePageText(page: unknown) {
 }
 
 export class ProjectDocumentExtractor implements DocumentExtractor {
- constructor(private readonly env=process.env,private readonly request:typeof fetch=fetch){}
+ constructor(private readonly env=process.env,private readonly request:typeof fetch=fetch,private readonly pdfProvider?:PdfExtractionProvider){}
  async extract(path:string,signal?:AbortSignal):Promise<DocumentExtraction>{
   const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex'),extension=path.split('.').at(-1)?.toLowerCase();
   if(extension==='pdf'){
+   if(this.pdfProvider){const result=await this.pdfProvider.extract(path,signal);if(result.sha256!==sha256)throw new Error('PDF提取结果与原件指纹不匹配');return{format:'pdf',...result};}
    const key=this.env.ZHIPU_API_KEY;if(!key)throw new Error('未配置 ZHIPU_API_KEY');
    let response:Response;
    try{response=await this.request(`${this.env.ZHIPU_BASE_URL??'https://open.bigmodel.cn/api/paas/v4'}/layout_parsing`,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:'glm-ocr',file:`data:application/pdf;base64,${bytes.toString('base64')}`,request_id:crypto.randomUUID()}),signal:AbortSignal.any([AbortSignal.timeout(30*60*1000),...(signal?[signal]:[])])});}catch{throw new Error('GLM-OCR请求失败或30分钟超时');}
-   if(!response.ok){if(response.status===401||response.status===403)await blockExecutor('materials','authentication');if(response.status===402)await blockExecutor('materials','quota');throw new DocumentProviderError(response.status);}
+   if(!response.ok)throw new DocumentProviderError(response.status);
    const result=await response.json() as {data_info?:{num_pages?:number};layout_details?:unknown[];md_results?:string};
    const count=result.data_info?.num_pages,pages=result.layout_details;
    if(!Number.isInteger(count)||!pages||pages.length!==count)throw new Error('GLM-OCR未返回完整页级结果');

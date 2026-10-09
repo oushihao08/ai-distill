@@ -36,7 +36,7 @@ async function saved(){editing.value=undefined;await refresh();message.value='�
   <template v-if="data"><code class="text-xs text-muted break-all">skill：{{ data.workspace.skill_path }}</code>
    <Row wrap :gap="8"><v-chip :color="data.source_changed||data.draft_is_stale?'warning':'secondary'">{{ data.source_changed?'工作目录与已冻结版本不同':data.draft_is_stale?'草稿指纹待更新':'当前文件已读取' }}</v-chip><v-btn color="primary" variant="flat" :disabled="busy||loading||data.workspace.issues.length>0" :loading="action==='freeze'" @click="freeze">冻结内部版本</v-btn></Row>
    <v-alert v-if="data.workspace.issues.length" type="warning"><p v-for="issue in data.workspace.issues" :key="issue" class="text-sm break-words">{{ issue }}</p></v-alert>
-   <p class="text-xs text-muted">skill 自动生成和工作流规则加载尚未接入。冻结内部版本不代表符合正式提交资格。</p>
+   <p class="text-xs text-muted">冻结版本会由出题、质检和独立评分自动读取；模型作答不会收到评分标准。冻结仅固定项目资料，不代表符合正式提交资格。</p>
    <Column v-if="data.workspace.unresolved.length" :gap="6" class="border-t border-line-subtle pt-12"><h3 class="text-sm font-medium">已登记的待核事项</h3><p v-for="issue in data.workspace.unresolved" :key="issue.id" class="text-sm text-muted">{{ issue.detail||issue.id }}</p></Column>
   </template>
  </Column>

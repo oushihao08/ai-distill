@@ -1,8 +1,8 @@
 import { Hono, type Context } from 'hono';
 import {startRevision,resumeRevision} from './decisions/revision-jobs';
-import {startAutomation,listAutomation,controlAutomation,controlProjectExecution} from './automation/jobs';
-import {codexLoginStatus,configureCodexCredentialsHome,runCodex} from './codex/client';
-import {readCodexCredentialHome,saveCodexCredentialHome} from './codex/system-config';
+import {configureCodexCredentialsHome,runCodex} from './codex/client';
+import {clearProjectCodexSettings,readCodexCredentialHome,readCodexSettings,readProjectCodexSettings,saveCodexSettings,saveProjectCodexSettings} from './codex/system-config';
+import {readCodexModelCatalog} from './codex/models';
 import {readWorkerMonitor} from './monitoring/worker-monitor';
 import { HTTPException } from 'hono/http-exception';
 import { bodyLimit } from 'hono/body-limit';
@@ -15,7 +15,6 @@ import { validateFolder, scanProjectFolder, registerQuestionFolders, projectStep
 import { enqueueIngestion } from './intake-jobs';
 import { enqueueRedaction } from './materials/redaction-jobs';
 import {clearGeneratedData} from './generated-data';
-import {loadWorkflowRules} from './rule-loading';
 import {validateAnswerScore} from './scoring/context';
 import {enqueueScore} from './scoring/jobs';
 import {enqueueAuthoring} from './authoring/jobs';
@@ -56,35 +55,37 @@ export function createApp(pool: Pool, storageRoot: string) {
    return c.json({ error: '操作失败，请检查数据库连接或文件存储后重试' }, 500);
  });
  app.notFound(c => c.json({ error: '接口不存在' }, 404));
- app.get('/api/projects/:id/automation',async c=>{try{return c.json(await listAutomation(pool,uuid(c.req.param('id'))));}catch(error){throw error;}});
- app.post('/api/projects/:id/automation',async c=>{try{return c.json(await startAutomation(pool,uuid(c.req.param('id')),await c.req.json().catch(()=>{throw new HTTPException(400,{message:'自动批次参数须为有效JSON'});})),202);}catch(error){throw error;}});
- app.post('/api/projects/:id/automation/:batchId/:action',async c=>{try{return c.json(await controlAutomation(pool,uuid(c.req.param('id')),uuid(c.req.param('batchId')),c.req.param('action')));}catch(error){throw error;}});
- app.post('/api/projects/:id/execution/:action',async c=>{
-  try{return c.json(await controlProjectExecution(pool,uuid(c.req.param('id')),c.req.param('action')));}catch(error){throw error;}
+ app.get('/api/codex/config',async c=>{
+  const config=await readCodexSettings(pool);
+  return c.json({...config,model_options:readCodexModelCatalog()});
  });
- app.get('/api/executor-blocks',async c=>{try{return c.json((await pool.query('SELECT executor,reason,updated_at FROM ai_distill.executor_blocks ORDER BY executor')).rows);}catch(error){throw error;}});
- app.get('/api/codex/config',async c=>c.json({credential_home:await readCodexCredentialHome(pool)??null}));
  app.put('/api/codex/config',async c=>{
   const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
-  try{return c.json({credential_home:await saveCodexCredentialHome(pool,body?.credential_home)});}
-  catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'凭证路径无效'});}
+  try{
+   const config=await saveCodexSettings(pool,body);
+   return c.json({...config,model_options:readCodexModelCatalog()});
+  }catch(error){if(error instanceof HTTPException)throw error;throw new HTTPException(400,{message:error instanceof Error?error.message:'Codex设置无效'});}
+ });
+ app.get('/api/projects/:id/codex-settings',async c=>{
+  try{return c.json(await readProjectCodexSettings(pool,uuid(c.req.param('id'))));}catch(error){throw error;}
+ });
+ app.put('/api/projects/:id/codex-settings',async c=>{
+  const id=uuid(c.req.param('id'));
+  const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
+  try{return c.json(await saveProjectCodexSettings(pool,id,body));}catch(error){if(error instanceof HTTPException)throw error;throw new HTTPException(400,{message:error instanceof Error?error.message:'项目Codex设置无效'});}
+ });
+ app.delete('/api/projects/:id/codex-settings',async c=>{
+  try{return c.json(await clearProjectCodexSettings(pool,uuid(c.req.param('id'))));}catch(error){throw error;}
  });
  app.post('/api/codex/test',async c=>{
-  const credentialsHome=await readCodexCredentialHome(pool);
+  const config=await readCodexSettings(pool),credentialsHome=config.credential_home??undefined;
   const directory=await mkdtemp(join(tmpdir(),'ai-distill-codex-probe-'));
   const schema={type:'object',additionalProperties:false,properties:{ok:{type:'boolean'}},required:['ok']};
   try{
-   const result=await runCodex({directory,prompt:'Codex 连通性检查。请立即返回JSON：{"ok":true}。',model:'gpt-6.1-sol',reasoning_effort:'low',schema,timeout_ms:45000,credentialsHome,updateExecutorBlock:false,validate(value){if(!value||typeof value!=='object'||Array.isArray(value)||(value as {ok?:unknown}).ok!==true)throw new Error('Codex 返回校验失败');return {ok:true};}});
-   return c.json({connected:true,model:'gpt-6.1-sol',duration_ms:result.duration_ms});
+   const result=await runCodex({directory,prompt:'Codex 连通性检查。请立即返回JSON：{"ok":true}。',model:config.model,reasoning_effort:config.reasoning_effort,schema,timeout_ms:45000,credentialsHome,validate(value){if(!value||typeof value!=='object'||Array.isArray(value)||(value as {ok?:unknown}).ok!==true)throw new Error('Codex 返回校验失败');return {ok:true};}});
+   return c.json({connected:true,model:config.model,reasoning_effort:config.reasoning_effort,duration_ms:result.duration_ms});
   }catch{throw new HTTPException(502,{message:'Codex 连通性测试失败，请检查凭证路径、ChatGPT 登录和 Codex 服务状态'});}
   finally{await rm(directory,{recursive:true,force:true});}
- });
- app.post('/api/executor-blocks/:executor/resume',async c=>{
-  try{
-   const executor=c.req.param('executor');if(!['codex','materials','answer:qwen','answer:kimi','answer:deepseek','answer:doubao','answer:openrouter'].includes(executor))throw new HTTPException(400,{message:'执行器无效'});
-   if(executor==='codex'&&(await codexLoginStatus(undefined,await readCodexCredentialHome(pool))).status!=='chatgpt')throw new HTTPException(409,{message:'Codex登录仍未恢复'});
-   await pool.query('DELETE FROM ai_distill.executor_blocks WHERE executor=$1',[executor]);return c.json({status:'retry_enabled'});
-  }catch(error){throw error;}
  });
  app.get('/api/monitor', async c => { try { return c.json(await readWorkerMonitor(storageRoot)); } catch(error) { throw error; } });
  app.get('/api/health', async c => {
@@ -137,8 +138,8 @@ export function createApp(pool: Pool, storageRoot: string) {
    if (!project.rowCount) throw new HTTPException(404,{message:'项目不存在'});
    const [workflows,steps] = await Promise.all([
     pool.query(`SELECT w.*, (SELECT count(*)::int FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.input_revision=w.input_revision) AS material_count,
-     COALESCE((SELECT min(display_position) FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal<>2 AND s.status NOT IN ('succeeded','skipped')),8) AS current_ordinal,
-     (SELECT status FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal<>2 AND s.status NOT IN ('succeeded','skipped') ORDER BY display_position LIMIT 1) AS current_status
+     COALESCE((SELECT CASE s.ordinal WHEN 1 THEN 1 WHEN 9 THEN 2 WHEN 4 THEN 3 WHEN 5 THEN 4 WHEN 6 THEN 5 WHEN 7 THEN 6 WHEN 8 THEN 7 END FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal NOT IN (2,3) AND s.status NOT IN ('succeeded','skipped') ORDER BY s.display_position LIMIT 1),7) AS current_ordinal,
+     (SELECT status FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal NOT IN (2,3) AND s.status NOT IN ('succeeded','skipped') ORDER BY display_position LIMIT 1) AS current_status
      FROM ai_distill.workflows w WHERE project_id=$1 AND w.deleted_at IS NULL ORDER BY created_at DESC,id`,[id]),
     projectStepSummary(pool,id),
    ]);
@@ -278,6 +279,19 @@ export function createApp(pool: Pool, storageRoot: string) {
     await db.query('COMMIT');return c.json(saved.rows[0]);
    }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  });
+ app.delete('/api/projects/:id/steps/:ordinal/config',async c=>{
+  const id=uuid(c.req.param('id')),ordinal=Number(c.req.param('ordinal'));
+  if(![4,6,9].includes(ordinal))throw new HTTPException(400,{message:'仅Codex步骤支持恢复继承'});
+  const project=await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[id]);
+  if(!project.rowCount)throw new HTTPException(404,{message:'项目不存在'});
+  if(ordinal===9){
+   const saved=await pool.query(`UPDATE ai_distill.project_step_configs SET config=config-'provider'-'model'-'reasoning_effort',updated_at=now()
+    WHERE project_id=$1 AND ordinal=9 RETURNING config`,[id]);
+   return c.json({reset:true,config:saved.rows[0]?.config??{}});
+  }
+  await pool.query('DELETE FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=$2',[id,ordinal]);
+  return c.json({reset:true});
+ });
  app.get('/api/projects/:id/rules',async c=>{
    try{return c.json(await readProjectRules(pool,uuid(c.req.param('id'))));}catch(error){throw error;}
  });
@@ -352,11 +366,11 @@ export function createApp(pool: Pool, storageRoot: string) {
        pool.query('SELECT id,original_name,sha256,size_bytes,content_type,processing_status,created_at FROM ai_distill.materials WHERE workflow_id=$1 AND input_revision=$2 ORDER BY created_at,id', [id, workflow.rows[0].input_revision]),
        pool.query('SELECT ordinal,step_key,display_position,enabled,name,status,implemented,result,error,started_at,finished_at FROM ai_distill.steps WHERE workflow_id=$1 ORDER BY display_position NULLS LAST,ordinal', [id]),
        pool.query('SELECT id,ordinal,status,input,result,error,config,session_id,started_at,finished_at,input_revision FROM ai_distill.step_attempts WHERE workflow_id=$1 ORDER BY ordinal,attempt', [id]),
-       pool.query("SELECT ar.id,ar.kind,ar.attempt_id,ar.created_at,a.result->>'question_version' AS question_version FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE ar.workflow_id=$1 AND a.input_revision=$2 AND ar.kind IN ('redacted_markdown','redacted_index','model_answer','score_report') ORDER BY ar.created_at DESC,ar.id", [id, workflow.rows[0].input_revision]),
+       pool.query("SELECT ar.id,ar.kind,ar.attempt_id,ar.created_at,a.result->>'question_version' AS question_version FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE ar.workflow_id=$1 AND a.input_revision=$2 AND ar.kind IN ('redacted_markdown','redacted_index','authored_question','model_answer','score_report','published_result') ORDER BY ar.created_at DESC,ar.id", [id, workflow.rows[0].input_revision]),
      ]);
      const hasPdf=materials.rows.some(material=>String(material.original_name).toLowerCase().endsWith('.pdf'));
      const extraction=steps.rows.find(step=>step.ordinal===2);
-     const visibleSteps=steps.rows.filter(step=>step.ordinal!==2).map(step=>step.ordinal===1&&hasPdf&&extraction?{...step,status:extraction.status,result:extraction.result??step.result,error:extraction.error??step.error,started_at:extraction.started_at??step.started_at,finished_at:extraction.finished_at??step.finished_at}:step);
+     const visibleSteps=steps.rows.filter(step=>step.ordinal!==2&&step.ordinal!==3).map(step=>step.ordinal===1&&hasPdf&&extraction?{...step,status:extraction.status,result:extraction.result??step.result,error:extraction.error??step.error,started_at:extraction.started_at??step.started_at,finished_at:extraction.finished_at??step.finished_at}:step).map((step,index)=>({...step,display_position:index+1,position:index+1}));
      return c.json({ artifacts: artifacts.rows, workflow: workflow.rows[0], project: project.rows[0], materials: materials.rows.map(m => ({ ...m, size_bytes: Number(m.size_bytes) })), steps: visibleSteps, attempts: attempts.rows });
    } catch (error) { throw error; }
  });
@@ -407,7 +421,7 @@ export function createApp(pool: Pool, storageRoot: string) {
   let extracted:{format?:unknown;provider?:unknown;pages?:unknown};
   try{extracted=JSON.parse(content);}catch{throw new HTTPException(500,{message:'已入库全文格式异常'});}
   if(!Array.isArray(extracted.pages)||extracted.pages.some(page=>!page||typeof page!=='object'||typeof page.text!=='string'))throw new HTTPException(500,{message:'已入库全文页内容不完整'});
-  let redactedPages:{page:number;text:string}[]|undefined;
+  let redactedPages:{page:number;text:string}[]|undefined,redactedText:string|undefined;
   if(material.processing_status==='redacted'){
    const redactedArtifact=(await pool.query(`SELECT idx.content AS content,idx.storage_path,idx.sha256
     FROM ai_distill.step_attempts a JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 AND s.status='succeeded'
@@ -425,7 +439,9 @@ export function createApp(pool: Pool, storageRoot: string) {
     if(createHash('sha256').update(indexContent).digest('hex')!==redactedArtifact.sha256)throw new HTTPException(409,{message:'脱敏索引指纹校验失败'});
     try{
      const index=JSON.parse(indexContent),entry=Array.isArray(index.materials)?index.materials.find((item:any)=>item.material_id===materialId):undefined;
+     if(entry&&typeof entry.markdown==='string')redactedText=entry.markdown;
      if(entry&&Array.isArray(entry.pages)&&entry.pages.every((page:any)=>Number.isInteger(page.page)&&typeof page.text==='string'))redactedPages=entry.pages;
+     if(redactedText===undefined&&redactedPages)redactedText=redactedPages.map(page=>page.text).join('\n\n');
     }catch{throw new HTTPException(500,{message:'脱敏索引格式异常'});}
    }
   }
@@ -435,6 +451,7 @@ export function createApp(pool: Pool, storageRoot: string) {
    provider:typeof extracted.provider==='string'?extracted.provider:'unknown',
    pages:extracted.pages.map((page,index)=>({page:Number.isInteger(page.page)?page.page:index+1,text:page.text,method:typeof page.method==='string'?page.method:'unknown',...(Array.isArray(page.issues)?{issues:page.issues.filter((issue:unknown):issue is string=>typeof issue==='string')}: {})})),
    redaction_status:material.processing_status==='redacted'?'redacted':'not_redacted',
+   ...(redactedText!==undefined?{redacted_text:redactedText}:{}),
    ...(redactedPages?{redacted_pages:redactedPages}:{}),
   });
  });
@@ -457,11 +474,11 @@ export function createApp(pool: Pool, storageRoot: string) {
      return new Response(file, { headers: { 'Content-Type': materialMime(result.rows[0].original_name), 'Content-Disposition': "attachment; filename*=UTF-8''"+encodeURIComponent(result.rows[0].original_name), 'Cache-Control': 'no-store' } });
    } catch (error) { throw error; }
  });
- async function executeStep(c: Context, ordinal: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9) {
+ async function executeStep(c: Context, ordinal: 1 | 2 | 4 | 5 | 6 | 7 | 8 | 9) {
    try {
     const waitMs=waitDuration(c.req.query('wait_ms'));
     const id=uuid(c.req.param('id') ?? '');
-    const task=ordinal===1?await enqueueIngestion(pool,id):ordinal===2?await enqueueExtraction(pool,id):ordinal===9?await enqueueRedaction(pool,id):ordinal===3?await loadWorkflowRules(pool,id):ordinal===4?await enqueueAuthoring(pool,id):ordinal===5?await enqueueAnswer(pool,id,storageRoot):ordinal===6?await enqueueScore(pool,id):ordinal===7?await runAcceptance(pool,id):await publishWorkflow(pool,id,storageRoot);
+   const task=ordinal===1?await enqueueIngestion(pool,id):ordinal===2?await enqueueExtraction(pool,id):ordinal===9?await enqueueRedaction(pool,id):ordinal===4?await enqueueAuthoring(pool,id):ordinal===5?await enqueueAnswer(pool,id,storageRoot):ordinal===6?await enqueueScore(pool,id):ordinal===7?await runAcceptance(pool,id):await publishWorkflow(pool,id,storageRoot);
     if ('completed' in task && task.completed) return c.json(task,200);
     if (!waitMs) return c.json(task,202);
     const attemptIds=(task as {ids?:unknown}).ids;
@@ -477,7 +494,6 @@ export function createApp(pool: Pool, storageRoot: string) {
  app.post('/api/workflows/:id/intake', c => executeStep(c,1));
  app.post('/api/workflows/:id/extract', c => executeStep(c,2));
  app.post('/api/workflows/:id/redact', c => executeStep(c,9));
- app.post('/api/workflows/:id/load-rules', c => executeStep(c,3));
  app.post('/api/workflows/:id/author', c => executeStep(c,4));
  app.post('/api/workflows/:id/answer', c => executeStep(c,5));
  app.post('/api/workflows/:id/score', c => executeStep(c,6));
@@ -493,7 +509,7 @@ export function createApp(pool: Pool, storageRoot: string) {
  app.post('/api/projects/:id/steps/:ordinal/run-batch', async c => {
    const projectId = uuid(c.req.param('id'));
    const ordinal = Number(c.req.param('ordinal'));
-   if (!Number.isInteger(ordinal) || ![1,3,4,5,6,7,8,9].includes(ordinal)) throw new HTTPException(400, { message: '步骤序号无效' });
+   if (!Number.isInteger(ordinal) || ![1,4,5,6,7,8,9].includes(ordinal)) throw new HTTPException(400, { message: '步骤序号无效' });
    let body: unknown = {};
    try { body = await c.req.json(); } catch { throw new HTTPException(400, { message: '批量执行参数须为有效JSON' }); }
    const rawIds = (body as { workflow_ids?: unknown } | null)?.workflow_ids;
@@ -514,10 +530,10 @@ export function createApp(pool: Pool, storageRoot: string) {
      try {
        const ready = await pool.query(`SELECT CASE WHEN s.ordinal=1 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=s.workflow_id AND m.input_revision=(SELECT input_revision FROM ai_distill.workflows WHERE id=s.workflow_id) AND lower(m.original_name) LIKE '%.pdf') THEN (SELECT status FROM ai_distill.steps WHERE workflow_id=s.workflow_id AND ordinal=2) ELSE s.status END AS status,
         EXISTS(SELECT 1 FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.workflow_id=s.workflow_id AND a.input_revision=w.input_revision AND a.ordinal IN (CASE WHEN s.ordinal=1 THEN 1 ELSE s.ordinal END,CASE WHEN s.ordinal=1 THEN 2 ELSE s.ordinal END) AND a.status IN ('waiting','running')) AS active,
-        (SELECT p.status FROM ai_distill.steps p WHERE p.workflow_id=s.workflow_id AND p.enabled AND p.ordinal<>2 AND p.display_position<s.display_position ORDER BY p.display_position DESC LIMIT 1) AS previous_status
+        (SELECT p.status FROM ai_distill.steps p WHERE p.workflow_id=s.workflow_id AND p.enabled AND p.ordinal NOT IN (2,3) AND p.display_position<s.display_position ORDER BY p.display_position DESC LIMIT 1) AS previous_status
         FROM ai_distill.steps s WHERE s.workflow_id=$1 AND s.ordinal=$2`,[workflowId,ordinal]);
        if (ready.rowCount && (!['waiting','failed'].includes(ready.rows[0].status) || ready.rows[0].active || (ready.rows[0].previous_status!==null && ready.rows[0].previous_status!=='succeeded'))) return {workflow_id:workflowId,status:'not_ready' as const,reason:'此题目未就绪或此步骤已完成'};
-       const task = ordinal===1 ? await enqueueIngestion(pool,workflowId) : ordinal===9 ? await enqueueRedaction(pool,workflowId) : ordinal===3 ? await loadWorkflowRules(pool,workflowId) : ordinal===4 ? await enqueueAuthoring(pool,workflowId) : ordinal===5 ? await enqueueAnswer(pool,workflowId,storageRoot) : ordinal===6 ? await enqueueScore(pool,workflowId) : ordinal===7 ? await runAcceptance(pool,workflowId) : await publishWorkflow(pool,workflowId,storageRoot);
+       const task = ordinal===1 ? await enqueueIngestion(pool,workflowId) : ordinal===9 ? await enqueueRedaction(pool,workflowId) : ordinal===4 ? await enqueueAuthoring(pool,workflowId) : ordinal===5 ? await enqueueAnswer(pool,workflowId,storageRoot) : ordinal===6 ? await enqueueScore(pool,workflowId) : ordinal===7 ? await runAcceptance(pool,workflowId) : await publishWorkflow(pool,workflowId,storageRoot);
        const decisionStatus='decision' in task?(task.decision==='accepted'?'succeeded' as const:'decision_recorded' as const):'completed' in task&&task.completed?'succeeded' as const:'queued' as const;
        return { workflow_id: workflowId, status: decisionStatus, attempt_id: task.id,...('ids' in task?{attempt_ids:task.ids}:{}), reused: 'reused' in task?task.reused:false,...('decision' in task?{decision:task.decision,reasons:task.reasons}:{}) };
      } catch (error) {
@@ -539,7 +555,7 @@ export function createApp(pool: Pool, storageRoot: string) {
      }
      const file = Bun.file(join(resolve(storageRoot), result.rows[0].storage_path));
      if (!await file.exists()) throw new HTTPException(404, { message: '产物文件缺失' });
-     const filename = result.rows[0].kind === 'published_result' ? 'published.json' : result.rows[0].kind === 'authored_question' ? 'authoring.json' : result.rows[0].kind === 'score_report' ? 'score.json' : result.rows[0].kind === 'model_answer' ? 'answer.txt' : result.rows[0].kind === 'redacted_markdown' ? 'materials.md' : 'pages.json';
+     const filename = result.rows[0].kind === 'published_result' ? 'published.json' : result.rows[0].kind === 'authored_question' ? 'authoring.txt' : result.rows[0].kind === 'score_report' ? 'score.json' : result.rows[0].kind === 'model_answer' ? 'answer.txt' : result.rows[0].kind === 'redacted_markdown' ? 'materials.md' : 'pages.json';
      return new Response(file, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"`, 'Cache-Control': 'no-store' } });
    } catch (error) { throw error; }
  });

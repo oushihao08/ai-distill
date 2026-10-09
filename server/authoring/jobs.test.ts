@@ -9,23 +9,40 @@ import {enqueueAuthoring,runNextAuthoring,inputDigest} from './jobs';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const empty={rows:[],rowCount:0};
 
-test('authoring enqueue freezes current rules and redacted attachments before creating a step-four attempt',async()=>{
+test.each([
+ {label:'a step override',projectConfig:{provider:'codex',model:'fixture-model',reasoning_effort:'medium'},projectDefault:null,expected:{provider:'codex',model:'fixture-model',reasoning_effort:'medium'}},
+ {label:'the project default',projectConfig:null,projectDefault:{model:'project-model',reasoning_effort:'high'},expected:{provider:'codex',model:'project-model',reasoning_effort:'high'}},
+ {label:'the system default when no override exists',projectConfig:null,projectDefault:null,expected:{provider:'codex',model:'system-model',reasoning_effort:'low'}},
+ {label:'the project default without a manual rule-loading step',projectConfig:null,projectDefault:{model:'project-model',reasoning_effort:'high'},expected:{provider:'codex',model:'project-model',reasoning_effort:'high'},autoBind:true},
+])('authoring enqueue freezes inputs and uses $label',async({projectConfig,projectDefault,expected,autoBind})=>{
  const root=await mkdtemp(join(tmpdir(),'authoring-enqueue-'));
  const priorCodexHome=process.env.CODEX_HOME;process.env.CODEX_HOME=root;
- await writeFile(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'medium'}]}]}));
- const snapshot=join(root,'rules');await mkdir(snapshot);const ruleText='# 本期规则\n只按材料事实出题。';await writeFile(join(snapshot,'SKILL.md'),ruleText);
- const ruleFile={path:'SKILL.md',sha256:hash(ruleText),size_bytes:Buffer.byteLength(ruleText)};
+ await writeFile(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'medium'}]},{slug:'project-model',supported_reasoning_levels:[{effort:'high'}]},{slug:'system-model',supported_reasoning_levels:[{effort:'low'}]}]}));
+ const snapshot=join(root,'rules');await mkdir(join(snapshot,'skill'),{recursive:true});const ruleText='# 本期规则\n只按材料事实出题。';await writeFile(join(snapshot,'skill','SKILL.md'),ruleText);
+ const ruleFile={path:'skill/SKILL.md',sha256:hash(ruleText),size_bytes:Buffer.byteLength(ruleText)};
+ let ruleVersionId=autoBind?null:'rules-1';let ruleStatus=autoBind?'waiting':'succeeded';let ruleAttempt:any=autoBind?null:{id:'rules-attempt',revision:2,result:{input_revision:2,rule_version_id:'rules-1',source_digest:'c'.repeat(64),snapshot_path:snapshot,files:[ruleFile]}};
+ const version={id:'rules-1',project_id:'project',version:1,status:'published',manifest:{source_digest:'c'.repeat(64),snapshot_path:snapshot,files:[ruleFile],issues:[]}};
  const saved:unknown[][]=[];
+ const calls:string[]=[];
  const query=async(sql:string,values:unknown[]=[]):Promise<any>=>{
-  if(sql.startsWith('SELECT w.input_revision'))return{rows:[{input_revision:2,project_id:'project',title:'问题4',rule_version_id:'rules-1',ingestion_status:'succeeded',redaction_status:'succeeded',rules_status:'succeeded'}],rowCount:1};
+  calls.push(sql);
+  if(sql.startsWith('SELECT w.*'))return{rows:[{id:'workflow',project_id:'project',input_revision:2,rule_version_id:ruleVersionId}],rowCount:1};
+  if(sql.startsWith('SELECT ordinal,status'))return{rows:[{ordinal:1,status:'succeeded'},{ordinal:9,status:'succeeded'},{ordinal:3,status:ruleStatus}],rowCount:3};
+  if(sql.startsWith('SELECT * FROM ai_distill.rule_versions'))return{rows:[version],rowCount:1};
+  if(sql.startsWith('SELECT w.input_revision'))return{rows:[{input_revision:2,project_id:'project',title:'问题4',rule_version_id:ruleVersionId,ingestion_status:'succeeded',redaction_status:'succeeded',rules_status:ruleStatus}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redact-1'}],rowCount:1};
-  if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redact-1'}],rowCount:1};
-  if(sql.startsWith('SELECT id,result FROM ai_distill.step_attempts')&&sql.includes('ordinal=3'))return{rows:[{id:'rules-attempt',result:{input_revision:2,rule_version_id:'rules-1',source_digest:'c'.repeat(64),snapshot_path:snapshot,files:[ruleFile]}}],rowCount:1};
+  if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=3'))return{rows:ruleAttempt?[{id:ruleAttempt.id}]:[],rowCount:ruleAttempt?1:0};
+  if(sql.startsWith('SELECT id,result FROM ai_distill.step_attempts')&&sql.includes('ordinal=3'))return{rows:ruleAttempt?[ruleAttempt]:[],rowCount:ruleAttempt?1:0};
   if(sql.startsWith('SELECT ar.id'))return values[1]==='redact-1'?{rows:[{id:'attachment-1',kind:'redacted_markdown',sha256:'a'.repeat(64),storage_path:'workflow/attachment.md'}],rowCount:1}:empty;
-  if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{provider:'codex',model:'fixture-model',reasoning_effort:'medium'}}],rowCount:1};
+  if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:projectConfig?[{config:projectConfig}]:[],rowCount:projectConfig?1:0};
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:projectDefault?.model??null,codex_reasoning_effort:projectDefault?.reasoning_effort??null}],rowCount:1};
+  if(sql.startsWith('SELECT credential_home,model,reasoning_effort FROM ai_distill.system_codex_config'))return{rows:[{credential_home:null,model:'system-model',reasoning_effort:'low'}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("status IN ('waiting','running')"))return empty;
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("status IN ('waiting','running','succeeded')"))return empty;
-  if(sql.startsWith('INSERT INTO ai_distill.step_attempts'))saved.push(values);
+  if(sql.startsWith('INSERT INTO ai_distill.step_attempts')&&sql.includes('ordinal=3'))ruleAttempt={id:values[0],revision:values[2],result:JSON.parse(String(values[3]))};
+  if(sql.startsWith('INSERT INTO ai_distill.step_attempts')&&sql.includes('ordinal=4'))saved.push(values);
+  if(sql.startsWith('UPDATE ai_distill.workflows SET rule_version_id'))ruleVersionId=String(values[1]);
+  if(sql.startsWith('UPDATE ai_distill.steps')&&sql.includes('ordinal=3'))ruleStatus='succeeded';
   return{...empty,rowCount:1};
  };
  const client={query,release(){}};const pool={query,connect:async()=>client} as unknown as Pool;
@@ -34,7 +51,8 @@ test('authoring enqueue freezes current rules and redacted attachments before cr
   expect(result).toMatchObject({reused:false,id:expect.any(String)});
   const input=JSON.parse(String(saved[0][2]));
   expect(input).toMatchObject({input_revision:2,title:'问题4',rule_version_id:'rules-1',rule_source_digest:'c'.repeat(64),rule_snapshot_path:snapshot,rule_files:[ruleFile],redaction_attempt_id:'redact-1',materials:[{id:'attachment-1',sha256:'a'.repeat(64)}]});
-  expect(saved[0][0]).toBe('workflow');expect(saved[0][4]).toBe(2);
+  expect(saved[0][0]).toBe('workflow');expect(JSON.parse(String(saved[0][3]))).toEqual(expected);expect(saved[0][4]).toBe(2);
+  if(autoBind){expect(ruleStatus).toBe('succeeded');expect(ruleVersionId).toBe('rules-1');expect(calls.some(sql=>sql.startsWith('INSERT INTO ai_distill.step_attempts')&&sql.includes('ordinal=3'))).toBe(true);}
  }finally{if(priorCodexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=priorCodexHome;await rm(root,{recursive:true,force:true});}
 });
 

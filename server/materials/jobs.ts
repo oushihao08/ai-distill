@@ -1,6 +1,7 @@
 import {runRevisionCall} from '../decisions/revision-calls';
 import {ProjectDocumentExtractor,DocumentProviderError,type DocumentExtractor} from './document';
-import {watchTaskCancellation,withTaskSignal} from '../automation/task-signal';
+import {MineruCliPdfExtractor} from './pdf-extraction/mineru-cli';
+import {watchTaskCancellation,withTaskSignal} from '../task-signal';
 import type { Pool } from 'pg';
 import { HTTPException } from 'hono/http-exception';
 import { createVisionClient } from './vision';
@@ -24,8 +25,14 @@ export async function enqueueExtraction(pool: Pool, id: string) {
   const previous = await client.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND input_revision=$2 AND ordinal=2 AND status IN ('waiting','running','succeeded') ORDER BY attempt DESC LIMIT 1",[id,revision]);
   if(previous.rowCount){await client.query('COMMIT');return {id:previous.rows[0].id,reused:true};}
   const extraction=loadExtractionConfig();
+  const pdfProvider=process.env.PDF_EXTRACTION_PROVIDER||(process.env.MINERU_KEY?'mineru-cli':'glm-ocr');
+  if(!['mineru-cli','glm-ocr'].includes(pdfProvider))throw new HTTPException(503,{message:'PDF_EXTRACTION_PROVIDER只支持mineru-cli或glm-ocr'});
+  if(pdfProvider==='mineru-cli'&&!process.env.MINERU_KEY)throw new HTTPException(503,{message:'使用MinerU CLI前请配置MINERU_KEY'});
+  const model=pdfProvider==='mineru-cli'?'mineru-vlm':'glm-ocr';
+  const baseUrl=pdfProvider==='mineru-cli'?'https://mineru.net':'https://open.bigmodel.cn/api/paas/v4';
+  const ocrVersion=pdfProvider==='mineru-cli'?'mineru-open-api-json-v1':'glm-ocr-layout-v1';
   const attempt = crypto.randomUUID();
-  await client.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,input_revision) SELECT $2,$1::uuid,2,COALESCE(max(attempt),0)+1,'waiting',jsonb_build_object('workflow_id',$1::text,'input_revision',$4::int),$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=2",[id,attempt,JSON.stringify({model:'glm-ocr',base_url:process.env.ZHIPU_BASE_URL??'https://open.bigmodel.cn/api/paas/v4',ocr_version:'glm-ocr-layout-v1',processor:'pdf-text-ingestion-v1',extraction}),revision]);
+  await client.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,input_revision) SELECT $2,$1::uuid,2,COALESCE(max(attempt),0)+1,'waiting',jsonb_build_object('workflow_id',$1::text,'input_revision',$4::int),$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=2",[id,attempt,JSON.stringify({pdf_provider:pdfProvider,model,base_url:pdfProvider==='glm-ocr'?(process.env.ZHIPU_BASE_URL??baseUrl):baseUrl,ocr_version:ocrVersion,processor:'pdf-text-ingestion-v2',extraction}),revision]);
   await client.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',error=NULL,result=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=2",[id]);
   await client.query('COMMIT'); return {id:attempt,reused:false};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
@@ -40,7 +47,7 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
    await client.query("UPDATE ai_distill.step_attempts SET status='failed',error='执行进程中断，可重试',finished_at=now() WHERE id=$1",[attempt.id]);
    if(attempt.input_revision===attempt.current_revision){await client.query("UPDATE ai_distill.steps SET status='failed',error='执行进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=2 AND status='running'",[attempt.workflow_id]);await client.query("UPDATE ai_distill.steps SET status='failed',error='PDF文本提取中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[attempt.workflow_id]);}
   }
-  const selected=await client.query("SELECT a.* FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=2 AND a.status='waiting' AND ai_distill.dispatch_allowed(w.id,'materials') AND ($1::uuid IS NULL OR a.workflow_id=$1::uuid) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1",[workflowId??null]);
+  const selected=await client.query("SELECT a.* FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=2 AND a.status='waiting' AND ($1::uuid IS NULL OR a.workflow_id=$1::uuid) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1",[workflowId??null]);
   job=selected.rows[0];if(!job){await client.query('COMMIT');return false;}
   await client.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await client.query("UPDATE ai_distill.steps SET status='running',started_at=now() WHERE workflow_id=$1 AND ordinal=2",[job.workflow_id]);
@@ -51,13 +58,15 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
  let publication;
  try{
   const materials=await pool.query("SELECT id,storage_path,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND input_revision=$2 AND lower(original_name) LIKE '%.pdf' ORDER BY created_at,id",[job.workflow_id,job.input_revision]);
-  const cacheRows=await pool.query("SELECT DISTINCT ON (m.sha256) m.sha256 AS source_sha256,ar.storage_path,ar.sha256,a.id AS attempt_id,m.id AS material_id FROM ai_distill.artifacts ar JOIN ai_distill.materials m ON m.id=ar.material_id JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE m.workflow_id=$1 AND lower(m.original_name) LIKE '%.pdf' AND ar.kind='private_extracted_pages' AND a.ordinal=2 AND (a.config->>'ocr_version')=($2::jsonb->>'ocr_version') AND (a.config->>'model')=($2::jsonb->>'model') AND (a.config->>'base_url')=($2::jsonb->>'base_url') AND (a.config#>>'{extraction,extractionPrompt}')=($2::jsonb#>>'{extraction,extractionPrompt}') AND COALESCE(a.config#>>'{extraction,ocrReasoningEffort}',a.config#>>'{extraction,reasoningEffort}') IS NOT DISTINCT FROM COALESCE($2::jsonb#>>'{extraction,ocrReasoningEffort}',$2::jsonb#>>'{extraction,reasoningEffort}') ORDER BY m.sha256,ar.created_at DESC,ar.id DESC",[job.workflow_id,JSON.stringify(job.config)]);
+  const cacheRows=await pool.query("SELECT DISTINCT ON (m.sha256) m.sha256 AS source_sha256,ar.storage_path,ar.sha256,a.id AS attempt_id,m.id AS material_id FROM ai_distill.artifacts ar JOIN ai_distill.materials m ON m.id=ar.material_id JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE m.workflow_id=$1 AND lower(m.original_name) LIKE '%.pdf' AND ar.kind='private_extracted_pages' AND a.ordinal=2 AND COALESCE(a.config->>'pdf_provider','glm-ocr')=COALESCE($2::jsonb->>'pdf_provider','glm-ocr') AND (a.config->>'ocr_version')=($2::jsonb->>'ocr_version') AND (a.config->>'model')=($2::jsonb->>'model') AND (a.config->>'base_url')=($2::jsonb->>'base_url') AND (a.config#>>'{extraction,extractionPrompt}')=($2::jsonb#>>'{extraction,extractionPrompt}') AND COALESCE(a.config#>>'{extraction,ocrReasoningEffort}',a.config#>>'{extraction,reasoningEffort}') IS NOT DISTINCT FROM COALESCE($2::jsonb#>>'{extraction,ocrReasoningEffort}',$2::jsonb#>>'{extraction,reasoningEffort}') ORDER BY m.sha256,ar.created_at DESC,ar.id DESC",[job.workflow_id,JSON.stringify(job.config)]);
   const caches = new Map<string,ExtractionCache>(cacheRows.rows.map(row=>[row.source_sha256,row]));
   const repairIds=job.input?.material_repair?.material_ids as string[]|undefined;
   const inputs:InputMaterial[] = materials.rows.map(material=>({...material,extraction_cache:repairIds?.includes(material.id)?undefined:caches.get(material.sha256)}));
   const config=job.config.extraction;
-  const vision=createVisionClient({...process.env,ZHIPU_MODEL:job.config.model,ZHIPU_BASE_URL:job.config.base_url??process.env.ZHIPU_BASE_URL},fetch,config);
-  const original=new ProjectDocumentExtractor({...process.env,ZHIPU_BASE_URL:job.config.base_url??process.env.ZHIPU_BASE_URL});
+  const vision=createVisionClient({...process.env,ZHIPU_MODEL:job.config.pdf_provider==='glm-ocr'?job.config.model:process.env.ZHIPU_MODEL,ZHIPU_BASE_URL:job.config.pdf_provider==='glm-ocr'?(job.config.base_url??process.env.ZHIPU_BASE_URL):process.env.ZHIPU_BASE_URL},fetch,config);
+  const pdfProvider=job.config.pdf_provider==='mineru-cli'?new MineruCliPdfExtractor(process.env):undefined;
+  if(job.config.pdf_provider&& !['mineru-cli','glm-ocr'].includes(job.config.pdf_provider))throw new Error('任务快照中的PDF解析器不受支持');
+  const original=new ProjectDocumentExtractor({...process.env,ZHIPU_BASE_URL:job.config.pdf_provider==='glm-ocr'?(job.config.base_url??process.env.ZHIPU_BASE_URL):process.env.ZHIPU_BASE_URL},fetch,pdfProvider);
   const extractor:DocumentExtractor={extract:async(path,signal)=>{
    const material=inputs.find(item=>join(resolve(root),item.storage_path)===path);
    if(repairIds&&(!material||!repairIds.includes(material.id)))throw new Error('原件健康缓存缺失，需核对后恢复');

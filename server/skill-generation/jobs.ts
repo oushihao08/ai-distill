@@ -1,17 +1,18 @@
-import {watchTaskCancellation} from '../automation/task-signal';
+import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {dirname,join,resolve} from 'node:path';
 import {rm} from 'node:fs/promises';
 import {scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot} from '../rule-files';
 import {validateStepConfig} from '../project-folders';
+import {mergeCodexDefaults,readProjectCodexDefaults} from '../codex/system-config';
 import {generateProjectSkill} from './generate';
 const projectSql="SELECT p.*, (SELECT manifest->>'workspace_path' FROM ai_distill.rule_versions WHERE project_id=p.id ORDER BY version DESC LIMIT 1) AS workspace_path FROM ai_distill.projects p WHERE p.id=$1 AND p.deleted_at IS NULL FOR UPDATE OF p";
 export async function enqueueProjectSkill(pool:Pool,id:string,raw:unknown,options:{template?:string}={}){
  const db=await pool.connect();let snapshot:string|undefined;let attempt:string|undefined;
  try{
   await db.query('BEGIN');const project=(await db.query(projectSql,[id])).rows[0];if(!project)throw new HTTPException(404,{message:'项目不存在'});
-  const validated=validateStepConfig(3,raw);
+  const validated=validateStepConfig(3,mergeCodexDefaults(raw,await readProjectCodexDefaults(db,id)));
   if(!('reasoning_effort' in validated))throw new HTTPException(400,{message:'skill生成需要Codex配置'});
   const config={provider:'codex',model:validated.model,reasoning_effort:validated.reasoning_effort};
   const workspace=project.workspace_path??dirname(project.material_root??project.local_skill_path??'');
@@ -40,7 +41,7 @@ export async function runNextProjectSkill(pool:Pool,root:string,generate:typeof 
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
   const stale=await db.query("SELECT a.id,a.project_id FROM ai_distill.project_skill_attempts a JOIN ai_distill.projects p ON p.id=a.project_id WHERE a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY p.id,a.id FOR UPDATE OF p,a SKIP LOCKED");
   for(const row of stale.rows)await db.query("UPDATE ai_distill.project_skill_attempts SET status='failed',error='skill生成进程中断，可重试',finished_at=now() WHERE id=$1",[row.id]);
-  job=(await db.query("SELECT a.* FROM ai_distill.project_skill_attempts a JOIN ai_distill.projects p ON p.id=a.project_id WHERE p.deleted_at IS NULL AND NOT p.execution_paused AND NOT EXISTS(SELECT 1 FROM ai_distill.executor_blocks WHERE executor='codex') AND a.status='waiting' ORDER BY a.created_at,a.id FOR UPDATE OF p,a SKIP LOCKED LIMIT 1")).rows[0];
+  job=(await db.query("SELECT a.* FROM ai_distill.project_skill_attempts a JOIN ai_distill.projects p ON p.id=a.project_id WHERE p.deleted_at IS NULL AND a.status='waiting' ORDER BY a.created_at,a.id FOR UPDATE OF p,a SKIP LOCKED LIMIT 1")).rows[0];
   if(!job){await db.query('COMMIT');return false;}
   await db.query("UPDATE ai_distill.project_skill_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);await db.query('COMMIT');
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}

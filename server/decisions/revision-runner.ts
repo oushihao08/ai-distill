@@ -50,14 +50,13 @@ async function cloneRetry(pool:Pool,chain:any,round:any,source:any){
 }
 
 export async function runRevisionTick(pool:Pool,root:string){
- const chains=(await pool.query("SELECT c.* FROM ai_distill.revision_chains c JOIN ai_distill.workflows w ON w.id=c.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE c.status IN ('waiting','running') AND w.deleted_at IS NULL AND p.deleted_at IS NULL AND NOT p.execution_paused ORDER BY c.created_at LIMIT 100")).rows;
+ const chains=(await pool.query("SELECT c.* FROM ai_distill.revision_chains c JOIN ai_distill.workflows w ON w.id=c.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE c.status IN ('waiting','running') AND w.deleted_at IS NULL AND p.deleted_at IS NULL ORDER BY c.created_at LIMIT 100")).rows;
  for(const chain of chains){
   const lock=await pool.connect();let acquired=false;
   try{
    await lock.query('BEGIN');
    acquired=(await lock.query('SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired',[`revision:${chain.id}`])).rows[0]?.acquired;
    if(!acquired)continue;
-   if((await pool.query("SELECT ai_distill.dispatch_allowed($1,'revision') AS allowed",[chain.workflow_id])).rows[0]?.allowed===false)continue;
    const current=(await pool.query('SELECT input_revision FROM ai_distill.workflows WHERE id=$1',[chain.workflow_id])).rows[0];
    if(current?.input_revision!==chain.input_revision){await pool.query("UPDATE ai_distill.revision_chains SET status='stale',reason='input_revision_changed',updated_at=now() WHERE id=$1",[chain.id]);continue;}
    const round=(await pool.query('SELECT * FROM ai_distill.revision_rounds WHERE chain_id=$1 ORDER BY round DESC LIMIT 1',[chain.id])).rows[0];

@@ -1,5 +1,4 @@
 import type {Pool} from 'pg';
-import {registeredProcesses} from './runtime';
 import {mkdir,readFile,writeFile,rename,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -81,17 +80,16 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
  const update=async()=>{
   let tasks:ExecutorStatus[]|undefined;
   try{
-   const result=await pool.query(`SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind,(SELECT reason FROM ai_distill.executor_blocks e WHERE e.executor=CASE WHEN a.ordinal IN (3,4,6,9) THEN 'codex' WHEN a.ordinal=2 THEN 'materials' WHEN a.ordinal=5 THEN 'answer:'||(a.config->>'provider') ELSE 'none' END) AS block_reason FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.input_revision=w.input_revision AND a.status IN ('waiting','running')`);
+   const result=await pool.query(`SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.input_revision=w.input_revision AND a.status IN ('waiting','running')`);
    tasks=result.rows.map(row=>{
     if(row.status!=='waiting'&&row.status!=='running')throw new Error('invalid');
     const at=row.heartbeat_at??row.started_at;
     const date=at instanceof Date?at:new Date(at);
-    const reason=row.block_reason;
-    return{state:row.status,authentication:reason==='authentication'?'blocked':'unknown',quota:reason==='quota'?'exhausted':'unknown',error:reason==='authentication'||reason==='quota'?reason:row.error_kind??'unknown',...(at&&Number.isFinite(date.getTime())?{last_event:{type:row.heartbeat_at?'heartbeat' as const:'started' as const,at:date.toISOString()}}:{})};
+    return{state:row.status,authentication:'unknown',quota:'unknown',error:row.error_kind??'unknown',...(at&&Number.isFinite(date.getTime())?{last_event:{type:row.heartbeat_at?'heartbeat' as const:'started' as const,at:date.toISOString()}}:{})};
    });
   }catch{tasks=undefined;}
   let snapshot:ResourceSnapshot;
-  try{snapshot=projectSnapshot(await (options.sample??sampleResources)({registered_pids:registeredProcesses(),tasks}));}
+  try{snapshot=projectSnapshot(await (options.sample??sampleResources)({registered_pids:[],tasks}));}
   catch{snapshot={sampled_at:new Date().toISOString(),system:{status:'unknown'},processes:[{pid:process.pid,rss_bytes:{status:'unknown'}}],tasks:{status:'unknown'}};}
   const low=snapshot.system.status==='known'&&snapshot.system.value.available_percent<threshold;
   record={status:stopped?'stopped':low?'paused':'running',heartbeat_at:new Date().toISOString(),worker_pid:process.pid,dispatch:{allowed:!stopped&&!low,policy:'memory_only_unknown_allow',memory_state:snapshot.system.status,min_available_percent:threshold,reason:stopped?'stopped':low?'low_available_memory':snapshot.system.status==='known'?'memory_above_threshold':'memory_unknown'},advice:adviseDispatch(snapshot,{min_available_percent:threshold}),snapshot};

@@ -1,10 +1,9 @@
 import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
-import {registerProcess,blockExecutor,classifyExecutorFailure} from '../monitoring/runtime';
 import {appendFileSync} from 'node:fs';
 import {mkdir,readFile,writeFile,rm,realpath} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
-export interface CodexOptions<T> {binary?:string;directory:string;prompt:string;model:string;reasoning_effort:string;schema:Record<string,unknown>;validate:(value:unknown)=>T;timeout_ms?:number;signal?:AbortSignal;credentialsHome?:string;updateExecutorBlock?:boolean}
+export interface CodexOptions<T> {binary?:string;directory:string;prompt:string;model:string;reasoning_effort:string;schema:Record<string,unknown>;validate:(value:unknown)=>T;timeout_ms?:number;signal?:AbortSignal;credentialsHome?:string}
 const bundledCodex='/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 const defaultBinary=process.env.CODEX_BIN??(process.platform==='darwin'&&existsSync(bundledCodex)?bundledCodex:'codex');
 let credentialsHomeProvider:(()=>Promise<string|undefined>)|undefined;
@@ -15,7 +14,6 @@ async function execute(binary:string,args:string[],options:{directory?:string;pr
  try {
   return await new Promise<{stdout:string;stderr:string;code:number|null}>((resolveResult,reject)=>{
    const child=spawn(binary,args,{cwd:options.directory,env:environment(options.credentialsHome),detached:process.platform!=='win32',stdio:['pipe','pipe','pipe']});
-   const unregister=child.pid?registerProcess(child.pid,'codex'):()=>{};
    let stdout='',stderr='',stopped:string|undefined;
    const stop=(reason:string)=>{if(stopped)return;stopped=reason;try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,'SIGKILL');else child.kill('SIGKILL');}catch{child.kill('SIGKILL');}};
    const timer=setTimeout(()=>stop('Codex执行超时'),options.timeout);
@@ -25,7 +23,7 @@ async function execute(binary:string,args:string[],options:{directory?:string;pr
    child.stderr.on('data',chunk=>{stderr+=chunk.toString();});
    child.stdin.on('error',()=>stop('Codex执行输入发送失败'));
    child.stdin.end(options.prompt??'');
-   const cleanup=()=>{unregister();clearTimeout(timer);options.signal?.removeEventListener('abort',cancel);};
+   const cleanup=()=>{clearTimeout(timer);options.signal?.removeEventListener('abort',cancel);};
    child.on('error',()=>{cleanup();reject(new Error('Codex执行器不可用'));});
    child.on('close',code=>{cleanup();if(stopped)reject(new Error(stopped));else resolveResult({stdout,stderr,code});});
   });
@@ -39,7 +37,7 @@ export async function runCodex<T>(options:CodexOptions<T>):Promise<{result:T;ses
  if(options.signal?.aborted)throw new Error('Codex执行已取消');
  const binary=options.binary??defaultBinary;
  const credentialsHome=options.credentialsHome??await credentialsHomeProvider?.();
- if((await codexLoginStatus(binary,credentialsHome)).status!=='chatgpt'){if(options.updateExecutorBlock!==false)await blockExecutor('codex','authentication');throw new Error('Codex需要有效的ChatGPT套餐登录');}
+ if((await codexLoginStatus(binary,credentialsHome)).status!=='chatgpt')throw new Error('Codex需要有效的ChatGPT套餐登录');
  const started=Date.now();
  const directory=await realpath(resolve(options.directory)),output=join(directory,'output');
  await mkdir(output,{recursive:true,mode:0o700});
@@ -53,11 +51,6 @@ export async function runCodex<T>(options:CodexOptions<T>):Promise<{result:T;ses
  let invocation;
  try{invocation=await execute(binary,args,{directory,prompt:options.prompt,timeout:options.timeout_ms??30*60*1000,signal:options.signal,credentialsHome,onStdout:chunk=>appendFileSync(events_path,chunk)});}
  catch(error){appendFileSync(events_path,JSON.stringify({type:'distill.failed',message:error instanceof Error?error.message:'Codex执行失败'})+'\n');throw error;}
- // Only executor diagnostics are evidence of an account block. Model text may
- // itself discuss authentication or quotas and must never control dispatch.
- const failures=invocation.stdout.split('\n').flatMap(line=>{try{const event=JSON.parse(line);return event.type==='error'||event.type==='turn.failed'?[String(event.message??event.error?.message??'')]:[];}catch{return [];}}).join('\n');
- const block=classifyExecutorFailure(failures+(invocation.code!==0?'\n'+invocation.stderr:''));
- if(block&&options.updateExecutorBlock!==false)await blockExecutor('codex',block);
  if(invocation.code!==0)throw new Error('Codex执行失败，详情保留在私有事件记录');
  try{
   const events=invocation.stdout.split('\n').filter(line=>line.trim()).map(line=>JSON.parse(line));

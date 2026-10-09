@@ -1,8 +1,7 @@
-import {watchTaskCancellation} from '../automation/task-signal';
+import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {bindRevisionAttempt,readRevisionSettings} from '../decisions/revision-binding';
 import {runRevisionCall} from '../decisions/revision-calls';
-import {blockExecutor} from '../monitoring/runtime';
 import {HTTPException} from 'hono/http-exception';
 import {readFile,realpath,mkdir,writeFile,rm} from 'node:fs/promises';
 import {resolve,join,relative,isAbsolute} from 'node:path';
@@ -109,7 +108,7 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
    await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='作答进程中断，可重试',finished_at=now() WHERE id=$1",[row.id]);
    await db.query("UPDATE ai_distill.steps SET status='failed',error='作答进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=5 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1 AND w.input_revision=$2)",[row.workflow_id,row.input_revision]);
   }
-  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.status='waiting' AND (a.revision_round_id IS NULL OR NOT EXISTS(SELECT 1 FROM ai_distill.step_attempts active WHERE active.workflow_id=a.workflow_id AND active.revision_round_id IS NOT NULL AND active.status='running')) AND ai_distill.dispatch_allowed(w.id,'answer:' || (a.config->>'provider')) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
+  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.status='waiting' AND (a.revision_round_id IS NULL OR NOT EXISTS(SELECT 1 FROM ai_distill.step_attempts active WHERE active.workflow_id=a.workflow_id AND active.revision_round_id IS NOT NULL AND active.status='running')) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
   if(!job){await db.query('COMMIT');return false;}
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=5",[job.workflow_id]);
@@ -143,7 +142,6 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
   if(wrote)try{const published=await pool.query('SELECT id FROM ai_distill.artifacts WHERE attempt_id=$1 LIMIT 1',[job.id]);if(!published.rowCount)await rm(join(resolve(root),job.workflow_id,job.id),{recursive:true,force:true});}catch{console.error('无法确认答案发布状态，保留文件等待核对');}
   const message=error instanceof QwenError||error instanceof DomesticError||error instanceof AnswerInputError?error.message:'模型作答失败，请检查服务配置或存储状态';
   const result=error instanceof QwenError||error instanceof DomesticError?{error:{kind:error.kind,retryable:error.retryable,http_status:error.http_status,provider_code:error.provider_code,request_id:error.request_id}}:null;
-  if(result?.error.kind==='authentication'||result?.error.kind==='quota')await blockExecutor(`answer:${job.config.provider}`,result.error.kind);
   const tx=await pool.connect();try{
    await tx.query('BEGIN');const w=(await tx.query(activeWorkflow,[job.workflow_id])).rows[0];
    const failed=await tx.query("UPDATE ai_distill.step_attempts SET status='failed',error=$2,result=$3,finished_at=now() WHERE id=$1 AND status='running'",[job.id,message,JSON.stringify(result)]);

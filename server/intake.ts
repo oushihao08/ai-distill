@@ -55,8 +55,6 @@ export async function receiveMaterials(pool: Pool, storageRoot: string, input: I
      const revision = job?.revision ?? (existing ? existing.input_revision + 1 : 1);
      const attemptId = job?.attemptId ?? crypto.randomUUID();
      const relativeDirectory = existing ? `${id}/intake-${attemptId}` : id;
-     directory = join(resolve(storageRoot), relativeDirectory);
-     await mkdir(directory, { recursive: true, mode: 0o700 });
      if (existing) {
        await client.query("UPDATE ai_distill.workflows SET title=$2,input_revision=$3,status='waiting' WHERE id=$1", [id, title, revision]);
        await client.query("UPDATE ai_distill.step_attempts SET status='skipped',error='材料版本更新，任务失效',finished_at=now() WHERE workflow_id=$1 AND status IN ('waiting','running') AND id<>$2", [id, attemptId]);
@@ -64,6 +62,14 @@ export async function receiveMaterials(pool: Pool, storageRoot: string, input: I
      } else {
        await client.query('INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_key) VALUES($1,$2,$3,$4,$5)', [id, projectId, requestId, title, key]);
      }
+     if (existing && input.workflowId && !job && prepared.length === 0) {
+       await client.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL,enabled=true,name='入库（含PDF文本提取）',display_position=1 WHERE workflow_id=$1 AND ordinal=1", [id]);
+       await client.query("UPDATE ai_distill.steps SET status='skipped',result=$2,error=NULL,started_at=now(),finished_at=now(),enabled=false WHERE workflow_id=$1 AND ordinal=2", [id, JSON.stringify({ reason: '等待重新入库后判断是否需要PDF文本提取' })]);
+       await client.query('COMMIT');
+       return { id, updated: true, input_revision: revision, empty: true };
+     }
+     directory = join(resolve(storageRoot), relativeDirectory);
+     await mkdir(directory, { recursive: true, mode: 0o700 });
      const summaries = [];
      const rawArtifacts:{material_id:string;storage_path:string;sha256:string;size_bytes:number;content:string}[]=[];
      for (const file of prepared) {

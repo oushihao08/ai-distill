@@ -1,4 +1,5 @@
 import {validateCodexModel} from './codex/models';
+import {readProjectCodexSettings} from './codex/system-config';
 import { readdir, realpath, readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -25,28 +26,30 @@ export async function scanProjectFolder(root: string): Promise<QuestionFolder[]>
   if (entries.some(entry => entry.isFile() && supportedDocument.test(entry.name))) throw new HTTPException(400, { message: '请将材料放入每道题目的子文件夹，项目根目录不能直接放文件' });
   const questions: QuestionFolder[] = [];
   for (const entry of entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.')).sort((a,b) => a.name.localeCompare(b.name, 'zh-CN'))) {
-   const files: FolderFile[] = [];
-   async function visit(directory: string, prefix = '') {
-    try {
-     for (const child of (await readdir(directory, { withFileTypes: true })).sort((a,b) => a.name.localeCompare(b.name, 'zh-CN'))) {
-      const name = prefix + child.name; const path = join(directory, child.name);
-      if (child.isDirectory() && !child.name.startsWith('.')) await visit(path, `${name}/`);
-      else if (child.isFile() && supportedDocument.test(child.name)) {
-       const info = await stat(path);
-       if (info.size > 30 * 1024 * 1024) throw new HTTPException(400, { message: '题目「'+entry.name+'」的材料超过30MB限制' });
-       const bytes = await readFile(path);
-       files.push({ name, path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
-      }
-     }
-    } catch (error) { throw error; }
-   }
-   await visit(join(root, entry.name));
-   if (files.length > 100 || files.reduce((sum, file) => sum + file.size, 0) > 100 * 1024 * 1024) throw new HTTPException(400, { message: `题目「${entry.name}」的材料超过100份或100MB限制` });
-   files.sort((a,b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
-   questions.push({ key: entry.name, files });
+   questions.push(await scanQuestionFolder(root, entry.name));
   }
   return questions;
  } catch (error) { if (error instanceof HTTPException) throw error; throw new HTTPException(400, { message: '材料文件夹读取失败，请检查访问权限' }); }
+}
+export async function scanQuestionFolder(root: string, key: string): Promise<QuestionFolder> {
+ const files: FolderFile[] = [];
+ async function visit(directory: string, prefix = '') {
+  for (const child of (await readdir(directory, { withFileTypes: true })).sort((a,b) => a.name.localeCompare(b.name, 'zh-CN'))) {
+   const name = prefix + child.name; const path = join(directory, child.name);
+   if (child.isDirectory() && !child.name.startsWith('.')) await visit(path, `${name}/`);
+   else if (child.isFile() && supportedDocument.test(child.name)) {
+    const info = await stat(path);
+    if (info.size > 30 * 1024 * 1024) throw new HTTPException(400, { message: '题目「'+key+'」的材料超过30MB限制' });
+    const bytes = await readFile(path);
+    files.push({ name, path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+   }
+  }
+ }
+ try { await visit(join(root, key)); }
+ catch (error) { if (error instanceof HTTPException) throw error; throw new HTTPException(409, { message: `题目「${key}」目录不存在或无法读取，请检查目录后重试` }); }
+ if (files.length > 100 || files.reduce((sum, file) => sum + file.size, 0) > 100 * 1024 * 1024) throw new HTTPException(400, { message: `题目「${key}」的材料超过100份或100MB限制` });
+ files.sort((a,b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+ return { key, files };
 }
 export async function registerQuestionFolders(db: PoolClient, projectId: string, projectName: string, questions: QuestionFolder[]) {
  const rows=await db.query('SELECT id,source_key,input_revision,source_manifest,deleted_at FROM ai_distill.workflows WHERE project_id=$1 FOR UPDATE',[projectId]);
@@ -86,8 +89,6 @@ export function validateStepConfig(ordinal: number, raw: unknown) {
  if (value.provider !== undefined && value.provider !== provider) throw new HTTPException(400, { message: `此步骤使用${provider}` });
  const model = text(value.model, '模型ID', 160);
  const effort = text(value.reasoning_effort ?? 'medium', '推理强度', 20);
- const allowed = ['low','medium','high','xhigh','max','ultra'];
- if (!allowed.includes(effort)) throw new HTTPException(400, { message: '推理强度无效' });
  if(ordinal===9){const prompt=text(value.prompt,'脱敏提示词',12000);validateCodexModel(model,effort);return{provider,model,reasoning_effort:effort,prompt};}
  if(provider==='codex')validateCodexModel(model,effort);
  return { provider, model, reasoning_effort: effort };
@@ -95,14 +96,15 @@ export function validateStepConfig(ordinal: number, raw: unknown) {
 function defaultAnswerConfig(){try{return resolveQwenConfig({});}catch{return {provider:'qwen'};}}
 export async function projectStepSummary(pool: Pool, projectId: string) {
  const visible=STEP_REGISTRY.filter(stage=>stage.visible);
- const [rows,configs]=await Promise.all([
+ const [rows,configs,codexSettings]=await Promise.all([
   pool.query(`SELECT w.id AS workflow_id,w.input_revision,s.ordinal,s.status,s.implemented,s.enabled,
    EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.input_revision=w.input_revision AND lower(m.original_name) LIKE '%.pdf') AS has_pdf,
    (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,
    EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.input_revision=w.input_revision AND a.ordinal IN (CASE WHEN s.ordinal=1 THEN 1 ELSE s.ordinal END,CASE WHEN s.ordinal=1 THEN 2 ELSE s.ordinal END) AND a.status IN ('waiting','running')) AS active
    FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id
-   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal<>2 ORDER BY w.id,s.display_position`,[projectId]),
+   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3) ORDER BY w.id,s.display_position`,[projectId]),
   pool.query('SELECT ordinal,config FROM ai_distill.project_step_configs WHERE project_id=$1 ORDER BY ordinal',[projectId]),
+  readProjectCodexSettings(pool,projectId),
  ]);
  const totals=new Map<number,Record<string,number>>();
  for(const stage of visible)totals.set(stage.ordinal,{total:0,ready:0,queued:0,running:0,succeeded:0,failed:0});
@@ -121,5 +123,14 @@ export async function projectStepSummary(pool: Pool, projectId: string) {
    if((status==='waiting'||status==='failed')&&previousStatus==='succeeded'&&!row.active&&row.enabled)values.ready++;
   }
  }
- return visible.map(stage=>({ordinal:stage.ordinal,position:stage.position,name:stage.name,key:stage.key,implemented:stage.defaultEnabled,...totals.get(stage.ordinal),config:configs.rows.find(row=>row.ordinal===stage.ordinal)?.config??(stage.ordinal===5?defaultAnswerConfig():stage.ordinal===9?{provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'medium',prompt:DEFAULT_REDACTION_PROMPT}:{})}));
+ return visible.map(stage=>{
+  const stored=configs.rows.find(row=>row.ordinal===stage.ordinal)?.config;
+  const isCodex=[4,6,9].includes(stage.ordinal);
+  const explicit=Boolean(stored&&typeof stored.model==='string'&&typeof stored.reasoning_effort==='string');
+  const defaults={model:codexSettings.model,reasoning_effort:codexSettings.reasoning_effort};
+  const config=stage.ordinal===5?stored??defaultAnswerConfig():isCodex?{
+   provider:'codex',...(stage.ordinal===9?{prompt:DEFAULT_REDACTION_PROMPT}:{}),...defaults,...(stored??{}),
+  }:stored??{};
+  return{ordinal:stage.ordinal,position:stage.position,name:stage.name,key:stage.key,implemented:stage.defaultEnabled,...totals.get(stage.ordinal),config,...(isCodex?{config_source:explicit?'step':codexSettings.source}:{})};
+ });
 }

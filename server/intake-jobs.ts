@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { receiveMaterials } from './intake';
 import { enqueueExtraction } from './materials/jobs';
-import type { FolderFile } from './project-folders';
+import { scanQuestionFolder, validateFolder, type FolderFile } from './project-folders';
 export async function enqueueIngestion(pool:Pool,workflowId:string){
  const current=(await pool.query(`SELECT w.input_revision,
   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.input_revision=w.input_revision) AS has_materials,
@@ -20,9 +20,22 @@ export async function enqueueIntake(pool: Pool, workflowId: string) {
  const db = await pool.connect();
  try {
   await db.query('BEGIN');
-  const row = (await db.query('SELECT w.* FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL FOR UPDATE OF w', [workflowId])).rows[0];
+  const row = (await db.query('SELECT w.*,p.material_root FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL FOR UPDATE OF w,p', [workflowId])).rows[0];
   if (!row) throw new HTTPException(404, { message: '题目不存在' });
   if (!row.source_key) throw new HTTPException(409, { message: '此题目没有材料目录，请在题目详情补充材料' });
+  const actual = await scanQuestionFolder(await validateFolder(row.material_root), row.source_key);
+  if (!actual.files.length) throw new HTTPException(409, { message: `题目「${row.source_key}」目录中没有PDF、DOCX、TXT或MD文件，请补充材料后重试` });
+  const manifestSignature = (files: FolderFile[]) => JSON.stringify(files.map(file => [file.name,file.path,file.size,file.sha256]));
+  const previousManifest = (row.source_manifest ?? []) as FolderFile[];
+  let revision = Number(row.input_revision);
+  if (manifestSignature(previousManifest) !== manifestSignature(actual.files)) {
+   revision += 1;
+   await db.query('UPDATE ai_distill.workflows SET source_manifest=$2::jsonb,input_revision=$3,status=\'waiting\' WHERE id=$1',[workflowId,JSON.stringify(actual.files),revision]);
+   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='材料目录更新，任务失效',finished_at=now() WHERE workflow_id=$1 AND status IN ('waiting','running')",[workflowId]);
+   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1",[workflowId]);
+   row.source_manifest = actual.files;
+   row.input_revision = revision;
+  }
   const active = await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND input_revision=$2 AND ordinal=1 AND status IN ('waiting','running')", [workflowId,row.input_revision]);
   if (active.rowCount) { await db.query('COMMIT'); return { id:active.rows[0].id,reused:true }; }
   const step = (await db.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=1', [workflowId])).rows[0];
@@ -42,7 +55,7 @@ export async function runNextIntake(pool: Pool, root: string, workflowId?: strin
    await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='接收进程中断，可重试',finished_at=now() WHERE id=$1", [row.id]);
    await db.query("UPDATE ai_distill.steps SET status='failed',error='接收进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=1", [row.workflow_id]);
   }
-  job = (await db.query("SELECT a.*,w.project_id,w.title,w.source_key FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision JOIN ai_distill.projects p ON p.id=w.project_id WHERE a.ordinal=1 AND a.status='waiting' AND ai_distill.dispatch_allowed(w.id,'materials') AND w.deleted_at IS NULL AND p.deleted_at IS NULL AND ($1::uuid IS NULL OR w.id=$1) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1", [workflowId??null])).rows[0];
+  job = (await db.query("SELECT a.*,w.project_id,w.title,w.source_key FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id AND w.input_revision=a.input_revision JOIN ai_distill.projects p ON p.id=w.project_id WHERE a.ordinal=1 AND a.status='waiting' AND w.deleted_at IS NULL AND p.deleted_at IS NULL AND ($1::uuid IS NULL OR w.id=$1) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1", [workflowId??null])).rows[0];
   if (!job) { await db.query('COMMIT'); return false; }
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1", [job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=1", [job.workflow_id]);

@@ -1,7 +1,7 @@
 import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
-import { currentTaskSignal } from '../automation/task-signal';
+import { currentTaskSignal } from '../task-signal';
 import type { Page } from './pdf';
 import type { VisionClient } from './vision';
 import type { ExtractionConfig } from './config';
@@ -26,7 +26,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
  await mkdir(directory,{recursive:true,mode:0o700});
  if(!materials.length)throw new Error('原件材料为空');
  const extractor:DocumentExtractor=_extract&&typeof _extract==='object'&&'extract' in _extract?_extract as DocumentExtractor:new ProjectDocumentExtractor();
- const extracted:{material_id:string;sha256:string;format:string;pages:Page[];mode:'fresh'|'cached';from_attempt_id:string|null;from_material_id:string|null;cache_error?:'missing_or_invalid'}[]=[];
+ const extracted:{material_id:string;sha256:string;format:string;pages:Page[];provider:string;mode:'fresh'|'cached';from_attempt_id:string|null;from_material_id:string|null;cache_error?:'missing_or_invalid'}[]=[];
  const artifacts:Artifact[]=[];
  try{
   for(const material of materials){
@@ -34,7 +34,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    const sourceBytes=await Bun.file(sourcePath).arrayBuffer();
    if(createHash('sha256').update(Buffer.from(sourceBytes)).digest('hex')!==material.sha256)throw new Error('原件指纹变化，停止发布处理结果');
    const format=material.storage_path.split('.').at(-1)?.toLowerCase()??'';
-   let pages:Page[]|undefined,mode:'fresh'|'cached'='fresh',from_attempt_id:string|null=null,from_material_id:string|null=null,cache_error:'missing_or_invalid'|undefined;
+   let pages:Page[]|undefined,provider='glm-ocr',mode:'fresh'|'cached'='fresh',from_attempt_id:string|null=null,from_material_id:string|null=null,cache_error:'missing_or_invalid'|undefined;
    if(format!=='pdf')throw new Error('非PDF文本文档应在入库时直接解析，不能进入PDF提取队列');
    if(material.extraction_cache){
     try{
@@ -44,15 +44,15 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
      if(createHash('sha256').update(Buffer.from(bytes)).digest('hex')!==cache.sha256)throw new Error('invalid cache hash');
      const value=JSON.parse(new TextDecoder().decode(bytes));
      if(value.source_sha256!==material.sha256||!Array.isArray(value.pages)||!value.pages.length||value.pages.some((page:Page,index:number)=>!page||page.page!==index+1||typeof page.text!=='string'||!['text','ocr'].includes(page.method)||page.issues?.length))throw new Error('invalid cached pages');
-     pages=value.pages;mode='cached';from_attempt_id=cache.attempt_id;from_material_id=cache.material_id;
+     pages=value.pages;provider=typeof value.provider==='string'?value.provider:'glm-ocr';mode='cached';from_attempt_id=cache.attempt_id;from_material_id=cache.material_id;
     }catch{cache_error='missing_or_invalid';}
    }
    if(!pages){
     const result=await extractor.extract(sourcePath,currentTaskSignal());
     if(result.sha256!==material.sha256||result.format!=='pdf')throw new Error('OCR返回与原件不匹配');
-    pages=result.pages;
+    pages=result.pages;provider=result.provider;
    }
-   extracted.push({material_id:material.id,sha256:material.sha256,format,pages,mode,from_attempt_id,from_material_id,...(cache_error?{cache_error}:{})});
+   extracted.push({material_id:material.id,sha256:material.sha256,format,pages,provider,mode,from_attempt_id,from_material_id,...(cache_error?{cache_error}:{})});
   }
   const allPages=extracted.flatMap(material=>material.pages.map(page=>({...page,material_id:material.material_id,reused:material.mode==='cached'||page.reused===true})));
   const issues=allPages.flatMap((page,index)=>[
@@ -61,13 +61,13 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    ...(/无法辨认|�/.test(page.text)?[{page_index:index,material_id:page.material_id,page:page.page,kind:'unreadable'}]:[]),
   ]);
   for(const material of extracted){
-   const content=JSON.stringify({source_sha256:material.sha256,format:material.format,provider:material.mode==='cached'?'cache':'glm-ocr',pages:material.pages.map(({reused:_,...page})=>page)});
+   const content=JSON.stringify({source_sha256:material.sha256,format:material.format,provider:material.provider,pages:material.pages.map(({reused:_,...page})=>page)});
    const storage_path=workflow+'/'+attempt+'/material-'+material.material_id+'-extracted.json';
    await writeFile(join(resolve(root),storage_path),content,{mode:0o600,flag:'wx'});
    artifacts.push({kind:'private_extracted_pages',material_id:material.material_id,storage_path,sha256:createHash('sha256').update(content).digest('hex'),size_bytes:Buffer.byteLength(content),content});
   }
   const result={
-   materials:extracted.map(material=>({material_id:material.material_id,sha256:material.sha256,pages:material.pages.length,format:material.format,content_type:material.pages.every(page=>page.method==='text')?'text':'scanned',extraction:{mode:material.mode,from_attempt_id:material.from_attempt_id,from_material_id:material.from_material_id,...(material.cache_error?{cache_error:material.cache_error}:{})}})),
+   materials:extracted.map(material=>({material_id:material.material_id,sha256:material.sha256,pages:material.pages.length,format:material.format,provider:material.mode==='cached'?'cache':material.provider,content_type:material.pages.every(page=>page.method==='text')?'text':'scanned',extraction:{mode:material.mode,from_attempt_id:material.from_attempt_id,from_material_id:material.from_material_id,...(material.cache_error?{cache_error:material.cache_error}:{})}})),
    pages:allPages.map(page=>({material_id:page.material_id,page:page.page,method:page.method,usage:page.reused?null:page.usage??null,model:page.model??null,extraction_reused:page.reused,recognition_attempts:page.attempts??[]})),
    issues,
    persistence:'原始文本及逐页索引已写入PostgreSQL私有产物；脱敏由后续独立步骤执行',
