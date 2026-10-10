@@ -1,3 +1,6 @@
+/** 文件职责：以临时 PostgreSQL schema 验证材料接收、队列和真实提取／脱敏；环境参数决定 PDF 范围。
+ * 执行入口与用途：`bun scripts/verify-integration.ts`；在临时 schema 接通材料接收、提取队列和脱敏执行；按环境配置调用真实 provider 并记录证据。
+ */
 import { createPool } from '../server/db';
 import { createApp } from '../server/app';
 import { runNextExtraction } from '../server/materials/jobs';

@@ -1,8 +1,32 @@
+/** 验证百分制逐模型上限、严格小于边界、缺失满分及无效数值处理。
+ * 运行方式：由 Bun test 收集；此处更新用例不代表已经运行。
+ */
 import {test,expect} from 'bun:test';
 import {decideAcceptance,type AcceptanceInput} from './acceptance';
-const valid:AcceptanceInput={question_current:true,quality:{status:'passed'},config:{required_models:['qwen','kimi'],minimum_score_by_model:{qwen:8,kimi:7}},models:['qwen','kimi'].map(model=>({model,answer_status:'succeeded',score_status:'succeeded',score:8,max_score:10,score_valid:true,binding_matches:true,disputes:[]}))};
-test('acceptance applies each configured model threshold without averaging',()=>{expect(decideAcceptance(valid).decision).toBe('accepted');const lower={...valid,models:valid.models.map(m=>m.model==='kimi'?{...m,score:6}:m)};expect(decideAcceptance(lower)).toMatchObject({decision:'repair',reasons:['below_model_threshold:kimi']});});
-test('missing configuration or model results wait explicitly',()=>{expect(decideAcceptance({...valid,config:undefined})).toMatchObject({decision:'waiting',reasons:['acceptance_config_missing_or_invalid']});expect(decideAcceptance({...valid,models:valid.models.slice(0,1)})).toMatchObject({decision:'waiting',reasons:['required_model_missing:kimi']});});
-test('model results without an approved score threshold wait instead of guessing',()=>expect(decideAcceptance({...valid,config:{required_models:['qwen','kimi'],minimum_score_by_model:{qwen:null,kimi:null}}})).toMatchObject({decision:'waiting',reasons:['minimum_score_missing:qwen']}));
-test('failed answer and invalid/disputed/stale scoring cannot be accepted',()=>{expect(decideAcceptance({...valid,question_current:false}).decision).toBe('quarantine');expect(decideAcceptance({...valid,quality:{status:'failed',issues:['rubric conflict']}}).decision).toBe('repair');expect(decideAcceptance({...valid,models:valid.models.map(m=>m.model==='qwen'?{...m,answer_status:'failed'}:m)}).decision).toBe('waiting');expect(decideAcceptance({...valid,models:valid.models.map(m=>m.model==='qwen'?{...m,score_valid:false}:m)}).decision).toBe('repair');});
-test('invalid score ranges are isolated and thresholds cannot be guessed',()=>{expect(decideAcceptance({...valid,models:valid.models.map(m=>m.model==='qwen'?{...m,score:11}:m)}).decision).toBe('quarantine');expect(decideAcceptance({...valid,config:{required_models:['qwen'],minimum_score_by_model:{}}})).toMatchObject({decision:'waiting',reasons:['minimum_score_missing:qwen']});expect(decideAcceptance({...valid,config:{required_models:['qwen'],minimum_score_by_model:{qwen:11}},models:valid.models.slice(0,1)}).decision).toBe('waiting');});
+const valid:AcceptanceInput={question_current:true,config:{required_models:['qwen','kimi'],minimum_score_by_model:{qwen:50,kimi:50}},models:['qwen','kimi'].map(model=>({model,answer_status:'succeeded',score:9,max_score:20}))};
+test('each required model must be strictly below its percentage cap, without averaging',()=>{
+ expect(decideAcceptance(valid)).toMatchObject({decision:'accepted',model_scores:{qwen:{score:9,max_score:20,percentage:45}}});
+ const mixed={...valid,models:valid.models.map(m=>({...m,score:m.model==='qwen'?0:10}))};
+ expect(decideAcceptance(mixed)).toMatchObject({decision:'repair',reasons:['at_or_above_model_threshold:kimi']});
+});
+test('missing configuration or model results wait explicitly',()=>{
+ expect(decideAcceptance({...valid,config:undefined})).toMatchObject({decision:'waiting',reasons:['acceptance_config_missing_or_invalid']});
+ expect(decideAcceptance({...valid,models:valid.models.slice(0,1)})).toMatchObject({decision:'waiting',reasons:['required_model_missing:kimi']});
+ for(const threshold of [null,-1,101,NaN,Infinity])expect(decideAcceptance({...valid,config:{required_models:['qwen'],minimum_score_by_model:{qwen:threshold}}}).decision).toBe('waiting');
+});
+test('different rubric lengths use the same percentage threshold and equality fails',()=>{
+ for(const [score,max_score,decision] of [[7,11,'repair'],[5,15,'accepted'],[9,18,'repair'],[9,20,'accepted'],[10,20,'repair'],[20,20,'repair']] as const){
+  expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,score,max_score}))})).toMatchObject({decision});
+ }
+});
+test('comparison is not rounded to the displayed two decimals',()=>{
+ expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,score:49.999,max_score:100}))}).decision).toBe('accepted');
+});
+test('missing or invalid maxima and out-of-range scores cannot pass as low scores',()=>{
+ for(const max_score of [undefined,0,-1,NaN,Infinity])expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,max_score}))}).decision).toBe('waiting');
+ for(const score of [undefined,-1,21,NaN,Infinity])expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,score}))}).decision).toBe('waiting');
+});
+test('stale questions and incomplete answers do not pass',()=>{
+ expect(decideAcceptance({...valid,question_current:false}).decision).toBe('quarantine');
+ expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,answer_status:'failed'}))}).decision).toBe('waiting');
+});

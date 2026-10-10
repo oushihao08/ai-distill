@@ -1,7 +1,14 @@
+/**
+ * 职责：返修私有草稿读取：限制工作区路径，恢复并校验当前尝试或旧目录格式的出题草稿。
+ * 关键方法与用途：`readPrivateDraft()` 优先读取数据库完整草稿，并按受限路径兼容历史本地草稿，并校验附件与标答。
+ * 使用场景：由出题队列在返修恢复时调用，不向公开 API 暴露私有文件路径。
+ */
 import {readFile,readdir,realpath,stat} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {validateDraft,type Draft} from './validate';
-export async function readPrivateDraft(root:string,workflowId:string,attemptId:string,materials:{id:string;text:string}[]):Promise<Draft>{
+export async function readPrivateDraft(root:string,workflowId:string,attemptId:string,materials:{id:string;text:string}[],storedResult?:unknown):Promise<Draft>{
+ // 新任务完整草稿已入库；缺少字段的历史任务继续兼容本地私有草稿。
+ if(storedResult&&typeof storedResult==='object'&&('reference_answer' in storedResult||'answer_approach' in storedResult))return validateDraft(storedResult,materials);
  const base=await realpath(resolve(root));
  const privateRoot=await realpath(join(base,workflowId,attemptId,'private'));
  if(privateRoot!==join(base,workflowId,attemptId,'private')||!privateRoot.startsWith(base+'/'))throw new Error('unsafe revision workspace');

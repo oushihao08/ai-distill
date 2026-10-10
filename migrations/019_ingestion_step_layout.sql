@@ -1,3 +1,4 @@
+-- 文件职责：将 PDF 提取并入可见入库状态，保留内部 ordinal 2 与独立脱敏。
 -- The logical first stage now includes PDF text extraction before raw text is
 -- considered ready for the separate redaction stage. Keep ordinal 2 as an
 -- internal extraction attempt identity for existing history and worker queues.

@@ -1,3 +1,6 @@
+/** 验证候选采用会创建草稿、保留旧版本且重复操作幂等。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';

@@ -1,3 +1,4 @@
+-- 文件职责：建立项目级 skill 生成尝试、快照及持久化队列。
 CREATE TABLE ai_distill.project_skill_attempts (
  id uuid PRIMARY KEY,
  project_id uuid NOT NULL REFERENCES ai_distill.projects(id),

@@ -1,3 +1,6 @@
+/** 文件职责：在临时 PostgreSQL schema 验证并发接收、附件更新与晚到结果隔离；不调用 OCR。
+ * 执行入口与用途：`bun scripts/verify-input-versions.ts`；在临时 schema 并发接收合成材料，检查附件更新、旧结果失效和晚到提交拒绝。
+ */
 import { createPool } from '../server/db';
 import { createApp } from '../server/app';
 import { runNextExtraction } from '../server/materials/jobs';
@@ -45,7 +48,7 @@ try {
    form.append('files', new File([`%PDF-1.7\n${content}`], 'attachment.pdf'));
    const response = await app.request(`/api/projects/${project.id}/workflows`, { method: 'POST', body: form });
    if (![200, 201].includes(response.status)) throw new Error(`intake status ${response.status}`);
-   return await response.json() as { id: string; reused?: boolean; updated?: boolean; input_revision: number };
+   return await response.json() as { id: string; reused?: boolean; updated?: boolean;  };
   } catch (error) { throw error; }
  }
  const [first, repeated] = await Promise.all([upload(), upload()]);
@@ -56,7 +59,7 @@ try {
  const processing = new Promise<void>(resolve => { started = resolve; });
  const gate = new Promise<void>(resolve => { release = resolve; });
  const running = runNextExtraction(testPool, root, async (storage, workflow, attempt, materials) => {
-  check('claimed attempt reads its exact input revision', materials.length === 1 && materials[0]!.sha256 === createHash('sha256').update('%PDF-1.7\nfirst').digest('hex'));
+  check('claimed attempt reads its exact attachment snapshot', materials.length === 1 && materials[0]!.sha256 === createHash('sha256').update('%PDF-1.7\nfirst').digest('hex'));
   started(); await gate;
   const relative = `${workflow}/${attempt}/materials.md`;
   await mkdir(join(storage, workflow, attempt), { recursive: true }); await writeFile(join(storage, relative), 'synthetic fixture');
@@ -65,17 +68,17 @@ try {
  let updated;
  try { await processing; updated = await upload('second'); }
  finally { release(); await running; }
- check('changed source updates the same workflow identity', updated?.id === workflowId && updated.input_revision === 2 && updated.updated === true);
+ check('changed source updates the same workflow identity', updated?.id === workflowId && updated.updated === true);
  const detail = await (await app.request(`/api/workflows/${workflowId}`)).json() as any;
  check('only current materials appear in workflow detail', detail.materials.length === 1 && detail.materials[0].sha256 === createHash('sha256').update('%PDF-1.7\nsecond').digest('hex'));
  check('late old result cannot publish into current steps', detail.steps[1].status === 'waiting' && detail.artifacts.length === 0 && detail.attempts.find((attempt: any) => attempt.id === queued.id)?.status === 'skipped');
- check('old input records remain traceable', (await testPool.query('SELECT count(*)::int AS count FROM ai_distill.materials WHERE workflow_id=$1', [workflowId])).rows[0].count === 2 && detail.attempts.some((attempt: any) => attempt.input_revision === 1));
+ check('old input records remain traceable', (await testPool.query('SELECT count(*)::int AS count FROM ai_distill.materials WHERE workflow_id=$1', [workflowId])).rows[0].count === 2 && detail.attempts.some((attempt: any) => attempt.id===queued.id));
  const current = await (await app.request(`/api/workflows/${workflowId}/extract`, { method: 'POST' })).json() as { id: string; reused: boolean };
- check('new revision gets a new extraction attempt', current.id !== queued.id && !current.reused);
+ check('changed attachments get a new extraction attempt', current.id !== queued.id && !current.reused);
  const unchanged = await upload('second');
- check('unchanged reimport preserves current queue', unchanged.reused === true && unchanged.input_revision === 2 && (await testPool.query('SELECT status FROM ai_distill.step_attempts WHERE id=$1', [current.id])).rows[0].status === 'waiting');
+ check('unchanged reimport preserves current queue', unchanged.reused === true && (await testPool.query('SELECT status FROM ai_distill.step_attempts WHERE id=$1', [current.id])).rows[0].status === 'waiting');
  const projectDetail = await (await app.request(`/api/projects/${project.id}`)).json() as any;
- check('project current-material count excludes historical revisions', projectDetail.workflows.length === 1 && projectDetail.workflows[0].material_count === 1);
+ check('project current-material count excludes removed attachments', projectDetail.workflows.length === 1 && projectDetail.workflows[0].material_count === 1);
  // Verify failed redaction is persisted without publishing text, then reuse private extraction.
  let parses=0;
  const extract=async()=>{parses++;return[{page:1,text:'公开资料',method:'ocr' as const}];};
@@ -95,7 +98,7 @@ try {
  check('retry reuses failed attempt OCR with source and config fingerprints intact',parses===1&&recovered.steps[1].status==='succeeded'&&recovered.steps[1].result.materials[0].extraction.mode==='cached'&&recovered.steps[1].result.materials[0].extraction.from_attempt_id===current.id);
  check('recovery keeps the failed attempt and publishes only checked public outputs',recovered.attempts.find((attempt:any)=>attempt.id===current.id).status==='failed'&&recovered.artifacts.length===2);
 } catch (error) {
- console.error('Input revision integration failed:', error instanceof Error && checks.some(check => check.name === error.message) ? error.message : 'runtime failure; credentials omitted');
+ console.error('Material update integration failed:', error instanceof Error && checks.some(check => check.name === error.message) ? error.message : 'runtime failure; credentials omitted');
  process.exitCode = 1;
 } finally {
  try { await pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); } catch { console.error('Temporary schema cleanup failed'); process.exitCode = 1; }

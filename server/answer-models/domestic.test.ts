@@ -1,3 +1,6 @@
+/** 验证国内及 OpenRouter 供应商的模型路由、凭证隔离、配置校验与错误处理。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {describe,test,expect} from 'bun:test';
 import {createDomesticClient,resolveDomesticConfig} from './domestic';
 const cases=[

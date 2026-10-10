@@ -1,3 +1,6 @@
+/** 文件职责：创建工作台使用的 Vuetify 实例并统一组件视觉默认值。
+ * 关键配置与用法：从 appTheme 映射颜色，注册简体中文和 mdi-svg 图标，并设置按钮、输入框、提示等默认样式；由 main.ts 在应用挂载前注册。
+ */
 import { createVuetify } from 'vuetify'
 import { aliases, mdi } from 'vuetify/iconsets/mdi-svg'
 import { zhHans } from 'vuetify/locale'

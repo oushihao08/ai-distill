@@ -1,8 +1,10 @@
+/** 验证题目草稿、附件、rubric 与标答隐私的结构约束。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
-import {validateDraft,validateQuality,type Draft} from './validate';
+import {validateDraft,type Draft} from './validate';
 const materials=[{id:'attachment-1',text:'合同金额100元'}];
-const draft:Draft={question:'合同金额多少？',attachment_ids:['attachment-1'],rubric:[{id:'amount',criterion:'准确写明100元；金额错误得零分',max_score:1}],reference_answer:'100元',answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}};
-const quality={passed:true,checks:{material_grounding:true,question_complete:true,rubric_consistent:true,reference_answer_complete:true,deliverables_complete:true},issues:[]};
+const draft:Draft={task_name:'金额核算',task_type:'合同计算',header:{industry_l1:'待确认',industry_l2:'待确认',task_form:'single_round',occupation_l1:'待确认',occupation_l2:'待确认'},question:'合同金额多少？',attachment_ids:['attachment-1'],rubric:[{id:'amount',criterion:'准确写明100元；金额错误得零分',max_score:1}],answer_approach:'核对金额条款',reference_answer:'100元',answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}};
 test('complete draft keeps reference private and strips model selected versions',()=>{
  const result=validateDraft({...draft,question_version:'forged',quality_check:{passed:true}},materials);
  expect(result).toEqual(draft);expect(result).not.toHaveProperty('quality_check');expect(result).not.toHaveProperty('question_version');
@@ -17,16 +19,4 @@ test('empty full reference and invalid score cannot become a valid draft',()=>{
 test('unsupported delivery requirements are retained for capability rejection',()=>{
  const result=validateDraft({...draft,answer_requirements:{input_mode:'text',output_mode:'file',tools:['python']}},materials);
  expect(result.answer_requirements.output_mode).toBe('file');expect(result.answer_requirements.tools).toEqual(['python']);
-});
-test('quality pass requires every explicit check and no blocking issue',()=>{
- expect(validateQuality(quality).valid).toBe(true);
- expect(validateQuality({...quality,checks:{...quality.checks,rubric_consistent:false}}).valid).toBe(false);
- expect(validateQuality({...quality,issues:[{code:'conflict',detail:'金额矛盾',blocking:true}]}).valid).toBe(false);
- expect(validateQuality({...quality,passed:false}).valid).toBe(false);
-});
-test('malformed checks fail closed while nonblocking observations remain recorded',()=>{
- expect(()=>validateQuality({passed:true,issues:[]})).toThrow();
- expect(()=>validateQuality({...quality,issues:[{code:'x',detail:'未确认'}]})).toThrow();
- const result=validateQuality({...quality,issues:[{code:'external',detail:'外部资格待核实',blocking:false}]});
- expect(result.valid).toBe(true);expect(result.report.issues).toHaveLength(1);
 });

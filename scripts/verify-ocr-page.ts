@@ -1,3 +1,6 @@
+/** 文件职责：渲染指定真实 PDF 页并调用智谱识别及实体检查，记录安全摘要，不保存原文。
+ * 执行入口与用途：`bun scripts/verify-ocr-page.ts`；从指定 PDF 渲染一页并调用智谱 OCR／实体检查，输出计数摘要，不保存识别原文。
+ */
 import {mkdtemp,rm,readFile,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';

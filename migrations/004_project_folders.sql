@@ -1,3 +1,4 @@
+-- 文件职责：登记项目材料／skill 目录、来源清单与逻辑删除状态，建立项目步骤配置。
 ALTER TABLE ai_distill.projects ADD COLUMN material_root text;
 ALTER TABLE ai_distill.projects ADD COLUMN local_skill_path text;
 ALTER TABLE ai_distill.projects ADD COLUMN deleted_at timestamptz;

@@ -1,3 +1,8 @@
+<!--
+职责：管理项目级 Codex 默认模型和推理强度，并可恢复继承全局设置。
+关键方法与用法：`load()` 读取项目设置与模型能力，`save()` 写入覆盖，`inherit()` 删除项目覆盖；项目详情页以 `projectId` 加载此面板。
+-->
+
 <script setup lang="ts">
 import {api} from '../api/client';
 interface ModelOption {slug:string;supported_reasoning_levels:{effort:string}[]}
@@ -11,15 +16,15 @@ const canSave=computed(()=>modelItems.value.some(item=>item.value===model.value)
 watch(model,selected=>{const supported=options.value.find(item=>item.slug===selected)?.supported_reasoning_levels.map(level=>level.effort)??[];if(!supported.includes(effort.value))effort.value=supported.includes('medium')?'medium':supported[0]??'';});
 function apply(settings:Settings){model.value=settings.model;effort.value=settings.reasoning_effort;source.value=settings.source;}
 async function load(){
- try{loading.value=true;error.value='';const [catalog,settings]=await Promise.all([api<{model_options:ModelOption[]}>('/codex/config'),api<Settings>(`/projects/${props.projectId}/codex-settings`)]);options.value=catalog.model_options??[];apply(settings);}
+ try{loading.value=true;error.value='';const [catalog,settings]=await Promise.all([api<{model_options:ModelOption[]}>('/agent/config'),api<Settings>(`/projects/${props.projectId}/agent-settings`)]);options.value=catalog.model_options??[];apply(settings);}
  catch(cause){error.value=cause instanceof Error?cause.message:'读取项目Codex设置失败';}finally{loading.value=false;}
 }
 async function save(){
- try{busy.value=true;error.value='';apply(await api<Settings>(`/projects/${props.projectId}/codex-settings`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model.value,reasoning_effort:effort.value})}));}
+ try{busy.value=true;error.value='';apply(await api<Settings>(`/projects/${props.projectId}/agent-settings`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:model.value,reasoning_effort:effort.value})}));}
  catch(cause){error.value=cause instanceof Error?cause.message:'保存项目Codex设置失败';}finally{busy.value=false;}
 }
 async function inherit(){
- try{busy.value=true;error.value='';apply(await api<Settings>(`/projects/${props.projectId}/codex-settings`,{method:'DELETE'}));}
+ try{busy.value=true;error.value='';apply(await api<Settings>(`/projects/${props.projectId}/agent-settings`,{method:'DELETE'}));}
  catch(cause){error.value=cause instanceof Error?cause.message:'恢复全局默认失败';}finally{busy.value=false;}
 }
 onMounted(load);

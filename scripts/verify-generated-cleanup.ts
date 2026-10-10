@@ -1,3 +1,6 @@
+/** 文件职责：在临时 PostgreSQL schema 和本地夹具验证工作流重置及生成文件清理。
+ * 执行入口与用途：`bun scripts/verify-generated-cleanup.ts`；在临时 schema 和临时存储目录创建产物，调用重置／清理路径并检查残留。
+ */
 import {mkdtemp,mkdir,writeFile,rm,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';

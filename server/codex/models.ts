@@ -1,3 +1,8 @@
+/**
+ * 职责：本机 Codex 模型目录：读取缓存公开的模型和推理档位，并校验所选设置。
+ * 关键方法与用途：`readCodexModelCatalog()` 读取本机模型能力；`validateCodexModelSettings()`／`validateCodexModel()` 校验模型与推理档位。
+ * 使用场景：由 Codex 设置接口和项目／步骤配置校验复用。
+ */
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {HTTPException} from 'hono/http-exception';
@@ -9,6 +14,7 @@ export function readCodexModelCatalog(codexHome=defaultCodexHome()):AdvertisedMo
   if(!Array.isArray(value.models))return[];
   return value.models.flatMap((model:unknown)=>{
    if(!model||typeof model!=='object'||!('slug'in model)||typeof model.slug!=='string'||!model.slug.trim()||!('supported_reasoning_levels'in model)||!Array.isArray(model.supported_reasoning_levels))return[];
+   if(model.slug==='gpt-6-astra')return[];
    const efforts=[...new Set(model.supported_reasoning_levels.flatMap((level:unknown)=>level&&typeof level==='object'&&'effort'in level&&typeof level.effort==='string'&&level.effort.trim()?[level.effort]:[]))];
    return efforts.length?[{slug:model.slug,supported_reasoning_levels:efforts.map(effort=>({effort}))}]:[];
   });

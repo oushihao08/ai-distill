@@ -1,9 +1,21 @@
+/**
+ * 职责：返修问题归类：从阶段结果提取材料、题面、rubric 或服务问题，并冻结有限预算。
+ * 关键方法与用途：`classifyRevisionSource()` 从阶段结果提取问题类型与证据；`freezeRevisionBudget()` 固定有限预算。
+ * 使用场景：返修启动和续接时调用，输出供纯策略与 runner 使用。
+ */
 import {HTTPException} from 'hono/http-exception';
 import {validateRevisionBudget} from './config';
 import type {IssueKind,RevisionBudget} from './revision';
 
 export interface RevisionSource {ordinal:number;status?:string;result?:any;error?:string|null}
-export interface RevisionEvidence {kind:IssueKind;evidence:{reasons?:string[];quality_check?:unknown;error?:string|null;materials?:{material_id:string;pages:number[];kinds:string[]}[]}}
+export interface RevisionEvidence {kind:IssueKind;evidence:{reasons?:string[];error?:string|null;materials?:{material_id:string;pages:number[];kinds:string[]}[]}}
+/** Keep one bounded, version-labelled snapshot per failed evaluation round; legacy rows retain their summaries. */
+export function buildFailedEvaluationHistory(rows:Array<{id:string;attempt:number;result?:any}>,limit=3){
+ return rows.filter(row=>row.result?.decision==='repair').slice(0,limit).map(row=>{
+  const result=row.result??{};
+  return {acceptance_attempt_id:row.id,attempt:row.attempt,reasons:Array.isArray(result.reasons)?result.reasons:[],model_scores:result.model_scores??{},models:Array.isArray(result.evaluation_records)?result.evaluation_records:[],details_available:Array.isArray(result.evaluation_records)};
+ });
+}
 export function classifyRevisionSource(source:RevisionSource):RevisionEvidence|null{
  if(source.status==='failed'&&source.result?.error){
   const error=source.result.error;
@@ -22,15 +34,10 @@ export function classifyRevisionSource(source:RevisionSource):RevisionEvidence|n
  if(source.ordinal===7){
   if(source.result?.decision!=='repair')return null;
   const reasons=Array.isArray(source.result.reasons)?source.result.reasons.filter((item:unknown):item is string=>typeof item==='string'):[];
-  // A low score requests analysis under the frozen rules; it is not evidence
-  // that the rubric should be relaxed or that a particular fact is wrong.
-  const kind:IssueKind=reasons.length&&reasons.every((reason:string)=>reason.startsWith('score_invalid_or_disputed:'))?'score':reasons.length&&reasons.every((reason:string)=>reason.startsWith('below_model_threshold:'))?'question':'unknown';
+  // 得分率达到上限时分析题目难度；不得据此收紧评分制造低分。
+  // 旧原因仍可定位历史返修记录，但新判定只产生 at_or_above 原因。
+  const kind:IssueKind=reasons.length&&reasons.every((reason:string)=>reason.startsWith('score_invalid_or_disputed:'))?'score':reasons.length&&reasons.every((reason:string)=>reason.startsWith('at_or_above_model_threshold:')||reason.startsWith('below_model_threshold:'))?'question':'unknown';
   return {kind,evidence:{reasons}};
- }
- if(source.ordinal===4&&source.status==='failed'&&source.result?.quality_check?.passed===false){
-  const report=source.result.quality_check,checks=report.checks;
-  const rubricOnly=checks?.rubric_consistent===false&&['material_grounding','question_complete','reference_answer_complete','deliverables_complete'].every(key=>checks[key]===true);
-  return {kind:rubricOnly?'rubric':'question',evidence:{quality_check:report}};
  }
  if(source.status==='failed')return {kind:'unknown',evidence:{error:source.error}};
  return null;

@@ -1,3 +1,4 @@
+-- 文件职责：拆分稳定步骤 key、持久化 ordinal 与显示顺序，新增独立脱敏身份。
 -- Give every stage a stable key and a separate display order. Ordinals remain
 -- storage IDs so historic attempts and their foreign keys are not renumbered.
 ALTER TABLE ai_distill.steps

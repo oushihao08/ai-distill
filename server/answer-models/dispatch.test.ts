@@ -1,3 +1,6 @@
+/** 验证供应商配置解析、冻结凭证选择及 OpenRouter 请求路由。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {resolveAnswerConfig,createAnswerClient} from './dispatch';
 const router={provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'} as const;

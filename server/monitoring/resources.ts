@@ -1,5 +1,10 @@
+/**
+ * 职责：本地资源采样与建议：解析 macOS 内存和进程数据，将未知值显式表达并计算派发建议。
+ * 关键方法与用途：`parseMemoryPressure()`／`parseProcessRss()` 解析 macOS 采样；`sampleResources()` 汇总当前进程与内存；`adviseDispatch()` 计算是否暂停派发。
+ * 使用场景：由 worker monitor 定时调用；未知采样保留为 unknown，不猜成零。
+ */
 import {execFile} from 'node:child_process';
-import type {StepStatus} from '../../shared/types';
+import type {StepStatus} from '@shared/types';
 export type Reading<T> = {status:'known';value:T}|{status:'unknown'};
 const unknown = ():Reading<never>=>({status:'unknown'});
 const known = <T>(value:T):Reading<T>=>({status:'known',value});

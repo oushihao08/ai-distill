@@ -1,3 +1,4 @@
+<!-- 文件职责：保存 domestic adapters 的历史证据与检查记录；结论仅限文件注明的日期和范围。 -->
 # 国产作答模型独立模块验收
 
 2026-10-08；第四阶段②。仅新增 `server/answer-models/domestic.ts`、`domestic.test.ts` 和本说明，未接公共路由、队列或数据库。现有 Qwen 实现与共用 provider 契约保持原样。

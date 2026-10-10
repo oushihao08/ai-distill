@@ -1,3 +1,6 @@
+/** 验证 skill 候选使用固定模板与资料、保护原件并检查引用及取消边界。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,readFile,rm,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';

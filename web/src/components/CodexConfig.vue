@@ -1,3 +1,8 @@
+<!--
+职责：配置全局 Codex 凭证目录、模型和推理强度。
+关键方法与用法：`load()` 读取目录与设置，`save()` 保存选择，`test()` 探测连接；在项目列表页作为工作区级设置面板使用。
+-->
+
 <script setup lang="ts">
 import {api} from '../api/client';
 
@@ -43,7 +48,7 @@ watch(model,selected=>{
 async function load(){
  try{
   loading.value=true;error.value='';
-  const config=await api<CodexConfig>('/codex/config');
+  const config=await api<CodexConfig>('/agent/config');
   applyConfig(config);
  }catch(cause){error.value=cause instanceof Error?cause.message:'读取Codex设置失败';}
  finally{loading.value=false;}
@@ -51,7 +56,7 @@ async function load(){
 async function save(){
  try{
   busy.value=true;error.value='';probe.value=null;probeFailed.value=false;
-  const config=await api<CodexConfig>('/codex/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestBody())});
+  const config=await api<CodexConfig>('/agent/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestBody())});
   applyConfig(config);
  }catch(cause){error.value=cause instanceof Error?cause.message:'保存Codex设置失败';}
  finally{busy.value=false;}
@@ -60,9 +65,9 @@ function clearProbe(){probe.value=null;probeFailed.value=false;error.value='';}
 async function test(){
  try{
   busy.value=true;error.value='';probe.value=null;probeFailed.value=false;
-  const config=await api<CodexConfig>('/codex/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestBody())});
+  const config=await api<CodexConfig>('/agent/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(requestBody())});
   applyConfig(config);
-  probe.value=await api<CodexProbe>('/codex/test',{method:'POST'});
+  probe.value=await api<CodexProbe>('/agent/test',{method:'POST'});
  }catch(cause){probeFailed.value=true;error.value=cause instanceof Error?cause.message:'Codex连通性测试失败';}
  finally{busy.value=false;}
 }

@@ -1,3 +1,4 @@
+<!-- 文件职责：保存 resource monitor 的历史证据与检查记录；结论仅限文件注明的日期和范围。 -->
 # 第四阶段⑥资源监控独立模块
 
 2026-10-08：新增 `server/monitoring/resources.ts` 和针对性测试；未修改 worker、Codex 客户端、公共路由、数据库或调度状态。

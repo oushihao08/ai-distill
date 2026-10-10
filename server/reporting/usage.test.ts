@@ -1,3 +1,6 @@
+/** 验证 API token 费用、缓存用量、套餐排除、未知数据与多币种汇总。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {calculateApiCallCost,summarizeApiCosts,type ApiCallUsage} from './usage';
 const call=(delta:Partial<ApiCallUsage>={}):ApiCallUsage=>({call_id:'c1',billing:'api_key',provider:'qwen',model:'qwen-plus',currency:'CNY',usage:{prompt_tokens:1000,completion_tokens:500,prompt_tokens_details:{cached_tokens:200}},price:{input_per_million:2,output_per_million:8,cached_input_per_million:1,currency:'CNY'},...delta});

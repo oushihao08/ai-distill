@@ -1,15 +1,18 @@
+/** 验证返修轮次接续、题目状态变化检测、内容上限与材料返修顺序。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {runRevisionTick} from './revision-runner';
 function fixture(options:{stale?:boolean;pending?:boolean;failure?:boolean;rubric?:boolean;exhausted?:boolean;materialStage?:2|9}={}){
  const calls:{sql:string;values:any[]}[]=[];
- const chain={id:'chain',workflow_id:'workflow',input_revision:1,status:'running',content_revisions:options.exhausted?3:1,technical_retries:0,calls_reserved:1,spent_duration_ms:10,budget:{max_content_revisions:3,max_technical_retries:2,max_calls:20,max_duration_ms:10000}};
+ const chain={id:'chain',workflow_id:'workflow',status:'running',content_revisions:options.exhausted?3:1,technical_retries:0,calls_reserved:1,spent_duration_ms:10,budget:{max_content_revisions:3,max_technical_retries:2,max_calls:20,max_duration_ms:10000}};
  const round={id:'round',chain_id:'chain',round:1,stage:options.materialStage??4,status:'running',issue_kind:options.rubric?'rubric':'question'};
  const attempt={id:'author',ordinal:options.materialStage??4,status:options.pending?'running':options.failure?'failed':'succeeded',result:options.failure?{quality_check:{passed:false,checks:{material_grounding:false},issues:[{detail:'事实缺失'}]}}:{}};
  const query=async(sql:string,values:any[]=[])=>{
   calls.push({sql,values});
   if(sql.startsWith('SELECT c.*'))return {rows:[chain]};
   if(sql.includes('pg_try_advisory_xact_lock'))return {rows:[{acquired:true}]};
-  if(sql.startsWith('SELECT input_revision'))return {rows:[{input_revision:options.stale?2:1}]};
+  if(sql.startsWith('SELECT id'))return {rows:[{}]};
   if(sql.startsWith('SELECT * FROM ai_distill.revision_rounds'))return {rows:[round]};
   if(sql.startsWith('SELECT * FROM ai_distill.step_attempts WHERE revision_round_id'))return {rows:[attempt]};
   if(sql.startsWith('SELECT ordinal,status'))return {rows:[{ordinal:2,status:'succeeded'},{ordinal:9,status:'succeeded'},{ordinal:4,status:'succeeded'},{ordinal:5,status:options.rubric?'succeeded':'waiting'}]};

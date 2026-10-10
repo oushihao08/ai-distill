@@ -1,3 +1,6 @@
+/** 文件职责：在临时 PostgreSQL schema 核对项目 skill 生成队列、候选采用及冻结状态。
+ * 执行入口与用途：`bun scripts/verify-project-skill-queue.ts`；在临时 schema 注入生成器，调用 enqueue／worker／adopt 路径核对候选和冻结状态。
+ */
 import {createPool} from '../server/db';
 import {createApp} from '../server/app';
 import {adoptProjectSkill,registerProjectRules,publishProjectRules} from '../server/rules';
@@ -18,7 +21,7 @@ try{
  await testPool.query('INSERT INTO ai_distill.projects(id,name,material_root,local_skill_path) VALUES($1,$2,$3,$4)',[project,'skill fixture',join(workspace,'questions'),join(workspace,'skill')]);await testPool.query('INSERT INTO ai_distill.projects(id,name) VALUES($1,$2)',[other,'isolated other']);
  await mkdir(join(workspace,'skill'));await writeFile(join(workspace,'skill/SKILL.md'),'---\nname: imported\ndescription: imported\n---');
  const initial=await registerProjectRules(testPool,project,workspace);const baseline=await publishProjectRules(testPool,project,initial.manifest.source_digest!);
- const config={model:'gpt-6-astra',reasoning_effort:'low'},options={template};
+ const config={model:'gpt-6-luna',reasoning_effort:'low'},options={template};
  const [one,two]=await Promise.all([enqueueProjectSkill(testPool,project,config,options),enqueueProjectSkill(testPool,project,config,options)]);check('concurrent enqueues reuse one persistent project task',one.id===two.id&&one.reused!==two.reused);
  check('exactly one active project generation',(await testPool.query("SELECT id FROM ai_distill.project_skill_attempts WHERE project_id=$1 AND status='waiting'",[project])).rowCount===1);
  const app=createApp(testPool,root);check('list API returns queued attempt',(await (await app.request(`/api/projects/${project}/skill/attempts`)).json() as any[])[0].id===one.id);

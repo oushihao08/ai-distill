@@ -1,3 +1,6 @@
+/** 文件职责：对指定真实题目目录执行已接入的业务步骤并保存过程记录；会改变对应工作流状态。
+ * 执行入口与用途：`bun scripts/verify-real-question-folders.ts`；通过本地 API 轮询指定真实题目并推进已接入步骤，保存材料／步骤摘要；会改变工作流状态。
+ */
 import {readdir,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {createVisionClient} from '../server/materials/vision';
@@ -30,8 +33,8 @@ try{
     const download=await fetch(base+`/artifacts/${artifact.id}/download`);const bytes=Buffer.from(await download.arrayBuffer());
     md.push({id:artifact.id,http:download.status,bytes:bytes.length,download_sha256:createHash('sha256').update(bytes).digest('hex'),download_url:base+`/artifacts/${artifact.id}/download`,approved_for_next_step:d.data.steps[1].status==='succeeded'});
    }
-   const extraction=d.data.steps[1];const active=d.data.attempts.some((a:any)=>a.input_revision===d.data.workflow.input_revision&&['waiting','running'].includes(a.status));pending||=active;
-   const attempt=d.data.attempts.filter((a:any)=>a.ordinal===2&&a.input_revision===d.data.workflow.input_revision).at(-1);
+   const extraction=d.data.steps[1];const active=d.data.attempts.some((a:any)=>['waiting','running'].includes(a.status));pending||=active;
+   const attempt=d.data.attempts.filter((a:any)=>a.ordinal===2).at(-1);
    const row={question:name,workflow_id:w.id,attempt_id:attempt?.id,source_directory:`/Users/jack/Downloads/${name}`,project_directory:`projects/豆包高经济价值-第五期/questions/${name}`,files:d.data.materials.map((m:any)=>({name:m.original_name,sha256:m.sha256})),steps:d.data.steps.map((s:any)=>({ordinal:s.ordinal,status:s.status,implemented:s.implemented,error:s.error})),ocr_cached_pages:attempt?await checkpointCount(w.id,attempt.config):0,extracted_pages:extraction.result?.pages?.length??null,issues:extraction.result?.issues??[],markdown:md,next_step:next??null,generated_cleanup_endpoint:`DELETE /api/workflows/${w.id}/generated`,cleanup_running_guard_verified:true};
    records.push(row);const brief=JSON.stringify({question:name,stage2:extraction.status,cached:row.ocr_cached_pages,stage3:d.data.steps[2].status,md:md.length});if(previous.get(name)!==brief||Date.now()-lastLog>60000){console.log(brief);previous.set(name,brief);lastLog=Date.now();}
   }

@@ -1,3 +1,6 @@
+/** 文件职责：对齐指定历史任务的 GLM-OCR 与页级缓存，记录文本相似度；相似度不等于识别准确率。
+ * 执行入口与用途：`bun scripts/compare-glm-ocr-page-cache.ts`；读取固定历史 OCR 与逐页缓存，计算规范化文本相似度并保存 JSON；不代表准确率验收。
+ */
 import{readFile,writeFile,mkdir}from'node:fs/promises';import{join,resolve}from'node:path';import{createHash}from'node:crypto';import{createPool}from'../server/db';import{createVisionClient}from'../server/materials/vision';
 const pool=createPool(),root=resolve('.storage'),attempt='73b10d51-717c-4e1f-bfcb-d323775db1f3';
 function norm(s:string){return s.replace(/<[^>]*>/g,'').replace(/!\[[^\]]*\]\([^)]*\)/g,'').replace(/\s+/g,'').trim();}

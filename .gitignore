@@ -1,3 +1,4 @@
+# 忽略本地凭证、依赖、构建产物与运行时数据，避免进入版本管理。
 node_modules/
 dist/
 .env
@@ -13,6 +14,7 @@ projects/*/questions/**
 !projects/*/questions/.gitkeep
 projects/*/outputs/**
 !projects/*/outputs/.gitkeep
+!projects/*/outputs/README.md
 projects/*/snapshots/**
 !projects/*/snapshots/.gitkeep
 .DS_Store

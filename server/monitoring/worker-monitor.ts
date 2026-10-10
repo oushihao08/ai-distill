@@ -1,17 +1,33 @@
+/**
+ * 职责：worker 安全监控：采集任务与资源心跳、写入共享快照并据内存阈值控制新任务派发。
+ * 关键方法与用途：`createWorkerMonitor()` 管理启停、心跳和资源采样；`readWorkerMonitor()` 读取净化后的快照；`readActiveWorkflowTasks()` 查询运行中的 API／Agent 项目、题目与步骤。
+ * 使用场景：`worker.ts` 控制任务领取，`app.ts` 提供本地资源状态与步骤占用明细。
+ */
 import type {Pool} from 'pg';
 import {mkdir,readFile,writeFile,rename,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {sampleResources,adviseDispatch,type ResourceSnapshot,type ExecutorStatus,type Reading,type SafeEvent} from './resources';
+import {listAgentProcessIds} from '../agent/processes';
+import {classifyLogError,logEvent} from '../logging';
 export interface WorkerMonitorStatus {
  status:'running'|'paused'|'stopped'|'stale'|'unavailable';
  heartbeat_at:string|null;worker_pid:number|null;
  dispatch:{allowed:boolean;policy:'memory_only_unknown_allow';memory_state:'known'|'unknown';min_available_percent:number;reason:'low_available_memory'|'memory_above_threshold'|'memory_unknown'|'stopped'}|null;
  advice:ReturnType<typeof adviseDispatch>|null;snapshot:ResourceSnapshot|null;
 }
+export interface ActiveWorkflowTask {
+ channel:'agent'|'api'|'unknown';project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;
+ state:'running';started_at:string|null;attempt_id:string;
+}
+export async function readActiveWorkflowTasks(pool:Pool):Promise<ActiveWorkflowTask[]>{
+ const result=await pool.query("SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,s.name AS step_name,a.status AS state,a.started_at,CASE WHEN a.ordinal=5 THEN 'api' WHEN a.ordinal IN (4,6) THEN 'agent' WHEN a.ordinal=9 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=9 AND a.config->>'provider'='codex' THEN 'agent' ELSE 'unknown' END AS channel FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=a.ordinal WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status='running' AND a.ordinal IN (4,5,6,9) ORDER BY a.started_at,a.id LIMIT 500");
+ return result.rows.map(row=>({attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:row.state,channel:row.channel,started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
+}
 const unavailable=():WorkerMonitorStatus=>({status:'unavailable',heartbeat_at:null,worker_pid:null,dispatch:null,advice:null,snapshot:null});
 const integer=(value:unknown)=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0;
 const timestamp=(value:unknown):value is string=>typeof value==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value).toISOString()===value;
+let snapshotReadFailed=false;
 
 function projectSnapshot(raw:any):ResourceSnapshot {
  if(!raw||!timestamp(raw.sampled_at)||!Array.isArray(raw.processes)||raw.processes.length>256)throw new Error('invalid');
@@ -62,37 +78,51 @@ function projectRecord(raw:any):WorkerMonitorStatus {
  return{status:age>30000||age< -5000?'stale':raw.status,heartbeat_at:raw.heartbeat_at,worker_pid:raw.worker_pid,dispatch:{allowed:d.allowed,policy:'memory_only_unknown_allow',memory_state:d.memory_state,min_available_percent:d.min_available_percent,reason},advice,snapshot};
 }
 export async function readWorkerMonitor(root:string):Promise<WorkerMonitorStatus> {
+ let path=join(root,'.worker-monitor.json');
  try{
-  const path=join(root,'.worker-monitor.json');if((await stat(path)).size>16*1024*1024)return unavailable();
-  return projectRecord(JSON.parse(await readFile(path,'utf8')));
- }catch{return unavailable();}
+  if((await stat(path)).size>16*1024*1024)throw new Error('monitor snapshot too large');
+  const record=projectRecord(JSON.parse(await readFile(path,'utf8')));
+  if(record.status==='unavailable')throw new Error('invalid monitor snapshot');
+  if(snapshotReadFailed)logEvent('monitor.snapshot_read_recovered',{level:'info',component:'worker_monitor',operation:'read_snapshot'});
+  snapshotReadFailed=false;return record;
+ }catch(error){
+  if(error&&typeof error==='object'&&'code'in error&&(error as {code?:unknown}).code==='ENOENT')return unavailable();
+  if(!snapshotReadFailed)logEvent('monitor.snapshot_read_failed',{level:'warn',component:'worker_monitor',operation:'read_snapshot',...classifyLogError(error)});
+  snapshotReadFailed=true;return unavailable();
+ }
 }
 export function createWorkerMonitor(pool:Pool,root:string,options:{min_available_percent:number;sample_interval_ms?:number;sample?:typeof sampleResources}) {
  const threshold=options.min_available_percent,interval=options.sample_interval_ms??5000;
  if(!Number.isFinite(threshold)||threshold<0||threshold>100||!Number.isSafeInteger(interval)||interval<1)throw new Error('监控参数无效');
- let timer:ReturnType<typeof setTimeout>|undefined,inflight:Promise<void>|undefined,stopped=false,started=false,lastSample=0,record:WorkerMonitorStatus|undefined;
+ let timer:ReturnType<typeof setTimeout>|undefined,inflight:Promise<void>|undefined,stopped=false,started=false,lastSample=0,record:WorkerMonitorStatus|undefined,lastDispatchAllowed:boolean|undefined,tasksReadFailed=false,resourceSampleFailed=false,snapshotWriteFailed=false;
  const write=async()=>{
   const temporary=join(root,`.worker-monitor-${randomUUID()}.tmp`);
-  try{await mkdir(root,{recursive:true});await writeFile(temporary,JSON.stringify(record),{mode:0o600,flag:'wx'});await rename(temporary,join(root,'.worker-monitor.json'));}
-  catch{/* Safe monitoring persistence failure must not stop running tasks or erase the in-memory gate. */}
-  finally{try{await rm(temporary,{force:true});}catch{/* No private diagnostics are emitted. */}}
+ try{await mkdir(root,{recursive:true});await writeFile(temporary,JSON.stringify(record),{mode:0o600,flag:'wx'});await rename(temporary,join(root,'.worker-monitor.json'));if(snapshotWriteFailed)logEvent('monitor.snapshot_write_recovered',{level:'info',component:'worker_monitor'});snapshotWriteFailed=false;}
+  catch(error){if(!snapshotWriteFailed)logEvent('monitor.snapshot_write_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});snapshotWriteFailed=true;}
+  finally{try{await rm(temporary,{force:true});}catch(error){logEvent('monitor.temporary_cleanup_failed',{level:'warn',component:'worker_monitor',...classifyLogError(error)});}}
  };
  const update=async()=>{
   let tasks:ExecutorStatus[]|undefined;
   try{
-   const result=await pool.query(`SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.input_revision=w.input_revision AND a.status IN ('waiting','running')`);
+   const result=await pool.query("SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status IN ('waiting','running')");
    tasks=result.rows.map(row=>{
     if(row.status!=='waiting'&&row.status!=='running')throw new Error('invalid');
     const at=row.heartbeat_at??row.started_at;
     const date=at instanceof Date?at:new Date(at);
     return{state:row.status,authentication:'unknown',quota:'unknown',error:row.error_kind??'unknown',...(at&&Number.isFinite(date.getTime())?{last_event:{type:row.heartbeat_at?'heartbeat' as const:'started' as const,at:date.toISOString()}}:{})};
    });
-  }catch{tasks=undefined;}
+  }catch(error){tasks=undefined;if(!tasksReadFailed)logEvent('monitor.tasks_read_failed',{level:'warn',component:'worker_monitor',...classifyLogError(error)});tasksReadFailed=true;}
+  if(tasks&&tasksReadFailed){logEvent('monitor.tasks_read_recovered',{level:'info',component:'worker_monitor'});tasksReadFailed=false;}
   let snapshot:ResourceSnapshot;
-  try{snapshot=projectSnapshot(await (options.sample??sampleResources)({registered_pids:[],tasks}));}
-  catch{snapshot={sampled_at:new Date().toISOString(),system:{status:'unknown'},processes:[{pid:process.pid,rss_bytes:{status:'unknown'}}],tasks:{status:'unknown'}};}
+  try{snapshot=projectSnapshot(await (options.sample??sampleResources)({registered_pids:listAgentProcessIds(),tasks}));}
+  catch(error){if(!resourceSampleFailed)logEvent('monitor.resource_sample_failed',{level:'warn',component:'worker_monitor',...classifyLogError(error)});resourceSampleFailed=true;snapshot={sampled_at:new Date().toISOString(),system:{status:'unknown'},processes:[{pid:process.pid,rss_bytes:{status:'unknown'}}],tasks:{status:'unknown'}};}
+  if(!resourceSampleFailed||snapshot.system.status==='known'){if(resourceSampleFailed)logEvent('monitor.resource_sample_recovered',{level:'info',component:'worker_monitor'});resourceSampleFailed=false;}
   const low=snapshot.system.status==='known'&&snapshot.system.value.available_percent<threshold;
   record={status:stopped?'stopped':low?'paused':'running',heartbeat_at:new Date().toISOString(),worker_pid:process.pid,dispatch:{allowed:!stopped&&!low,policy:'memory_only_unknown_allow',memory_state:snapshot.system.status,min_available_percent:threshold,reason:stopped?'stopped':low?'low_available_memory':snapshot.system.status==='known'?'memory_above_threshold':'memory_unknown'},advice:adviseDispatch(snapshot,{min_available_percent:threshold}),snapshot};
+  const dispatch=record.dispatch!;
+  if(lastDispatchAllowed===undefined)logEvent('worker.dispatch.state',{level:'info',component:'worker_monitor',state:record.status,reason_code:dispatch.reason});
+  else if(lastDispatchAllowed!==dispatch.allowed)logEvent(dispatch.allowed?'worker.dispatch.resumed':'worker.dispatch.paused',{level:dispatch.allowed?'info':'warn',component:'worker_monitor',state:record.status,reason_code:dispatch.reason});
+  lastDispatchAllowed=dispatch.allowed;
   lastSample=Date.now();await write();
  };
  const refresh=async()=>{
@@ -103,6 +133,6 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
  return{
   async start(){if(started||stopped)return;started=true;await refresh();schedule();},
   async beforeDispatch(){if(stopped)return false;if(inflight||!record||Date.now()-lastSample>=interval)await refresh();return record?.dispatch?.allowed??true;},
-  async stop(){stopped=true;if(timer)clearTimeout(timer);if(inflight)await inflight;if(record){record={...record,status:'stopped',heartbeat_at:new Date().toISOString(),dispatch:record.dispatch?{...record.dispatch,allowed:false,reason:'stopped'}:null};await write();}},
+  async stop(){stopped=true;if(timer)clearTimeout(timer);if(inflight)await inflight;if(record){record={...record,status:'stopped',heartbeat_at:new Date().toISOString(),dispatch:record.dispatch?{...record.dispatch,allowed:false,reason:'stopped'}:null};logEvent('worker.dispatch.stopped',{level:'info',component:'worker_monitor',state:'stopped'});await write();}},
  };
 }

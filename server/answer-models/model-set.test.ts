@@ -1,3 +1,6 @@
+/** 验证模型集合注册身份、稳定指纹、配置快照与评分门槛持久化。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {answerModelSetDigest,validateModelSet,readProjectModelSet,saveProjectModelSet} from './model-set';
 import type {Pool} from 'pg';

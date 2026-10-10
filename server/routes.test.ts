@@ -1,9 +1,14 @@
+/** HTTP 路由契约：覆盖项目与工作流读写、步骤派发前置、入库等待、产物下载、规则绑定隐藏、错误净化及服务健康状态。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import { test,expect,afterEach } from 'bun:test';
 import type {Pool} from 'pg';
-import{mkdtemp,rm,writeFile}from'node:fs/promises';
+import{mkdir,mkdtemp,readFile,rm,writeFile}from'node:fs/promises';
 import{join}from'node:path';
 import{tmpdir}from'node:os';
 import{createApp}from'./app';
+import{createHash}from'node:crypto';
+import{redactionInputDigest}from'./materials/redaction-jobs';
 const id='11111111-1111-4111-8111-111111111111';
 const dirs:string[]=[];
 afterEach(async()=>{try{for(const dir of dirs.splice(0))await rm(dir,{recursive:true,force:true});}catch(error){throw error;}});
@@ -13,7 +18,7 @@ function setup(query:(sql:string,values?:unknown[])=>unknown|Promise<unknown>){
 }
 const empty={rows:[],rowCount:0};
 test('step-eight publication has an execution route and rejects incomplete prerequisites',async()=>{
- const app=setup(sql=>sql.startsWith('SELECT w.input_revision')?{rows:[{input_revision:1,project_id:id}],rowCount:1}:empty);
+ const app=setup(sql=>sql.startsWith('SELECT w.project_id')?{rows:[{project_id:id}],rowCount:1}:empty);
  expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST'})).status).toBe(409);
 });
 test('authored question public package can be downloaded through the artifact whitelist',async()=>{
@@ -57,15 +62,41 @@ test('downloads stream exact bytes and correctly encode source names',async()=>{
 test('missing stored files return 404 rather than an empty success',async()=>{
  const app=setup(()=>({rows:[{original_name:'a.pdf',kind:'redacted_index',storage_path:'missing-file'}],rowCount:1}));for(const path of [`/api/materials/${id}/download`,`/api/artifacts/${id}/download`])expect((await app.request(path)).status).toBe(404);
 });
+test('optional redacted DOCX export is separate from workflow steps and safely downloadable',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'redacted-docx-route-'));dirs.push(root);const materialRoot=join(root,'project','questions');await mkdir(materialRoot,{recursive:true});
+ const source=[{material_id:'33333333-3333-4333-8333-333333333333',source_sha256:'source-hash',artifact_id:'44444444-4444-4444-8444-444444444444',artifact_sha256:'extract-hash'}],markdown='【附件 1】\n\n【原附件第 1 页】\n仅含脱敏内容',sha256=createHash('sha256').update(markdown).digest('hex'),attemptId='22222222-2222-4222-8222-222222222222';
+ const attemptInput={materials:source,digest:redactionInputDigest(source)},steps=[1,9,4,10,5,6,7,8].map(ordinal=>({ordinal,status:'succeeded'})),calls:string[]=[];let attachmentsChanged=false,exported:{id:string;workflow_id:string;attempt_id:string;storage_path:string;sha256:string}|undefined;
+ const query=async(sql:string,values?:unknown[])=>{
+  calls.push(sql);
+  if(sql.includes('FROM ai_distill.workflows w JOIN ai_distill.projects p')&&sql.includes('FOR UPDATE OF w'))return{rows:[{workflow_id:id,project_id:id,title:'问题1',source_key:'题目1',material_root:materialRoot}],rowCount:1};
+  if(sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))return{rows:steps,rowCount:steps.length};
+  if(sql.includes("status IN ('waiting','running') LIMIT 1"))return{rows:[],rowCount:0};
+  if(sql.includes('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=9'))return{rows:[{status:'succeeded'}],rowCount:1};
+  if(sql.includes("ar.kind='redacted_markdown'"))return{rows:[{id:attemptId,status:'succeeded',input:attemptInput,result:{redacted_sha256:sha256},content:markdown,sha256}],rowCount:1};
+  if(sql.includes("ar.kind='private_extracted_pages'"))return{rows:attachmentsChanged?[{...source[0],source_sha256:'changed-source-hash'}]:source,rowCount:1};
+  if(sql.startsWith('SELECT count(*)::int'))return{rows:[{count:1}],rowCount:1};
+  if(sql.startsWith('SELECT kind,storage_path,sha256,content')&&sql.includes('redacted_docx'))return{rows:exported?[{kind:'redacted_docx',...exported,source_key:'题目1',material_root:materialRoot}]:[],rowCount:exported?1:0};
+  if(sql.includes("ar.kind='redacted_docx'"))return{rows:exported?[{...exported,source_key:'题目1',material_root:materialRoot}]:[],rowCount:exported?1:0};
+  if(sql.includes("kind='redacted_docx'"))return{rows:exported?[exported]:[],rowCount:exported?1:0};
+  if(sql.startsWith('INSERT INTO ai_distill.artifacts')){exported={id:String(values?.[0]),workflow_id:String(values?.[1]),attempt_id:String(values?.[2]),storage_path:String(values?.[3]),sha256:String(values?.[4])};return{rows:[],rowCount:1};}
+  return{rows:[],rowCount:1};
+ };
+ const client={query,release(){}};const app=createApp({query,connect:async()=>client}as unknown as Pool,root);
+ const response=await app.request(`/api/workflows/${id}/redacted-docx`,{method:'POST'});expect(response.status).toBe(201);expect(await response.json()).toMatchObject({artifact_id:expect.any(String),reused:false});
+ expect(exported?.storage_path).toBe('outputs/题目1/脱敏材料.docx');expect((await readFile(join(root,'project',exported!.storage_path))).readUInt32LE(0)).toBe(0x04034b50);
+ const download=await app.request(`/api/artifacts/${exported!.id}/download`);expect(download.headers.get('Content-Type')).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+ attachmentsChanged=true;expect((await app.request(`/api/artifacts/${exported!.id}/download`)).status).toBe(409);
+ expect(calls.some(sql=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts|revision_chains)/.test(sql))).toBe(false);
+});
 test('unexpected database failures keep internal details out of API responses',async()=>{
  const r=await setup(()=>{throw new Error('secret key and SQL details');}).request('/api/projects');expect(r.status).toBe(500);expect(await r.text()).not.toContain('secret');
 });
 test('extraction API rejects missing workflow and incomplete intake',async()=>{
  expect((await setup(()=>empty).request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(404);
- const app=setup(sql=>sql.startsWith('SELECT input_revision')?{rows:[{input_revision:1}],rowCount:1}:sql.startsWith('SELECT ordinal')?{rows:[{status:'failed'}],rowCount:1}:empty);expect((await app.request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(409);
+ const app=setup(sql=>sql.startsWith('SELECT id')?{rows:[{}],rowCount:1}:sql.startsWith('SELECT ordinal')?{rows:[{status:'failed'}],rowCount:1}:empty);expect((await app.request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(409);
 });
 test('step four authoring route is wired and refuses incomplete current prerequisites',async()=>{
- const calls:string[]=[];const app=setup(sql=>{calls.push(sql);return sql.startsWith('SELECT w.* FROM ai_distill.workflows')?{rows:[{id,project_id:id,input_revision:1,rule_version_id:null}],rowCount:1}:sql.startsWith('SELECT ordinal,status')?{rows:[{ordinal:1,status:'succeeded'},{ordinal:3,status:'waiting'},{ordinal:9,status:'succeeded'}],rowCount:3}:empty;});
+ const calls:string[]=[];const app=setup(sql=>{calls.push(sql);return sql.startsWith('SELECT w.* FROM ai_distill.workflows')?{rows:[{id,project_id:id,rule_version_id:null}],rowCount:1}:sql.startsWith('SELECT ordinal,status')?{rows:[{ordinal:1,status:'succeeded'},{ordinal:3,status:'waiting'},{ordinal:9,status:'succeeded'}],rowCount:3}:empty;});
  const response=await app.request(`/api/workflows/${id}/author`,{method:'POST'});
  expect(response.status).toBe(409);expect(await response.json()).toMatchObject({error:'请先冻结当前项目资料与skill版本'});expect(calls.some(sql=>sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
 });
@@ -88,15 +119,15 @@ test('rule mutation parameters are validated before touching files or database',
  expect(calls).toBe(0);
 });
 test('attempt status reports the persisted result and input version',async()=>{
- const app=setup(sql=>sql.startsWith('SELECT a.id,a.workflow_id')?{rows:[{id,workflow_id:id,ordinal:2,status:'succeeded',input_revision:1,current_input_revision:1,result:{pages:[{page:1}]},error:null}],rowCount:1}:empty);
+ const app=setup(sql=>sql.startsWith('SELECT a.id,a.workflow_id')?{rows:[{id,workflow_id:id,ordinal:2,status:'succeeded',result:{pages:[{page:1}]},error:null}],rowCount:1}:empty);
  const response=await app.request(`/api/attempts/${id}`);
  expect(response.status).toBe(200);
- expect(await response.json()).toMatchObject({id,status:'succeeded',completed:true,input_revision:1,result:{pages:[{page:1}]}});
+ expect(await response.json()).toMatchObject({id,status:'succeeded',completed:true,result:{pages:[{page:1}]}});
 });
 test('synchronous extraction waits for the same queued attempt without creating another',async()=>{
  let reads=0,inserts=0;
  const app=setup((sql)=>{
-  if(sql.startsWith('SELECT input_revision'))return{rows:[{input_revision:1}],rowCount:1};
+  if(sql.startsWith('SELECT id'))return{rows:[{}],rowCount:1};
   if(sql.startsWith('SELECT ordinal,status'))return{rows:[{status:'succeeded'}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return{rows:[{id}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.step_attempts'))inserts++;
@@ -112,7 +143,7 @@ test('synchronous timeout returns the attempt ID and leaves the queued job intac
  const calls:string[]=[];
  const app=setup(sql=>{
   calls.push(sql);
-  if(sql.startsWith('SELECT input_revision'))return{rows:[{input_revision:1}],rowCount:1};
+  if(sql.startsWith('SELECT id'))return{rows:[{}],rowCount:1};
   if(sql.startsWith('SELECT ordinal,status'))return{rows:[{status:'succeeded'}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return{rows:[{id}],rowCount:1};
   if(sql.startsWith('SELECT a.id,a.workflow_id'))return{rows:[{id,status:'waiting',result:null}],rowCount:1};
@@ -141,7 +172,7 @@ test('project batch queues each ready workflow once and isolates unready or miss
   if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id}],rowCount:1};
   if(sql.startsWith('SELECT id,project_id FROM ai_distill.workflows'))return{rows:[{id:ready,project_id:id},{id:unready,project_id:id}],rowCount:2};
   if(sql.startsWith('SELECT s.status,prev.status'))return {rows:[{status:'waiting',previous_status:values?.[0]===unready?'failed':'succeeded'}],rowCount:1};
-  if(sql.startsWith('SELECT input_revision'))return{rows:[{input_revision:1}],rowCount:1};
+  if(sql.startsWith('SELECT id'))return{rows:[{}],rowCount:1};
   if(sql.startsWith('SELECT ordinal,status FROM ai_distill.steps'))return{rows:[{ordinal:1,status:values?.[0]===unready?'failed':'succeeded'},{ordinal:2,status:'waiting'}],rowCount:2};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return{rows:[],rowCount:0};
   return{rows:[],rowCount:1};
@@ -157,7 +188,7 @@ test('project batch queues each ready workflow once and isolates unready or miss
 test('batch endpoint validates step number, workflow IDs, and batch size',async()=>{
  const app=setup(()=>empty);
  const base={method:'POST',headers:{'Content-Type':'application/json'}};
- expect((await app.request(`/api/projects/${id}/steps/7/run-batch`,{...base,body:'{}'})).status).toBe(404);
+ expect((await app.request(`/api/projects/${id}/steps/7/run-batch`,{...base,body:'{}'})).status).toBe(400);
  expect((await app.request(`/api/projects/${id}/steps/2/run-batch`,{...base,body:JSON.stringify({workflow_ids:['bad']})})).status).toBe(400);
  expect((await app.request(`/api/projects/${id}/steps/2/run-batch`,{...base,body:JSON.stringify({workflow_ids:Array.from({length:101},(_,i)=>`${String(i+1).padStart(8,'0')}-0000-4000-8000-000000000000`)})})).status).toBe(400);
 });
@@ -172,7 +203,7 @@ test('a 100-question batch queues exactly the 99 whose previous step succeeded',
   if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id}],rowCount:1};
   if(sql.startsWith('SELECT id,project_id FROM ai_distill.workflows'))return{rows:workflowIds.map(flow=>({id:flow,project_id:id})),rowCount:100};
   if(sql.startsWith('SELECT s.status,prev.status'))return{rows:[{status:'waiting',previous_status:values?.[0]===workflowIds[99]?'running':'succeeded'}],rowCount:1};
-  if(sql.startsWith('SELECT input_revision'))return{rows:[{input_revision:1}],rowCount:1};
+  if(sql.startsWith('SELECT id'))return{rows:[{}],rowCount:1};
   if(sql.startsWith('SELECT ordinal,status'))return{rows:[{ordinal:1,status:'succeeded'},{ordinal:2,status:'waiting'}],rowCount:2};
   if(sql.startsWith('INSERT INTO ai_distill.step_attempts'))inserted++;
   return{rows:[],rowCount:0};

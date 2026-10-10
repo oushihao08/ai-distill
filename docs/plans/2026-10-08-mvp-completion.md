@@ -1,3 +1,4 @@
+<!-- 文件职责：记录 2026 10 08 mvp completion 对应的目标、约束与实施计划；计划状态以正文为准。 -->
 # 完整 MVP 剩余任务执行台账
 
 用户在独立任务包状态核对后授权“去做”。范围保持完整任务表，不以已交付独立模块替代完整业务目标。依据 workflow-mvp.md、execution-review.md、answer-input-and-score-contract.md。

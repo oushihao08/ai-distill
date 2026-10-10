@@ -1,3 +1,6 @@
+/** 文件职责：采样本机内存与当前进程，保存资源监控证据；不验证完整 worker 或 Codex 生命周期。
+ * 执行入口与用途：`bun scripts/verify-resource-monitor.ts`；调用 sampleResources 读取当前进程资源，写入资源快照证据；不启动 worker。
+ */
 import {mkdir,writeFile} from 'node:fs/promises';
 import {sampleResources,adviseDispatch} from '../server/monitoring/resources';
 try{

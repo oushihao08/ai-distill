@@ -1,3 +1,6 @@
+/** 文件职责：通过本地 CLI 子进程检查隔离目录的读写边界；不以沙箱检查替代真实模型执行验收。
+ * 执行入口与用途：`bun scripts/verify-codex-isolation.ts`；启动本地 CLI 子进程验证允许／拒绝的目录读写边界，输出沙箱检查结果。
+ */
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';

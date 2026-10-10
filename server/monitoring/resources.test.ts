@@ -1,3 +1,6 @@
+/** 验证本机内存与进程采样、未知值表达、PID 白名单及派发建议。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {describe,test,expect} from 'bun:test';
 import {parseMemoryPressure,parseProcessRss,sampleResources,adviseDispatch,type CommandReader,type ResourceSnapshot} from './resources';
 const memory='The system has 1000000 (100 pages with a page size of 10000).\nSystem-wide memory free percentage: 40%\n';

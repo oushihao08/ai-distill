@@ -1,3 +1,8 @@
+/**
+ * 职责：规则脱敏辅助：合并实体及敏感格式匹配，统一替换文本并检查敏感模式残留。
+ * 关键方法与用途：`redactTexts()` 合并实体和敏感模式，对文本执行一致替换并检查残留；`sensitivePatterns` 提供规则集合。
+ * 使用场景：由材料脱敏 executor 调用；仅作为规则辅助，不替代模型上下文和人工核验。
+ */
 export const sensitivePatterns = [/(?<!\d)\d{17}[\dXx](?!\d)/g, /(?<!\d)1[3-9]\d{9}(?!\d)/g, /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, /(?<!\d)\d{16,19}(?!\d)/g];
 export function redactTexts(texts: string[], entities: string[], maskStyle: 'partial' | 'placeholder' = 'placeholder') {
  const all = texts.join('\n');

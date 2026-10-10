@@ -1,3 +1,8 @@
+/**
+ * 职责：任务状态读取与有限等待：请求等待结束不取消后台执行，终态完成与成功分开表达。
+ * 关键方法与用途：`waitDuration()` 限制 HTTP 等待时长；`waitForAttempt()` 等待持久化尝试达到终态，不取消后台任务。
+ * 使用场景：由 `app.ts` 的等待接口调用，区分终态完成与业务成功。
+ */
 import type { Pool } from 'pg';
 import { HTTPException } from 'hono/http-exception';
 
@@ -12,9 +17,7 @@ export async function waitForAttempt(pool: Pool, id: string, waitMs: number, sig
  try {
   while (true) {
    if (signal.aborted) throw new HTTPException(408,{message:'等待请求已中断，后台任务继续执行'});
-   const row=(await pool.query(`SELECT a.id,a.workflow_id,a.ordinal,a.status,a.input_revision,w.input_revision AS current_input_revision,a.result,a.error,a.started_at,a.finished_at
-    FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id
-    WHERE a.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL`,[id])).rows[0];
+   const row=(await pool.query("SELECT a.id,a.workflow_id,a.ordinal,a.status,a.result,a.error,a.started_at,a.finished_at\n    FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id\n    WHERE a.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL",[id])).rows[0];
    if (signal.aborted) throw new HTTPException(408,{message:'等待请求已中断，后台任务继续执行'});
    if (!row) throw new HTTPException(404,{message:'执行任务不存在'});
    const completed=['succeeded','failed','skipped'].includes(row.status);

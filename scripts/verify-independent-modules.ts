@@ -1,3 +1,6 @@
+/** 文件职责：在隔离数据库与合成夹具中核对达标、发布、导出、费用和模型设置的模块接线。
+ * 执行入口与用途：`bun scripts/verify-independent-modules.ts`；在隔离数据库与合成记录中调用达标、发布、导出、费用和模型设置模块并核对结果。
+ */
 import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -13,10 +16,10 @@ try{
  await pool.query("INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_key) VALUES($1,$2,$3,'verification question','verification-batch')",[workflowId,projectId,requestId]);
  await pool.query("INSERT INTO ai_distill.steps(workflow_id,ordinal,name,status,implemented) SELECT $1,n,($2::text[])[n],'waiting',true FROM generate_series(1,8) n",[workflowId,['接收材料','提取与脱敏','加载本期规则','出题与质检','模型作答','独立评分','达标或返修','发布成果与导出']]);
  const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
- const questionResult={input_revision:1,rubric:[{id:'amount',criterion:'金额正确',max_score:10}],answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},question:'根据材料金额是多少？',question_version:'qv1',rubric_version:'rv1',attachment_ids:[materialArtifact],quality_check:{passed:true,checks:{material_grounding:true,question_complete:true,rubric_consistent:true,reference_answer_complete:true,deliverables_complete:true},issues:[]}};
- const answerResult={text:'100元',answer_sha256:hash('100元'),input_digest:'a'.repeat(64),provider:'qwen',model,question_attempt_id:questionAttempt,question_version:'qv1',input_revision:1,usage:{prompt_tokens:100,completion_tokens:20}};
+ const questionResult={rubric:[{id:'amount',criterion:'金额正确',max_score:10}],answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},question:'根据材料金额是多少？',question_version:'qv1',rubric_version:'rv1',attachment_ids:[materialArtifact],quality_check:{passed:true,checks:{material_grounding:true,question_complete:true,rubric_consistent:true,reference_answer_complete:true,deliverables_complete:true},issues:[]}};
+ const answerResult={text:'100元',answer_sha256:hash('100元'),input_digest:'a'.repeat(64),provider:'qwen',model,question_attempt_id:questionAttempt,question_version:'qv1',usage:{prompt_tokens:100,completion_tokens:20}};
  const rubric=[{id:'amount',criterion:'金额正确',max_score:10}];
- const scoreBinding={question_version:'qv1',input_revision:1,rubric_version:'rv1',input_digest:'a'.repeat(64),rubric_digest:'b'.repeat(64),answer_attempt_id:answerAttempt,answer_sha256:hash('100元')};
+ const scoreBinding={question_version:'qv1',rubric_version:'rv1',input_digest:'a'.repeat(64),rubric_digest:'b'.repeat(64),answer_attempt_id:answerAttempt,answer_sha256:hash('100元')};
  const scoreResult={binding:scoreBinding,validation:{valid:true},report:{assessment_valid:true,items:[{id:'amount',score:9,reason:'与答案相符',evidence:[{source:'answer',quote:'100元'}]}],total:9,max_score:10,disputes:[]}};
  const attempts=[
   [extractAttempt,2,'succeeded',{},{},{},1],
@@ -24,7 +27,7 @@ try{
   [answerAttempt,5,'succeeded',{question_attempt_id:questionAttempt},answerResult,{provider:'qwen',model},1],
   [scoreAttempt,6,'succeeded',{context:{binding:scoreBinding,rubric}},scoreResult,{provider:'codex',model:'fixture'},1],
  ];
- for(const [id,ordinal,status,input,result,config,revision] of attempts)await pool.query('INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,config,input_revision,finished_at) VALUES($1,$2,$3,1,$4,$5,$6,$7,$8,now())',[id,workflowId,ordinal,status,JSON.stringify(input),JSON.stringify(result),JSON.stringify(config),revision]);
+ for(const [id,ordinal,status,input,result,config,revision] of attempts)await pool.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,config,finished_at) VALUES($1,$2,$3,1,$4,$5,$6,$7,now())",[id,workflowId,ordinal,status,JSON.stringify(input),JSON.stringify(result),JSON.stringify(config)]);
  await pool.query("UPDATE ai_distill.steps SET status='succeeded',implemented=true WHERE workflow_id=$1 AND ordinal IN(2,3,4,5,6)",[workflowId]);
  await pool.query('UPDATE ai_distill.steps SET result=$2 WHERE workflow_id=$1 AND ordinal=4',[workflowId,JSON.stringify(questionResult)]);
  await pool.query('UPDATE ai_distill.steps SET result=$2 WHERE workflow_id=$1 AND ordinal=5',[workflowId,JSON.stringify(answerResult)]);

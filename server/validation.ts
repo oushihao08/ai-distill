@@ -1,5 +1,10 @@
+/**
+ * 职责：接口输入边界：校验 UUID、文字、来源标识，以及支持材料的扩展名、大小和文件标识。
+ * 关键方法与用途：`uuid()`、`text()`、`sourceKey()` 和 `validateFile()` 校验 API 输入及材料扩展名、大小和标识。
+ * 使用场景：项目目录和路由入口在创建任务或接收材料前调用。
+ */
 import { HTTPException } from 'hono/http-exception';
-export const MAX_FILE = Number(process.env.PDF_MAX_SIZE_MB ?? 30) * 1024 * 1024;
+export const MAX_FILE = Number(process.env.PDF_MAX_SIZE_MB ?? 50) * 1024 * 1024;
 export const MAX_BATCH = 100 * 1024 * 1024;
 export function uuid(value: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new HTTPException(400, { message: '无效的记录ID' });

@@ -1,10 +1,13 @@
+/** 验证 Codex 模型能力选项、系统与项目默认值继承及设置持久化。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {Pool} from 'pg';
 import {readCodexModelCatalog,validateCodexModelSettings} from './models';
-import {mergeCodexDefaults,saveCodexSettings} from './system-config';
+import {mergeCodexDefaults,readCodexSettings,saveCodexSettings} from './system-config';
 
 function settingsPool(initial:{credential_home:string|null;model:string;reasoning_effort:string}){
  let row={...initial};
@@ -23,6 +26,7 @@ test('Codex model dropdown options come from the selected local model catalog',a
  try{
   await writeFile(join(home,'models_cache.json'),JSON.stringify({models:[
    {slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}],secret:'discard'},
+   {slug:'gpt-6-astra',supported_reasoning_levels:[{effort:'low'}]},
    {slug:'bad-entry',supported_reasoning_levels:'invalid'},
   ]}));
   expect(readCodexModelCatalog(home)).toEqual([{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]);
@@ -40,6 +44,12 @@ test('project Codex config overrides the system defaults without dropping step-s
  const defaults={model:'gpt-default',reasoning_effort:'medium'};
  expect(mergeCodexDefaults(undefined,defaults)).toEqual(defaults);
  expect(mergeCodexDefaults({model:'gpt-project',reasoning_effort:'high',prompt:'保留此提示词'},defaults)).toEqual({model:'gpt-project',reasoning_effort:'high',prompt:'保留此提示词'});
+ expect(mergeCodexDefaults({model:'gpt-6-astra',reasoning_effort:'ultra'},defaults)).toEqual({model:'gpt-6-luna',reasoning_effort:'max'});
+});
+
+test('legacy global Astra settings are exposed as Luna',async()=>{
+ const fixture=settingsPool({credential_home:null,model:'gpt-6-astra',reasoning_effort:'ultra'});
+ expect(await readCodexSettings(fixture.pool)).toMatchObject({model:'gpt-6-luna',reasoning_effort:'max'});
 });
 
 test('saving system Codex defaults persists model and effort while path-only updates preserve them',async()=>{

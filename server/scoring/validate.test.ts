@@ -1,13 +1,34 @@
+/** 验证评分报告的证据引用、逐项覆盖、零分理由与合计重算。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {validateScore} from './validate';
-const binding={question_version:'v1',input_revision:1,input_digest:'a'.repeat(64),rubric_version:'r1',rubric_digest:'c'.repeat(64),answer_attempt_id:'answer',answer_sha256:'b'.repeat(64)};
-const context={binding,question:'问题',materials:[{name:'附件1',text:'金额100'}],answer:'实际答案：金额100。未支付。',rubric:[{id:'one',max_score:1,criterion:'指出金额'},{id:'two',max_score:1,criterion:'指出日期'}]};
+import {extractTextScore} from './validate';
+const binding={question_version:'v1',input_digest:'a'.repeat(64),rubric_version:'r1',rubric_digest:'c'.repeat(64),answer_attempt_id:'answer',answer_sha256:'b'.repeat(64)};
+const context={binding,question:'问题',materials:[{name:'附件1',text:'金额100'}],answer:'实际答案：金额100。未支付。',rubric:[{id:'one',max_score:1,criterion:'指出金额'},{id:'two',max_score:1,criterion:'指出日期'}],project_rules:{version_id:'rules',source_digest:'d'.repeat(64),snapshot_path:'rules',files:[{path:'skill/SKILL.md',sha256:'e'.repeat(64),size_bytes:1}]}};
 const report={binding,assessment_valid:true,items:[{id:'one',score:1,reason:'金额完整',evidence:[{source:'answer',quote:'金额100'}]},{id:'two',score:0,reason:'没有日期',missing:true,evidence:[]}],total:1,max_score:2,disputes:[]};
 test('validates complete evidence-backed report and recomputes total',()=>{expect(validateScore(report,context)).toMatchObject({valid:true,total:1,max_score:2,issues:[]});});
-test.each(['question_version','input_revision','input_digest','rubric_version','rubric_digest','answer_attempt_id','answer_sha256'])('rejects mismatched %s',key=>{expect(validateScore({...report,binding:{...binding,[key]:'changed'}},context).valid).toBe(false);});
+test.each(['question_version','input_digest','rubric_version','rubric_digest','answer_attempt_id','answer_sha256'])('rejects mismatched %s',key=>{expect(validateScore({...report,binding:{...binding,[key]:'changed'}},context).valid).toBe(false);});
 test('rejects fabricated quote and missing positive evidence',()=>{expect(validateScore({...report,items:[{...report.items[0],evidence:[{source:'answer',quote:'不存在的原文'}]},report.items[1]]},context).valid).toBe(false);expect(validateScore({...report,items:[{...report.items[0],evidence:[]},report.items[1]]},context).valid).toBe(false);});
 test.each([{assessment_valid:false},{assessment_valid:undefined},{items:[report.items[0]]},{items:[report.items[0],report.items[0]]},{total:2},{max_score:20},{disputes:['rubric与材料冲突']},{items:[{...report.items[0],score:2},report.items[1]]},{items:[{...report.items[0],score:NaN},report.items[1]]}])('rejects incomplete, disputed or inconsistent score',change=>{expect(validateScore({...report,...change},context).valid).toBe(false);});
 test('zero score requires a reason plus evidence or explicit missing finding',()=>{expect(validateScore({...report,items:[report.items[0],{...report.items[1],missing:false}]},context).valid).toBe(false);expect(validateScore({...report,items:[report.items[0],{...report.items[1],reason:''}]},context).valid).toBe(false);});
 test('quote from materials cannot substitute answer evidence for positive score',()=>{expect(validateScore({...report,items:[{...report.items[0],evidence:[{source:'material',material_index:0,quote:'金额100'}]},report.items[1]]},context).valid).toBe(false);});
 test.each([null,{}, {binding,items:'bad'}, {binding,items:[],disputes:'bad'}])('malformed report returns invalid without throwing',value=>{expect(validateScore(value,context).valid).toBe(false);});
 test('positive score cannot also claim the required answer was missing',()=>{expect(validateScore({...report,items:[{...report.items[0],missing:true},report.items[1]]},context).valid).toBe(false);});
+
+test('text scoring requires one binary score row for every unit-weight rubric item',()=>{
+ const text='one：1 / 1分。证据完整。\ntwo：0 / 1分。未找到。\n最终总分：1 / 2 分';
+ expect(extractTextScore(text,context.rubric)).toMatchObject({valid:true,total:1,max_score:2,issues:[]});
+});
+
+test('text scoring rejects partial points even when the final total is extractable',()=>{
+ const text='one：0.5 / 1分。部分满足。\ntwo：0 / 1分。未找到。\n最终总分：0.5 / 2 分';
+ expect(extractTextScore(text,context.rubric)).toMatchObject({valid:false,total:null,max_score:2});
+ expect(extractTextScore(text,context.rubric).issues.join(' ')).toContain('只能为0或1');
+});
+
+test('text scoring rejects a final total when a unit-weight rubric item is missing',()=>{
+ const text='one：1 / 1分。证据完整。\n最终总分：1 / 2 分';
+ expect(extractTextScore(text,context.rubric)).toMatchObject({valid:false,total:null,max_score:2});
+ expect(extractTextScore(text,context.rubric).issues.join(' ')).toContain('条目评分缺失');
+});

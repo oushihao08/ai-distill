@@ -1,3 +1,6 @@
+/** 文件职责：配置 UnoCSS 预设、主题映射、语义快捷类和布局原子规则。
+ * 关键方法与用法：从 appTheme 构造 colors／spacing／字体等 token，tableColumnRule 将表格列 token 转为 CSS；Vite 的 UnoCSS 插件读取本文件生成样式。
+ */
 import { defineConfig, presetWind3 } from 'unocss'
 import { appTheme } from './src/theme'
 

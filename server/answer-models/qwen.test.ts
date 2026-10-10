@@ -1,3 +1,6 @@
+/** 验证 Qwen 原生与 OpenRouter 配置、密钥隔离、响应校验、用量和取消行为。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import { expect, test } from 'bun:test';
 import { inspect } from 'node:util';
 import { createQwenClient, QwenError, resolveQwenConfig, type QwenAnswerInput, type QwenErrorKind } from './qwen';

@@ -1,3 +1,6 @@
+/** 验证 worker 资源采样合并、低内存派发暂停、状态净化及停止落盘。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import type {Pool} from 'pg';
 import {mkdtemp,readFile,writeFile,rm,readdir} from 'node:fs/promises';
@@ -5,7 +8,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createWorkerMonitor,readWorkerMonitor} from './worker-monitor';
 import {sampleResources,type MonitorInput} from './resources';
-const db=(rows:any[]=[])=>({query:async(sql:string)=>{expect(sql).toContain('a.input_revision=w.input_revision');expect(sql).toContain('w.deleted_at IS NULL');expect(sql).not.toContain('a.error');return{rows};}} as unknown as Pool);
+import{configureLogger}from'../logging';
+const db=(rows:any[]=[])=>({query:async(sql:string)=>{expect(sql).toContain("a.status IN ('waiting','running')");expect(sql).toContain('w.deleted_at IS NULL');expect(sql).not.toContain('a.error');return{rows};}} as unknown as Pool);
 const sampler=(percent:number|null)=>async(input:MonitorInput)=>sampleResources(input,{platform:'darwin',read:async(file,args)=>file.endsWith('memory_pressure')?percent===null?'':`The system has 1000000 (100 pages).\nSystem-wide memory free percentage: ${percent}%\n`:`${args[1]} 100`});
 async function directory(run:(root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'distill-monitor-'));try{await run(root);}finally{await rm(root,{recursive:true,force:true});}}
 test('low memory pauses and recovery resumes using shared cached sample',async()=>directory(async root=>{
@@ -57,4 +61,16 @@ test('stale, corrupt, missing and invalid nested records are not running',async(
 test('stop waits for in-flight sample then persists stopped',async()=>directory(async root=>{
  const monitor=createWorkerMonitor(db(),root,{min_available_percent:10,sample:async input=>{await Bun.sleep(15);return sampler(30)(input);}});
  await Promise.all([monitor.start(),monitor.stop()]);expect(await monitor.beforeDispatch()).toBe(false);expect((await readWorkerMonitor(root)).status).toBe('stopped');
+}));
+test('corrupt monitor snapshots log one failure and a recovery event',async()=>directory(async root=>{
+ const logger=configureLogger({root:join(root,'log-root'),service:'api'}),monitor=createWorkerMonitor(db(),root,{min_available_percent:10,sample:sampler(30)});
+ try{
+  await monitor.start();await monitor.stop();const path=join(root,'.worker-monitor.json'),valid=await readFile(path,'utf8');
+  await writeFile(path,'private malformed snapshot');expect((await readWorkerMonitor(root)).status).toBe('unavailable');expect((await readWorkerMonitor(root)).status).toBe('unavailable');
+  await writeFile(path,valid);expect((await readWorkerMonitor(root)).status).toBe('stopped');await logger.flush();
+  const day=new Date().toISOString().slice(0,10),logDirectory=join(root,'log-root','logs',day),files=await readdir(logDirectory).catch(()=>[]),records=files.length?(await readFile(join(logDirectory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line)):[];
+  expect(records).toContainEqual(expect.objectContaining({event:'monitor.snapshot_read_failed',component:'worker_monitor',level:'warn',error_kind:'unknown'}));
+  expect(records).toContainEqual(expect.objectContaining({event:'monitor.snapshot_read_recovered',component:'worker_monitor',level:'info'}));
+  expect(records.filter(record=>record.event==='monitor.snapshot_read_failed')).toHaveLength(1);expect(JSON.stringify(records)).not.toContain('private malformed snapshot');
+ }finally{await monitor.stop();await logger.close();}
 }));

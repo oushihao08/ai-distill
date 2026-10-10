@@ -1,3 +1,6 @@
+/** 验证作答队列的输入冻结、供应商调用、结果落盘、过期隔离与取消处理。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import type {Pool} from 'pg';
 import {enqueueAnswer,runNextAnswer} from './jobs';
@@ -7,24 +10,24 @@ import {mkdtemp,writeFile,mkdir,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
-const q={question_version:'v1',input_revision:1,question:'题面',attachment_ids:['attachment'],quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}};
+const q={question_version:'v1',question:'题面',attachment_ids:['attachment'],quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}};
 const config={provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'};
-function fake(options:{reuse?:boolean;previousByModel?:Record<string,string>;revision?:number;question?:unknown;inactive?:boolean;empty?:boolean;publishError?:boolean;published?:boolean;stale?:boolean;unready?:boolean;models?:any[];summary?:any[]}={}){
+function fake(options:{reuse?:boolean;previousByModel?:Record<string,string>;question?:unknown;inactive?:boolean;empty?:boolean;publishError?:boolean;published?:boolean;stale?:boolean;unready?:boolean;models?:any[];summary?:any[]}={}){
  const calls:{sql:string;values:any[]}[]=[];
- const input={question_attempt_id:'author',question_version:'v1',input_revision:1,question:'题面',materials:[{name:'附件1',text:'脱敏'}],attachments:[{id:'attachment',sha256:hash('脱敏')}],input_digest:''};
- input.input_digest=inputDigest({question_version:input.question_version,input_revision:input.input_revision,question:input.question,materials:input.materials,attachments:input.attachments});
- const job={id:'answer',workflow_id:'workflow',input_revision:1,input,config};
+ const input={question_attempt_id:'author',question_version:'v1',question:'题面',materials:[{name:'附件1',text:'脱敏'}],attachments:[{id:'attachment',sha256:hash('脱敏')}],input_digest:''};
+ input.input_digest=inputDigest({question_version:input.question_version,question:input.question,materials:input.materials,attachments:input.attachments});
+ const job={id:'answer',workflow_id:'workflow',input,config};
  const query=async(sql:string,values:any[]=[])=>{
   calls.push({sql,values});
   if(sql.startsWith('SELECT id,input,result,status FROM ai_distill.step_attempts'))return {rowCount:options.summary?.length??0,rows:options.summary??[]};
   if(sql.startsWith('SELECT s.model_id'))return {rowCount:options.models?.length??0,rows:options.models??[]};
-  if(sql.startsWith('SELECT w.input_revision'))return {rowCount:1,rows:[{input_revision:options.revision??1,project_id:'project'}]};
+  if(sql.startsWith('SELECT w.project_id'))return {rowCount:1,rows:[{project_id:'project'}]};
   if(sql.startsWith('SELECT a.id,a.result'))return {rowCount:options.unready?0:1,rows:options.unready?[]:[{id:'author',result:options.question??q}]};
-  if(sql.startsWith('SELECT a.id,a.workflow_id,a.input_revision'))return {rowCount:options.stale?1:0,rows:options.stale?[{id:'stale',workflow_id:'workflow',input_revision:1}]:[]};
+  if(sql.startsWith('SELECT a.id,a.workflow_id,'))return {rowCount:options.stale?1:0,rows:options.stale?[{id:'stale',workflow_id:'workflow'}]:[]};
   if(sql.startsWith('SELECT ar.id,ar.kind'))return {rowCount:1,rows:[{id:'attachment',kind:'redacted_markdown',sha256:hash('脱敏'),storage_path:'source.md'}]};
   if(sql.startsWith('SELECT config'))return {rowCount:1,rows:[{config}]};
   if(sql.includes("input->>'model_set_digest' IS DISTINCT FROM"))return {rowCount:0,rows:[]};
-  if(options.models?.length&&sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("input->>'model_id' IS NOT DISTINCT FROM")){const prior=options.previousByModel?.[values[4] as string];return {rowCount:prior?1:0,rows:prior?[{id:prior}]:[]};}
+  if(options.models?.length&&sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("input->>'model_id' IS NOT DISTINCT FROM")){const prior=options.previousByModel?.[values[3] as string];return {rowCount:prior?1:0,rows:prior?[{id:prior}]:[]};}
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&!sql.includes("status='running'"))return {rowCount:options.reuse?1:0,rows:options.reuse?[{id:'existing'}]:[]};
   if(sql.startsWith('SELECT a.*'))return {rowCount:options.empty?0:1,rows:options.empty?[]:[job]};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return {rowCount:options.inactive?0:1,rows:options.inactive?[]:[{id:'answer'}]};
@@ -40,8 +43,8 @@ const answer=async()=>({text:'答案',requested_model:'qwen/qwen-plus',model:'ac
 test('enqueue pins safe input and configuration, duplicate does not create attempt',async()=>fixture(async root=>{const a=fake();await enqueueAnswer(a.pool,'workflow',root);const inserted=a.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;expect(JSON.parse(inserted.values[2])).toMatchObject({question_attempt_id:'author',question_version:'v1',materials:[{name:'附件1',text:'脱敏'}]});expect(inserted.values.join(' ')).not.toContain('OPEN_ROUTER_KEY');const b=fake({reuse:true});expect(await enqueueAnswer(b.pool,'workflow',root)).toEqual({id:'existing',reused:true});expect(b.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);}));
 test('enqueue rejects changed file bytes and rolls back',async()=>fixture(async root=>{await writeFile(join(root,'source.md'),'原始私密');const {pool,calls}=fake();await expect(enqueueAnswer(pool,'workflow',root)).rejects.toThrow();expect(calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);expect(calls.at(-1)?.sql).toBe('ROLLBACK');}));
 test('idle worker does not invoke provider',async()=>{const {pool}=fake({empty:true});let called=false;expect(await runNextAnswer(pool,'unused',async()=>{called=true;return answer();})).toBe(false);expect(called).toBe(false);});
-test('worker persists exact answer and usage with immutable config',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,answer);const saved=calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$3'));expect(saved?.values[2]).toBe('succeeded');expect(JSON.parse(saved?.values[3])).toMatchObject({text:'答案',usage:{total_tokens:8},model:'actual'});}));
-test.each([{revision:2},{inactive:true},{question:{...q,question_version:'v2'}}])('late answers cannot overwrite changed source',async options=>fixture(async root=>{const {pool,calls}=fake(options);await runNextAnswer(pool,root,answer);expect(calls.some(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'))).toBe(false);expect(calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);}));
+test('worker persists exact answer and usage with immutable config',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,answer);const saved=calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'));expect(saved?.values[1]).toBe('succeeded');expect(JSON.parse(saved?.values[2])).toMatchObject({text:'答案',usage:{total_tokens:8},model:'actual'});}));
+test.each([{inactive:true},{question:{...q,question_version:'v2'}}])('late answers cannot overwrite changed source',async options=>fixture(async root=>{const {pool,calls}=fake(options);await runNextAnswer(pool,root,answer);expect(calls.some(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'))).toBe(false);expect(calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);}));
 test('provider errors are bounded and do not publish success',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,async()=>{throw new Error('secret provider response');});expect(JSON.stringify(calls)).not.toContain('secret provider response');expect(calls.some(c=>c.values[1]==='succeeded')).toBe(false);}));
 import {QwenError} from './qwen';
 import {readAnswerAttachment} from './jobs';
@@ -58,8 +61,8 @@ import {DomesticError} from './domestic';
 test('native provider attempt uses immutable config and saves its identity',async()=>fixture(async root=>{
  const {pool,calls,job}=fake();job.config={provider:'deepseek',base_url:'https://api.deepseek.com',model:'explicit-model'} as any;
  await runNextAnswer(pool,root,async input=>{expect(input.config.provider).toBe('deepseek');return {...await answer(),requested_model:'explicit-model'};});
- const saved=calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$3'));
- expect(JSON.parse(saved?.values[3])).toMatchObject({provider:'deepseek',mode:'provider_default',text:'答案'});
+ const saved=calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'));
+ expect(JSON.parse(saved?.values[2])).toMatchObject({provider:'deepseek',mode:'provider_default',text:'答案'});
 }));
 test('native authentication failure preserves safe error and cannot publish success',async()=>fixture(async root=>{
  const {pool,calls}=fake();await runNextAnswer(pool,root,async()=>{throw new DomesticError('authentication',false,401);});
@@ -98,7 +101,7 @@ test('one model answer cannot mark the shared step complete while another requir
  const {pool,calls,job}=fake({models:[qwenRow,deepseekRow],summary:[{id:'answer',input:{model_id:qwenRow.model_id},result:{answer_sha256:hash('答案')},status:'succeeded'},{id:'pending',input:{model_id:deepseekRow.model_id},result:null,status:'waiting'}]});
  (job as any).project_id='project';(job as any).input.model_id=qwenRow.model_id;(job as any).input.model_set=set;(job as any).input.model_set_digest=digest;
  await runNextAnswer(pool,root,answer);
- const update=calls.find(call=>call.sql.startsWith('UPDATE ai_distill.steps SET status=$3,result=$4'));
+ const update=calls.find(call=>call.sql.startsWith('UPDATE ai_distill.steps SET status=$2,result=$4'));
  expect(update?.values[2]).toBe('waiting');
  expect(JSON.parse(update?.values[3]).models.map((item:any)=>item.status)).toEqual(['succeeded','waiting']);
 }));

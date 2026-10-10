@@ -8,6 +8,17 @@
     "types": [
       "vite/client"
     ],
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@shared/*": [
+        "./../shared/*"
+      ],
+      "@server/*": [
+        "./../server/*"
+      ]
+    },
     "lib": [
       "ESNext",
       "DOM",

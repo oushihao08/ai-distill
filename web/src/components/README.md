@@ -1,0 +1,40 @@
+<!-- 文件职责：说明跨页面复用的工作台组件及子目录边界。 -->
+# 业务组件
+
+组件由页面传入项目 ID、工作流 ID 或已读取的数据；操作成功以事件通知父页面刷新，部分组件独立读取自己的接口。
+
+| 组件 | 职责 |
+| --- | --- |
+| `AppShell`、`UiIcon` | 应用外壳、路由出口与固定图标 |
+| `ProjectForm` | 项目新建和编辑 |
+| `ProjectQuestionRecords` | 项目题目记录、搜索及分页清单；读取单题步骤与尝试状态，在“步骤操作”列复用详情页的入库、脱敏、出题、作答、评分、发布按钮及禁用条件；达标或返修状态可查看最近判定执行详情 |
+| `AcceptedQuestionList`、`AcceptedQuestionDetail` | 当前达标题目的搜索、异常筛选、分页、模型评分概览；详情弹窗按需展示当前题目包、答案、评分及脱敏附件全文 |
+| `CodexConfig`、`ProjectCodexSettings`、`StepSettings` | 全局、项目、步骤 Agent 配置；步骤覆盖优先于项目，项目优先于全局；达标步骤只配置返修预算 |
+| `WorkerConcurrencyConfig` | 系统级 Agent／API 并发设置；显示安全上限及当前生效值，保存后重启 API 与 worker 生效 |
+| `AnswerModelSet` | 系统模型目录、项目作答模型集合及各模型百分制分数上限；这是达标判断的唯一配置来源 |
+| `DirectoryImportForm`、`UploadForm`、`MaterialEditor` | 浏览器 PDF 导入、材料包上传和附件新增替换 |
+| `ProjectStepRecords` | 全部题目在指定步骤的状态、未进入原因、结果及产物表格弹窗 |
+| `MaterialRecordsTable` | 当前附件、全文与原 PDF 标签预览，允许在逐题步骤弹窗只读复用 |
+| `StepResultTable` | 递归展示结构化步骤结果 |
+| `StepTimeline` | 单题步骤状态及操作、下载插槽 |
+| `ModelEvaluationSummary` | 关联本轮答案与评分，按模型展示百分制分数、上限及通过状态，并展示整体达标／返修状态；弹窗按模型展示答案、按最新失败时间展示评分失败记录与文本 |
+| `RevisionHistory` | 有限返修链、恢复操作及各轮依据；明确展示参考失败轮次、逐模型得分与答案／评分引用、失败附件页码，并可查看实际送入出题 Agent 的答案与评分原文 |
+| `WorkerMonitor`、`ActiveWorkflowTasks` | WorkerMonitor 展示执行器心跳、内存与队列摘要；ActiveWorkflowTasks 按 API／Agent 展示运行中的项目、题目和步骤；由全局任务监控路由承载 |
+| [rules](rules/README.md) | 规则资料、skill 候选及冻结版本 |
+
+`ProjectStepRecords` 分组读取既有工作流详情，不派发任务；逐题详情返回的 `ready` 与 `ready_reason` 来自服务端统一就绪判断，组件不复制前置条件；活动时每五秒刷新。`MaterialRecordsTable` 的附件进度由题目步骤推导；全文通过附件接口按需读取，PDF 原件在同一弹窗的 PDF 标签中通过 Blob URL 使用浏览器内置查看器预览，并提示原件可能未脱敏，关闭弹窗后释放预览 URL。附件已标记脱敏仍可能缺少附件级脱敏正文。
+
+`AcceptedQuestionList` 只展示当前 ordinal 7 成功且判定为 accepted 的题目；模型得分、百分制、门槛和归档／导出状态来自项目详情响应。归档成功的题目从 `ProjectQuestionRecords` 移出，但仍在此列表查看。`AcceptedQuestionDetail` 延迟读取工作流详情，附件标签仅请求 `redacted_only=true` 的脱敏正文，不读取或返回原始提取文本；题面、作答和评分文本保留换行并在弹窗滚动区域显示。列表的 Excel 操作汇总全部当前有效达标题目。
+
+上传类组件当前选择器面向 PDF；后端目录同步与入库支持的其他格式不能据此前端选择器判断。组件是否有入口不等于真实模型任务已成功验收。
+
+`StepSettings.vue` 的脱敏设置可选择独立大模型 API 或本地 Agent；API 模型选项复用已部署的 `/api/answer-models` 系统目录接口，默认推荐 GLM-5.3-Flash；步骤只选择模型和可选输出参数，不重复填写供应商或 API URL。保存时冻结所选模型的非敏感配置，不经过 Agent 配置模块。`AnswerModelSet.vue` 仍管理作答模型集合，实际调用统一由后端 llm-api 执行。
+
+评分步骤设置显示并编辑实际执行的评分提示词；旧内置默认正文映射为要求逐项解释得分并引用答案原文证据的新默认，自定义提示词原样保留。从 `/api/agent/scoring-instructions` 读取的程序调用说明和隔离参数折叠显示，不再显示通用开发者指令。`ModelEvaluationSummary` 提供“查看评分原文与发送内容”，逐模型展示已保存的实际回复；旧记录没有快照时仅显示当时步骤提示词并说明缺失，不使用当前指令补作历史证据。返修轮次冻结最近最多三条未达标评测的所有模型引用，`RevisionHistory` 按返修轮次关联第 4 步尝试，显示实际送入出题 Agent 的答案和评分原文。
+
+
+### 旧版独立评分直接文本调用（历史格式）
+
+独立评分在新隔离会话中发送题面、rubric、脱敏附件、匿名完整答案和原样评分提示词；作答思路及标准答案仅保留在内部同版题目包校验上下文，不发送给评分模型，不写入供模型读取的 input.json，不追加评分开发者指令，不要求 JSON 输出。Codex 文本模式省略输出 schema，保存 result.txt；其他结构化任务保持原协议。禁用记忆、项目规则及外部工具读取。
+
+评分原文与实际发送正文保存在执行记录中，界面可查看。程序在返回后提取明确总分用于展示及达标判断；不修改模型评分。无法明确提取时，执行仍记为成功，单独标记提取失败且暂不参与达标判断。旧结构化报告继续按旧协议读取；旧记录不会用当前指令补造快照。

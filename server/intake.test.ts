@@ -1,3 +1,6 @@
+/** 材料接收状态：验证移除最后一份当前附件后入库步骤回到 waiting，且不会伪造失败尝试。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import type {Pool} from 'pg';
 import {receiveMaterials} from './intake';
@@ -10,13 +13,13 @@ test('removing the last current attachment leaves intake waiting without a faile
   calls.push(sql);
   if(sql.startsWith('SELECT id FROM ai_distill.workflows WHERE project_id'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
-  if(sql.startsWith('SELECT id,input_revision FROM ai_distill.workflows'))return{rows:[{id:workflowId,input_revision:5}],rowCount:1};
+  if(sql.startsWith('SELECT id FROM ai_distill.workflows'))return{rows:[{id:workflowId}],rowCount:1};
   if(sql.startsWith('SELECT original_name,sha256 FROM ai_distill.materials'))return{rows:[{original_name:'last.pdf',sha256:'a'.repeat(64)}],rowCount:1};
   return{rows:[],rowCount:0};
  };
  const pool={query,connect:async()=>({query,release(){}})} as unknown as Pool;
- const result=await receiveMaterials(pool,'/tmp/unused',{projectId,requestId:crypto.randomUUID(),title:'题目1',key:'题目1',workflowId,expectedRevision:5,files:[],allowEmpty:true});
- expect(result).toMatchObject({id:workflowId,updated:true,input_revision:6,empty:true});
+ const result=await receiveMaterials(pool,'/tmp/unused',{projectId,requestId:crypto.randomUUID(),title:'题目1',key:'题目1',workflowId,files:[],allowEmpty:true});
+ expect(result).toMatchObject({id:workflowId,updated:true,empty:true});
  expect(calls.some(sql=>sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
  expect(calls.some(sql=>sql.includes("SET status='waiting',result=NULL,error=NULL")&&sql.includes('ordinal=1'))).toBe(true);
  expect(calls.some(sql=>sql.includes('没有材料，请补充后重试'))).toBe(false);

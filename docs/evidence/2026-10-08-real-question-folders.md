@@ -1,3 +1,4 @@
+<!-- 文件职责：保存 2026 10 08 real question folders 的历史证据与检查记录；结论仅限文件注明的日期和范围。 -->
 # 题目1、题目3真实材料测试
 
 来源：`/Users/jack/Downloads/题目1`、`/Users/jack/Downloads/题目3`。已复制到第五期项目 `questions/` 下的同名目录，Downloads 原件保留；题目1为2份PDF共126页，题目3为2份PDF共106页。

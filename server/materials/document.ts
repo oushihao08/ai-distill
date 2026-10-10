@@ -1,3 +1,8 @@
+/**
+ * 职责：统一文档提取：本地解析 DOCX/TXT/MD，PDF 使用 GLM-OCR 或注入的提取供应商。
+ * 关键方法与用途：`extractLocalDocument()` 解析 DOCX／TXT／MD；`ProjectDocumentExtractor` 将 PDF provider 接入统一提取契约。
+ * 使用场景：`intake.ts` 和提取队列调用；PDF 文本、页码与识别问题统一返回。
+ */
 import { readFile } from 'node:fs/promises';
 import { inflateRawSync } from 'node:zlib';
 import { createHash } from 'node:crypto';

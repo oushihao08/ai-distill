@@ -1,4 +1,6 @@
-/** ai-distill design tokens. UnoCSS and Vuetify consume this single source. */
+/** 文件职责：定义供 UnoCSS 与 Vuetify 共用的颜色、布局、间距、字体和动效 token。
+ * 关键导出与用法：appTheme 提供结构化主题值，appThemeCssVariables 生成 CSS 变量；前端主题插件和原子样式配置共同读取。
+ */
 export const appTheme = {
   color: {
     primary: '#315EE8',

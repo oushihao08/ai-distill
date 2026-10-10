@@ -1,8 +1,11 @@
+/** 验证返修调用预留、真实用量记账、不确定失败保留预算及规则变更隔离。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {runRevisionCall} from './revision-calls';
 function fixture(options:{ordinary?:boolean;exhausted?:boolean;previous?:boolean;rulesChanged?:boolean}={}){
  const calls:{sql:string;values:any[]}[]=[];
- const chain={...(options.rulesChanged?{config_snapshot:{rule_version_id:'old'},current_rule_version_id:'new'}:{}),id:'chain',round_id:'round',input_revision:1,current_revision:1,status:'running',calls_reserved:options.exhausted?2:0,spent_duration_ms:'10',budget:{max_calls:2,max_duration_ms:1000}};
+ const chain={...(options.rulesChanged?{config_snapshot:{rule_version_id:'old'},current_rule_version_id:'new'}:{}),id:'chain',round_id:'round',status:'running',calls_reserved:options.exhausted?2:0,spent_duration_ms:'10',budget:{max_calls:2,max_duration_ms:1000}};
  const query=async(sql:string,values:any[]=[])=>{
   calls.push({sql,values});
   if(sql.startsWith('SELECT c.*'))return {rows:options.ordinary?[]:[chain]};
@@ -35,7 +38,7 @@ test('uncertain failed invocation retains reservation rather than refunding budg
  expect(calls.some(call=>call.sql.includes('calls_reserved=calls_reserved-'))).toBe(false);
 });
 test('ordinary manual attempts do not allocate revision budget',async()=>{
- const {pool,calls}=fixture({ordinary:true});expect(await runRevisionCall(pool,'attempt','answer',async remaining=>{expect(remaining).toBeUndefined();return {};})).toEqual({});
+ const {pool,calls}=fixture({ordinary:true});expect(await runRevisionCall(pool,'attempt','answer',async (remaining,callId)=>{expect(remaining).toBeUndefined();expect(callId).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));return {};})).toEqual({});
  expect(calls.some(call=>call.sql.startsWith('INSERT'))).toBe(false);
 });
 

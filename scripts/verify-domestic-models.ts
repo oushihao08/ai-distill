@@ -1,3 +1,6 @@
+/** 文件职责：默认只核对供应商配置；--call 指定供应商时发送一次合成请求并保存冒烟证据。
+ * 执行入口与用途：`bun scripts/verify-domestic-models.ts`；读取供应商配置并打印校验结果；传 --call 和供应商参数时发送一次合成请求。
+ */
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolveDomesticConfig,createDomesticClient,DomesticError,type DomesticConfig} from '../server/answer-models/domestic';
 // Default is configuration-only. --call <provider> sends exactly one synthetic request.

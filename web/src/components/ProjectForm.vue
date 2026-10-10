@@ -1,3 +1,8 @@
+<!--
+职责：创建或编辑项目名称、说明、材料目录和本地 skill 路径。
+关键方法与用法：`submit()` 按是否收到 `project` 选择 POST 或 PATCH；成功时通过 `created` 事件返回项目，通过 `close` 事件关闭，由项目列表页托管。
+-->
+
 <script setup lang="ts">
 import { api } from '../api/client';
 import type { Project } from '../types/api';

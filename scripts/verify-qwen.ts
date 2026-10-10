@@ -1,3 +1,6 @@
+/** 文件职责：发送一次合成文字请求验证 Qwen 接入并保存安全用量证据；不访问案件或数据库。
+ * 执行入口与用途：`bun scripts/verify-qwen.ts`；向配置的 Qwen endpoint 发送一次合成文本请求，校验答案和用量并保存安全证据。
+ */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createQwenClient, QwenError, resolveQwenConfig } from '../server/answer-models/qwen';
 

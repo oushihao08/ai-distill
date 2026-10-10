@@ -1,19 +1,24 @@
+/** HTTP 应用路由集成：覆盖 PDF 接收校验、原子清理与幂等复用、题目目录版本、Codex 设置、跨域变更拒绝及错误响应；用于核对 createApp 装配的真实 HTTP 契约。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import { test, expect, afterEach } from 'bun:test';
 import type { Pool } from 'pg';
-import { mkdtemp, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readdir,readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from './app';
+import {closeAgentConcurrencyGate,createAgentConcurrencyGate,readConcurrencySettings} from './concurrency';
 import { validateFile } from './validation';
 import { createHash } from 'node:crypto';
+import{configureLogger}from'./logging';
 const directories: string[] = [];
 afterEach(async () => { try { for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); } catch (error) { throw error; } });
-function fakePool(options: { failMaterial?: boolean; previous?: string; source?: { id: string; input_revision: number; materials: { original_name: string; sha256: string }[] } } = {}) {
+function fakePool(options: { failMaterial?: boolean; previous?: string; source?: { id: string;  materials: { original_name: string; sha256: string }[] } } = {}) {
  const calls: { sql: string; values?: unknown[] }[] = [];
  const client = { query: async (sql: string, values?: unknown[]) => {
   try {
    calls.push({ sql, values });
-   if (sql.startsWith('SELECT id,input_revision FROM ai_distill.workflows')) return { rows: options.source ? [options.source] : [], rowCount: options.source ? 1 : 0 };
+   if (sql.startsWith('SELECT id FROM ai_distill.workflows')) return { rows: options.source ? [options.source] : [], rowCount: options.source ? 1 : 0 };
    if (sql.startsWith('SELECT original_name,sha256 FROM ai_distill.materials')) return { rows: options.source?.materials ?? [], rowCount: options.source?.materials.length ?? 0 };
    if (sql.startsWith('SELECT id FROM ai_distill.workflows')) return { rows: options.previous ? [{ id: options.previous }] : [], rowCount: options.previous ? 1 : 0 };
    if (sql.startsWith('SELECT id FROM ai_distill.projects')) return { rows: [{ id: 'project' }], rowCount: 1 };
@@ -38,7 +43,27 @@ test('reject disguised non-PDF instead of publishing intake success', () => {
 });
 test('reject empty and oversized PDFs', () => {
  expect(() => validateFile(new File([], 'empty.pdf'), new Uint8Array())).toThrow('PDF标识');
- expect(() => validateFile(new File([new Uint8Array(30*1024*1024+1)], 'large.pdf'), new TextEncoder().encode('%PDF-'))).toThrow('30MB');
+ expect(() => validateFile(new File([new Uint8Array(50*1024*1024+1)], 'large.pdf'), new TextEncoder().encode('%PDF-'))).toThrow('50MB');
+});
+test('redacted-only attachment text response never includes extracted source text',async()=>{
+ const workflowId='33333333-3333-4333-8333-333333333333',materialId='44444444-4444-4444-8444-444444444444';
+ const extracted=JSON.stringify({format:'pdf',provider:'mineru',pages:[{page:1,text:'PRIVATE RAW TEXT'}]});
+ const redacted=JSON.stringify({materials:[{material_id:materialId,markdown:'已脱敏正文',pages:[{page:1,text:'已脱敏正文'}]}]});
+ const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+ const pool={query:async(sql:string)=>{
+  if(sql.includes('SELECT m.id,m.original_name,m.processing_status'))return{rows:[{id:materialId,original_name:'材料.pdf',processing_status:'redacted',sha256:hash('pdf')}]};
+  if(sql.includes("ar.kind='private_extracted_pages'"))return{rows:[{content:extracted,sha256:hash(extracted)}]};
+  if(sql.includes("idx.kind='redacted_index'"))return{rows:[{content:redacted,sha256:hash(redacted)}]};
+  throw new Error(`Unexpected query: ${sql}`);
+ }} as unknown as Pool;
+ const dir=await mkdtemp(join(tmpdir(),'ai-distill-redacted-view-'));directories.push(dir);
+ const app=createApp(pool,dir);
+ const response=await app.fetch(new Request(`http://localhost/api/workflows/${workflowId}/materials/${materialId}/extracted-text?redacted_only=true`));
+ expect(response.status).toBe(200);
+ const body=await response.json() as Record<string,unknown>;
+ expect(body).toMatchObject({redaction_status:'redacted',redacted_text:'已脱敏正文'});
+ expect(JSON.stringify(body)).not.toContain('PRIVATE RAW TEXT');
+ expect(body.pages).toBeUndefined();
 });
 test('save multiple PDFs with unique storage names and stage one successful and extraction/answer executors available', async () => {
  try {
@@ -75,18 +100,18 @@ test('identical request returns prior workflow without writing more files', asyn
 });
 test('unchanged question folder reuses its workflow across different upload requests', async () => {
  const hash = createHash('sha256').update('%PDF-1.7\nintake fixture').digest('hex');
- const { app, dir, calls } = await setup({ source: { id: projectId, input_revision: 2, materials: [{ original_name: '卷宗.pdf', sha256: hash }] } });
+ const { app, dir, calls } = await setup({ source: {id: projectId,materials: [{ original_name: '卷宗.pdf', sha256: hash }] } });
  const response = await app.fetch(upload([valid()], '题目 4'));
  expect(response.status).toBe(200);
- expect(await response.json()).toEqual({ id: projectId, reused: true, input_revision: 2 });
+ expect(await response.json()).toEqual({id: projectId,reused: true });
  expect(await readdir(dir)).toHaveLength(0);
  expect(calls.some(c => c.sql.startsWith('INSERT'))).toBe(false);
 });
 test('changed question folder keeps the workflow identity and preserves old input history', async () => {
- const { app, dir, calls } = await setup({ source: { id: projectId, input_revision: 2, materials: [{ original_name: '卷宗.pdf', sha256: 'old-hash' }] } });
+ const { app, dir, calls } = await setup({ source: {id: projectId,materials: [{ original_name: '卷宗.pdf', sha256: 'old-hash' }] } });
  const response = await app.fetch(upload([valid()], '题目 4'));
  expect(response.status).toBe(200);
- expect(await response.json()).toMatchObject({ id: projectId, updated: true, input_revision: 3 });
+ expect(await response.json()).toMatchObject({id: projectId,updated: true });
  expect(calls.some(c => c.sql.startsWith('INSERT INTO ai_distill.workflows'))).toBe(false);
  expect(calls.some(c => c.sql.startsWith('DELETE'))).toBe(false);
  expect(calls.some(c => c.sql.startsWith('UPDATE ai_distill.steps') && c.sql.includes('ordinal>1'))).toBe(true);
@@ -111,8 +136,20 @@ test('malformed ID and cross-origin mutations are rejected before DB access', as
  } catch (error) { throw error; }
 });
 
+test('results library lists only current accepted workflows with safe summary fields',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'results-library-api-'));directories.push(root);
+ const logger=configureLogger({root,service:'api'});
+ const row={workflow_id:'33333333-3333-4333-8333-333333333333',project_id:projectId,project_name:'示例项目',title:'示例题目',source_key:'题目1',created_at:'2026-10-10T00:00:00.000Z',current_question_version:'q1',current_rubric_version:'r1',acceptance_result:{decision:'accepted',model_scores:{}},answer_models:[],publication_status:'succeeded',exported:true};
+ try{
+  const pool={query:async(sql:string)=>{expect(sql).toContain("acceptance.result->>'decision'='accepted'");return{rows:[row],rowCount:1};}} as unknown as Pool;
+  const response=await createApp(pool,root).request('/api/results');
+  expect(response.status).toBe(200);expect(await response.json()).toEqual([row]);
+ }finally{await logger.close();}
+});
+
 test('Codex settings API exposes local model options and rejects unsupported reasoning effort',async()=>{
  const root=await mkdtemp(join(tmpdir(),'codex-settings-api-'));directories.push(root);
+ const logger=configureLogger({root,service:'api'});
  const previousHome=process.env.CODEX_HOME;process.env.CODEX_HOME=root;
  try{
   await Bun.write(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]}));
@@ -125,15 +162,46 @@ test('Codex settings API exposes local model options and rejects unsupported rea
   const pool={query,connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool;
   const app=createApp(pool,root);
   const loaded=await app.request('/api/codex/config');
-  expect(loaded.status).toBe(200);expect(await loaded.json()).toMatchObject({model:'gpt-test',reasoning_effort:'low',model_options:[{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]});
+  expect(loaded.status).toBe(200);expect(loaded.headers.get('X-Request-ID')).toBeTruthy();expect(await loaded.json()).toMatchObject({model:'gpt-test',reasoning_effort:'low',model_options:[{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]});
   const invalid=await app.request('/api/codex/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:null,model:'gpt-test',reasoning_effort:'max'})});
   expect(invalid.status).toBe(400);expect(config.reasoning_effort).toBe('low');
-  const saved=await app.request('/api/codex/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:null,model:'gpt-test',reasoning_effort:'high'})});
+  const saved=await app.request('/api/agent/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:null,model:'gpt-test',reasoning_effort:'high'})});
   expect(saved.status).toBe(200);expect(await saved.json()).toMatchObject({model:'gpt-test',reasoning_effort:'high'});expect(config.reasoning_effort).toBe('high');
- }finally{if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
+  await logger.flush();const day=new Date().toISOString().slice(0,10),logDirectory=join(root,'logs',day),files=await readdir(logDirectory);
+  const records=(await readFile(join(logDirectory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line)),requestId=loaded.headers.get('X-Request-ID'),savedRequestId=saved.headers.get('X-Request-ID');
+  expect(records.filter(record=>record.request_id===requestId)).toEqual(expect.arrayContaining([expect.objectContaining({event:'request.started',component:'http'}),expect.objectContaining({event:'request.finished',route:'/api/codex/config',operation:'get__api_codex_config',status_code:200})]));
+  const change=records.find(record=>record.event==='management.changed'&&record.request_id===savedRequestId);
+  expect(change).toMatchObject({operation:'agent_settings.update',state:'succeeded',changed_fields:'credential_home,model,reasoning_effort'});
+  expect(JSON.stringify(change)).not.toContain('gpt-test');
+ }finally{await logger.close();if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
+});
+test('Agent model catalog follows the configured credentials directory',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'agent-model-catalog-api-'));directories.push(root);
+ const credentialHome=await mkdtemp(join(tmpdir(),'agent-credential-home-'));directories.push(credentialHome);
+ const logger=configureLogger({root,service:'api'});const previousHome=process.env.CODEX_HOME;process.env.CODEX_HOME=root;
+ try{
+  await Bun.write(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'default-model',supported_reasoning_levels:[{effort:'low'}]}]}));
+  await Bun.write(join(credentialHome,'models_cache.json'),JSON.stringify({models:[{slug:'credential-home-model',supported_reasoning_levels:[{effort:'high'}]}]}));
+  let config:{credential_home:string|null;model:string;reasoning_effort:string}={credential_home:credentialHome,model:'credential-home-model',reasoning_effort:'high'};
+  const query=async(sql:string,values?:unknown[])=>{
+   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{...config}],rowCount:1};
+   if(sql.startsWith('INSERT INTO ai_distill.system_codex_config')){config={credential_home:values?.[0] as string|null,model:values?.[1] as string,reasoning_effort:values?.[2] as string};return{rows:[{...config}],rowCount:1};}
+   if(sql.startsWith('INSERT INTO ai_distill.project_step_configs'))return{rows:[{config:{model:'credential-home-model',reasoning_effort:'high'}}],rowCount:1};
+   throw new Error(`Unexpected query: ${sql}`);
+  };
+  const app=createApp({query,connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool,root);
+  const response=await app.request('/api/agent/config');
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({credential_home:credentialHome,model_options:[{slug:'credential-home-model',supported_reasoning_levels:[{effort:'high'}]}]});
+  const saved=await app.request('/api/agent/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:credentialHome,model:'credential-home-model',reasoning_effort:'high'})});
+  expect(saved.status).toBe(200);expect(await saved.json()).toMatchObject({model_options:[{slug:'credential-home-model'}]});
+  const step=await app.request('/api/agent/projects/11111111-1111-4111-8111-111111111111/steps/4/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'credential-home-model',reasoning_effort:'high'})});
+  expect(step.status).toBe(200);
+ }finally{await logger.close();if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
 });
 test('project Codex settings inherit system defaults and can be overridden or reset',async()=>{
  const root=await mkdtemp(join(tmpdir(),'project-codex-settings-api-'));directories.push(root);
+ const logger=configureLogger({root,service:'api'});
  const previousHome=process.env.CODEX_HOME;process.env.CODEX_HOME=root;
  try{
   await Bun.write(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'gpt-project',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]}));
@@ -148,9 +216,76 @@ test('project Codex settings inherit system defaults and can be overridden or re
   const app=createApp({query,connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool,root);
   const inherited=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/codex-settings');
   expect(inherited.status).toBe(200);expect(await inherited.json()).toEqual({model:'gpt-system',reasoning_effort:'low',source:'system'});
-  const saved=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/codex-settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-project',reasoning_effort:'high'})});
+  const saved=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/agent-settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-project',reasoning_effort:'high'})});
   expect(saved.status).toBe(200);expect(await saved.json()).toEqual({model:'gpt-project',reasoning_effort:'high',source:'project'});
-  const reset=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/codex-settings',{method:'DELETE'});
+  const reset=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/agent-settings',{method:'DELETE'});
   expect(reset.status).toBe(200);expect(await reset.json()).toEqual({model:'gpt-system',reasoning_effort:'low',source:'system'});
- }finally{if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
+  await logger.flush();const day=new Date().toISOString().slice(0,10),logDirectory=join(root,'logs',day),files=await readdir(logDirectory);
+  const records=(await readFile(join(logDirectory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+  const savedChange=records.find(record=>record.event==='management.changed'&&record.operation==='project_agent_settings.update');
+  expect(savedChange).toMatchObject({target_id:'11111111-1111-4111-8111-111111111111',changed_fields:'model,reasoning_effort',state:'succeeded'});
+  const resetChange=records.find(record=>record.event==='management.changed'&&record.operation==='project_agent_settings.reset');
+  expect(resetChange).toMatchObject({target_id:'11111111-1111-4111-8111-111111111111',changed_fields:'model,reasoning_effort',state:'succeeded'});
+  expect(JSON.stringify(records)).not.toContain('gpt-project');
+ }finally{await logger.close();if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
+});
+
+test('agent step settings endpoint exposes Codex model overrides through the Agent module',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'agent-step-settings-api-'));directories.push(root);
+ const logger=configureLogger({root,service:'api'});const previousHome=process.env.CODEX_HOME;process.env.CODEX_HOME=root;
+ try{
+  await Bun.write(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'gpt-agent',supported_reasoning_levels:[{effort:'low'}]}]}));
+  const app=createApp({query:async(sql:string)=>{
+   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-agent',reasoning_effort:'low'}],rowCount:1};
+   if(sql.startsWith('INSERT INTO ai_distill.project_step_configs'))return{rows:[{config:{model:'gpt-agent',reasoning_effort:'low'}}],rowCount:1};
+   throw new Error(`Unexpected query: ${sql}`);
+  },connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool,root);
+  const response=await app.request('/api/agent/projects/11111111-1111-4111-8111-111111111111/steps/4/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-agent',reasoning_effort:'low'})});
+  expect(response.status).toBe(200);expect(await response.json()).toEqual({config:{model:'gpt-agent',reasoning_effort:'low'}});
+  const unrelated=await app.request('/api/agent/projects/11111111-1111-4111-8111-111111111111/steps/7/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+  expect(unrelated.status).toBe(404);
+ }finally{if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;await logger.close();}
+});
+
+test('Agent connection check respects the shared concurrency limit when all slots are occupied',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'agent-concurrency-api-'));directories.push(root);
+ const logger=configureLogger({root,service:'api'});
+ const holder=createAgentConcurrencyGate(root,readConcurrencySettings().agent);
+ let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+ const occupied=Array.from({length:holder.limit},()=>holder.run(()=>held));
+ try{
+  const pool={
+   query:async(sql:string)=>{
+    if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-test',reasoning_effort:'low'}],rowCount:1};
+    throw new Error(`Unexpected query: ${sql}`);
+   },
+   connect:async()=>{throw new Error('unexpected connection')},
+  } as unknown as Pool;
+  const app=createApp(pool,root);
+  const response=await app.request('/api/agent/test',{method:'POST'});
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({error:'Agent 当前并发已满，请稍后重试'});
+ }finally{release();await Promise.all(occupied);closeAgentConcurrencyGate(root);holder.close();await logger.close();}
+});
+
+test('project batch dispatch accepts the decision step and chunks all project workflows by configuration',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'project-batch-api-'));directories.push(root);
+ const logger=configureLogger({root,service:'api'});
+ const previousChunkSize=process.env.BATCH_DISPATCH_CHUNK_SIZE;process.env.BATCH_DISPATCH_CHUNK_SIZE='2';
+ const workflowIds=['11111111-1111-4111-8111-111111111101','11111111-1111-4111-8111-111111111102','11111111-1111-4111-8111-111111111103','11111111-1111-4111-8111-111111111104','11111111-1111-4111-8111-111111111105'];
+ const stateBatches:string[][]=[];
+ try{
+  const pool={query:async(sql:string,values?:unknown[])=>{
+   if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
+   if(sql.startsWith('SELECT id,project_id FROM ai_distill.workflows WHERE project_id=$1'))return{rows:workflowIds.map(id=>({id,project_id:projectId})),rowCount:workflowIds.length};
+   if(sql.startsWith('SELECT w.id AS workflow_id')){stateBatches.push(values?.[1] as string[]);return{rows:[],rowCount:0};}
+   throw new Error(`Unexpected query: ${sql}`);
+  },connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool;
+  const app=createApp(pool,root);
+  const response=await app.request(`/api/projects/${projectId}/steps/7/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  expect(response.status).toBe(202);
+  expect((await response.json()).results).toEqual(workflowIds.map(workflow_id=>({workflow_id,status:'not_ready',reason:'此题目缺少当前步骤记录'})));
+  expect(stateBatches.map(batch=>batch.length)).toEqual([2,2,1]);
+  expect((await app.request(`/api/projects/${projectId}/steps/10/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status).toBe(400);
+ }finally{if(previousChunkSize===undefined)delete process.env.BATCH_DISPATCH_CHUNK_SIZE;else process.env.BATCH_DISPATCH_CHUNK_SIZE=previousChunkSize;await logger.close();}
 });

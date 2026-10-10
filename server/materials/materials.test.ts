@@ -1,3 +1,6 @@
+/** 验证 OCR 与实体检查配置、脱敏替换、供应商错误和页码契约。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import { test, expect, spyOn } from 'bun:test';
 import { redactTexts } from './redact';
 import { createVisionClient } from './vision';
@@ -8,7 +11,71 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import { loadExtractionConfig } from './config';
+import {redactExtractedMaterials} from './redaction';
+import {sameRedactionConfig} from './redaction-config';
 const strictConfig=()=>({...loadExtractionConfig(),continueOnError:false,entityReview:true});
+
+test('redaction settings compare effective defaults rather than JSON key order',()=>{
+ const defaults={model:'gpt-default',reasoning_effort:'medium'};
+ expect(sameRedactionConfig({provider:'codex',model:'gpt-default',reasoning_effort:'medium'},{reasoning_effort:'medium',provider:'codex',model:'gpt-default'},defaults)).toBe(true);
+ expect(sameRedactionConfig({provider:'codex',model:'gpt-default',reasoning_effort:'medium'},{provider:'codex',model:'gpt-default',reasoning_effort:'medium',prompt:'不同设置'},defaults)).toBe(false);
+});
+
+test.each([
+ ['material_count_mismatch',{materials:[]}],
+ ['page_count_mismatch',{materials:[{material_id:'material-a',pages:[]}]}],
+])('redaction validation rejects structural errors with a stable reason code for %s',async(reason_code:string,result:unknown)=>{
+ const root=await mkdtemp(join(tmpdir(),'redaction-validation-'));
+ try{
+  await expect(redactExtractedMaterials({directory:root,materials:[{material_id:'material-a',source_sha256:'sha256',pages:[{page:1,text:'private source',method:'text'}]}],prompt:'fixture',model:'fixture',reasoning_effort:'low',execute:(async (options:any)=>options.validate(result)) as any})).rejects.toMatchObject({kind:'invalid_response',reason_code});
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('API redaction batches pages and keeps empty pages in the exact output sequence',async()=>{
+ const materials=[
+  {material_id:'material-b',source_sha256:'sha-b',pages:[{page:1,text:'other attachment',method:'text' as const}]},
+  {material_id:'material-a',source_sha256:'sha-a',pages:Array.from({length:13},(_,index)=>({page:index+1,text:index===4?'':'page '+(index+1),method:'text' as const}))},
+ ];
+ const requests:any[]=[];
+ const result=await redactExtractedMaterials({directory:'unused',materials,config:{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture-model'},prompt:'Skip pages with no readable text.'},executeApi:(async(request:any,callKey:string)=>{
+  requests.push({request,callKey});
+  const input=JSON.parse(request.messages[1].content);
+  const output={materials:input.materials.map((material:any)=>({...material,pages:material.pages.map((page:any)=>({...page}))}))};
+  return{text:JSON.stringify(output),usage:{prompt_tokens:10,completion_tokens:2,total_tokens:12},duration_ms:3,completion_id:`completion-${requests.length}`,call_id:request.call_id};
+ }) as any});
+ expect(requests).toHaveLength(3);
+ expect(requests.map(({request}:any)=>JSON.parse(request.messages.at(-1).content).materials[0].pages.length)).toEqual([1,12,1]);
+ expect(requests.map(({request}:any)=>JSON.parse(request.messages.at(-1).content).materials[0].material_id)).toEqual(['material-b','material-a','material-a']);
+ expect(requests.map(({callKey}:any)=>callKey)).toEqual(['redaction-batch-1','redaction-batch-2','redaction-batch-3']);
+ expect(requests[1].request.messages[0].content).toContain('即使页面没有可转写正文，也必须保留该页并返回空字符串');
+ expect(result.materials.map(material=>material.material_id)).toEqual(['material-b','material-a']);
+ expect(result.materials[1]?.pages.map(page=>page.page)).toEqual(Array.from({length:13},(_,index)=>index+1));
+ expect(result.materials[1]?.pages[4]?.text).toBe('');
+ expect(result.usage).toEqual({prompt_tokens:30,completion_tokens:6,total_tokens:36});
+ expect(result.duration_ms).toBe(9);
+ expect(result.completion_id).toBeNull();
+ expect(result.call_ids).toEqual(requests.map(({request}:any)=>request.call_id));
+});
+
+test('API redaction retries one structurally incomplete batch and accounts for both calls',async()=>{
+ const materials=[{material_id:'material-a',source_sha256:'sha256',pages:Array.from({length:12},(_,index)=>({page:index+1,text:'page '+(index+1),method:'text' as const}))}];
+ const requests:any[]=[];
+ const result=await redactExtractedMaterials({directory:'unused',materials,config:{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture-model'},prompt:'fixture'},executeApi:(async(request:any,callKey:string)=>{
+  requests.push({request,callKey});
+  const input=JSON.parse(request.messages.at(-1).content),pages=input.materials[0].pages;
+  const output={materials:[{...input.materials[0],pages:requests.length===1?pages.slice(0,-1):pages}]};
+  return{text:JSON.stringify(output),usage:{prompt_tokens:10,completion_tokens:2,total_tokens:12},duration_ms:4,completion_id:`completion-${requests.length}`,call_id:request.call_id};
+ }) as any});
+ expect(requests).toHaveLength(2);
+ expect(requests.map(({callKey}:any)=>callKey)).toEqual(['redaction-batch-1','redaction-batch-1-retry-1']);
+ expect(requests[1].request.messages).toHaveLength(3);
+ expect(requests[1].request.messages[1].content).toContain('上一轮输出未通过');
+ expect(result.materials[0]?.pages).toHaveLength(12);
+ expect(result.usage).toEqual({prompt_tokens:20,completion_tokens:4,total_tokens:24});
+ expect(result.duration_ms).toBe(8);
+ expect(result.completion_id).toBeNull();
+ expect(result.call_ids).toEqual(requests.map(({request}:any)=>request.call_id));
+});
 
 test('JSON prompt is sent verbatim and partial masks contain no subject placeholders',async()=>{
  const config=loadExtractionConfig();

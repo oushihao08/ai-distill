@@ -1,3 +1,4 @@
+<!-- 文件职责：记录 2026 10 08 qwen main flow handoff 对应的目标、约束与实施计划；计划状态以正文为准。 -->
 # Qwen 主流程接线说明
 
 适用范围：第五步 Qwen 接线。依据：[独立接入计划](2026-10-08-qwen-independent-integration.md)。

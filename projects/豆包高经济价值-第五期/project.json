@@ -13,7 +13,7 @@
     {
       "path": "materials/材料目录与重要程度.md",
       "source": "/Users/jack/Documents/codes/lvgou/豆包高经/材料目录与重要程度.md",
-      "sha256": "a00a0fdb58f97e15ec0f9206bf15f1e476eaa6f8699c60ac3eb3f205bc98f773",
+      "sha256": "81a587e356963f060e5b2a4742d583feb313da2556c1ef9fefd8fcb95e992935",
       "source_sha256": "1825af65167ffc2d81d305f334638ed7ad2df14d14d31010c066d764fd06ab75"
     },
     {
@@ -30,24 +30,13 @@
     {
       "path": "materials/官方评分标准.md",
       "source": "/Users/jack/Documents/codes/lvgou/豆包高经/官方评分标准.md",
-      "sha256": "7e1362fab9070d1250503121bace7dbc7550e6f82e1f521a1989915adfa627cf"
-    },
-    {
-      "path": "materials/难度提升会议纪要.md",
-      "source": "/Users/jack/Documents/codes/lvgou/豆包高经/难度提升会议纪要.md",
-      "sha256": "b4c3abdaea570080152775979c41fa5af97288468cba643deb39781f78ea96ea"
+      "sha256": "91b4c5a5a9e576c8c34b9eccd02a0f742e6f7049173d0afe54f204647607df3e"
     },
     {
       "path": "materials/题目规范.md",
       "source": "/Users/jack/Documents/codes/lvgou/豆包高经/题目规范.md",
-      "sha256": "36099148c50f808553a2d4addb47ad3dd4528fe1f9e9fb2cbf99a140806a8f7e",
+      "sha256": "952f44e05ed9eaa0d53e0e140e9ff6503b5216a1447831605fe26a5c353068d2",
       "source_sha256": "e07d97cdca5e61433c2bc2ecf4138d3a75d563bb4c14e557047244bc9fe1fac7"
-    },
-    {
-      "path": "materials/优秀案例讲解会-程前AA录播纪要.md",
-      "source": "/Users/jack/Documents/codes/lvgou/豆包高经/优秀案例讲解会-程前AA录播纪要.md",
-      "sha256": "830952ff5a9c73103f671f9b8e9855d0a037d253a71d504bdb106051599a75a8",
-      "source_sha256": "5022a512bdf7a5decc26dd58911c1c4f4f2617c62c1feac67c872da541832bbe"
     },
     {
       "path": "materials/C端任务全流程操作指南.md",
@@ -58,19 +47,19 @@
   "skill_files": [
     {
       "path": "skill/SKILL.md",
-      "sha256": "15086e47925a70337642aaed1759af1d567cfc2201b0636808896378b074990a"
+      "sha256": "b87191535149d62114ee823427e1081fe3628a0415ac341d057be68dc73224d2"
     },
     {
       "path": "skill/assets/案例模板集.docx",
-      "sha256": "62a6947a6249d57726c883f23c5cbb7eda5ded5d83edb8268b832f97589a7503"
+      "sha256": "337ce9ecaaadf22d60304e6626c45d12387a174681799906fb82a5ca764b10a9"
     },
     {
       "path": "skill/assets/题目模板.docx",
-      "sha256": "faa9ea4fa42cdb16a5999b52cd2d3488baa9eab494c473e5a6fc611f920f1c34"
+      "sha256": "3c7bae85c84acea3c9a3363add77b4b4ecf06f9e0e472412ee2a18a7c3fe228a"
     },
     {
       "path": "skill/references/出题设计方法.md",
-      "sha256": "6848dbf72b5414820549377d4b839ef5cfb84264be65eaf9eb57e0191f3a0a2c"
+      "sha256": "f2e599178e431a39fc82dd0fb9f50b130efd67346822e6bf790e56793f541af2"
     },
     {
       "path": "skill/references/失败模式与自检清单.md",
@@ -78,15 +67,15 @@
     },
     {
       "path": "skill/references/评分与难度验证.md",
-      "sha256": "20c35a21bf8b2d2aa2652a7fa3f67006ded4c5945969720a2c6829c973f9dca1"
+      "sha256": "9686236b03d16be8af73bf6b0be75705098c67ac93c2bfeeeef734640499a2b9"
     },
     {
       "path": "skill/references/资料索引.md",
-      "sha256": "8723f6f4d5ed5a012aea0c416dd46b352ce1c19da3ebc7c5f763727b798f2a33"
+      "sha256": "ffaa27619fa5e15aa858cf6e53465665656b9872ac3a5a9c781909fb4c8cd965"
     },
     {
       "path": "skill/references/题目格式与交付.md",
-      "sha256": "ddc4cdbe2855ba54d1cdf740308a461342be31292f8dbeecc070122cbdc63e7c"
+      "sha256": "9be0b6a28adbe357243ffb137066a4e2376efef246f7245eb7b15a61ca94bd5e"
     }
   ],
   "assessment": {

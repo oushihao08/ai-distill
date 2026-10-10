@@ -1,3 +1,8 @@
+/**
+ * 职责：提取配置读取：从 config/extraction.json 合并并校验文本识别、实体检查和脱敏兼容参数。
+ * 关键方法与用途：`loadExtractionConfig()` 读取默认或指定 JSON、合并环境覆盖并校验识别和脱敏参数。
+ * 使用场景：PDF 处理器和视觉客户端在创建任务时加载；不在前端暴露密钥。
+ */
 import { readFileSync } from 'node:fs';
 export interface ExtractionConfig {
  maxTokens?: number;

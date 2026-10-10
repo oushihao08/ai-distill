@@ -1,3 +1,8 @@
+/**
+ * 职责：出题产物契约：校验题面、附件、rubric 和标答的结构与完整性。
+ * 关键方法与用途：`validateDraft()` 校验模型返回的题目草稿及其附件引用。
+ * 使用场景：由 `executor.ts` 与 `jobs.ts` 在出题结果写入前调用。
+ */
 export interface Draft {
  task_name:string;task_type:string;
  header:{industry_l1:string;industry_l2:string;task_form:'single_round';occupation_l1:string;occupation_l2:string};
@@ -6,11 +11,6 @@ export interface Draft {
  answer_approach:string;
  reference_answer:string;
  answer_requirements:{input_mode:'text'|'image';output_mode:'text'|'file';tools:string[]};
-}
-export const qualityChecks=['material_grounding','question_complete','rubric_consistent','reference_answer_complete','deliverables_complete'] as const;
-export interface QualityReport {
- passed:boolean;checks:Record<typeof qualityChecks[number],boolean>;
- issues:{code:string;detail:string;blocking:boolean}[];
 }
 const record=(raw:unknown):Record<string,any>=>{
  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('出题或质检结果结构无效');
@@ -22,7 +22,8 @@ export function validateDraft(raw:unknown,materials:{id:string;text:string}[]):D
  if(!materials.length||materials.length>100||materials.some(m=>!text(m.id,160)||!text(m.text,8_000_000))||new Set(materials.map(m=>m.id)).size!==materials.length)throw new Error('出题附件输入无效');
  const header=record(value.header);
  if(!text(value.task_name,500)||!text(value.task_type,500)||!text(header.industry_l1,500)||!text(header.industry_l2,500)||header.task_form!=='single_round'||!text(header.occupation_l1,500)||!text(header.occupation_l2,500)||!text(value.answer_approach,200_000))throw new Error('题目名称、表头或作答思路缺失');
- if(!text(value.question)||!text(value.reference_answer)||!Array.isArray(value.attachment_ids)||!value.attachment_ids.length||value.attachment_ids.length>100||value.attachment_ids.some((id:unknown)=>!text(id,160)||!materials.some(m=>m.id===id))||new Set(value.attachment_ids).size!==value.attachment_ids.length)throw new Error('题面、完整标答或附件引用无效');
+ if(!text(value.question)||!text(value.reference_answer))throw new Error('题面或完整标答缺失');
+ if(!Array.isArray(value.attachment_ids)||!value.attachment_ids.length||value.attachment_ids.length>100||value.attachment_ids.some((id:unknown)=>!text(id,160)||!materials.some(m=>m.id===id))||new Set(value.attachment_ids).size!==value.attachment_ids.length)throw Object.assign(new Error('题目返回的附件 ID 缺失、重复或不属于本题材料'),{reason_code:'attachment_reference_invalid'});
  if(!Array.isArray(value.rubric)||!value.rubric.length||value.rubric.length>500)throw new Error('评分标准缺失或过大');
  const rubric=value.rubric.map((rawItem:unknown)=>{
   const item=record(rawItem);
@@ -33,15 +34,4 @@ export function validateDraft(raw:unknown,materials:{id:string;text:string}[]):D
  const requirements=record(value.answer_requirements);
  if(!['text','image'].includes(requirements.input_mode)||!['text','file'].includes(requirements.output_mode)||!Array.isArray(requirements.tools)||requirements.tools.length>100||requirements.tools.some((tool:unknown)=>!text(tool,160))||new Set(requirements.tools).size!==requirements.tools.length)throw new Error('作答能力声明无效');
  return {task_name:value.task_name,task_type:value.task_type,header:{industry_l1:header.industry_l1,industry_l2:header.industry_l2,task_form:'single_round',occupation_l1:header.occupation_l1,occupation_l2:header.occupation_l2},question:value.question,attachment_ids:[...value.attachment_ids],rubric,answer_approach:value.answer_approach,reference_answer:value.reference_answer,answer_requirements:{input_mode:requirements.input_mode,output_mode:requirements.output_mode,tools:[...requirements.tools]}};
-}
-export function validateQuality(raw:unknown):{valid:boolean;report:QualityReport}{
- const value=record(raw),checks=record(value.checks);
- if(typeof value.passed!=='boolean'||qualityChecks.some(key=>typeof checks[key]!=='boolean')||!Array.isArray(value.issues)||value.issues.length>500)throw new Error('独立质检结果无效');
- const issues=value.issues.map((rawIssue:unknown)=>{
-  const issue=record(rawIssue);
-  if(!text(issue.code,160)||!text(issue.detail)||typeof issue.blocking!=='boolean')throw new Error('独立质检问题无效');
-  return {code:issue.code as string,detail:issue.detail as string,blocking:issue.blocking as boolean};
- });
- const report:QualityReport={passed:value.passed,checks:Object.fromEntries(qualityChecks.map(key=>[key,checks[key]])) as QualityReport['checks'],issues};
- return {valid:report.passed&&qualityChecks.every(key=>report.checks[key])&&!issues.some((issue:{blocking:boolean})=>issue.blocking),report};
 }

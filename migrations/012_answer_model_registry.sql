@@ -1,3 +1,4 @@
+-- 文件职责：建立系统作答模型目录及项目模型集合、顺序与最低分关联。
 CREATE TABLE ai_distill.system_answer_models (
  id uuid PRIMARY KEY,
  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 80),

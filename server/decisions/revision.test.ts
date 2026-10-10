@@ -1,3 +1,6 @@
+/** 验证返修纯策略对技术重试、内容返修、认证额度问题和预算耗尽的处理。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {decideRevision} from './revision';
 test('transient retries require explicit limit and stop at boundary',()=>{expect(decideRevision('service_transient',{}).action).toBe('wait');expect(decideRevision('service_transient',{max_technical_retries:2,technical_retries:1})).toMatchObject({action:'retry',technical_retries:2});expect(decideRevision('service_transient',{max_technical_retries:2,technical_retries:2}).action).toBe('isolate');});

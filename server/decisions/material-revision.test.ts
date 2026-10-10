@@ -1,9 +1,12 @@
+/** 验证材料返修仅处理有来源证据的原件，并在证据缺失时停止派发。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {enqueueMaterialRevision} from './material-revision';
 function fixture(missing=false){
  const calls:{sql:string;values:any[]}[]=[];
- const source={id:'source',ordinal:2,input_revision:1,config:{ocr_version:'glm-ocr-layout-v1',model:'glm-ocr'},result:{materials:[{material_id:'pdf',pages:1}],pages:[{material_id:'pdf',page:1}],issues:[{material_id:'pdf',page:1,kind:'empty_page'}]}};
- const query=async(sql:string,values:any[]=[])=>{calls.push({sql,values});if(sql.startsWith('SELECT input_revision'))return{rows:[{input_revision:1}]};if(sql.startsWith('SELECT c.config_snapshot'))return{rows:[{config_snapshot:{configs:{}}}]};if(sql.startsWith('SELECT a.*'))return{rows:[source]};if(sql.startsWith('SELECT id FROM ai_distill.materials'))return{rows:missing?[]:[{id:'pdf'}]};if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return{rows:[]};if(sql.startsWith('SELECT r.id'))return{rows:[{id:'round'}]};return{rows:[],rowCount:1};};
+ const source={id:'source',ordinal:2,config:{ocr_version:'glm-ocr-layout-v1',model:'glm-ocr'},result:{materials:[{material_id:'pdf',pages:1}],pages:[{material_id:'pdf',page:1}],issues:[{material_id:'pdf',page:1,kind:'empty_page'}]}};
+ const query=async(sql:string,values:any[]=[])=>{calls.push({sql,values});if(sql.startsWith('SELECT id'))return{rows:[{}]};if(sql.startsWith('SELECT c.config_snapshot'))return{rows:[{config_snapshot:{configs:{}}}]};if(sql.startsWith('SELECT a.*'))return{rows:[source]};if(sql.startsWith('SELECT id FROM ai_distill.materials'))return{rows:missing?[]:[{id:'pdf'}]};if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return{rows:[]};if(sql.startsWith('SELECT r.id'))return{rows:[{id:'round'}]};return{rows:[],rowCount:1};};
  return{pool:{connect:async()=>({query,release(){}})} as any,calls};
 }
 test('material repair queues only evidenced originals with source OCR settings and a bound round',async()=>{

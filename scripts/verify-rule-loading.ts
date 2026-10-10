@@ -1,3 +1,6 @@
+/** 文件职责：在临时 PostgreSQL schema 核对规则快照绑定、重用和篡改拒绝，不调用模型。
+ * 执行入口与用途：`bun scripts/verify-rule-loading.ts`；经临时 schema 与 HTTP app 调用规则注册、发布、绑定和重用接口，验证快照篡改拒绝。
+ */
 import {mkdtemp,mkdir,writeFile,rm,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -25,7 +28,7 @@ try{
  check('workflow binds the published version',(await testPool.query('SELECT rule_version_id FROM ai_distill.workflows WHERE id=$1',[ids[0]])).rows[0].rule_version_id===v1.id);
  await writeFile(join(root,'materials','rules.md'),'new synthetic rules');await request(`/projects/${project}/rules/register`,{workspace_path:root});await testPool.query("UPDATE ai_distill.steps SET status='succeeded' WHERE workflow_id=$1 AND ordinal=2",[ids[1]]);
  check('new draft blocks first-time binding',(await request(`/workflows/${ids[1]}/load-rules`)).status===409);
- await testPool.query('UPDATE ai_distill.workflows SET input_revision=2 WHERE id=$1',[ids[0]]);await testPool.query("UPDATE ai_distill.steps SET status='waiting' WHERE workflow_id=$1 AND ordinal=3",[ids[0]]);
+ await testPool.query("UPDATE ai_distill.steps SET status='waiting' WHERE workflow_id=$1 AND ordinal=3",[ids[0]]);
  response=await request(`/workflows/${ids[0]}/load-rules`);check('material revision retains originally bound rules',response.status===200&&(await testPool.query('SELECT result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=3',[ids[0]])).rows[0].result.rule_version_id===v1.id);
  await writeFile(join(v1.manifest.snapshot_path,'skill','SKILL.md'),'tampered');check('tampered snapshot prevents reuse',(await request(`/workflows/${ids[0]}/load-rules`)).status===409);
 }catch(error){console.error(error instanceof Error&&checks.some(c=>c.name===error.message)?error.message:'rule loading failed; private details omitted');process.exitCode=1;}

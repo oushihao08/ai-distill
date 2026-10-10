@@ -1,3 +1,4 @@
+-- 文件职责：建立 ai_distill 初始项目、规则、工作流、材料、步骤、尝试和产物表。
 CREATE SCHEMA IF NOT EXISTS ai_distill;
 CREATE TABLE ai_distill.projects (
  id uuid PRIMARY KEY, name text NOT NULL CHECK (length(name) BETWEEN 1 AND 120), description text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now()

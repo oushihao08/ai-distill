@@ -1,3 +1,6 @@
+/** 提取文本 API：验证路由只从当前材料的脱敏索引返回文本，并保持响应字段与访问边界；不允许原文替代脱敏结果。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import { test, expect } from 'bun:test';
 import type { Pool } from 'pg';
 import { createHash } from 'node:crypto';
@@ -19,7 +22,7 @@ test('extracted-text API returns the current material redacted from redacted_ind
   query: async (sql: string, values?: unknown[]) => {
    queries.push({ sql, values });
    if (sql.includes('FROM ai_distill.workflows w JOIN ai_distill.projects')) {
-    return { rows: [{ id: materialId, original_name: '材料.txt', processing_status: 'redacted', sha256: 'a'.repeat(64), input_revision: 3 }], rowCount: 1 };
+    return { rows: [{id: materialId,original_name: '材料.txt',processing_status: 'redacted',sha256: 'a'.repeat(64) }], rowCount: 1 };
    }
    if (sql.includes("ar.kind='private_extracted_pages'")) {
     return { rows: [{ content: rawContent, storage_path: 'unused.json', sha256: sha256(rawContent) }], rowCount: 1 };

@@ -1,8 +1,12 @@
+/** 规则文件安全边界：验证完整 skill 清单、引用和路径检查、冻结快照字节／指纹、JSONB 顺序稳定性，以及按预期指纹编辑材料并拒绝改写 skill。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect,afterEach} from 'bun:test';
-import {mkdtemp,mkdir,writeFile,readFile,rm,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm,symlink,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot,changeRuleFile} from './rule-files';
+import {scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot,changeRuleFile,readRuleFile} from './rule-files';
+import {configureLogger} from './logging';
 const roots:string[]=[];
 afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 async function fixture(){
@@ -53,6 +57,16 @@ test('file replacement requires the visible fingerprint and cannot overwrite a n
  await changeRuleFile(root,file.path,new TextEncoder().encode('第一次修改'),file.sha256);
  await expect(changeRuleFile(root,file.path,new TextEncoder().encode('旧页面修改'),file.sha256)).rejects.toThrow('已变化');
  expect(await readFile(join(root,file.path),'utf8')).toBe('第一次修改');
+});
+test('rule file read failures emit a safe file boundary event',async()=>{
+ const {root}=await fixture(),logger=configureLogger({root,service:'api'});
+ try{
+  await expect(readRuleFile(root,'materials/missing.md')).rejects.toThrow('不存在');await logger.flush();
+  const directory=join(root,'logs',new Date().toISOString().slice(0,10)),files=await readdir(directory);
+  const records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+  expect(records.map(record=>record.event)).toContain('file.read.failed');
+  expect(records.find(record=>record.event==='file.read.failed')).toMatchObject({component:'rules',file_kind:'project_rule_file'});
+ }finally{await logger.close();}
 });
 test('material add/delete is explicit and cannot edit the skill or traverse directories',async()=>{
  const {root,skill}=await fixture();await changeRuleFile(root,'materials/新增.md',new TextEncoder().encode('新增资料'),null);

@@ -1,3 +1,8 @@
+/**
+ * 职责：页级 PDF 工具：封装 Poppler 命令、文字与 OCR 提取、页级并发及指纹缓存。
+ * 关键方法与用途：`command()` 安全调用 Poppler 工具；`extractPdf()` 按页执行文字／OCR 提取、并发控制和指纹缓存。
+ * 使用场景：材料处理与文档抽取器调用；返回页序和可追溯检查点。
+ */
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import {currentTaskSignal} from '../task-signal';

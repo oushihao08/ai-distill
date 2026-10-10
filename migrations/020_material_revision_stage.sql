@@ -1,3 +1,4 @@
+-- 文件职责：兼容历史返修表的 stage 字段，并扩展材料返修阶段约束。
 -- Some existing databases were created before revision_rounds.stage was added
 -- to migration 015. Keep this migration compatible with both schema histories.
 ALTER TABLE ai_distill.revision_rounds ADD COLUMN IF NOT EXISTS stage integer;

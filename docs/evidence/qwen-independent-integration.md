@@ -1,3 +1,4 @@
+<!-- 文件职责：保存 qwen independent integration 的历史证据与检查记录；结论仅限文件注明的日期和范围。 -->
 # Qwen 独立接入验收记录
 
 日期：2026-10-08（北京时间）。范围：[独立接入计划](../plans/2026-10-08-qwen-independent-integration.md)。

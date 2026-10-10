@@ -1,3 +1,4 @@
+<!-- 文件职责：保存 2026 10 08 ocr diagnosis 的历史证据与检查记录；结论仅限文件注明的日期和范围。 -->
 # 智谱 OCR 失败复核
 
 按用户提供的 chat/completions 示例，终端 curl 实测指定 568 PDF 第 26 页，使用图片 Base64 Data URL、用户原样提示词、thinking.type=enabled。凭证从本地环境读取，临时图片及响应原文均已清理。

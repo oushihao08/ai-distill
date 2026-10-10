@@ -1,3 +1,6 @@
+/** 文件职责：在临时 PostgreSQL schema 验证作答与评分队列；--real-score 可调用真实 Codex 评分。
+ * 执行入口与用途：`bun scripts/verify-answer-flow.ts`；建立临时 schema 和合成题目，驱动作答／评分队列并输出断言；--real-score 才调用真实 Codex。
+ */
 import {createPool} from '../server/db';
 import {createApp} from '../server/app';
 import {enqueueScore,runNextScore} from '../server/scoring/jobs';
@@ -22,10 +25,10 @@ try{
  await testPool.query('INSERT INTO ai_distill.workflows(id,project_id,request_id,title) VALUES($1,$2,$3,$4)',[workflow,project,crypto.randomUUID(),'fixture']);
  await testPool.query("INSERT INTO ai_distill.steps(workflow_id,ordinal,name,status,implemented) SELECT $1,n,'fixture',CASE WHEN n<=4 THEN 'succeeded' ELSE 'waiting' END,n=5 FROM generate_series(1,8) n",[workflow]);
  await writeFile(join(root,'redacted.md'),'甲公司欠款100元');
- await testPool.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input_revision) VALUES($1,$2,2,1,'succeeded',1)",[extract,workflow]);
+ await testPool.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status) VALUES($1,$2,2,1,'succeeded')",[extract,workflow]);
  await testPool.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)',[attachment,workflow,extract,'redacted_markdown','redacted.md',hash('甲公司欠款100元'),Buffer.byteLength('甲公司欠款100元')]);
- const question={question_version:'v1',input_revision:1,question:'应付多少？',attachment_ids:[attachment],quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:'r1',rubric:[{id:'amount',criterion:'回答100元',max_score:1}],reference_answer:'不得发送的标答'};
- await testPool.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input_revision,result) VALUES($1,$2,4,1,'succeeded',1,$3)",[author,workflow,JSON.stringify(question)]);
+ const question={question_version:'v1',question:'应付多少？',attachment_ids:[attachment],quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:'r1',rubric:[{id:'amount',criterion:'回答100元',max_score:1}],reference_answer:'不得发送的标答'};
+ await testPool.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,result) VALUES($1,$2,4,1,'succeeded',$3)",[author,workflow,JSON.stringify(question)]);
  const app=createApp(testPool,root);
  const put=await app.request(`/api/projects/${project}/steps/5/config`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'})});
  check('step 5 configuration saved via API',put.status===200);
@@ -37,12 +40,12 @@ try{
  check('answer and usage persisted',row.status==='succeeded'&&row.result.text==='应付100元。'&&row.result.usage.total_tokens===10);
  const artifacts=(await testPool.query("SELECT id,storage_path FROM ai_distill.artifacts WHERE attempt_id=$1 AND kind='model_answer'",[first.id])).rows;
  check('download returns saved answer',artifacts.length===1&&(await (await app.request(`/api/artifacts/${artifacts[0].id}/download`)).text())==='应付100元。');
- const binding={question_version:'v1',input_revision:1,input_digest:row.input.input_digest,rubric_version:'r1',rubric_digest:hash(JSON.stringify(question.rubric)),answer_attempt_id:first.id,answer_sha256:row.result.answer_sha256};
+ const binding={question_version:'v1',input_digest:row.input.input_digest,rubric_version:'r1',rubric_digest:hash(JSON.stringify(question.rubric)),answer_attempt_id:first.id,answer_sha256:row.result.answer_sha256};
  const score={binding,assessment_valid:true,items:[{id:'amount',score:1,reason:'金额正确',evidence:[{source:'answer',quote:'100元'}]}],total:1,max_score:1,disputes:[]};
  const scoreResponse=await app.request(`/api/workflows/${workflow}/answers/${first.id}/validate-score`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(score)});
  check('score checks bind persisted answer and rubric',scoreResponse.status===200&&(await scoreResponse.json() as any).valid===true);
  const bad=await app.request(`/api/workflows/${workflow}/answers/${first.id}/validate-score`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...score,total:0})});check('incorrect score total is rejected',(await bad.json() as any).valid===false);
- const gradeConfig=await app.request(`/api/projects/${project}/steps/6/config`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-6-astra',reasoning_effort:'low'})});
+ const gradeConfig=await app.request(`/api/projects/${project}/steps/6/config`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'gpt-6-luna',reasoning_effort:'low'})});
  check('stage six explicit Codex config saved',gradeConfig.status===200);
  const scoreEnqueue=await app.request(`/api/workflows/${workflow}/score`,{method:'POST'});
  const gradeAttempt=await scoreEnqueue.json() as any;

@@ -1,3 +1,6 @@
+/** 文件职责：使用 Flash max 页级识别处理指定真实题目 PDF，复用检查点并保存私有文本及处理记录。
+ * 执行入口与用途：`bun scripts/run-flash-max-question-pdfs.ts`；逐份扫描指定题目 PDF，调用页级识别、复用检查点并私有保存文本和处理记录。
+ */
 import{readdir,mkdir,writeFile,chmod,stat}from'node:fs/promises';
 import{join,resolve}from'node:path';
 import{createHash}from'node:crypto';

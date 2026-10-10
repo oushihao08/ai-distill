@@ -1,3 +1,4 @@
+-- 文件职责：建立返修链、轮次、外部调用预留账本及尝试绑定。
 CREATE TABLE ai_distill.revision_chains (
  id uuid PRIMARY KEY,
  workflow_id uuid NOT NULL REFERENCES ai_distill.workflows(id),

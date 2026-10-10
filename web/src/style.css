@@ -1,3 +1,4 @@
+/** 提供基于主题变量的全局重置、排版、键盘焦点及减少动画适配。 */
 :root { font-family: var(--theme-font-family); color: var(--app-ink); background: var(--app-background); line-height: var(--theme-line-height-normal); }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: var(--theme-min-viewport); }

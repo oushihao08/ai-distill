@@ -1,3 +1,8 @@
+<!--
+职责：把用户选择的项目目录按题目子目录分组并批量上传 PDF。
+关键方法与用法：`selectDirectory()` 建立题目分组，`importFolders()` 并发上传并逐题更新状态；接收 `projectId`／`projectName`，通过 `imported`／`close` 通知项目详情页。
+-->
+
 <script setup lang="ts">
 import { api } from '../api/client';
 import { fileSize } from '../utils/format';
@@ -59,7 +64,7 @@ async function importFolders() {
 <template>
  <Column class="surface-card p-24" :gap="16">
   <Row x="between"><h2 class="section-title">按题目目录导入</h2><v-btn icon="$close" variant="text" aria-label="关闭目录导入" :disabled="busy" @click="emit('close')" /></Row>
-  <p class="text-sm text-muted">选择项目目录，每个直接子目录建立一条工作流，目录内的 PDF 归入同一题目。再次导入时比较文件指纹；未变化则复用，变化则更新材料版本。</p>
+  <p class="text-sm text-muted">选择项目目录，每个直接子目录建立一条工作流，目录内的 PDF 归入同一题目。再次导入时比较文件指纹；未变化则复用，变化则更新附件并重新处理。</p>
   <input ref="picker" type="file" webkitdirectory multiple class="hidden" :disabled="busy" @change="selectDirectory" />
   <Row wrap :gap="8"><v-btn color="secondary" :disabled="busy" @click="picker?.click()">选择项目目录</v-btn><span class="text-sm text-muted">{{ folders.length }} 个题目目录 · 已完成 {{ finished }}</span></Row>
   <v-alert v-if="ignored || rootPdfCount" type="info" density="compact">已忽略 {{ ignored }} 个非 PDF 文件。{{ rootPdfCount ? `项目根目录另有 ${rootPdfCount} 份 PDF，请先放入对应题目子目录再导入。` : '' }}</v-alert>

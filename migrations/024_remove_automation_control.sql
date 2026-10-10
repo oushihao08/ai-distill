@@ -1,3 +1,4 @@
+-- 文件职责：撤除旧自动运行控制表、函数和暂停字段；执行会删除对应控制数据。
 DROP FUNCTION IF EXISTS ai_distill.dispatch_allowed(uuid, text);
 DROP TABLE IF EXISTS ai_distill.automation_members;
 DROP TABLE IF EXISTS ai_distill.automation_batches;

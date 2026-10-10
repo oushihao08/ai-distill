@@ -1,5 +1,10 @@
+<!--
+职责：提供工作台固定名称集合对应的轻量 SVG 图标。
+关键方法与用法：按 `name` 选择内置路径，不请求外部图标包；导航、按钮和状态控件通过组件属性复用。
+-->
+
 <script setup lang="ts">
-const props = defineProps<{ name: 'grid' | 'plus' | 'file' | 'activity' | 'refresh' | 'arrow' | 'search' | 'check' | 'layers' | 'clock' }>();
+const props = defineProps<{ name: 'grid' | 'plus' | 'file' | 'activity' | 'refresh' | 'arrow' | 'search' | 'check' | 'layers' | 'clock' | 'settings' }>();
 const paths = {
  grid: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
  plus: 'M12 5v14 M5 12h14',
@@ -11,6 +16,7 @@ const paths = {
  check: 'M5 12l4 4L19 6',
  layers: 'M12 3 2 8l10 5 10-5-10-5 M2 12l10 5 10-5 M2 16l10 5 10-5',
  clock: 'M12 8v4l3 2 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
+ settings: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.7 2.94-.08-.03a1.7 1.7 0 0 0-1.84.33l-.06.06h-3.4l-.03-.08a1.7 1.7 0 0 0-1.36-1.2 1.7 1.7 0 0 0-1.42.56l-.06.06-2.94-1.7.03-.08a1.7 1.7 0 0 0-.33-1.84l-.06-.06v-3.4l.08-.03a1.7 1.7 0 0 0 1.2-1.36 1.7 1.7 0 0 0-.56-1.42l-.06-.06 1.7-2.94.08.03a1.7 1.7 0 0 0 1.84-.33l.06-.06h3.4l.03.08a1.7 1.7 0 0 0 1.36 1.2 1.7 1.7 0 0 0 1.42-.56l.06-.06 2.94 1.7-.03.08a1.7 1.7 0 0 0 .33 1.84l.06.06v3.4z',
 };
 </script>
 <template><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-20 h-20 shrink-0" aria-hidden="true"><path :d="paths[props.name]" /></svg></template>

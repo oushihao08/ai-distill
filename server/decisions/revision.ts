@@ -1,3 +1,8 @@
+/**
+ * 职责：返修纯策略：按问题类型和有限预算决定技术重试、等待、内容返修或隔离及返回阶段。
+ * 关键方法与用途：`decideRevision()` 依据问题类型、历史结果和预算返回下一步、等待或隔离决定。
+ * 使用场景：由返修来源分析与 runner 调用；此模块只计算策略，不执行阶段任务。
+ */
 export type IssueKind='service_transient'|'authentication'|'quota'|'question'|'rubric'|'material'|'score'|'rules'|'unknown';
 export interface RevisionBudget {
  content_revisions?:number;

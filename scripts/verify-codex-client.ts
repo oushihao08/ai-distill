@@ -1,3 +1,6 @@
+/** 文件职责：使用合成输入实际调用 Codex，验证登录、受限目录与结构化返回；保存冒烟记录。
+ * 执行入口与用途：`bun scripts/verify-codex-client.ts`；以合成输入启动本地 Codex CLI，核对登录、隔离目录和结构化返回并保存摘要。
+ */
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';

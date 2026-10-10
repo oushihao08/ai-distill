@@ -1,3 +1,6 @@
+/** Worker 池调度：验证并发上限、空队列退避、资源不足时暂停派发，以及资源检查期间收到停止信号不会再领取任务。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import { expect, test } from 'bun:test';
 import { runWorkerPool } from './worker-pool';
 

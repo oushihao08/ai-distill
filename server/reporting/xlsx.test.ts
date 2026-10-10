@@ -1,3 +1,6 @@
+/** 验证 XLSX 写入、非法维度拒绝、文本安全、长单元格拆分和成果工作表。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {mkdtemp,rm,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -20,7 +23,7 @@ test('rejects empty workbook and invalid dimensions',()=>{expect(()=>writeXlsx('
 test('builds deliverable sheets from project results grouped by batch',async()=>{
  const root=await mkdtemp(join(tmpdir(),'result-xlsx-'));const path=join(root,'deliverable.xlsx');
  try{
-  const bytes=buildResultWorkbook([{project_id:'p1',project_name:'项目甲',batch:'第一批',workflow_id:'w1',input_revision:2,title:'题目',question:'题面',question_version:'q2',rubric_version:'r1',quality:'passed',accepted:true,quarantined:false,answers:[{model:'qwen-plus',status:'succeeded',answer:'答案',score_status:'succeeded',score_valid:true,total:8,max_score:10,items:[{id:'r1',score:8,max_score:10,reason:'证据充分'}]}],revisions:[],api_costs:[{model:'qwen-plus',input_revision:2,amount:null,currency:null,unknown_reason:'price_missing'}]}]);
+  const bytes=buildResultWorkbook([{project_id:'p1',project_name:'项目甲',batch:'第一批',workflow_id:'w1',title:'题目',question:'题面',question_version:'q2',rubric_version:'r1',quality:'passed',accepted:true,quarantined:false,answers:[{model:'qwen-plus',status:'succeeded',answer:'答案',score_status:'succeeded',score_valid:true,total:8,max_score:10,items:[{id:'r1',score:8,max_score:10,reason:'证据充分'}]}],revisions:[],api_costs:[{model:'qwen-plus',amount:null,currency:null,unknown_reason:'price_missing'}]}]);
   await Bun.write(path,bytes);const out=spawnSync('python3',['-c',"import json,openpyxl,sys; w=openpyxl.load_workbook(sys.argv[1],read_only=True); print(json.dumps({'sheets':w.sheetnames,'title':w['成果汇总']['F2'].value,'answer':w['答案评分-第一批']['G2'].value,'reason':w['返修费用-第一批']['M2'].value},ensure_ascii=False))",path],{encoding:'utf8'});
   expect(out.status).toBe(0);expect(JSON.parse(out.stdout)).toEqual({sheets:['成果汇总','答案评分-第一批','返修费用-第一批'],title:'题面',answer:'答案',reason:'price_missing'});
  }finally{await rm(root,{recursive:true,force:true});}

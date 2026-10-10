@@ -1,3 +1,8 @@
+/**
+ * 职责：API 价格输入校验：核对供应商、模型、币种、token 单价、来源和有效期。
+ * 关键方法与用途：`validateApiPrice()` 校验并归一化供应商、模型、币种、费率、来源及有效期。
+ * 使用场景：价格导入或计费前调用；不把缺失价格推断成零。
+ */
 export interface ApiPriceInput {provider:string;model:string;currency:string;input_per_million:number;output_per_million:number;cached_input_per_million?:number;cache_write_per_million?:number;source:string;valid_from:string;valid_until?:string|null}
 export function validateApiPrice(raw:unknown):ApiPriceInput{
  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('API价格须为JSON对象');

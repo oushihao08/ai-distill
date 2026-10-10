@@ -1,3 +1,6 @@
+/** 验证材料返修复用健康提取、绑定准确输入指纹并安全处理供应商错误。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {DocumentProviderError} from './document';
 import {classifyRevisionSource} from '../decisions/revision-source';
 import {test,expect} from 'bun:test';
@@ -21,7 +24,7 @@ test('file repair reuses verified healthy extraction and invokes the extractor o
 test('redaction input digest survives JSONB field ordering and still binds exact source artifacts',()=>{
  const original={material_id:'material',source_sha256:'source',artifact_id:'artifact',artifact_sha256:'text'};
  const reordered={artifact_sha256:'text',artifact_id:'artifact',source_sha256:'source',material_id:'material'};
- expect(redactionInputDigest(1,[original])).toBe(redactionInputDigest(1,[reordered]));expect(redactionInputDigest(1,[original])).not.toBe(redactionInputDigest(1,[{...reordered,artifact_sha256:'changed'}]));
+ expect(redactionInputDigest([original])).toBe(redactionInputDigest([reordered]));expect(redactionInputDigest([original])).not.toBe(redactionInputDigest([{...reordered,artifact_sha256:'changed'}]));
 });
 
 test('OCR HTTP failures expose bounded classification without raw response text',()=>{

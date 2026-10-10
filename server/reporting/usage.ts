@@ -1,3 +1,8 @@
+/**
+ * 职责：API 用量计费：按完整 token 和价格快照计算费用，缺数据保留未知并排除套餐计费。
+ * 关键方法与用途：`calculateApiCallCost()` 按完整 token 与价格快照计算单次费用；`summarizeApiCosts()` 去重汇总并保留未知原因。
+ * 使用场景：导出流程调用；Codex 套餐调用不按 API token 价格计费。
+ */
 export interface ApiCallUsage {
  call_id:string;
  billing:'api_key'|'codex_subscription'|'unknown';

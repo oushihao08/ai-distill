@@ -1,3 +1,8 @@
+/**
+ * 职责：轻量 XLSX 写入：构建 OOXML 与 ZIP，处理表名、XML 字符及超长单元格拆分。
+ * 关键方法与用途：`buildXlsx()` 从工作表数据构造 OOXML ZIP；`writeXlsx()` 将生成字节写入指定输出。
+ * 使用场景：报表结构模块调用；不负责读取业务数据库或决定可发布内容。
+ */
 import {deflateRawSync} from 'node:zlib';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';

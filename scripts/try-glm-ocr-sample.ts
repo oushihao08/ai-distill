@@ -1,9 +1,12 @@
+/** 文件职责：读取指定历史任务的真实 PDF，调用智谱 layout_parsing 并私有保存样本；不发布脱敏产物。
+ * 执行入口与用途：`bun scripts/try-glm-ocr-sample.ts`；按固定历史 attempt 查询 PDF 后调用 layout_parsing，将返回样本写入 .storage 私有目录。
+ */
 import{mkdir,writeFile,stat}from'node:fs/promises';
 import{join,resolve}from'node:path';
 import{createPool}from'../server/db';
 const pool=createPool(),attemptId='73b10d51-717c-4e1f-bfcb-d323775db1f3',outDir=resolve('.storage/.glm-ocr-sample');
 try{
- const row=(await pool.query("SELECT w.source_key,m.id,m.storage_path,m.sha256,m.size_bytes FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.materials m ON m.workflow_id=w.id AND m.input_revision=a.input_revision WHERE a.id=$1 AND m.original_name LIKE $2 ORDER BY m.created_at LIMIT 1",[attemptId,'%执312号.pdf'])).rows[0];
+ const row=(await pool.query("SELECT w.source_key,m.id,m.storage_path,m.sha256,m.size_bytes FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.materials m ON m.workflow_id=w.id WHERE a.id=$1 AND m.original_name LIKE $2 ORDER BY m.created_at LIMIT 1",[attemptId,'%执312号.pdf'])).rows[0];
  if(!row)throw new Error('未找到题目3的29页PDF');
  const path=join(resolve('.storage'),row.storage_path),info=await stat(path);
  if(info.size>50*1024*1024)throw new Error('样本超过GLM-OCR单PDF限制');

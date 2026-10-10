@@ -11,6 +11,9 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AcceptedQuestionDetail: typeof import('./components/AcceptedQuestionDetail.vue')['default']
+    AcceptedQuestionList: typeof import('./components/AcceptedQuestionList.vue')['default']
+    ActiveWorkflowTasks: typeof import('./components/ActiveWorkflowTasks.vue')['default']
     AnswerModelSet: typeof import('./components/AnswerModelSet.vue')['default']
     AppShell: typeof import('./components/AppShell.vue')['default']
     CodexConfig: typeof import('./components/CodexConfig.vue')['default']
@@ -21,6 +24,7 @@ declare module 'vue' {
     ModelEvaluationSummary: typeof import('./components/ModelEvaluationSummary.vue')['default']
     ProjectCodexSettings: typeof import('./components/ProjectCodexSettings.vue')['default']
     ProjectForm: typeof import('./components/ProjectForm.vue')['default']
+    ProjectQuestionRecords: typeof import('./components/ProjectQuestionRecords.vue')['default']
     ProjectRules: typeof import('./components/rules/ProjectRules.vue')['default']
     ProjectStepRecords: typeof import('./components/ProjectStepRecords.vue')['default']
     RevisionHistory: typeof import('./components/RevisionHistory.vue')['default']
@@ -34,6 +38,7 @@ declare module 'vue' {
     StepTimeline: typeof import('./components/StepTimeline.vue')['default']
     UiIcon: typeof import('./components/UiIcon.vue')['default']
     UploadForm: typeof import('./components/UploadForm.vue')['default']
+    WorkerConcurrencyConfig: typeof import('./components/WorkerConcurrencyConfig.vue')['default']
     WorkerMonitor: typeof import('./components/WorkerMonitor.vue')['default']
   }
 }

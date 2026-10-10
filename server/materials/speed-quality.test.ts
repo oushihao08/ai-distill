@@ -1,3 +1,6 @@
+/** 验证 PDF 页级并发与顺序、截断重试、失败页有限重试和完整性标记。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import{test,expect}from'bun:test';import{writeFile}from'node:fs/promises';import{extractPdf}from'./pdf';
 const pdf=async(args:string[])=>{if(args[0]==='pdfinfo')return'Pages: 3';if(args[0]==='pdfimages')return'1 0 image\n2 0 image\n3 0 image';if(args[0]==='pdftotext')return'';await writeFile(`${args.at(-1)}.png`,args[args.indexOf('-f')+1]!);return'';};
 test('two PDF jobs share three OCR slots and retain page order',async()=>{let active=0,peak=0;const vision={recognize:async(image:Uint8Array)=>{active++;peak=Math.max(peak,active);const text=Buffer.from(image).toString();await new Promise(r=>setTimeout(r,(4-Number(text))*8));active--;return{text,model:'fixture',usage:null};},entities:async()=>[]};const jobs=await Promise.all([extractPdf('one',vision,pdf),extractPdf('two',vision,pdf)]);expect(peak).toBe(3);for(const pages of jobs)expect(pages.map(p=>p.text)).toEqual(['1','2','3']);});

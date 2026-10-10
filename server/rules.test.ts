@@ -1,3 +1,6 @@
+/** 项目规则版本管理：验证相同清单复用草稿、发布冻结快照、后续编辑生成新草稿，以及陈旧清单或被篡改版本不能发布／复用。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect,afterEach} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';

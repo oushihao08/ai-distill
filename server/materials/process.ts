@@ -1,3 +1,8 @@
+/**
+ * 职责：PDF 材料处理与产物落盘：校验来源和缓存指纹，生成私有逐页文本并保留识别问题。
+ * 关键方法与用途：`processMaterials()` 校验原件与缓存后生成私有逐页文本和 issues；`clearExtractionCheckpoints()` 清除指定检查点。
+ * 使用场景：提取 worker 调用处理入口，返修流程按需清理缓存。
+ */
 import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';

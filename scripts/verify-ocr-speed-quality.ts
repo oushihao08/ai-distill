@@ -1,3 +1,6 @@
+/** 文件职责：调用模型比较同页不同推理强度及已有 max 缓存，记录耗时和源图复核差异。
+ * 执行入口与用途：`bun scripts/verify-ocr-speed-quality.ts`；对同一页调用不同推理强度并与缓存对比，记录耗时和模型源图复核结果。
+ */
 import{readFile,readdir,stat,mkdir,writeFile,rm}from'node:fs/promises';
 import{join,resolve}from'node:path';
 import{createHash}from'node:crypto';
@@ -13,7 +16,7 @@ let currentQuestion='unknown',currentPage:number|null=null;
 async function save(){await writeFile(reportPath,JSON.stringify(report,null,2)+'\n');}
 try{
  await mkdir(privateDir,{recursive:true,mode:0o700});
- const rows=(await pool.query("SELECT w.id AS workflow_id,w.source_key,m.id,m.storage_path,m.sha256,a.started_at,a.config FROM ai_distill.workflows w JOIN ai_distill.materials m ON m.workflow_id=w.id AND m.input_revision=w.input_revision JOIN ai_distill.step_attempts a ON a.workflow_id=w.id AND a.ordinal=2 WHERE a.id=ANY($1::uuid[]) ORDER BY w.source_key,m.created_at,m.id",[['cfe1bff7-58d0-4458-b9b4-156d9eea4bba','73b10d51-717c-4e1f-bfcb-d323775db1f3']])).rows;
+ const rows=(await pool.query("SELECT w.id AS workflow_id,w.source_key,m.id,m.storage_path,m.sha256,a.started_at,a.config FROM ai_distill.workflows w JOIN ai_distill.materials m ON m.workflow_id=w.id AND m.deleted_at IS NULL JOIN ai_distill.step_attempts a ON a.workflow_id=w.id AND a.ordinal=2 WHERE a.id=ANY($1::uuid[]) ORDER BY w.source_key,m.created_at,m.id",[['cfe1bff7-58d0-4458-b9b4-156d9eea4bba','73b10d51-717c-4e1f-bfcb-d323775db1f3']])).rows;
  for(const question of ['题目1','题目3']){currentQuestion=question;
   const selected:any[]=[];
   for(const row of rows.filter(r=>r.source_key===question)){

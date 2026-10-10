@@ -1,3 +1,6 @@
+/** 验证分页提取的部分结果问题、单页失败隔离和 OCR 输出边界。
+ * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+ */
 import {test,expect} from 'bun:test';
 import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';

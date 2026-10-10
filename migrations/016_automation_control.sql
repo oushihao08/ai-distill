@@ -1,3 +1,4 @@
+-- 文件职责：历史自动运行控制：建立批次、成员、暂停与执行阻断结构；后由 024 撤除。
 CREATE TABLE ai_distill.automation_batches (
  id uuid PRIMARY KEY,
  project_id uuid NOT NULL REFERENCES ai_distill.projects(id),

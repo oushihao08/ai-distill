@@ -1,3 +1,8 @@
+<!--
+职责：作为项目列表路由，提供项目搜索、新建、编辑和删除。
+关键方法与用法：`createProject()`／`editProject()` 打开表单，`removeProject()` 删除项目，`openCreated()` 在创建后导航；全局监控与 Codex 设置由独立导航路由提供。
+-->
+
 <script setup lang="ts">
 import { api } from '../api/client';
 import { useResource } from '../composables/useResource';
@@ -21,10 +26,7 @@ function openCreated(project: Project) { createOpen.value = false; if(editing.va
  <Row wrap :gap="16">
   <Column class="surface-card p-16 flex-1 min-w-column-narrow" :gap="12"><Row x="between"><span class="text-sm text-muted">出题项目</span><UiIcon name="grid" class="text-primary" /></Row><Row :gap="8"><strong class="text-3xl text-ink-heading">{{ data ? data.length : '—' }}</strong><span class="text-sm text-muted">个项目</span></Row></Column>
   <Column class="surface-card p-16 flex-1 min-w-column-narrow" :gap="12"><Row x="between"><span class="text-sm text-muted">材料工作流</span><UiIcon name="file" class="text-primary" /></Row><Row :gap="8"><strong class="text-3xl text-ink-heading">{{ workflowCount ?? '—' }}</strong><span class="text-sm text-muted">条记录</span></Row></Column>
-  <Column class="surface-card p-16 flex-1 min-w-column-narrow" :gap="12"><Row x="between"><span class="text-sm text-muted">流程接入</span><UiIcon name="activity" class="text-primary" /></Row><Row :gap="8"><strong class="text-3xl text-ink-heading">2<span class="text-lg text-muted font-normal"> / 8</span></strong><span class="text-sm text-muted">材料处理已开放</span></Row></Column>
  </Row>
- <WorkerMonitor />
- <CodexConfig />
  <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
  <section class="surface-card"><Column :gap="0">
   <Row x="between" wrap class="p-16 border-b border-line" :gap="12"><Column :gap="4"><h2 class="section-title">全部项目</h2><span class="text-xs text-muted">{{ visibleProjects.length }} 个项目</span></Column><Row wrap :gap="8" class="w-full sm:w-auto max-w-full"><v-text-field v-model="search" aria-label="搜索项目" placeholder="搜索项目" clearable hide-details class="filter-field-compact"><template #prepend-inner><UiIcon name="search" /></template></v-text-field><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新</v-btn></Row></Row>

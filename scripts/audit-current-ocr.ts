@@ -1,3 +1,6 @@
+/** 文件职责：核对指定真实项目的 OCR 检查点，并调用模型抽查源页；保存历史审计，不代表全文人工验收。
+ * 执行入口与用途：`bun scripts/audit-current-ocr.ts`；遍历指定项目的检查点，调用抽样识别并将安全审计写入 docs/evidence；会访问真实材料和模型。
+ */
 import{readdir,readFile,mkdir,writeFile,rm}from'node:fs/promises';
 import{join,resolve}from'node:path';
 import{createHash}from'node:crypto';
@@ -10,7 +13,7 @@ const report:any={checked_at:new Date().toISOString(),scope:'actual production m
 const reportPath='docs/evidence/2026-10-08-current-ocr-audit.json';
 try{
  await mkdir(dir,{recursive:true,mode:0o700});
- const rows=(await pool.query("SELECT a.id,a.workflow_id,a.status,a.config,w.source_key,m.id AS material_id,m.original_name,m.storage_path,m.sha256 FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.materials m ON m.workflow_id=a.workflow_id AND m.input_revision=a.input_revision WHERE a.id=ANY($1::uuid[]) ORDER BY w.source_key,m.original_name",[['cfe1bff7-58d0-4458-b9b4-156d9eea4bba','73b10d51-717c-4e1f-bfcb-d323775db1f3']])).rows;
+ const rows=(await pool.query("SELECT a.id,a.workflow_id,a.status,a.config,w.source_key,m.id AS material_id,m.original_name,m.storage_path,m.sha256 FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.materials m ON m.workflow_id=a.workflow_id WHERE a.id=ANY($1::uuid[]) ORDER BY w.source_key,m.original_name",[['cfe1bff7-58d0-4458-b9b4-156d9eea4bba','73b10d51-717c-4e1f-bfcb-d323775db1f3']])).rows;
  const samples:any[]=[];const prior:any=process.argv.includes('--retry')?await Bun.file(reportPath).json():{reviews:[]};
  for(const row of rows){
   const e=row.config.extraction,identity=JSON.stringify({ocr_version:row.config.ocr_version,max_tokens:e.maxTokens??131072,model:row.config.model,base_url:row.config.base_url??'https://open.bigmodel.cn/api/paas/v4',prompt:e.extractionPrompt,reasoning_effort:e.ocrReasoningEffort??e.reasoningEffort});

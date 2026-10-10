@@ -1,6 +1,11 @@
+<!--
+职责：读取、编辑或上传规则材料文件，并按指纹防止覆盖并发修改。
+关键方法与用法：`load()` 读取文件与 SHA-256，`save()` 按文字或文件模式提交预期指纹；仅允许编辑 materials，skill 只读，保存后向 `ProjectRules` 发出事件。
+-->
+
 <script setup lang="ts">
-import { api } from '../../api/client';
-import type { RuleFile } from '../../types/api';
+import { api } from '@/api/client';
+import type { RuleFile } from '@/types/api';
 const props=defineProps<{projectId:string;file:RuleFile|null}>();
 const emit=defineEmits<{saved:[];close:[]}>();
 const path=shallowRef(props.file?.path??'');const content=shallowRef('');const mode=shallowRef('text');

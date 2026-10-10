@@ -1,3 +1,4 @@
+-- 文件职责：启用达标判定，建立 API 价格表与项目导出记录。
 UPDATE ai_distill.steps SET implemented=true WHERE ordinal=7;
 CREATE TABLE ai_distill.api_model_prices (
  id uuid PRIMARY KEY,

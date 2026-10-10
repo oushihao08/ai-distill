@@ -1,3 +1,4 @@
+<!-- 文件职责：定义前端布局、色彩、间距与组件样式的统一约定。 -->
 # 样式与主题约定
 
 沿用 ai-news/web 的主题架构：`src/theme.ts` 是唯一 token 来源，`uno.config.ts` 和 `src/plugins/vuetify.ts` 读取该主题。页面布局使用 Row/Column，样式使用 UnoCSS 原子类及语义 shortcuts。
