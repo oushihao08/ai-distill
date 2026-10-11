@@ -56,15 +56,19 @@ export async function runNextProjectSkill(pool:Pool,root:string,generate:typeof 
  logEvent('attempt.claimed',{level:'info',state:'running'});logEvent('attempt.started',{level:'info',state:'running'});
  const cancellation=watchTaskCancellation(pool,job.id,signal,true);signal=cancellation.signal;
  let heartbeatFailed=false,lastHeartbeatAt=new Date().toISOString();
- const heartbeat=setInterval(()=>{withLogContext({component:'skill_generation',project_id:job.project_id,skill_attempt_id:job.id},()=>pool.query("UPDATE ai_distill.project_skill_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('skill任务心跳失败');}heartbeatFailed=true;}));},10000);
+ let heartbeatInFlight=false;
+ const heartbeat=setInterval(()=>{if(heartbeatInFlight)return;heartbeatInFlight=true;withLogContext({component:'skill_generation',project_id:job.project_id,skill_attempt_id:job.id},()=>pool.query("UPDATE ai_distill.project_skill_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('skill任务心跳失败');}heartbeatFailed=true;}).finally(()=>{heartbeatInFlight=false;}));},10000);
+ let failurePhase='input_validation';
  try{
   await verifyRuleSnapshot(job.input.snapshot_path,job.input.files);
   const before=await pool.connect();try{await before.query('BEGIN');if(!await current(before,job))throw new Error('stale input');await before.query('COMMIT');}catch(error){await before.query('ROLLBACK');throw error;}finally{before.release();}
+  failurePhase='agent_execution';
   const result=await generate({project:job.input.snapshot_path,template:join(job.input.snapshot_path,'skill'),root:join(resolve(root),'project-skills',job.project_id,job.id),model:job.config.model,reasoning_effort:job.config.reasoning_effort,signal});
   if(signal?.aborted)throw new Error('cancelled');
+  failurePhase='result_persistence';
   const tx=await pool.connect();try{await tx.query('BEGIN');if(!await current(tx,job))throw new Error('stale input');const saved=await tx.query("UPDATE ai_distill.project_skill_attempts SET status=$2,result=$3,session_id=$4,error=NULL,finished_at=now() WHERE id=$1 AND status='running'",[job.id,'succeeded',JSON.stringify(result),result.session_id]);if(!saved.rowCount)throw new Error('inactive');await tx.query('COMMIT');logEvent('attempt.completed',{level:'info',state:'succeeded'});}catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
  }catch(error){
-  logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)});
+  logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error),failure_phase:failurePhase});
   await pool.query("UPDATE ai_distill.project_skill_attempts SET status='failed',error='skill生成失败、取消或输入已变化，请核对后重试',finished_at=now() WHERE id=$1 AND status='running'",[job.id]);
  }finally{cancellation.dispose();clearInterval(heartbeat);restoreLogContext();}
  return true;

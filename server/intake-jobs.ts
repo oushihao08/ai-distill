@@ -58,10 +58,12 @@ export async function enqueueIntake(pool: Pool, workflowId: string) {
  * 领取一条活动入库任务，恢复超时尝试后读取冻结的来源清单并调用 receiveMaterials。
  * 成功入库后按材料类型接续 PDF 提取；worker 轮询调用，重复领取由行锁和 SKIP LOCKED 避免。
  */
-export async function runNextIntake(pool: Pool, root: string, workflowId?: string) {
+export async function runNextIntake(pool: Pool, root: string, workflowId?: string, signal?:AbortSignal) {
+ if(signal?.aborted)return false;
  const db = await pool.connect(); let job;let staleRows:any[]=[];
  try {
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
+  if(signal?.aborted){await db.query('ROLLBACK');return false;}
   const stale = await db.query("SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' FOR UPDATE OF w,a SKIP LOCKED");
   for (const row of stale.rows) {
    const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='接收进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id", [row.id]);
@@ -78,15 +80,18 @@ export async function runNextIntake(pool: Pool, root: string, workflowId?: strin
  const restoreLogContext=enterLogContext({component:'intake',workflow_id:job.workflow_id,project_id:job.project_id,ordinal:1,attempt_id:job.id,operation:'intake'});
  logEvent('attempt.claimed',{level:'info',state:'running'});logEvent('attempt.started',{level:'info',state:'running',material_count:(job.input.files as FolderFile[]).length});
  let heartbeatFailed=false,lastHeartbeatAt=new Date().toISOString();
- const heartbeat = setInterval(() => { withLogContext({component:'intake',project_id:job.project_id,workflow_id:job.workflow_id,ordinal:1,attempt_id:job.id},()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id", [job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('接收任务心跳写入失败');}heartbeatFailed=true;})); },10000);
+ let heartbeatInFlight=false;
+ const heartbeat = setInterval(() => { if(heartbeatInFlight)return;heartbeatInFlight=true;withLogContext({component:'intake',project_id:job.project_id,workflow_id:job.workflow_id,ordinal:1,attempt_id:job.id},()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id", [job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('接收任务心跳写入失败');}heartbeatFailed=true;}).finally(()=>{heartbeatInFlight=false;})); },10000);
  try {
   const files: File[] = [];
   for (const source of job.input.files as FolderFile[]) {
+   if(signal?.aborted){await requeueIntake(pool,job);return true;}
    const bytes = await readFile(source.path);
    if (createHash('sha256').update(bytes).digest('hex') !== source.sha256) throw new Error('材料目录已变化，请同步目录后重新接收');
    const extension=source.name.split('.').at(-1)?.toLowerCase();
    files.push(new File([bytes],source.name,{type:extension==='pdf'?'application/pdf':extension==='docx'?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'text/plain'}));
   }
+  if(signal?.aborted){await requeueIntake(pool,job);return true;}
   await receiveMaterials(pool,root,{projectId:job.project_id,requestId:job.id,title:job.title,key:job.source_key,files,job:{workflowId:job.workflow_id,attemptId:job.id}});
   logEvent('attempt.completed',{level:'info',state:'succeeded',material_count:files.length,input_bytes:files.reduce((sum,file)=>sum+file.size,0)});
   if(files.some(file=>file.name.toLowerCase().endsWith('.pdf')))await enqueueExtraction(pool,job.workflow_id);
@@ -103,4 +108,18 @@ export async function runNextIntake(pool: Pool, root: string, workflowId?: strin
   } catch (failure) { await failed.query('ROLLBACK'); throw failure; } finally { failed.release(); }
  } finally { clearInterval(heartbeat);restoreLogContext(); }
  return true;
+}
+
+async function requeueIntake(pool:Pool,job:any){
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN');
+  const updated=await db.query("UPDATE ai_distill.step_attempts SET status='waiting',started_at=NULL,heartbeat_at=NULL WHERE id=$1 AND status='running' RETURNING id",[job.id]);
+  if(updated.rowCount){
+   await db.query("UPDATE ai_distill.steps SET status='waiting',started_at=NULL,error=NULL WHERE workflow_id=$1 AND ordinal=1 AND status='running'",[job.workflow_id]);
+   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[job.workflow_id]);
+  }
+  await db.query('COMMIT');
+ }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+ logEvent('attempt.requeued_for_shutdown',{level:'info',state:'waiting',reason_code:'worker_stopping'});
 }

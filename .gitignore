@@ -17,4 +17,5 @@ projects/*/outputs/**
 !projects/*/outputs/README.md
 projects/*/snapshots/**
 !projects/*/snapshots/.gitkeep
+assets/out/附件库/
 .DS_Store

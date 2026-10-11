@@ -4,6 +4,7 @@
 import { expect, test } from 'bun:test';
 import { inspect } from 'node:util';
 import { createQwenClient, QwenError, resolveQwenConfig, type QwenAnswerInput, type QwenErrorKind } from './qwen';
+import { ANSWER_SYSTEM_PROMPT } from './dispatch';
 
 const env = { QWEN_API_KEY: 'test-only-secret' };
 const config = { provider: 'qwen' as const, base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' };
@@ -117,7 +118,7 @@ test('sends only question and selected text materials, with no SDK, history or t
   expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer ' + env.QWEN_API_KEY);
   expect(init?.redirect).toBe('error');
   const body = JSON.parse(init!.body as string);
-  expect(body).toEqual({ model: config.model, stream: false, enable_thinking: false, max_tokens: 9000, messages: [{ role: 'user', content: JSON.stringify({ question: input.question, materials: input.materials }) }] });
+  expect(body).toEqual({ model: config.model, stream: false, enable_thinking: false, max_tokens: 9000, messages: [{ role: 'system', content: ANSWER_SYSTEM_PROMPT }, { role: 'user', content: JSON.stringify({ question: input.question, materials: input.materials }) }] });
   return Response.json(answer);
  });
  const result = await client.answer({ ...input, config: { ...config, enable_thinking: false, max_tokens: 9000 } });
@@ -214,6 +215,11 @@ for (const data of [null, {}, { choices: [] }, { choices: [{ finish_reason: 'sto
 test('rejects malformed JSON without preserving parser text', async () => {
  const error = await failure(() => createQwenClient(env, async () => new Response('private invalid JSON ' + env.QWEN_API_KEY)).answer(input), 'invalid_response');
  expect(inspect(error)).not.toContain(env.QWEN_API_KEY);
+});
+test('invalid completion exposes a safe reason code without retaining response text', async () => {
+ const error = await failure(() => createQwenClient(env, async () => Response.json({ ...answer, choices: [{ ...answer.choices[0], finish_reason: 'length', message: { ...answer.choices[0].message, content: 'private partial answer' } }] })).answer(input), 'invalid_response');
+ expect(error.reason_code).toBe('incomplete_finish_reason');
+ expect(inspect(error)).not.toContain('private partial answer');
 });
 test('already cancelled work never invokes the provider', async () => {
  let calls = 0;

@@ -1,6 +1,6 @@
 /**
  * 职责：项目目录与步骤投影：扫描题目附件、登记工作流、校验阶段配置并计算批量就绪状态。
- * 关键方法与用途：`scanProjectFolder()`／`scanQuestionFolder()` 扫描只读来源；`registerQuestionFolders()` 登记工作流；`projectStepSummary()` 汇总可派发状态。
+ * 关键方法与用途：`scanProjectFolder()`／`scanQuestionFolder()` 扫描只读来源；`registerQuestionFolders()` 登记工作流；`validateStepConfig()` 校验保存设置；`validateStepConfigForExecution()` 校验已保存 Codex 步骤配置而不把模型缓存当执行白名单；`projectStepSummary()` 汇总可派发状态。
  * 使用场景：`app.ts` 提供目录同步与列表接口，入库队列按扫描结果处理材料。
  */
 import {mergeRedactionDefaults,validateRedactionConfig,type RedactionConfig} from './materials/redaction-config';
@@ -57,7 +57,7 @@ export function splitIntoBatches<T>(values:T[],size:number):T[][]{
  const batches:T[][]=[];for(let start=0;start<values.length;start+=size)batches.push(values.slice(start,start+size));return batches;
 }
 export async function readProjectWorkflowStepRows(pool:Pool,projectId:string,workflowIds?:string[]){
- return pool.query("SELECT w.id AS workflow_id,s.ordinal,s.status,s.result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND lower(m.original_name) LIKE '%.pdf') AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND lower(m.original_name) LIKE '%.pdf')))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position",[projectId,workflowIds??null]);
+ return pool.query("SELECT w.id AS workflow_id,s.ordinal,s.status,CASE WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','reasons',s.result->'reasons') WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND lower(m.original_name) LIKE '%.pdf') AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND lower(m.original_name) LIKE '%.pdf')))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position",[projectId,workflowIds??null]);
 }
 export async function validateFolder(value: unknown, label = '材料文件夹') {
  const path = text(value, label, 4096);
@@ -131,6 +131,13 @@ export function validateStepConfig(ordinal:5,raw:unknown,modelCatalog?:Parameter
 export function validateStepConfig(ordinal:7,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ReturnType<typeof validateAcceptanceConfig>|ReturnType<typeof validateAcceptanceBudgetConfig>;
 export function validateStepConfig(ordinal:number,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):object;
 export function validateStepConfig(ordinal: number, raw: unknown, modelCatalog?:Parameters<typeof validateAgentModel>[2]) {
+ return validateStepConfigInternal(ordinal,raw,modelCatalog,true);
+}
+/** Validate persisted author/reviewer settings for execution without treating a cached model list as an execution allowlist. */
+export function validateStepConfigForExecution(ordinal:4|6,raw:unknown){
+ return validateStepConfigInternal(ordinal,raw,undefined,false) as {provider:'codex';model:string;reasoning_effort:string;prompt:string};
+}
+function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Parameters<typeof validateAgentModel>[2]|undefined,validateAdvertisedModel:boolean) {
  if (![4,5,6,7,9].includes(ordinal)) throw new HTTPException(400, { message: '此步骤没有模型设置' });
  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HTTPException(400, { message: '步骤设置须为JSON对象' });
  if(ordinal===5){try{return resolveAnswerConfig(raw);}catch(error){if(error instanceof QwenError||error instanceof DomesticError)throw new HTTPException(400,{message:error.message});throw error;}}
@@ -141,7 +148,7 @@ export function validateStepConfig(ordinal: number, raw: unknown, modelCatalog?:
  if (value.provider !== undefined && value.provider !== provider) throw new HTTPException(400, { message: `此步骤使用${provider}` });
  const model = text(value.model, '模型ID', 160);
  const effort = text(value.reasoning_effort ?? 'medium', '推理强度', 20);
- if(provider==='codex')validateAgentModel(model,effort,modelCatalog);
+ if(provider==='codex'&&validateAdvertisedModel)validateAgentModel(model,effort,modelCatalog);
  const prompt=value.prompt??DEFAULT_STEP_PROMPTS[ordinal as 4|6];
  if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)throw new HTTPException(400,{message:'请填写有效的步骤提示词'});
  return { provider, model, reasoning_effort: effort, prompt };

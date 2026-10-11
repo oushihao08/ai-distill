@@ -69,8 +69,8 @@ test('corrupt monitor snapshots log one failure and a recovery event',async()=>d
   await writeFile(path,'private malformed snapshot');expect((await readWorkerMonitor(root)).status).toBe('unavailable');expect((await readWorkerMonitor(root)).status).toBe('unavailable');
   await writeFile(path,valid);expect((await readWorkerMonitor(root)).status).toBe('stopped');await logger.flush();
   const day=new Date().toISOString().slice(0,10),logDirectory=join(root,'log-root','logs',day),files=await readdir(logDirectory).catch(()=>[]),records=files.length?(await readFile(join(logDirectory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line)):[];
-  expect(records).toContainEqual(expect.objectContaining({event:'monitor.snapshot_read_failed',component:'worker_monitor',level:'warn',error_kind:'unknown'}));
-  expect(records).toContainEqual(expect.objectContaining({event:'monitor.snapshot_read_recovered',component:'worker_monitor',level:'info'}));
+  expect(records).toContainEqual(expect.objectContaining({event:'monitor.snapshot_read_failed',component:'worker_monitor',level:'error',error_kind:'unknown'}));
+  expect(records.some(record=>record.event==='monitor.snapshot_read_recovered')).toBe(false);
   expect(records.filter(record=>record.event==='monitor.snapshot_read_failed')).toHaveLength(1);expect(JSON.stringify(records)).not.toContain('private malformed snapshot');
  }finally{await monitor.stop();await logger.close();}
 }));

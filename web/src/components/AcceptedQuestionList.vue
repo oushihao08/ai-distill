@@ -44,7 +44,7 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
     <v-select v-model="filter" :items="['全部','异常','待归档','已归档']" label="筛选" hide-details class="filter-field-compact w-140px" />
    </Row>
   </Row>
-  <p class="text-xs text-muted">Excel 汇总全部当前达标题目的题面、模型答案、逐项评分、返修记录及 API 费用，生成后由浏览器下载。</p>
+  <p class="text-xs text-muted">Excel 汇总全部当前达标题目的题面、模型答案、逐项评分和返修记录，生成后由浏览器下载。</p>
   <p v-if="!visible.length" class="text-sm text-muted">{{ accepted.length?'没有符合筛选条件的达标题目':'暂无当前版本已达标题目。' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="comfortable" class="min-w-900px">

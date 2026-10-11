@@ -1,6 +1,6 @@
 /**
  * 职责：结构化日志的字段筛选、上下文传递、持久化与保留策略。
- * 关键方法与用途：`createStructuredLogger()` 创建过滤、轮转的 JSONL logger；`withLogContext()`／`enterLogContext()` 传递上下文；`logEvent()` 写事件。
+ * 关键方法与用途：`createStructuredLogger()` 创建过滤、轮转的 JSONL logger；`withLogContext()`／`withIsolatedLogContext()`／`enterLogContext()` 传递或隔离上下文；`logEvent()` 写事件。
  * 使用场景：API、worker 和业务队列按事件边界调用；`loggerHealth()` 查询状态，敏感字段先经 `sanitizeLogRecord()` 过滤。
  */
 import {appendFileSync,chmodSync,mkdirSync,statSync} from 'node:fs';
@@ -15,7 +15,7 @@ const context=new AsyncLocalStorage<LogContext>();
 const safeErrors=new Set(['authentication','quota','rate_limit','network','timeout','provider','configuration','cancelled','invalid_response','unknown','none']);
 const safeProviders=new Set(['codex','qwen','kimi','deepseek','doubao','openrouter','glm-ocr','mineru-cli','unknown']);
 const safeChangedFields=new Set(['credential_home','model','reasoning_effort','enabled','models','name','description','material_root','local_skill_path','provider','base_url','config','minimum_score','currency','input_per_million','output_per_million','cached_input_per_million','cache_write_per_million','source','valid_from','valid_until','ordinal','prompt','threshold','workspace_path','source_digest','expected_sha256','text','path','rubric','question','workflow_ids']);
-const allowed=new Set(['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','session_id','operation','provider','model','reasoning_effort','build_id','child_pid','timeout_ms','elapsed_ms','wall_elapsed_ms','timer_lateness_ms','exit_code','signal','error_kind','reason_code','retryable','http_status','material_count','page_count','input_bytes','output_bytes','token_usage','method','route','status_code','duration_ms','query_name','transaction_name','artifact_id','target_id','changed_fields','file_kind','dropped_count','state','queue_wait_ms','attempt_count','batch_index','last_heartbeat_at','threshold_ms','error_code','error_constraint','process_state','event_type','event_count','level','material_id','page','expected_count','actual_count','expected_page','actual_page','source_empty','diagnostic_id'
+const allowed=new Set(['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','session_id','operation','provider','model','reasoning_effort','build_id','child_pid','timeout_ms','elapsed_ms','wall_elapsed_ms','timer_lateness_ms','exit_code','signal','error_kind','reason_code','failure_phase','retryable','http_status','material_count','page_count','input_bytes','output_bytes','token_usage','method','route','status_code','duration_ms','query_name','transaction_name','artifact_id','target_id','changed_fields','file_kind','dropped_count','state','queue_wait_ms','attempt_count','batch_index','last_heartbeat_at','threshold_ms','error_code','error_constraint','process_state','event_type','event_count','level','material_id','page','expected_count','actual_count','expected_page','actual_page','source_empty','diagnostic_id'
 ]);
 const correlationKeys=['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','operation','provider','model','reasoning_effort'] as const;
 function safeString(key:string,value:string){
@@ -53,6 +53,7 @@ export function sanitizeLogRecord(raw:unknown):LogFields|undefined{
  return{schema_version:1,event_id:value.event_id,seq:value.seq,occurred_at:value.occurred_at,written_at:value.written_at,event:value.event,service:value.service,instance_id:value.instance_id,pid:value.pid,...projectFields(value)};
 }
 export function withLogContext<T>(fields:LogContext,run:()=>T):T{return context.run({...context.getStore(),...projectFields(fields)},run);}
+export function withIsolatedLogContext<T>(fields:LogContext,run:()=>T):T{return context.run(projectFields(fields),run);}
 export function enterLogContext(fields:LogContext){const previous=context.getStore();context.enterWith({...previous,...projectFields(fields)});return()=>context.enterWith(previous??{});}
 
 export interface StructuredLoggerOptions {root:string;service:'api'|'worker'|'migration'|'script'|string;instance_id?:string;build_id?:string;max_file_bytes?:number;retention_days?:number;max_total_bytes?:number;max_queue?:number;now?:()=>Date}
@@ -104,25 +105,23 @@ export function createStructuredLogger(options:StructuredLoggerOptions){
  }
  function pump(){
   if(inflight)return inflight;
-  inflight=(async()=>{while(queue.length){const record=queue.shift()!,wasDegraded=status==='degraded';if(queue.length<maxQueue){queueFailed=false;refreshHealth();}try{await persist(record);lastSuccess=now().toISOString();writeFailed=false;refreshHealth();if(wasDegraded&&status==='healthy')queue.push({schema_version:1,event_id:randomUUID(),seq:++seq,occurred_at:now().toISOString(),level:'info',event:'logger.storage_recovered',service,instance_id,pid:process.pid,component:'logging',build_id});}catch{markFailure('filesystem');}}})().finally(()=>{inflight=undefined;if(queue.length&&!closed)pump();});return inflight;
+    inflight=(async()=>{while(queue.length){const record=queue.shift()!;if(queue.length<maxQueue){queueFailed=false;refreshHealth();}try{await persist(record);lastSuccess=now().toISOString();writeFailed=false;refreshHealth();}catch{markFailure('filesystem');}}})().finally(()=>{inflight=undefined;if(queue.length&&!closed)pump();});return inflight;
  }
  const logger={
   instance_id,
   log(event:string,fields:LogFields={}){
-   if(closed){markFailure('closed');return;}if(!/^[a-z][a-z0-9_.-]{0,119}$/.test(event)){markFailure('filesystem');return;}
    const occurred_at=now().toISOString(),extra=projectFields(fields),level=extra.level??'info';
+   if(level!=='error')return;
+   if(closed){markFailure('closed');return;}if(!/^[a-z][a-z0-9_.-]{0,119}$/.test(event)){markFailure('filesystem');return;}
    if(queue.length>=maxQueue){
-    // Evict only a lower-priority queued event so bounded backpressure preserves failures when possible.
-    const priority=(value:unknown)=>value==='error'?3:value==='warn'?2:value==='info'?1:0;
-    const incoming=priority(level);let discardIndex=-1,discardPriority=incoming;
-    for(let index=0;index<queue.length;index++){const queuedPriority=priority(queue[index]?.level);if(queuedPriority<discardPriority){discardIndex=index;discardPriority=queuedPriority;}}
-    if(discardIndex<0){markFailure('queue_full');return;}queue.splice(discardIndex,1);markFailure('queue_full');
+    markFailure('queue_full');return;
    }
    queue.push({schema_version:1,event_id:randomUUID(),seq:++seq,occurred_at,level,event,service,instance_id,pid:process.pid,...projectFields(context.getStore()??{}),...extra,build_id});void pump();
   },
   logSync(event:string,fields:LogFields={}){
-   if(closed){markFailure('closed');return;}if(!/^[a-z][a-z0-9_.-]{0,119}$/.test(event)){markFailure('filesystem');return;}
    const occurred_at=now().toISOString(),day=occurred_at.slice(0,10),directory=join(options.root,'logs',day),extra=projectFields(fields),level=extra.level??'info';
+   if(level!=='error')return;
+   if(closed){markFailure('closed');return;}if(!/^[a-z][a-z0-9_.-]{0,119}$/.test(event)){markFailure('filesystem');return;}
    const record={schema_version:1,event_id:randomUUID(),seq:++seq,occurred_at,level,event,service,instance_id,pid:process.pid,...projectFields(context.getStore()??{}),...extra,build_id};
    try{
     mkdirSync(directory,{recursive:true,mode:0o700});chmodSync(directory,0o700);

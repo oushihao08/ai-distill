@@ -14,7 +14,7 @@ export interface ModelApiResult {
 }
 export type ModelApiErrorKind = 'configuration' | 'authentication' | 'quota' | 'rate_limit' | 'network' | 'timeout' | 'cancelled' | 'provider' | 'invalid_response';
 export class ModelApiError extends Error {
- constructor(public readonly kind: ModelApiErrorKind, public readonly retryable = false, public readonly http_status: number | null = null, public readonly provider_code: string | null = null, public readonly request_id: string | null = null) {
+ constructor(public readonly kind: ModelApiErrorKind, public readonly retryable = false, public readonly http_status: number | null = null, public readonly provider_code: string | null = null, public readonly request_id: string | null = null, public readonly reason_code?: string) {
   const messages: Record<ModelApiErrorKind, string> = {
    configuration: '大模型 API 配置或请求输入无效，请核对凭证、端点和模型参数',
    authentication: '大模型 API 认证或访问权限失败', quota: '大模型 API 账户欠费或订购状态阻断',

@@ -1,5 +1,5 @@
 <!--
-职责：作为单题工作流路由，编排步骤操作、附件、模型评测、返修及完整尝试历史。
+职责：作为单题工作流路由，编排步骤操作、附件、模型评测、返修及有限执行摘要。
 关键方法与用法：`intake()`、`redact()`、`author()`、`answer()` 等方法派发对应阶段，`addMaterial()`／`removeMaterial()` 管理附件，`clearGenerated()` 重置生成状态；路由参数 `id` 指定题目工作流。
 -->
 
@@ -15,33 +15,23 @@ const route = useRoute();
 const { data, error, loading, refresh } = useResource<WorkflowDetail>(`/workflows/${route.params.id}`);
 const submitting=shallowRef(false);
 const exportingDocx=shallowRef(false);
+const docxArchivePath=shallowRef('');
 const clearOpen=shallowRef(false);
-const attemptOpen=shallowRef(false);
-const copiedAttemptField=shallowRef('');
-const copyAttemptError=shallowRef('');
-const expandedAttemptSections=shallowRef<(string|number)[]>(['result']);
 const questionOpen=shallowRef(false);
 const visibleSteps=computed(()=>data.value?.steps.filter(step=>step.ordinal!==10)??[]);
 const authoredStep=computed(()=>visibleSteps.value.find(step=>step.ordinal===4));
-const selectedAttempt=shallowRef<Attempt|null>(null);
-// 展示本次历史判定使用的分数，不以最新评分覆盖历史结果。
-const acceptanceScores=computed(()=>{
- const attempt=selectedAttempt.value;
- if(attempt?.ordinal!==7)return [];
- const input=attempt.input as {models?:{model:string;score?:number;max_score?:number}[]}|null;
- const result=attempt.result as {model_scores?:Record<string,{status:string;score?:number;max_score?:number;percentage?:number;threshold?:number}>}|null;
- const ids=new Set([...(input?.models??[]).map(item=>item.model),...Object.keys(result?.model_scores??{})]);
- return [...ids].map(id=>{
-  const source=input?.models?.find(item=>item.model===id),score=result?.model_scores?.[id];
-  const answer=data.value?.attempts.find(item=>item.ordinal===5&&(item.input as {model_id?:string}|null)?.model_id===id);
-  const name=(answer?.input as {model_name?:string}|null)?.model_name??id;
-  return {id,name,score:score?.score??source?.score,max_score:score?.max_score??source?.max_score,percentage:score?.percentage,threshold:score?.threshold,status:({passed:'通过',not_passed:'未通过',pending:'等待',invalid:'评分不可用'} as Record<string,string>)[score?.status??'pending']??score?.status};
- });
-});
 const activeTask=computed(()=>data.value?.attempts.some(a=>a.ordinal!==10&&['waiting','running'].includes(a.status)));
 const hasSucceededAuthoring=computed(()=>data.value?.attempts.some(attempt=>attempt.ordinal===4&&attempt.status==='succeeded')??false);
 const visibleAttempts=computed(()=>[...(data.value?.attempts??[])].filter(attempt=>attempt.ordinal!==10).sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at)));
 const sortedAttempts=visibleAttempts;
+const answerDiagnosticLabels:Record<string,string>={invalid_response_shape:'响应结构无效',missing_choice:'响应缺少结果',unexpected_choice_count:'响应结果数量异常',invalid_choice_shape:'结果结构无效',incomplete_finish_reason:'响应未正常结束',invalid_message_shape:'消息结构无效',invalid_message_role:'消息角色异常',empty_content:'响应正文为空',unexpected_tool_call:'返回了未支持的工具调用',refusal_response:'模型返回拒答',invalid_usage_shape:'用量字段格式异常',invalid_model_field:'模型字段格式异常',invalid_completion_id:'响应ID格式异常',invalid_json:'响应JSON无效',result_validation_failed:'答案内容未通过校验'};
+function answerDiagnostic(attempt:Attempt){
+ const result=attempt.result as {error?:{reason_code?:unknown}}|null;
+ const code=result?.error?.reason_code;
+ if(typeof code==='string')return `${answerDiagnosticLabels[code]??'响应校验未通过'}（${code}）`;
+ if(attempt.ordinal===5&&attempt.status==='failed'&&attempt.error?.includes('未返回完整有效的内容'))return '历史记录未保存细分原因码';
+ return null;
+}
 const materialOpen=shallowRef(false);const deleting=shallowRef<{id:string;original_name:string}|null>(null);
 const currentStep=computed(()=>visibleSteps.value.find(step=>!['succeeded','skipped'].includes(step.status)||(step.ordinal===7&&step.result?.decision==='repair')));
 const currentStepLabel=computed(()=>{
@@ -89,19 +79,6 @@ function attemptStatusColor(attempt:Attempt){
  if(attempt.ordinal===7&&attempt.result&&typeof attempt.result==='object'&&'decision' in attempt.result&&attempt.result.decision==='quarantine')return 'error';
  return attempt.status==='succeeded'?'success':attempt.status==='failed'?'error':attempt.status==='running'?'primary':'secondary';
 }
-function showAttempt(attempt:Attempt){selectedAttempt.value=attempt;copiedAttemptField.value='';copyAttemptError.value='';expandedAttemptSections.value=['result'];attemptOpen.value=true;}
-function toggleAttemptSection(section:string){expandedAttemptSections.value=expandedAttemptSections.value.includes(section)?expandedAttemptSections.value.filter(item=>item!==section):[...expandedAttemptSections.value,section];}
-function attemptJson(value:unknown){return value==null?'暂无内容':JSON.stringify(value,null,2)??'暂无内容';}
-async function copyAttemptField(label:string,value:unknown){
- try{
-  await navigator.clipboard.writeText(attemptJson(value));
-  copiedAttemptField.value=label;
-  copyAttemptError.value='';
-  window.setTimeout(()=>{if(copiedAttemptField.value===label)copiedAttemptField.value='';},1800);
- }catch(cause){
-  copyAttemptError.value=cause instanceof Error?`复制${label}失败：${cause.message}`:`复制${label}失败，请检查浏览器剪贴板权限`;
- }
-}
 const artifactAttempts:Record<number,number[]>={1:[1,2],9:[9],4:[4],5:[5],6:[6],8:[8]};
 function artifactsForStep(step:Step){
  const ordinals=new Set(artifactAttempts[step.ordinal]??[]);
@@ -122,22 +99,17 @@ function questionSections(step:Step){
 }
 function artifactLabel(kind:string){return kind==='published_result'?'下载发布成果':kind==='authored_question'?'下载题目包文本':kind==='score_report'?'下载评分报告':kind==='model_answer'?'下载模型答案':kind==='redacted_markdown'?'下载脱敏文本':'下载页码索引';}
 async function publish(){try{submitting.value=true;error.value='';await api(`/workflows/${route.params.id}/publish`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'成果发布失败';}finally{submitting.value=false;}}
-async function exportDocx(){try{exportingDocx.value=true;error.value='';await api(`/workflows/${route.params.id}/redacted-docx`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'生成脱敏 DOCX 失败';}finally{exportingDocx.value=false;}}
-let timer:ReturnType<typeof setInterval>|undefined;
-watch(()=>data.value?.attempts.some(a=>[1,2,3,4,5,6,9].includes(a.ordinal) && ['waiting','running'].includes(a.status)),active=>{
- if(timer)clearInterval(timer);
- if(active)timer=setInterval(()=>{if(!loading.value)refresh();},3000);
-});
-onUnmounted(()=>{if(timer)clearInterval(timer);});
+watch(()=>route.params.id,()=>{docxArchivePath.value='';});
+async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArchivePath.value='';const result=await api<{archive_path:string}>(`/workflows/${route.params.id}/redacted-docx`,{method:'POST'});docxArchivePath.value=`assets/out/${result.archive_path}`;await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'生成脱敏 DOCX 失败';}finally{exportingDocx.value=false;}}
 </script>
 <template><Column :gap="24">
  <RouterLink v-if="data" :to="`/projects/${data.project.id}`" class="link-text text-sm">← {{ data.project.name }}</RouterLink>
  <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
  <p v-if="loading && !data" class="text-muted">正在读取工作流…</p>
  <template v-if="data">
-  <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ currentStep ? `${currentStep.display_position ?? currentStep.position ?? currentStep.ordinal} · ${currentStep.name} · ${currentStepLabel}` : '全部完成' }}</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料</p></Column><Row wrap :gap="8"><v-btn color="error" variant="text" :disabled="submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
+  <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ currentStep ? `${currentStep.display_position ?? currentStep.position ?? currentStep.ordinal} · ${currentStep.name} · ${currentStepLabel}` : '全部完成' }}</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料 · 状态以最近一次刷新为准</p></Column><Row wrap :gap="8"><v-btn color="error" variant="text" :disabled="submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
   <v-alert type="info">原件保留在本机。PDF由第一步调用智谱提取并入库，DOCX/TXT/MD本地解析入库；第二步读取数据库原文并脱敏。请核对脱敏产物与识别异常。</v-alert>
-  <section v-if="stepStatus(9)==='succeeded'" class="surface-card p-16"><Column :gap="12"><h2 class="section-title">可选脱敏材料 DOCX</h2><p class="text-sm text-muted">流程完成并归档后可手动生成，供后续自行上传。导出使用当前脱敏结果，不会新增或重跑工作流步骤。<template v-if="!canExportDocx">当前还需完成：{{ currentStep?.name ?? '归档达标题目' }}。</template></p><Row wrap :gap="8"><v-btn color="primary" variant="flat" :loading="exportingDocx" :disabled="exportingDocx||!canExportDocx" @click="exportDocx">生成脱敏 DOCX</v-btn><v-btn v-if="currentDocxArtifact" :href="`/api/artifacts/${currentDocxArtifact.id}/download`" color="secondary" variant="tonal">下载脱敏材料.docx</v-btn></Row></Column></section>
+  <section v-if="stepStatus(9)==='succeeded'" class="surface-card p-16"><Column :gap="12"><h2 class="section-title">可选脱敏材料 DOCX</h2><p class="text-sm text-muted">流程完成并归档后可手动生成，供后续自行上传。导出使用当前脱敏结果，不会新增或重跑工作流步骤；原件副本与 DOCX 保存在仓库的 <code>assets/out/附件库/</code> 下。<template v-if="!canExportDocx">当前还需完成：{{ currentStep?.name ?? '归档达标题目' }}。</template></p><p v-if="docxArchivePath" class="text-xs text-muted break-all">本题附件目录：{{ docxArchivePath }}</p><Row wrap :gap="8"><v-btn color="primary" variant="flat" :loading="exportingDocx" :disabled="exportingDocx||!canExportDocx" @click="exportDocx">生成脱敏 DOCX</v-btn><v-btn v-if="currentDocxArtifact" :href="`/api/artifacts/${currentDocxArtifact.id}/download`" color="secondary" variant="tonal">下载脱敏材料.docx</v-btn></Row></Column></section>
   <Row stack-on-mobile y="start" :gap="16">
    <StepTimeline :steps="visibleSteps" class="w-full lg:w-650px lg:flex-none">
     <template #actions="{step}">
@@ -163,17 +135,17 @@ onUnmounted(()=>{if(timer)clearInterval(timer);});
     <Column v-if="!data.materials.length && data.workflow.source_manifest?.length" class="surface-panel p-16" :gap="8"><p class="text-xs text-muted">待入库目录材料：</p><span v-for="source in data.workflow.source_manifest" :key="source.name" class="text-xs text-muted break-all">{{ source.name }} · {{ fileSize(source.size) }}</span></Column>
     <MaterialRecordsTable :workflow-id="data.workflow.id" :materials="data.materials" :steps="visibleSteps" :redaction-status="stepStatus(9)" :redaction-queued="data.attempts.some(attempt=>attempt.ordinal===9 && attempt.status==='waiting')" :disabled="submitting" prefer-redacted @add="addMaterial" @delete="deleting=$event" />
     <ModelEvaluationSummary :steps="visibleSteps" :attempts="data.attempts" />
-    <section class="surface-card  p-16 min-w-0"><Column :gap="12"><Row x="between"><h2 class="section-title">执行历史</h2><span class="text-sm text-muted">{{ visibleAttempts.length }} 次</span></Row>
+    <section class="surface-card  p-16 min-w-0"><Column :gap="12"><Row x="between"><h2 class="section-title">最近执行状态</h2><span class="text-sm text-muted">{{ visibleAttempts.length }} 次</span></Row>
      <Column class="w-full overflow-x-auto">
       <v-table density="compact" class="min-w-0 h-400">
-       <thead><tr><th scope="col">步骤</th><th scope="col">状态</th><th scope="col">执行时间</th><th scope="col">详情</th></tr></thead>
+       <thead><tr><th scope="col">步骤</th><th scope="col">状态</th><th scope="col">执行时间</th><th scope="col">失败原因及诊断</th></tr></thead>
        <tbody>
         <template v-for="attempt in sortedAttempts" :key="attempt.id">
          <tr>
           <td class="text-sm">{{ attemptNames[attempt.ordinal] ?? `步骤 ${attempt.ordinal}` }}</td>
           <td class="whitespace-nowrap"><v-chip size="small" :color="attemptStatusColor(attempt)">{{ attemptStatusLabel(attempt) }}</v-chip></td>
           <td class="whitespace-nowrap text-xs">{{ dateLabel(attempt.started_at) }}</td>
-          <td><v-btn variant="text" color="primary" @click="showAttempt(attempt)">查看</v-btn></td>
+          <td class="text-xs text-danger">{{ attempt.error || '—' }}<div v-if="answerDiagnostic(attempt)" class="text-muted">{{ answerDiagnostic(attempt) }}</div></td>
          </tr>
         </template>
         <tr v-if="!data.attempts.length"><td colspan="4" class="text-sm text-muted py-12">暂无执行记录</td></tr>
@@ -198,42 +170,6 @@ onUnmounted(()=>{if(timer)clearInterval(timer);});
     </v-card-text>
     <v-card-actions><v-spacer /><v-btn color="secondary" @click="questionOpen=false">关闭</v-btn></v-card-actions>
    </v-card>
-  </v-dialog>
-  <v-dialog v-model="attemptOpen" max-width="960" scrollable>
-   <Column v-if="selectedAttempt" class="surface-card p-20" :gap="16">
-    <Row x="between" y="center" :gap="12"><Column :gap="4"><h2 class="section-title">{{ attemptNames[selectedAttempt.ordinal] ?? `步骤 ${selectedAttempt.ordinal}` }} · 执行详情</h2><span class="text-xs text-muted">{{ dateLabel(selectedAttempt.started_at) }}</span></Column><v-btn icon="$close" aria-label="关闭执行详情" variant="text" @click="attemptOpen=false" /></Row>
-    <v-chip class="self-start" size="small" :color="attemptStatusColor(selectedAttempt)">{{ attemptStatusLabel(selectedAttempt) }}</v-chip>
-    <section v-if="selectedAttempt.ordinal===7"><h3 class="text-sm font-semibold mb-8">各作答模型评分</h3>
-     <v-table v-if="acceptanceScores.length" density="compact"><thead><tr><th>模型</th><th>得分 / 满分</th><th>百分制</th><th>分数上限</th><th>结论</th></tr></thead><tbody><tr v-for="item in acceptanceScores" :key="item.id"><td>{{ item.name }}</td><td>{{ item.score??'—' }} / {{ item.max_score??'—' }}</td><td>{{ item.percentage??'—' }}</td><td>{{ item.threshold??'—' }}</td><td>{{ item.status }}</td></tr></tbody></v-table>
-     <p v-else class="text-sm text-muted">本次执行未保存各模型评分。</p>
-     <p class="text-xs text-muted mt-8">各模型百分制得分严格低于各自上限才通过；全部通过才达标。</p>
-    </section>
-    <v-alert v-if="selectedAttempt.error" type="error" density="compact">{{ selectedAttempt.error }}</v-alert>
-    <v-alert v-if="copyAttemptError" type="error" density="compact" closable @click:close="copyAttemptError=''">{{ copyAttemptError }}</v-alert>
-    <Column class="max-h-480px overflow-y-auto" :gap="4">
-     <section class="surface-panel overflow-hidden">
-      <Row x="between" y="center" class="min-h-36px px-8">
-       <v-btn size="small" variant="text" @click="toggleAttemptSection('result')">{{ expandedAttemptSections.includes('result')?'收起':'展开' }} · 结果 / 输出</v-btn>
-       <v-btn size="small" variant="text" @click="copyAttemptField('结果',selectedAttempt.result)">{{ copiedAttemptField==='结果'?'已复制':'复制' }}</v-btn>
-      </Row>
-      <pre v-if="expandedAttemptSections.includes('result')" class="border-t border-subtle p-8 text-xs whitespace-pre-wrap break-all">{{ attemptJson(selectedAttempt.result) }}</pre>
-     </section>
-     <section class="surface-panel overflow-hidden">
-      <Row x="between" y="center" class="min-h-36px px-8">
-       <v-btn size="small" variant="text" @click="toggleAttemptSection('input')">{{ expandedAttemptSections.includes('input')?'收起':'展开' }} · 输入</v-btn>
-       <v-btn size="small" variant="text" @click="copyAttemptField('输入',selectedAttempt.input)">{{ copiedAttemptField==='输入'?'已复制':'复制' }}</v-btn>
-      </Row>
-      <pre v-if="expandedAttemptSections.includes('input')" class="border-t border-subtle p-8 text-xs whitespace-pre-wrap break-all">{{ attemptJson(selectedAttempt.input) }}</pre>
-     </section>
-     <section v-if="selectedAttempt.config" class="surface-panel overflow-hidden">
-      <Row x="between" y="center" class="min-h-36px px-8">
-       <v-btn size="small" variant="text" @click="toggleAttemptSection('config')">{{ expandedAttemptSections.includes('config')?'收起':'展开' }} · 配置</v-btn>
-       <v-btn size="small" variant="text" @click="copyAttemptField('配置',selectedAttempt.config)">{{ copiedAttemptField==='配置'?'已复制':'复制' }}</v-btn>
-      </Row>
-      <pre v-if="expandedAttemptSections.includes('config')" class="border-t border-subtle p-8 text-xs whitespace-pre-wrap break-all">{{ attemptJson(selectedAttempt.config) }}</pre>
-     </section>
-    </Column>
-   </Column>
   </v-dialog>
   <v-dialog v-model="materialOpen" max-width="520"><MaterialEditor v-if="materialOpen" :workflow-id="data.workflow.id" @saved="refresh" @close="materialOpen=false" /></v-dialog>
   <v-dialog :model-value="deleting!==null" max-width="460" @update:model-value="deleting=null"><Column class="surface-card p-20" :gap="16"><h2 class="section-title">移除附件</h2><p class="text-sm text-muted break-all">{{ deleting?.original_name }} 将从这道题移除，历史记录和本机原件保留。移除后第一步会回到“入库”待执行；点击“入库”会重新读取题目目录，DOCX/TXT/MD 本地解析，PDF 提取文本，混合格式会分别处理。</p><Row x="end" :gap="8"><v-btn :disabled="submitting" @click="deleting=null">取消</v-btn><v-btn color="error" :loading="submitting" @click="removeMaterial">确认移除</v-btn></Row></Column></v-dialog>

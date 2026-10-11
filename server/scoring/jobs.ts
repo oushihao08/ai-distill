@@ -16,8 +16,8 @@ import {join,resolve,relative} from 'node:path';
 import {readScoreContext} from './context';
 import {buildAnonymousInput,runIndependentScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
 import {extractTextScore,validateScore,type ScoreContext} from './validate';
-import {validateStepConfig} from '../project-folders';
-import {mergeCodexDefaults,readConfiguredAgentModelCatalog,readProjectAgentDefaults} from '../agent/config';
+import {validateStepConfigForExecution} from '../project-folders';
+import {mergeCodexDefaults,readProjectAgentDefaults} from '../agent/config';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '@shared/step-prompts';
 export function scoreContextDigest(context:ScoreContext){
  const b=context.binding;
@@ -50,7 +50,7 @@ export async function enqueueScore(pool:Pool,id:string,revisionRoundId?:string){
   if(!answerIds.length)throw new HTTPException(409,{message:'当前模型集合没有成功答案可评分'});
   const settings=await readRevisionSettings(db,id,revisionRoundId);
   const raw=settings?settings.configs?.['6']:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[w.project_id])).rows[0]?.config;
-  const config=validateStepConfig(6,mergeCodexDefaults(raw,await readProjectAgentDefaults(db,w.project_id)),await readConfiguredAgentModelCatalog(db)) as {provider:'codex';model:string;reasoning_effort:string;prompt:string},loggingConfig=config as {model?:string;reasoning_effort?:string},queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
+  const config=validateStepConfigForExecution(6,mergeCodexDefaults(raw,await readProjectAgentDefaults(db,w.project_id))),loggingConfig=config as {model?:string;reasoning_effort?:string},queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
   config.prompt=resolveScoreStepPrompt(config.prompt);
   for(const answerId of answerIds){
    const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];buildAnonymousInput(context);
@@ -127,8 +127,9 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
  logEvent('attempt.claimed',{level:'info',state:'running'});logEvent('attempt.started',{level:'info',state:'running'});
  const cancellation=watchTaskCancellation(pool,job.id,signal,false);signal=cancellation.signal;
  let heartbeatFailed=false,lastHeartbeatAt=new Date().toISOString();
- const heartbeat=setInterval(()=>{withLogContext({component:'scoring',project_id:job.project_id,workflow_id:job.workflow_id,ordinal:6,attempt_id:job.id},()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('评分心跳写入失败');}heartbeatFailed=true;}));},10000);
- let wrote=false;const directory=join(resolve(root),job.workflow_id,job.id);
+ let heartbeatInFlight=false;
+ const heartbeat=setInterval(()=>{if(heartbeatInFlight)return;heartbeatInFlight=true;withLogContext({component:'scoring',project_id:job.project_id,workflow_id:job.workflow_id,ordinal:6,attempt_id:job.id},()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('评分心跳写入失败');}heartbeatFailed=true;}).finally(()=>{heartbeatInFlight=false;}));},10000);
+ let wrote=false,failurePhase='input_validation';const directory=join(resolve(root),job.workflow_id,job.id);
  try{
   if(scoreContextDigest(job.input.context)!==job.input.digest)throw new Error('invalid snapshot');
   buildAnonymousInput(job.input.context);
@@ -136,25 +137,29 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
   const config=job.config;
   if(job.input.execution_instructions&&scoreExecutionDigest(job.input.execution_instructions)!==scoreExecutionDigest())throw new Error('评分执行指令已变化，请重新派发评分');
   if(config?.provider!=='codex'||typeof config.model!=='string'||!config.model.trim()||typeof config.reasoning_effort!=='string'||!['low','medium','high','xhigh','max','ultra'].includes(config.reasoning_effort))throw new Error('invalid frozen config');
+  failurePhase='agent_execution';
   const invocation=await runRevisionCall(pool,job.id,'score',(remaining,call_id)=>grade(job.input.context,{root:join(directory,'private'),model:config.model,reasoning_effort:config.reasoning_effort,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:Math.min(1800000,remaining??1800000)}));
   if(signal?.aborted)throw new Error('cancelled');
+  failurePhase='result_validation';
   const validation=typeof invocation.raw_text==='string'?extractTextScore(invocation.raw_text,job.input.context.rubric):validateScore(invocation.report,job.input.context);
   const textReturned=typeof invocation.raw_text==='string'&&!!invocation.raw_text.trim();
   const context=job.input.context;
   const projectBinding=context.project_prompt?{project_prompt_digest:context.project_prompt.source_digest,project_prompt_files:context.project_prompt.files.map((file:{path:string;sha256:string;size_bytes:number})=>({path:file.path,sha256:file.sha256,size_bytes:file.size_bytes}))}:context.project_rules?{project_rule_version_id:context.project_rules.version_id,project_rule_source_digest:context.project_rules.source_digest,project_rule_files:context.project_rules.files.map((file:{path:string;sha256:string;size_bytes:number})=>({path:file.path,sha256:file.sha256,size_bytes:file.size_bytes}))}:{};
   const publication={question_version:context.binding.question_version,rubric_version:context.binding.rubric_version,...projectBinding,...(invocation.execution_request?{execution_request:invocation.execution_request}:{}),...(textReturned?{raw_text:invocation.raw_text,score_extraction:validation}:{}),report:invocation.report,validation,binding:context.binding,session_id:invocation.session_id,usage:invocation.usage,duration_ms:invocation.duration_ms,model:config.model,reasoning_effort:config.reasoning_effort};
+  failurePhase='result_persistence';
   const bytes=Buffer.from(JSON.stringify(publication,null,2)+'\n'),path=join(directory,'score.json');await mkdir(directory,{recursive:true});wrote=true;logEvent('file.write.started',{level:'info',file_kind:'score_report',output_bytes:bytes.length});await writeFile(path,bytes,{mode:0o600});logEvent('file.write.completed',{level:'info',file_kind:'score_report',output_bytes:bytes.length});
-  const tx=await pool.connect();try{
+  const tx=await pool.connect();let scoreStepStatus='';try{
    await tx.query('BEGIN');if(!await stillCurrent(tx,job)||!(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE",[job.id])).rowCount)throw new Error('obsolete');
    await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)',[crypto.randomUUID(),job.workflow_id,job.id,'score_report',relative(resolve(root),path),createHash('sha256').update(bytes).digest('hex'),bytes.length]);
    const status=textReturned||validation.valid?'succeeded':'failed',error=textReturned||validation.valid?null:'评分存在争议或证据/结构无效，详见校验结果';
    await tx.query('UPDATE ai_distill.step_attempts SET status=$2,result=$3,session_id=$4,error=$5,finished_at=now() WHERE id=$1',[job.id,status,JSON.stringify(publication),invocation.session_id,error]);
-   job.status=status;job.result=publication;const scoreStepStatus=await refreshScoreStep(tx,job);await tx.query('COMMIT');logEvent('attempt.completed',{level:validation.valid?'info':'warn',state:status,output_bytes:bytes.length,token_usage:invocation.usage});await automaticallyJudgeAfterScoring(job,scoreStepStatus,judgeAcceptance);
+   job.status=status;job.result=publication;scoreStepStatus=await refreshScoreStep(tx,job);await tx.query('COMMIT');logEvent('attempt.completed',{level:validation.valid?'info':'error',state:status,output_bytes:bytes.length,token_usage:invocation.usage,...(!validation.valid?{failure_phase:'result_validation'}:{})});
   }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
+  await automaticallyJudgeAfterScoring(job,scoreStepStatus,judgeAcceptance);
  }catch(error){
-  logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)});
+  logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error),failure_phase:failurePhase});
   if(wrote)try{if(!(await pool.query('SELECT id FROM ai_distill.artifacts WHERE attempt_id=$1 LIMIT 1',[job.id])).rowCount)await rm(join(directory,'score.json'),{force:true});}catch(cleanupError){logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'score_report',...classifyLogError(cleanupError)});console.error('评分发布状态未知，保留文件等待核对');}
-  const tx=await pool.connect();try{await tx.query('BEGIN');const current=await stillCurrent(tx,job);const failed=await tx.query("UPDATE ai_distill.step_attempts SET status='failed',error='评分执行失败或版本已失效，可检查后重试',finished_at=now() WHERE id=$1 AND status='running'",[job.id]);let scoreStepStatus='';if(current&&failed.rowCount){job.status='failed';job.result=null;scoreStepStatus=await refreshScoreStep(tx,job);}await tx.query('COMMIT');await automaticallyJudgeAfterScoring(job,scoreStepStatus,judgeAcceptance);}catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
+  const tx=await pool.connect();let scoreStepStatus='',shouldJudge=false;try{await tx.query('BEGIN');const current=await stillCurrent(tx,job);const failed=await tx.query("UPDATE ai_distill.step_attempts SET status='failed',error='评分执行失败或版本已失效，可检查后重试',finished_at=now() WHERE id=$1 AND status='running'",[job.id]);if(current&&failed.rowCount){job.status='failed';job.result=null;scoreStepStatus=await refreshScoreStep(tx,job);shouldJudge=true;}await tx.query('COMMIT');}catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}if(shouldJudge)await automaticallyJudgeAfterScoring(job,scoreStepStatus,judgeAcceptance);
  }finally{cancellation.dispose();clearInterval(heartbeat);restoreLogContext();}
  return true;
 }

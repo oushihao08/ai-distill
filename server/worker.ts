@@ -9,7 +9,7 @@ import {createAnswerClient} from './answer-models/dispatch';
 import { runNextExtraction } from './materials/jobs';
 import { runNextRedaction } from './materials/redaction-jobs';
 import { runNextIntake } from './intake-jobs';
-import { runWorkerPool } from './worker-pool';
+import { createFairQueueHandler,runWorkerPool } from './worker-pool';
 import { createWorkerMonitor } from './monitoring/worker-monitor';
 import {runNextScore} from './scoring/jobs';
 import {runNextProjectSkill} from './skill-generation/jobs';
@@ -36,14 +36,20 @@ try {
  await monitor.start();
  agentConcurrencyGate=getAgentConcurrencyGate(root,concurrency.agent);
  const agentGate=agentConcurrencyGate;
- await Promise.all([runWorkerPool(async()=>{try{await runRevisionTick(pool,root);return false;}catch(error){throw error;}},{component:'revision',concurrency:1,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:error=>{logEvent('worker.dispatch.failed',{level:'error',component:'revision',...classifyLogError(error)});console.error('返修接续失败，稍后重试');}}),runWorkerPool(
+ const dispatchAgentQueue=createFairQueueHandler([
+  ()=>runNextProjectSkill(pool,root,undefined,controller.signal),
+  ()=>runNextRedaction(pool,root,controller.signal,undefined,'codex'),
+  ()=>runNextAuthoring(pool,root,undefined,controller.signal),
+  ()=>runNextScore(pool,root,undefined,controller.signal),
+ ]);
+ await Promise.all([runWorkerPool(async()=>{try{await runRevisionTick(pool,root);return false;}catch(error){throw error;}},{component:'revision',concurrency:1,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('返修接续失败，稍后重试');}}),runWorkerPool(
   async worker => {
    try {
     const root=process.env.STORAGE_DIR ?? '.storage';
     // Reserve a preferred lane for each available stage, with fallback when its queue is empty.
     return worker % 2 === 0
-     ? await runNextIntake(pool,root) || await runNextExtraction(pool,root)
-     : await runNextExtraction(pool,root) || await runNextIntake(pool,root);
+     ? await runNextIntake(pool,root,undefined,controller.signal) || await runNextExtraction(pool,root,undefined,undefined,controller.signal)
+     : await runNextExtraction(pool,root,undefined,undefined,controller.signal) || await runNextIntake(pool,root,undefined,controller.signal);
    } catch(error) { throw error; }
   },
   {
@@ -53,7 +59,7 @@ try {
    signal: controller.signal,
    idleMs: 3000,
    errorDelayMs: 5000,
-   onError: error => {logEvent('worker.dispatch.failed',{level:'error',component:'materials',...classifyLogError(error)});console.error('任务调度失败，稍后重试；未输出凭证或材料内容');},
+   onError: () => {console.error('任务调度失败，稍后重试；未输出凭证或材料内容');},
   },
  ),runWorkerPool(
   async worker=>{try{
@@ -61,14 +67,13 @@ try {
    const redact=()=>runNextRedaction(pool,root,controller.signal,undefined,'api');
    return worker%2===0?await answer()||await redact():await redact()||await answer();
   }catch(error){throw error;}},
-  {component:'model_api',concurrency:concurrency.llmApi,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:error=>{logEvent('worker.dispatch.failed',{level:'error',component:'model_api',...classifyLogError(error)});console.error('API 任务调度失败，稍后重试；未输出凭证或材料内容');}},
+  {component:'model_api',concurrency:concurrency.llmApi,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('API 任务调度失败，稍后重试；未输出凭证或材料内容');}},
  ),runWorkerPool(
   async()=>{try{
-   const permit=await agentGate.run(async()=>
-    await runNextProjectSkill(pool,root,undefined,controller.signal) || await runNextRedaction(pool,root,controller.signal,undefined,'codex') || await runNextAuthoring(pool,root,undefined,controller.signal) || await runNextScore(pool,root,undefined,controller.signal));
+   const permit=await agentGate.run(dispatchAgentQueue,{signal:controller.signal});
    return permit.acquired?permit.value:false;
   }catch(error){throw error;}},
-  {component:'codex_and_scoring',concurrency:concurrency.agent,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:error=>{logEvent('worker.dispatch.failed',{level:'error',component:'codex_and_scoring',...classifyLogError(error)});console.error('评分调度失败，稍后重试；未输出凭证或材料内容');}},
+  {component:'codex_and_scoring',concurrency:concurrency.agent,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('评分调度失败，稍后重试；未输出凭证或材料内容');}},
  )]);
 } catch(error) { logEvent('service.runtime_failed',{level:'error',component:'task_worker',...classifyLogError(error)});throw error; }
 finally { logEvent('service.shutdown_requested',{level:'info'});try { await monitor.stop(); } finally { if(agentConcurrencyGate)closeAgentConcurrencyGate(root);await pool.end();logEvent('service.stopped',{level:'info'});await logger.close(); } }

@@ -87,7 +87,7 @@ export async function readWorkerMonitor(root:string):Promise<WorkerMonitorStatus
   snapshotReadFailed=false;return record;
  }catch(error){
   if(error&&typeof error==='object'&&'code'in error&&(error as {code?:unknown}).code==='ENOENT')return unavailable();
-  if(!snapshotReadFailed)logEvent('monitor.snapshot_read_failed',{level:'warn',component:'worker_monitor',operation:'read_snapshot',...classifyLogError(error)});
+  if(!snapshotReadFailed)logEvent('monitor.snapshot_read_failed',{level:'error',component:'worker_monitor',operation:'read_snapshot',...classifyLogError(error)});
   snapshotReadFailed=true;return unavailable();
  }
 }
@@ -99,7 +99,7 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
   const temporary=join(root,`.worker-monitor-${randomUUID()}.tmp`);
  try{await mkdir(root,{recursive:true});await writeFile(temporary,JSON.stringify(record),{mode:0o600,flag:'wx'});await rename(temporary,join(root,'.worker-monitor.json'));if(snapshotWriteFailed)logEvent('monitor.snapshot_write_recovered',{level:'info',component:'worker_monitor'});snapshotWriteFailed=false;}
   catch(error){if(!snapshotWriteFailed)logEvent('monitor.snapshot_write_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});snapshotWriteFailed=true;}
-  finally{try{await rm(temporary,{force:true});}catch(error){logEvent('monitor.temporary_cleanup_failed',{level:'warn',component:'worker_monitor',...classifyLogError(error)});}}
+  finally{try{await rm(temporary,{force:true});}catch(error){logEvent('monitor.temporary_cleanup_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});}}
  };
  const update=async()=>{
   let tasks:ExecutorStatus[]|undefined;
@@ -111,11 +111,11 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
     const date=at instanceof Date?at:new Date(at);
     return{state:row.status,authentication:'unknown',quota:'unknown',error:row.error_kind??'unknown',...(at&&Number.isFinite(date.getTime())?{last_event:{type:row.heartbeat_at?'heartbeat' as const:'started' as const,at:date.toISOString()}}:{})};
    });
-  }catch(error){tasks=undefined;if(!tasksReadFailed)logEvent('monitor.tasks_read_failed',{level:'warn',component:'worker_monitor',...classifyLogError(error)});tasksReadFailed=true;}
+  }catch(error){tasks=undefined;if(!tasksReadFailed)logEvent('monitor.tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});tasksReadFailed=true;}
   if(tasks&&tasksReadFailed){logEvent('monitor.tasks_read_recovered',{level:'info',component:'worker_monitor'});tasksReadFailed=false;}
   let snapshot:ResourceSnapshot;
   try{snapshot=projectSnapshot(await (options.sample??sampleResources)({registered_pids:listAgentProcessIds(),tasks}));}
-  catch(error){if(!resourceSampleFailed)logEvent('monitor.resource_sample_failed',{level:'warn',component:'worker_monitor',...classifyLogError(error)});resourceSampleFailed=true;snapshot={sampled_at:new Date().toISOString(),system:{status:'unknown'},processes:[{pid:process.pid,rss_bytes:{status:'unknown'}}],tasks:{status:'unknown'}};}
+  catch(error){if(!resourceSampleFailed)logEvent('monitor.resource_sample_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});resourceSampleFailed=true;snapshot={sampled_at:new Date().toISOString(),system:{status:'unknown'},processes:[{pid:process.pid,rss_bytes:{status:'unknown'}}],tasks:{status:'unknown'}};}
   if(!resourceSampleFailed||snapshot.system.status==='known'){if(resourceSampleFailed)logEvent('monitor.resource_sample_recovered',{level:'info',component:'worker_monitor'});resourceSampleFailed=false;}
   const low=snapshot.system.status==='known'&&snapshot.system.value.available_percent<threshold;
   record={status:stopped?'stopped':low?'paused':'running',heartbeat_at:new Date().toISOString(),worker_pid:process.pid,dispatch:{allowed:!stopped&&!low,policy:'memory_only_unknown_allow',memory_state:snapshot.system.status,min_available_percent:threshold,reason:stopped?'stopped':low?'low_available_memory':snapshot.system.status==='known'?'memory_above_threshold':'memory_unknown'},advice:adviseDispatch(snapshot,{min_available_percent:threshold}),snapshot};

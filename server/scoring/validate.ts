@@ -24,29 +24,36 @@ export function extractTextScore(text:string,rubric:RubricItem[]){
  const value=candidates.size===1?[...candidates][0]:undefined;
  const issues:string[]=[];
  let itemTotal=0;
- if(rubric.length&&rubric.every(item=>item.max_score===1)){
+ if(rubric.length){
   const byId=new Map(rubric.map(item=>[item.id,item]));
   const found=new Set<string>();
+  const ordered=[...rubric].sort((left,right)=>right.id.length-left.id.length);
+  const linePattern=(id:string)=>new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\s*[：:]\\s*(?:得分\\s*)?(\\d+(?:\\.\\d+)?)\\s*[／/]\\s*(\\d+(?:\\.\\d+)?)(?:\\s*分)?(?:\\s|[，。；;|]|$)`);
+  const totalLabels=new Set(['最终总分','最终得分','总分','合计得分','得分']);
   for(const rawLine of text.split('\n')){
    const line=rawLine.replace(/\*\*/g,'').trim();
-   const item=rubric.find(candidate=>line.startsWith(`${candidate.id}：`)||line.startsWith(`${candidate.id}:`));
-   if(!item)continue;
-   const escaped=item.id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-   const match=line.match(new RegExp(`^${escaped}\\s*[：:]\\s*(?:得分\\s*)?(\\d+(?:\\.\\d+)?)\\s*[／/]\\s*(\\d+(?:\\.\\d+)?)(?:\\s*分)?(?:\\s|[，。；;|]|$)`));
-   if(!match||found.has(item.id)){
-    issues.push(`${item.id}：条目评分格式缺失或重复`);
+   const item=ordered.find(candidate=>line.startsWith(`${candidate.id}：`)||line.startsWith(`${candidate.id}:`));
+   if(item){
+    const match=line.match(linePattern(item.id));
+    if(!match||found.has(item.id)){
+     issues.push(`${item.id}：条目评分格式缺失或重复`);
+     continue;
+    }
+    found.add(item.id);
+    const score=Number(match[1]),denominator=Number(match[2]);
+    if(item.max_score===1&&score!==0&&score!==1){issues.push(`${item.id}：每项满分1分且得分只能为0或1`);continue;}
+    if(denominator!==item.max_score||score<0||score>item.max_score){issues.push(`${item.id}：得分或满分与本题rubric不符`);continue;}
+    itemTotal+=score;
     continue;
    }
-   found.add(item.id);
-   const score=Number(match[1]),denominator=Number(match[2]);
-   if((score!==0&&score!==1)||denominator!==1){issues.push(`${item.id}：每项满分1分且得分只能为0或1`);continue;}
-   itemTotal+=score;
+   const unknown=line.match(/^(.{1,160}?)\s*[：:]\s*(?:得分\s*)?(\d+(?:\.\d+)?)\s*[／/]\s*(\d+(?:\.\d+)?)(?:\s*分)?(?:\s|[，。；;|]|$)/);
+   if(unknown&&!totalLabels.has(unknown[1].trim())&&!byId.has(unknown[1].trim()))issues.push(`评分条目ID不属于本题rubric：${unknown[1].trim()}`);
   }
   if(found.size!==byId.size)issues.push('rubric条目评分缺失或重复');
  }
  const totalValid=value!==undefined&&Number.isFinite(value)&&value>=0&&value<=max_score;
  if(!totalValid)issues.push(candidates.size>1?'评分原文存在多个不同总分':'未能从评分原文明确提取合法总分');
- if(totalValid&&rubric.length&&rubric.every(item=>item.max_score===1)&&value!==itemTotal)issues.push('最终总分与逐项二元评分合计不一致');
+ if(totalValid&&rubric.length&&Math.abs(value-itemTotal)>1e-8)issues.push('最终总分与逐项评分合计不一致');
  const valid=totalValid&&issues.length===0;
  return {valid,total:valid?value:null,max_score,issues,mode:'text_score_extraction' as const};
 }

@@ -3,6 +3,7 @@
  * 关键方法与用途：`createApp()` 注册并组合项目、题目、配置、步骤、返修、下载与报表路由。
  * 使用场景：由 `index.ts` 创建本地服务实例；路由处理器调用各业务模块完成读写。
  */
+import {stepResultProjection,readWorkflowAttempts,readProjectWorkflowViews} from './workflow-view';
 import {invalidateRedactionResults} from './materials/state';
 import {sameRedactionConfig} from './materials/redaction-config';
 import {readModelApiCatalog} from './llm-api';
@@ -34,9 +35,7 @@ import {enqueueAnswer} from './answer-models/jobs';
 import {listAnswerModels,registerAnswerModel,setAnswerModelEnabled,readProjectModelSet,saveProjectModelSet} from './answer-models/model-set';
 import {runAcceptance} from './decisions/jobs';
 import {publishWorkflow} from './publishing/jobs';
-import {buildProjectExport,workbookSha256,collectProjectResults} from './reporting/export';
-import {summarizeProduction} from './reporting/metrics';
-import {validateApiPrice} from './reporting/prices';
+import {buildProjectExport,workbookSha256} from './reporting/export';
 import {exportRedactedDocx,readCurrentRedactedDocx} from './materials/redacted-docx-export';
 import { enqueueExtraction } from './materials/jobs';
 import { waitDuration, waitForAttempt } from './attempts';
@@ -49,7 +48,7 @@ import {classifyLogError,logEvent,loggerHealth,withLogContext} from './logging';
 const repositoryRoot=resolve(fileURLToPath(new URL('../',import.meta.url)));
 const projectExportsRoot=resolve(repositoryRoot,'assets/out');
 
-export function createApp(pool: Pool, storageRoot: string) {
+export function createApp(pool: Pool, storageRoot: string, assetExportRoot=projectExportsRoot) {
  configureAgentCredentialHome(()=>readAgentCredentialHome(pool));
  const concurrency=readConcurrencySettings(process.env,storageRoot);
  const batchChunkSize=readBatchChunkSize();
@@ -76,7 +75,6 @@ export function createApp(pool: Pool, storageRoot: string) {
   'post:/api/answer-models':{operation:'answer_model.register',fields:['model']},
   'put:/api/answer-models/:id':{operation:'answer_model.update',fields:['enabled']},
   'put:/api/projects/:id/answer-models':{operation:'project_answer_models.update',fields:['models']},
-  'put:/api/api-model-prices':{operation:'api_model_price.register',fields:['provider','model','currency','input_per_million','output_per_million','cached_input_per_million','cache_write_per_million','source','valid_from','valid_until']},
   'put:/api/projects/:id/steps/:ordinal/config':{operation:'project_step_config.update',fields:['config']},
   'put:/api/agent/projects/:id/steps/:ordinal/config':{operation:'agent_step_config.update',fields:['config']},
   'delete:/api/projects/:id/steps/:ordinal/config':{operation:'project_step_config.reset',fields:['config']},
@@ -86,7 +84,7 @@ export function createApp(pool: Pool, storageRoot: string) {
   'post:/api/projects/:id/rules/file':{operation:'project_rule_file.upload',fields:['expected_sha256','path']},
   'delete:/api/projects/:id/rules/file':{operation:'project_rule_file.delete',fields:['expected_sha256','path']},
  };
- const requestErrorStatus=(error:unknown)=>error instanceof HTTPException?error.status:error&&typeof error==='object'&&'code'in error&&error.code==='23505'&&'constraint'in error&&['projects_local_skill_path','system_answer_models_provider_base_url_model_key','api_model_prices_provider_model_currency_valid_from_key'].includes(String(error.constraint))?409:500;
+ const requestErrorStatus=(error:unknown)=>error instanceof HTTPException?error.status:error&&typeof error==='object'&&'code'in error&&error.code==='23505'&&'constraint'in error&&['projects_local_skill_path','system_answer_models_provider_base_url_model_key'].includes(String(error.constraint))?409:500;
  app.use('*',async(c,next)=>{
   const request_id=randomUUID(),started=performance.now();
   return withLogContext({request_id,operation_id:randomUUID()},async()=>{
@@ -102,11 +100,11 @@ export function createApp(pool: Pool, storageRoot: string) {
      logEvent('management.changed',{level:'info',...requestFields(c),operation:change.operation,state:'succeeded',changed_fields:change.fields.slice().sort().join(',')||'none',...(targetId?{target_id:targetId}:{}),...(c.req.param('ordinal')?{ordinal:Number(c.req.param('ordinal'))}:{})});
     }
    }
-   catch(error){failedStatus=requestErrorStatus(error);if(!healthRequest)logEvent('request.failed',{level:'error',...requestFields(c),status_code:failedStatus,...classifyLogError(error)});throw error;}
+   catch(error){failedStatus=requestErrorStatus(error);throw error;}
    finally{
     c.header('X-Request-ID',request_id);
     const status_code=failedStatus??c.res.status;
-    if(!healthRequest||status_code>=400)logEvent('request.finished',{level:status_code>=500?'error':status_code>=400?'warn':'info',...requestFields(c),status_code,duration_ms:Math.round(performance.now()-started)});
+    if((!healthRequest||status_code>=400)&&status_code<500)logEvent('request.finished',{level:status_code>=400?'warn':'info',...requestFields(c),status_code,duration_ms:Math.round(performance.now()-started)});
    }
   });
  });
@@ -120,11 +118,11 @@ export function createApp(pool: Pool, storageRoot: string) {
    } catch (error) { throw error; }
  });
  app.onError((error, c) => {
-   logEvent('request.error',{level:'error',...requestFields(c),status_code:requestErrorStatus(error),...classifyLogError(error)});
+   const status=requestErrorStatus(error);
+   if(status>=500)logEvent('request.error',{level:'error',...requestFields(c),status_code:status,...classifyLogError(error)});
    if (error instanceof HTTPException) return c.json({ error: error.message }, error.status);
    if ('code' in error && error.code==='23505' && 'constraint' in error && error.constraint==='projects_local_skill_path') return c.json({error:'此本地skill目录已被其他项目使用，请设置独立目录'},409);
    if ('code' in error && error.code==='23505' && 'constraint' in error && error.constraint==='system_answer_models_provider_base_url_model_key') return c.json({error:'此供应商模型已登记，请从系统目录选择现有记录'},409);
-   if ('code' in error && error.code==='23505' && 'constraint' in error && error.constraint==='api_model_prices_provider_model_currency_valid_from_key') return c.json({error:'此生效时间已有价格快照，历史价格不可覆盖，请追加新的生效时间'},409);
    console.error('请求失败（已写入安全诊断日志；未输出数据库或材料内容）');
    return c.json({ error: '操作失败，请检查数据库连接或文件存储后重试' }, 500);
  });
@@ -176,7 +174,7 @@ export function createApp(pool: Pool, storageRoot: string) {
  app.get('/api/monitor', async c => { try {
   const monitor=await readWorkerMonitor(storageRoot);
   let active_workflow_tasks:{status:'known'|'unavailable';items:Awaited<ReturnType<typeof readActiveWorkflowTasks>>}={status:'known',items:[]};
-  try{active_workflow_tasks.items=await readActiveWorkflowTasks(pool);}catch(error){active_workflow_tasks.status='unavailable';logEvent('monitor.active_tasks_read_failed',{level:'warn',component:'worker_monitor',...classifyLogError(error)});}
+  try{active_workflow_tasks.items=await readActiveWorkflowTasks(pool);}catch(error){active_workflow_tasks.status='unavailable';logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});}
   return c.json({...monitor,active_workflow_tasks,logging:await loggerHealth()});
  } catch(error) { throw error; } });
  app.get('/api/health', async c => {
@@ -250,38 +248,17 @@ export function createApp(pool: Pool, storageRoot: string) {
    const skillExists = await Bun.file(join(project.rows[0].local_skill_path ?? '/nonexistent','SKILL.md')).exists();
    return c.json({project:{...project.rows[0],skill_exists:skillExists},workflows:workflows.rows,steps});
  });
- app.get('/api/projects/:id/metrics',async c=>{
-   const id=uuid(c.req.param('id'));
-   const project=await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[id]);
-   if(!project.rowCount)throw new HTTPException(404,{message:'项目不存在'});
-   const [workflows,results]=await Promise.all([
-    pool.query("SELECT w.id AS workflow_id,true AS current,true AS started,\n     COALESCE((SELECT s.status='succeeded' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=1),false) AS processed,\n     COALESCE((SELECT s.status='succeeded' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4),false) AS authored,\n     COALESCE((SELECT (s.result->>'decision')='accepted' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=7),false) AS accepted,\n     COALESCE((SELECT (s.result->>'decision')='quarantine' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=7),false) AS quarantined,\n     CASE WHEN (SELECT s.status FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=6)='succeeded' THEN CASE WHEN (SELECT s.result->'validation'->>'valid' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=6)='true' THEN 1 ELSE (SELECT count(*)::int FROM jsonb_array_elements(COALESCE((SELECT s.result->'models' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=6),'[]'::jsonb)) model WHERE model->>'valid'='true') END ELSE 0 END AS valid_assessments,\n     EXISTS(SELECT 1 FROM ai_distill.project_exports e WHERE e.project_id=w.project_id AND e.status='succeeded' AND w.id=ANY(e.workflow_ids)) AS exported\n     FROM ai_distill.workflows w WHERE w.project_id=$1 AND w.deleted_at IS NULL ORDER BY w.id",[id]),
-    collectProjectResults(pool,id),
-   ]);
-   const currencyTotals:Record<string,number>={},unknownReasons:Record<string,number>={};let knownCalls=0,unknownCalls=0;
-   for(const cost of results.usage_costs){if(!cost.included)continue;if(cost.unknown_reason){unknownCalls++;unknownReasons[cost.unknown_reason]=(unknownReasons[cost.unknown_reason]??0)+1;}else{const currency=cost.currency!;currencyTotals[currency]=(currencyTotals[currency]??0)+cost.cost!;knownCalls++;}}
-   return c.json({production:summarizeProduction(workflows.rows),api_costs:{known_calls:knownCalls,known_amount_by_currency:currencyTotals,unknown_calls:unknownCalls,unknown_reasons:unknownReasons}});
+ app.get('/api/projects/:id/workflow-status',async c=>{
+  const projectId=uuid(c.req.param('id'));
+  const ids=[...new Set((c.req.query('ids')??'').split(',').filter(Boolean).map(value=>uuid(value)))];
+  if(!ids.length||ids.length>100)throw new HTTPException(400,{message:'一次读取1至100道题目的状态'});
+  return c.json(await readProjectWorkflowViews(pool,projectId,ids));
  });
  app.get('/api/projects/:id/exports',async c=>{
    const exists=await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[uuid(c.req.param('id'))]);
    if(!exists.rowCount)throw new HTTPException(404,{message:'项目不存在'});
    const result=await pool.query('SELECT id,batch,status,sha256,workflow_count,error,created_at,finished_at FROM ai_distill.project_exports WHERE project_id=$1 ORDER BY created_at DESC,id LIMIT 100',[uuid(c.req.param('id'))]);
    return c.json(result.rows);
- });
- app.get('/api/api-model-prices',async c=>c.json((await pool.query('SELECT id,provider,model,currency,input_per_million,output_per_million,cached_input_per_million,cache_write_per_million,source,valid_from,valid_until FROM ai_distill.api_model_prices ORDER BY provider,model,valid_from DESC')).rows));
- app.put('/api/api-model-prices',async c=>{
-   let price;try{price=validateApiPrice(await c.req.json());}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'API价格无效'});}
-   const db=await pool.connect();
-   try{
-    await db.query('BEGIN');
-    await db.query("SELECT pg_advisory_xact_lock(hashtext($1))",[`${price.provider}/${price.model}/${price.currency}`]);
-    const latest=(await db.query('SELECT max(valid_from) AS valid_from FROM ai_distill.api_model_prices WHERE provider=$1 AND model=$2 AND currency=$3',[price.provider,price.model,price.currency])).rows[0]?.valid_from;
-    if(latest&&new Date(price.valid_from)<new Date(latest))throw new HTTPException(409,{message:'价格快照必须按生效时间顺序登记'});
-    await db.query('UPDATE ai_distill.api_model_prices SET valid_until=$4 WHERE provider=$1 AND model=$2 AND currency=$3 AND valid_until IS NULL AND valid_from<$4',[price.provider,price.model,price.currency,price.valid_from]);
-    const saved=await db.query(`INSERT INTO ai_distill.api_model_prices(id,provider,model,currency,input_per_million,output_per_million,cached_input_per_million,cache_write_per_million,source,valid_from,valid_until)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[crypto.randomUUID(),price.provider,price.model,price.currency,price.input_per_million,price.output_per_million,price.cached_input_per_million??null,price.cache_write_per_million??null,price.source,price.valid_from,price.valid_until]);
-    await db.query('COMMIT');return c.json(saved.rows[0]);
-   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  });
  app.post('/api/projects/:id/export',async c=>{
    const projectId=uuid(c.req.param('id'));
@@ -468,13 +445,14 @@ export function createApp(pool: Pool, storageRoot: string) {
  app.get('/api/workflows/:id', async c => {
    try {
      const id = uuid(c.req.param('id'));
+     const content=c.req.query('view')!=='status';
      const workflow = await pool.query('SELECT * FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=project_id AND p.deleted_at IS NULL)', [id]);
      if (!workflow.rowCount) throw new HTTPException(404, { message: '工作流不存在' });
      const [project, materials, steps, attempts, artifacts] = await Promise.all([
        pool.query('SELECT * FROM ai_distill.projects WHERE id=$1', [workflow.rows[0].project_id]),
        pool.query("SELECT id,original_name,sha256,size_bytes,content_type,processing_status,created_at FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL ORDER BY created_at,id", [id]),
-       pool.query('SELECT ordinal,step_key,display_position,enabled,name,status,implemented,result,error,started_at,finished_at FROM ai_distill.steps WHERE workflow_id=$1 ORDER BY display_position NULLS LAST,ordinal', [id]),
-       pool.query("SELECT id,ordinal,status,input,result,error,config,session_id,revision_round_id,started_at,finished_at FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal<>10 ORDER BY ordinal,attempt", [id]),
+       pool.query(`SELECT ordinal,step_key,display_position,enabled,name,status,implemented,${stepResultProjection('s',content)} AS result,error,started_at,finished_at FROM ai_distill.steps s WHERE workflow_id=$1 ORDER BY display_position NULLS LAST,ordinal`, [id]),
+       readWorkflowAttempts(pool,id,content),
        pool.query("SELECT ar.id,ar.kind,ar.attempt_id,ar.created_at,a.result->>'question_version' AS question_version FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE ar.workflow_id=$1 AND ar.kind IN ('redacted_markdown','redacted_index','redacted_docx','authored_question','model_answer','score_report','published_result') ORDER BY ar.created_at DESC,ar.id", [id]),
      ]);
      const hasPdf=materials.rows.some(material=>String(material.original_name).toLowerCase().endsWith('.pdf'));
@@ -487,7 +465,7 @@ export function createApp(pool: Pool, storageRoot: string) {
  });
  app.post('/api/workflows/:id/redacted-docx',async c=>{
   const workflowId=uuid(c.req.param('id'));
-  const result=await exportRedactedDocx(pool,workflowId);
+  const result=await exportRedactedDocx(pool,workflowId,storageRoot,assetExportRoot);
   return c.json(result,result.reused?200:201);
  });
  async function editMaterials(workflowId: string, incoming: File[], replaceId?: string, deleteId?: string) {
@@ -564,7 +542,7 @@ export function createApp(pool: Pool, storageRoot: string) {
    ...(redactedPages?{redacted_pages:redactedPages}:{}),
   });
  });
- app.delete('/api/workflows/:id/generated', async c => {try{return c.json(await clearGeneratedData(pool,storageRoot,uuid(c.req.param('id'))));}catch(error){throw error;}});
+ app.delete('/api/workflows/:id/generated', async c => {try{return c.json(await clearGeneratedData(pool,storageRoot,uuid(c.req.param('id')),assetExportRoot));}catch(error){throw error;}});
  app.delete('/api/workflows/:id', async c => {
    const id=uuid(c.req.param('id')); const db=await pool.connect();
    try {
@@ -667,10 +645,10 @@ export function createApp(pool: Pool, storageRoot: string) {
      const artifactId=uuid(c.req.param('id'));
      const result = await pool.query("SELECT kind,storage_path,sha256,content FROM ai_distill.artifacts WHERE id=$1 AND kind IN ('redacted_markdown','redacted_index','model_answer','score_report','authored_question','published_result','redacted_docx')", [artifactId]);
      if(result.rows[0]?.kind==='redacted_docx'){
-      const docx=await readCurrentRedactedDocx(pool,artifactId);
+      const docx=await readCurrentRedactedDocx(pool,artifactId,assetExportRoot);
       if(!docx)throw new HTTPException(404,{message:'产物不存在或不允许下载'});
       logEvent('file.read.completed',{level:'info',component:'artifacts',artifact_id:artifactId,file_kind:'redacted_docx',output_bytes:docx.bytes.byteLength});
-      return new Response(docx.bytes,{headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','Content-Disposition':`attachment; filename="redacted.docx"; filename*=UTF-8''%E8%84%B1%E6%95%8F%E6%9D%90%E6%96%99.docx`,'Cache-Control':'no-store'}});
+      return new Response(Uint8Array.from(docx.bytes).buffer,{headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','Content-Disposition':`attachment; filename="redacted.docx"; filename*=UTF-8''%E8%84%B1%E6%95%8F%E6%9D%90%E6%96%99.docx`,'Cache-Control':'no-store'}});
      }
      if (!result.rowCount) throw new HTTPException(404, { message: '产物不存在或不允许下载' });
      const fileKind=result.rows[0].kind;

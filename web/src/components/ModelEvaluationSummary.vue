@@ -34,14 +34,10 @@ const props=defineProps<{steps:Step[];attempts:Attempt[]}>();
 const answerDialog=shallowRef(false);const answerTab=shallowRef('');
 const failedScoreDialog=shallowRef(false);const selectedFailureId=shallowRef('');
 const executionDialog=shallowRef(false),selectedExecutionId=shallowRef('');
-const executionAttempts=computed(()=>props.attempts.filter(item=>item.ordinal===6).sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at)));
+const executionAttempts=computed(()=>props.attempts.filter(item=>item.ordinal===6&&item.result!=null).sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at)));
 const executionAttempt=computed(()=>executionAttempts.value.find(item=>item.id===selectedExecutionId.value));
-const scoringOriginal=computed(()=>(executionAttempt.value?.result as {raw_text?:string}|null)?.raw_text);
-const executionSnapshot=computed(()=>(executionAttempt.value?.result as {execution_request?:unknown}|null)?.execution_request);
-const savedStepPrompt=computed(()=>{
- const input=executionAttempt.value?.input as {context?:{step_prompt?:string}}|null;
- return input?.context?.step_prompt??(executionAttempt.value?.config as {prompt?:string}|null)?.prompt??'未记录';
-});
+const scoringOriginal=computed(()=>{const result=executionAttempt.value?.result as {raw_text?:string;report?:unknown}|null;return result?.raw_text??(result?.report?JSON.stringify(result.report,null,2):executionAttempt.value?.error??'暂无评分内容');});
+const executionValidationIssues=computed(()=>{const result=executionAttempt.value?.result as {validation?:{issues?:unknown}}|null;return Array.isArray(result?.validation?.issues)?result.validation.issues.filter((issue):issue is string=>typeof issue==='string'):[];});
 function openExecution(id?:string|null){selectedExecutionId.value=id??executionAttempts.value[0]?.id??'';executionDialog.value=true;}
 const answers=computed(()=>{
  const models=props.steps.find(step=>step.ordinal===5)?.result?.models;
@@ -131,7 +127,7 @@ function failedText(attempt:Attempt){
    if(reasons.length)return reasons.join('\n');
   }
  }
- return 'AI 未返回失败原因文本。';
+ return attempt.error || '没有保存失败原因文本。';
 }
 // 作答／评分执行成功只表示任务已完成；模型是否通过由百分制分数和上限单独判定。
 function evaluationLabel(status:ModelAcceptance['status']){
@@ -164,7 +160,7 @@ function taskStatus(status:string){
     <Row wrap :gap="8" class="text-sm">
       <span>作答任务：{{ taskStatus(evaluation.answer.status) }}</span>
       <span v-if="evaluation.score">评分任务：{{ taskStatus(evaluation.score.score_status) }}</span>
-      <v-btn v-if="evaluation.score?.score_attempt_id" size="small" variant="text" @click="openExecution(evaluation.score.score_attempt_id)">查看评分原文与发送内容</v-btn>
+      <v-btn v-if="evaluation.score?.score_attempt_id" size="small" variant="text" @click="openExecution(evaluation.score.score_attempt_id)">查看评分</v-btn>
       <span v-else>评分任务：等待执行</span>
       <template v-if="evaluation.score">
       <span v-if="typeof evaluation.score.score==='number' && typeof evaluation.score.max_score==='number'">{{ evaluation.score.score }} / {{ evaluation.score.max_score }} 分</span>
@@ -184,12 +180,11 @@ function taskStatus(status:string){
  </section>
  <v-dialog v-model="executionDialog" max-width="1080" scrollable>
   <v-card class="surface-card">
-   <v-card-title>评分原文与实际发送内容</v-card-title>
+   <v-card-title>各模型评分</v-card-title>
    <v-card-text><Column :gap="12">
     <v-select v-model="selectedExecutionId" label="评分执行记录" :items="executionAttempts.map(item=>({title:`${dateLabel(item.started_at)} · ${taskStatus(item.status)}`,value:item.id}))" />
+    <v-alert v-if="executionValidationIssues.length" type="warning" density="compact"><p>程序校验未通过，以下评分不参与达标判断：</p><ul class="pl-20"><li v-for="issue in executionValidationIssues" :key="issue">{{ issue }}</li></ul></v-alert>
     <template v-if="scoringOriginal"><p class="font-bold">评分原文</p><pre class="text-sm whitespace-pre-wrap break-words">{{ scoringOriginal }}</pre></template>
-    <template v-if="executionSnapshot"><p class="text-sm text-muted">本次执行保存的应用指令、步骤提示词、模型配置、输入指纹和隔离参数；不包含 Codex 未返回的内置系统指令。</p><pre class="text-sm whitespace-pre-wrap break-words">{{ JSON.stringify(executionSnapshot,null,2) }}</pre></template>
-    <template v-else><v-alert type="info">这条记录未保存完整发送指令，不能用当前源码补作历史证据。以下仅为当时保存的步骤提示词。</v-alert><pre class="text-sm whitespace-pre-wrap break-words">{{ savedStepPrompt }}</pre></template>
    </Column></v-card-text>
    <v-card-actions><v-spacer /><v-btn @click="executionDialog=false">关闭</v-btn></v-card-actions>
   </v-card>

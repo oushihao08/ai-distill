@@ -10,15 +10,15 @@ import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
-const snapshot=join(tmpdir(),`score-job-rules-${process.pid}`),ruleText='---\nname: scoring-fixture\ndescription: scoring test\n---\n本期评分规则';
+const snapshot=join(tmpdir(),`score-job-rules-${process.pid}`),modelCatalogRoot=join(tmpdir(),`score-job-models-${process.pid}`),previousCodexHome=process.env.CODEX_HOME,ruleText='---\nname: scoring-fixture\ndescription: scoring test\n---\n本期评分规则';
 const projectRules={version_id:'rules-v1',source_digest:hash('project-rules'),snapshot_path:snapshot,files:[{path:'skill/SKILL.md',sha256:hash(ruleText),size_bytes:Buffer.byteLength(ruleText)}]};
-beforeAll(async()=>{await mkdir(join(snapshot,'skill'),{recursive:true});await writeFile(join(snapshot,'skill','SKILL.md'),ruleText);});
-afterAll(async()=>{await rm(snapshot,{recursive:true,force:true});});
+beforeAll(async()=>{await mkdir(join(snapshot,'skill'),{recursive:true});await writeFile(join(snapshot,'skill','SKILL.md'),ruleText);await mkdir(modelCatalogRoot,{recursive:true});await writeFile(join(modelCatalogRoot,'models_cache.json'),JSON.stringify({models:[{slug:'gpt-6-luna',supported_reasoning_levels:[{effort:'medium'}]}]}));process.env.CODEX_HOME=modelCatalogRoot;});
+afterAll(async()=>{if(previousCodexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousCodexHome;await rm(snapshot,{recursive:true,force:true});await rm(modelCatalogRoot,{recursive:true,force:true});});
 const rubric=[{id:'amount',criterion:'指出100元',max_score:1}];
 const input={question_version:'v1',question:'多少',materials:[{name:'附件1',text:'欠款100元'}],attachments:[{id:'attachment',sha256:hash('欠款100元')}]};
 const context={question:input.question,materials:input.materials,answer:'100元',rubric,answer_approach:'核对金额',reference_answer:'100元',project_rules:projectRules,binding:{question_version:'v1',input_digest:inputDigest(input),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'answer',answer_sha256:hash('100元')}};
 function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:boolean;inactive?:boolean;stale?:boolean;answers?:{id:string;text:string}[];bundle?:any[];scoreRows?:any[]}={}){
- const calls:{sql:string;values:any[]}[]=[];let claim=false;
+ const calls:{sql:string;values:any[]}[]=[];let claim=false,activeConnections=0;
  const job:any={id:'grade',workflow_id:'workflow',input:{context:structuredClone(context),digest:scoreContextDigest(context)},config:{provider:'codex',model:'gpt-6-luna',reasoning_effort:'medium'}};
  const query=async(sql:string,values:any[]=[])=>{
   calls.push({sql,values});
@@ -33,8 +33,7 @@ function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:bool
   if(sql.startsWith('SELECT result FROM ai_distill.steps'))return {rowCount:1,rows:[{result:options.bundle?{models:options.bundle}:null}]};
   if(sql.startsWith('SELECT id,input,result,status FROM ai_distill.step_attempts'))return {rowCount:options.scoreRows?.length??0,rows:options.scoreRows??[]};
   if(sql.startsWith('SELECT config'))return {rowCount:1,rows:[{config:job.config}]};
-  if(sql.startsWith('SELECT id FROM')&&sql.includes('config='))return {rowCount:options.reuse?1:0,rows:options.reuse?[{id:'existing'}]:[]};
-  if(sql.startsWith('SELECT id FROM')&&sql.includes("status IN ('waiting','running')"))return {rowCount:0,rows:[]};
+  if(sql.startsWith('SELECT id FROM')&&sql.includes("status IN ('waiting','running')"))return {rowCount:options.reuse?1:0,rows:options.reuse?[{id:'existing'}]:[]};
   if(sql.startsWith('SELECT a.id,a.workflow_id'))return {rowCount:options.stale?1:0,rows:options.stale?[{id:'lost',workflow_id:'workflow'}]:[]};
   if(sql.startsWith('SELECT a.*')){claim=true;return {rowCount:options.empty?0:1,rows:options.empty?[]:[job]};}
   if(sql.startsWith('SELECT id FROM')&&sql.includes("status='running'"))return {rowCount:options.inactive?0:1,rows:options.inactive?[]:[{id:'grade'}]};
@@ -42,11 +41,11 @@ function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:bool
   if(sql.startsWith('SELECT id FROM ai_distill.artifacts'))return {rowCount:0,rows:[]};
   return {rowCount:1,rows:[]};
  };
- return {pool:{query,connect:async()=>({query,release(){}})} as unknown as Pool,calls,job};
+ return {pool:{query,connect:async()=>{activeConnections++;return{query,release(){activeConnections--;}};}} as unknown as Pool,calls,job,activeConnections:()=>activeConnections};
 }
 async function fixture(run:(root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'score-jobs-'));try{await run(root);}finally{await rm(root,{recursive:true,force:true});}}
 const grade=async(c:any)=>({report:{binding:c.binding,assessment_valid:true,items:[{id:'amount',score:1,reason:'完整',evidence:[{source:'answer',quote:'100元'}]}],total:1,max_score:1,disputes:[]},session_id:'grade-session',usage:{input_tokens:5},duration_ms:10});
-test('enqueue pins persisted context and deduplicates exactly the same input/config',async()=>{const a=fake();await enqueueScore(a.pool,'workflow');expect(a.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))?.values.join(' ')).toContain('answer_sha256');const b=fake({reuse:true});expect(await enqueueScore(b.pool,'workflow')).toEqual({id:'existing',reused:true});expect(b.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);});
+test('enqueue pins persisted context and rejects a duplicate active score task',async()=>{const a=fake();await enqueueScore(a.pool,'workflow');expect(a.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))?.values.join(' ')).toContain('answer_sha256');const b=fake({reuse:true});await expect(enqueueScore(b.pool,'workflow')).rejects.toThrow('此答案已有评分任务');expect(b.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);});
 test('scoring digest binds the authoring approach and reference answer',()=>{
  expect(scoreContextDigest({...context,answer_approach:'另一作答思路'})).not.toBe(scoreContextDigest(context));
  expect(scoreContextDigest({...context,reference_answer:'另一标准答案'})).not.toBe(scoreContextDigest(context));
@@ -103,3 +102,19 @@ test('provider errors never put raw messages in public history',async()=>fixture
 test('heartbeat expiry is failed and terminal ordinary scoring still gets an automatic decision',async()=>{const a=fake({empty:true,stale:true});let judged=0;await runNextScore(a.pool,'unused',grade,undefined,async()=>{judged++;});expect(a.calls.some(c=>c.sql.includes("status='failed'")&&c.values[0]==='lost')).toBe(true);expect(judged).toBe(1);});
 test('pre-cancelled worker cannot claim a grading attempt',async()=>{const a=fake();const controller=new AbortController();controller.abort();expect(await runNextScore(a.pool,'unused',grade,controller.signal)).toBe(false);expect(a.calls).toEqual([]);});
 test('cancellation after model response cannot publish successful grading',async()=>fixture(async root=>{const a=fake();const controller=new AbortController();await runNextScore(a.pool,root,async c=>{const result=await grade(c);controller.abort();return result;},controller.signal);expect(a.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);}));
+
+test('releases scoring transaction connection before automatic acceptance',async()=>fixture(async root=>{
+ const bundle=[{model_id:'model-1',name:'模型一',status:'succeeded',attempt_id:'answer',answer_sha256:hash('100元')}];
+ const scoreRows=[{id:'grade',input:{context:{binding:{answer_attempt_id:'answer'}}},result:{report:{total:1,max_score:1},validation:{valid:true}},status:'succeeded'}];
+ const a=fake({bundle,scoreRows});let judged=0,connectionsDuringJudge=-1;
+ await runNextScore(a.pool,root,grade,undefined,async()=>{connectionsDuringJudge=a.activeConnections();judged++;});
+ expect(judged).toBe(1);expect(connectionsDuringJudge).toBe(0);
+}));
+
+test('releases failed scoring transaction connection before automatic acceptance',async()=>fixture(async root=>{
+ const bundle=[{model_id:'model-1',name:'模型一',status:'succeeded',attempt_id:'answer',answer_sha256:hash('100元')}];
+ const scoreRows=[{id:'grade',input:{context:{binding:{answer_attempt_id:'answer'}}},result:null,status:'failed'}];
+ const a=fake({bundle,scoreRows});let judged=0,connectionsDuringJudge=-1;
+ await runNextScore(a.pool,root,async()=>{throw new Error('private provider error');},undefined,async()=>{connectionsDuringJudge=a.activeConnections();judged++;});
+ expect(judged).toBe(1);expect(connectionsDuringJudge).toBe(0);
+}));

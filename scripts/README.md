@@ -16,7 +16,7 @@
 | `verify-authoring-flow.ts` | 临时数据库、合成材料，真实 Codex 出题与质检及发布检查 |
 | `verify-answer-flow.ts` | 临时数据库及注入作答／评分；`--real-score` 可实际调用评分 |
 | `verify-revision-loop.ts` | 临时数据库验证返修；`--real-author`、`--real-grading`、`--real-answer` 可启用相应真实调用 |
-| `verify-independent-modules.ts` | 合成数据库夹具验证达标、发布、导出与费用等模块 |
+| `verify-independent-modules.ts` | 合成数据库夹具验证达标、发布、导出和模型设置模块 |
 | `verify-qwen.ts` | 单次合成请求，真实供应商调用，保存安全摘要 |
 | `verify-domestic-models.ts` | 默认配置检查；`--call` 才对指定供应商发送一次合成请求 |
 | `verify-resource-monitor.ts` | 本机资源采样及证据文件写入，非完整 worker 验收 |

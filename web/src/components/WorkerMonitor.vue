@@ -1,6 +1,6 @@
 <!--
 职责：展示本地 worker 心跳、资源状态，以及正在占用 API／Agent 的项目题目步骤。
-关键方法与用法：组件挂载后每 5 秒刷新 `/monitor`，卸载时停止轮询；任务监控页用它定位当前运行任务。
+关键方法与用法：组件挂载后仅前台每 10 秒刷新 `/monitor`，卸载时停止轮询；任务监控页用它定位当前运行任务。
 -->
 
 <script setup lang="ts">
@@ -8,9 +8,9 @@ import { useResource } from '@/composables/useResource';
 import { dateLabel, fileSize } from '@/utils/format';
 import type { WorkerMonitorStatus } from '@server/monitoring/worker-monitor';
 type MonitorResponse=WorkerMonitorStatus&{active_workflow_tasks:{status:'known'|'unavailable';items:{attempt_id:string;project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;channel:'agent'|'api'|'unknown';state:'running';started_at:string|null}[]}};
-const {data,error,refresh}=useResource<MonitorResponse>('/monitor');
+const {data,error,loading,refresh}=useResource<MonitorResponse>('/monitor');
 let timer:ReturnType<typeof setInterval>|undefined;
-onMounted(()=>{timer=setInterval(refresh,5000);});
+onMounted(()=>{timer=setInterval(()=>{if(!loading.value&&!document.hidden)void refresh();},10000);});
 onUnmounted(()=>clearInterval(timer));
 const labels={running:'运行中',paused:'低内存暂停派发',stopped:'已停止',stale:'监控已过期',unavailable:'监控不可用'};
 const current=computed(()=>data.value&&['running','paused'].includes(data.value.status)?data.value.snapshot:null);

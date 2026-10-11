@@ -7,7 +7,7 @@ import { test, expect, afterEach } from 'bun:test';
 import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanProjectFolder, validateFolder, validateStepConfig, registerQuestionFolders,projectStepSummary,isWorkflowStepReady,splitIntoBatches,readBatchChunkSize } from './project-folders';
+import { scanProjectFolder, validateFolder, validateStepConfig, validateStepConfigForExecution, registerQuestionFolders,projectStepSummary,isWorkflowStepReady,splitIntoBatches,readBatchChunkSize } from './project-folders';
 const roots: string[] = [];
 afterEach(async () => { try { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); } catch (error) { throw error; } });
 test('folder is required, absolute and readable', async () => {
@@ -33,6 +33,10 @@ test('step configuration accepts the correct provider and rejects unsupported pa
  expect(() => validateStepConfig(2, { provider: 'codex', model: 'x' })).toThrow();
  expect(() => validateStepConfig(4, { model: 'gpt-6.1-sol', reasoning_effort: 'invalid' })).toThrow();
  expect(() => validateStepConfig(1, { model: 'x' })).toThrow();
+});
+
+test('saved Codex step settings are not blocked by a stale advertised model catalog at dispatch',()=>{
+ expect(validateStepConfigForExecution(4,{provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'low'})).toMatchObject({provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'low'});
 });
 
 test('registering 100 new question folders uses bulk writes and keeps unique identities',async()=>{

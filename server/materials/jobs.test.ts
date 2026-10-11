@@ -26,7 +26,7 @@ function executionFake(options:{empty?:boolean;invalidated?:boolean;publishError
   if(sql.startsWith('SELECT DISTINCT ON (m.sha256)'))return {rows:options.cached?[{source_sha256:'source-hash',storage_path:'workflow/old/material-extracted.json',sha256:'cache-hash',attempt_id:'old-attempt',material_id:'material'}]:[],rowCount:options.cached?1:0};
   if(sql.startsWith('SELECT id,storage_path,sha256 FROM ai_distill.materials'))return {rows:[{id:'material',storage_path:'source.pdf',sha256:'source-hash'}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.workflows'))return {rows:[{}],rowCount:1};
-  if(sql.startsWith('SELECT a.* FROM ai_distill.step_attempts'))return {rows:options.empty?[]:[job],rowCount:options.empty?0:1};
+  if(sql.startsWith('SELECT a.*')&&sql.includes('FROM ai_distill.step_attempts'))return {rows:options.empty?[]:[job],rowCount:options.empty?0:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return {rows:options.invalidated?[]:[{id:job.id}],rowCount:options.invalidated?0:1};
   if(sql.startsWith('UPDATE ai_distill.step_attempts SET status=')&&values?.[1]==='succeeded'&&options.publishError&&!failed){failed=true;throw new Error('db unavailable');}
   if(sql.startsWith('UPDATE ai_distill.step_attempts SET status=')&&sql.includes("status='running'")&&options.invalidated)return {rows:[],rowCount:0};
@@ -38,6 +38,18 @@ const publication=(blocked=false):Awaited<ReturnType<typeof processMaterials>>=>
 test('idle executor does not call material processor',async()=>{
  const {pool,calls}=executionFake({empty:true});let invoked=false;
  expect(await runNextExtraction(pool,'unused',async()=>{invoked=true;return publication();})).toBe(false);expect(invoked).toBe(false);expect(calls.at(-1)?.sql).toBe('COMMIT');
+});
+test('pre-stopped worker does not claim an extraction attempt',async()=>{
+ const {pool,calls}=executionFake(),controller=new AbortController();controller.abort();
+ expect(await runNextExtraction(pool,'unused',undefined,undefined,controller.signal)).toBe(false);
+ expect(calls).toHaveLength(0);
+});
+test('worker stop prevents late extraction publication and requeues the claimed attempt',async()=>{
+ const {pool,calls}=executionFake(),controller=new AbortController();
+ expect(await runNextExtraction(pool,'unused',async()=>{controller.abort();return publication();},undefined,controller.signal)).toBe(true);
+ expect(calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
+ expect(calls.some(call=>call.sql.includes("SET status='waiting'")&&call.values?.[0]==='attempt')).toBe(true);
+ expect(calls.some(call=>call.sql.includes('ordinal IN (1,2)'))).toBe(true);
 });
 test.each([false,true])('executor publishes %s blocked result atomically',async blocked=>{
  const {pool,calls}=executionFake();expect(await runNextExtraction(pool,'unused',async()=>publication(blocked))).toBe(true);

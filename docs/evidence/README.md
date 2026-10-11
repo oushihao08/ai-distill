@@ -5,7 +5,11 @@
 
 | 文件 | 格式 | 用途 |
 | --- | --- | --- |
+| [2026-10-11-workflow-cli-skill.md](2026-10-11-workflow-cli-skill.md) | Markdown | CLI/流程Skill实施、定向单测与类型检查、题目1真实归档末步；未重跑前序模型步骤，未对整个项目生成Excel。 |
+| [2026-10-11-workflow-api-inventory.md](2026-10-11-workflow-api-inventory.md) | Markdown | 从材料入库到单题归档/项目导出的步骤、查询与派发接口、异步 worker 契约及当前领域 CLI 缺口；仅为当前工作树静态核查。 |
 | [2026-10-10-fresh-authoring-alignment.md](2026-10-10-fresh-authoring-alignment.md) | Markdown | 普通出题从零生成、75项定向测试和真实工具验证；注明数据库53000及正式入库验收缺口。 |
+| [2026-10-11-authoring-to-scoring-preflight.md](2026-10-11-authoring-to-scoring-preflight.md) | Markdown | 题目2–6、8正式全流程测试前置核查；记录 API/worker 早于当前源码修改启动的阻断，因此未派发本轮任务。 |
+| [2026-10-11-backend-authoring-to-scoring-run.md](2026-10-11-backend-authoring-to-scoring-run.md) | Markdown | 题目2–6、8经正式后端 API/worker 出题、作答、评分与达标判定的完整运行记录；含中途派发修复、Codex 调用观察、分数及桌面对照限制。 |
 | [2026-10-08-codex-default-settings.md](2026-10-08-codex-default-settings.md) | Markdown | 人工记录的调查或验收说明；结论仅限文件注明的日期与范围。 |
 | [2026-10-08-current-ocr-audit.json](2026-10-08-current-ocr-audit.json) | JSON | 结构化历史记录；结论仅限文件注明的日期与范围。 |
 | [2026-10-08-current-ocr-audit.md](2026-10-08-current-ocr-audit.md) | Markdown | 人工记录的调查或验收说明；结论仅限文件注明的日期与范围。 |

@@ -54,9 +54,10 @@ test('ordinary authoring delivery renderer works in an actual local process',asy
 });
 
 test('authoring writes a private complete draft and public package omits private answers',async()=>{
- const root=await mkdtemp(join(tmpdir(),'authoring-executor-'));
+ const root=await mkdtemp(join(tmpdir(),'authoring-executor-'));let authorDirectory='';
  try{
   const author=await runAuthoring(options(join(root,'author'),async(call:any)=>{
+   authorDirectory=call.directory;
    const input=await Bun.file(join(call.directory,'input','input.json')).text();
    expect(new Uint8Array(await Bun.file(join(call.directory,'input','rules','skill','assets','template.docx')).arrayBuffer())).toEqual(new Uint8Array([80,75,3,4]));
    expect(input).not.toContain('合同金额100元');
@@ -65,6 +66,22 @@ test('authoring writes a private complete draft and public package omits private
   }));
   expect(author).toMatchObject({question_version:expect.any(String),rubric_version:expect.any(String)});
   expect(author.package_text).not.toContain('内部标答：合同金额100元');expect(author.package_text).not.toContain('作答思路');
+  expect(await Bun.file(join(authorDirectory,'input/attachments/附件1.txt')).exists()).toBe(false);
+  expect(await Bun.file(join(authorDirectory,'input/input.json')).exists()).toBe(true);
+  expect(await Bun.file(join(authorDirectory,'output/result.json')).exists()).toBe(true);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('ordinary authoring removes temporary attachment text after execution fails',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'authoring-cleanup-'));let authorDirectory='';
+ try{
+  await expect(runAuthoring(options(root,async(call:any)=>{
+   authorDirectory=call.directory;
+   expect(await Bun.file(join(authorDirectory,'input/attachments/附件1.txt')).text()).toBe('合同金额100元');
+   throw new Error('fixture author failed');
+  }))).rejects.toThrow('fixture author failed');
+  expect(await Bun.file(join(authorDirectory,'input/attachments/附件1.txt')).exists()).toBe(false);
+  expect(await Bun.file(join(authorDirectory,'input/input.json')).exists()).toBe(true);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -79,7 +96,7 @@ test('invalid draft is rejected before authoring completes',async()=>{
 test('unsupported answer capabilities fail the authoring step',async()=>{
  const root=await mkdtemp(join(tmpdir(),'authoring-capability-'));
  try{
-  await expect(runAuthoring(options(root,async(call:any)=>({result:call.validate({...draft,answer_requirements:{input_mode:'text',output_mode:'file',tools:[]}}),session_id:'author',usage:null,events_path:'private',duration_ms:1})))).rejects.toThrow('当前出题执行器仅支持文字输入、文字答案且不执行工具');
+  await expect(runAuthoring(options(root,async(call:any)=>({result:call.validate({...draft,answer_requirements:{input_mode:'text',output_mode:'file',tools:[]}}),session_id:'author',usage:null,events_path:'private',duration_ms:1})))).rejects.toThrow('作者Codex使用的工具不属于作答器能力');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -142,6 +159,8 @@ test('project task inputs preserve skill files and put task instructions before 
    expect(call.prompt.startsWith(input.step_prompt+'\n\n')).toBe(true);
    expect(call.execution_profile).toBe('fresh_authoring');expect(call.working_directory).toBe(await realpath(root));
    expect(call.prompt.indexOf('skill：')).toBeLessThan(call.prompt.indexOf('附件（'));
+   expect(call.prompt).toContain(`skill：${join(call.directory,'input/project-context/skill/SKILL.md')}`);
+   expect(call.prompt).toContain(`"path":"${join(call.directory,'input/attachments/附件1.txt')}"`);
    expect(call.prompt).not.toContain('只修有证据支持');expect(call.prompt).toContain('允许按skill导航读取其引用的案例卡');
    expect(call.prompt.match(/skill\/SKILL\.md/g)).toHaveLength(1);
    for(const file of files)expect(await Bun.file(join(call.directory,'input/project-context',file.path)).text()).toBe(file.text);

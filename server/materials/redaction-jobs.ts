@@ -124,8 +124,9 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
  const cancellation=watchTaskCancellation(pool,job.id,signal,false);signal=cancellation.signal;
  const taskContext={component:'redaction',workflow_id:job.workflow_id,project_id:job.project_id,ordinal:9,attempt_id:job.id,operation:'redaction'} as const;
  let heartbeatFailed=false,lastHeartbeatAt=new Date().toISOString();
- const heartbeat=setInterval(()=>{withLogContext(taskContext,()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('脱敏任务心跳写入失败');}heartbeatFailed=true;}));},10000);
- const directory=join(resolve(root),job.workflow_id,job.id);let wrote=false,digestMode:'current'|'legacy'|null=null;
+ let heartbeatInFlight=false;
+ const heartbeat=setInterval(()=>{if(heartbeatInFlight)return;heartbeatInFlight=true;withLogContext(taskContext,()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('脱敏任务心跳写入失败');}heartbeatFailed=true;}).finally(()=>{heartbeatInFlight=false;}));},10000);
+ const directory=join(resolve(root),job.workflow_id,job.id);let wrote=false,digestMode:'current'|'legacy'|null=null,failurePhase='input_validation';
  try{
   const {digest,...input}=job.input;
   digestMode=matchingRedactionDigest(input.materials,digest,input.input_revision);
@@ -140,6 +141,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
   const config=validateStepConfig(9,executionConfig,job.config?.provider==='codex'?await readConfiguredAgentModelCatalog(pool):undefined);
   if(!('prompt' in config)||typeof config.prompt!=='string')throw new Error('脱敏设置缺少提示词');
   const provider=config.provider==='api'?config.api.provider:'codex',model=config.provider==='api'?config.api.model:config.model;
+  failurePhase='agent_execution';
   const output=await withLogContext({...taskContext,model,provider},()=>{
    logEvent('attempt.input_validated',{level:'info',material_count:materials.length,page_count:materials.reduce((sum,item)=>sum+item.pages.length,0)});
    return redactExtractedMaterials({directory:join(directory,'private'),materials,config,signal,
@@ -150,6 +152,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
     }),
    });
   });
+  failurePhase='result_persistence';
   if(signal?.aborted)throw new Error('cancelled');
   const markdownPath=join(directory,'materials.md'),indexPath=join(directory,'pages.json');
   await mkdir(directory,{recursive:true,mode:0o700});
@@ -178,7 +181,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
    withLogContext({...taskContext,provider,model},()=>logEvent('state_update.committed',{level:'info',state:'succeeded',material_count:materials.length,page_count:result.page_count,output_bytes:files.reduce((sum,file)=>sum+file.size_bytes,0)}));
   }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
  }catch(error){
-  withLogContext(taskContext,()=>logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)}));
+  withLogContext(taskContext,()=>logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error),failure_phase:failurePhase}));
   if(wrote)try{const status=await pool.query('SELECT status FROM ai_distill.step_attempts WHERE id=$1',[job.id]);if(status.rows[0]?.status!=='succeeded')await rm(directory,{recursive:true,force:true});}catch(cleanupError){withLogContext(taskContext,()=>logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'redacted_outputs',...classifyLogError(cleanupError)}));console.error('无法确认脱敏结果发布状态，保留文件等待核对');}
   const failed=await pool.connect(),summary=redactionFailureSummary(error),safeError='脱敏执行失败或结果校验未通过，可检查配置后重试';
   try{await failed.query('BEGIN');const current=await failed.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[job.workflow_id]);const updated=await failed.query("UPDATE ai_distill.step_attempts SET status='failed',result=COALESCE(result,'{}'::jsonb)||jsonb_build_object('error',$3::jsonb),error=$2,finished_at=now() WHERE id=$1 AND status='running'",[job.id,safeError,JSON.stringify(summary)]);if(updated.rowCount)await failed.query("UPDATE ai_distill.steps SET status='failed',result=COALESCE(result,'{}'::jsonb)||jsonb_build_object('error',$3::jsonb),error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=9 AND status='running'",[job.workflow_id,safeError,JSON.stringify(summary)]);await failed.query('COMMIT');withLogContext(taskContext,()=>logEvent(updated.rowCount?'state_update.committed':'state_update.unchanged',{level:updated.rowCount?'info':'warn',state:updated.rowCount?'failed':'unchanged'}));}catch(failure){withLogContext(taskContext,()=>logEvent('state_update.failed',{level:'error',...classifyLogError(failure)}));await failed.query('ROLLBACK');throw failure;}finally{failed.release();}

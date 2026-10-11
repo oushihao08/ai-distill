@@ -35,7 +35,7 @@ async function execute(binary:string,args:string[],options:{directory?:string;pr
    const child=spawn(binary,args,{cwd:options.directory,env:environment(options.credentialsHome),detached:process.platform!=='win32',stdio:['pipe','pipe','pipe']});
    let observed=false;
    let stdout='',stderr='',stdoutBytes=0,stderrBytes=0,stopped:string|undefined,outputTask=Promise.resolve();
-   if(typeof child.pid==='number'){try{options.onProcess?.(child.pid);observed=!!options.onProcess;}catch(error){logEvent('process.registration_failed',{level:'warn',operation:'codex_cli',...classifyLogError(error)});}}
+   if(typeof child.pid==='number'){try{options.onProcess?.(child.pid);observed=!!options.onProcess;}catch(error){logEvent('process.registration_failed',{level:'error',operation:'codex_cli',...classifyLogError(error)});}}
    logEvent('process.spawned',{level:'info',operation:'codex_cli',child_pid:child.pid,timeout_ms:options.timeout});
    const stop=(reason:string)=>{if(stopped)return;stopped=reason;const kind=reason.includes('超时')?'timeout':'cancelled';logEvent('process.kill_requested',{level:'warn',process_state:kind,elapsed_ms:Math.round(performance.now()-started)});try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,'SIGKILL');else child.kill('SIGKILL');}catch(error){logEvent('process.kill_failed',{level:'error',process_state:kind,...classifyLogError(error)});try{child.kill('SIGKILL');}catch(failure){logEvent('process.kill_failed',{level:'error',process_state:kind,...classifyLogError(failure)});}}};
    const timer=setTimeout(()=>{const fired=performance.now();logEvent('timeout.fired',{level:'error',timeout_ms:options.timeout,elapsed_ms:Math.round(fired-started),timer_lateness_ms:Math.max(0,Math.round(fired-deadline))});stop('Codex执行超时');},options.timeout);
@@ -46,7 +46,7 @@ async function execute(binary:string,args:string[],options:{directory?:string;pr
    child.stdin.on('error',()=>stop('Codex执行输入发送失败'));
    child.stdin.end(options.prompt??'');
    let exitRecorded=false;
-   const cleanup=()=>{clearTimeout(timer);options.signal?.removeEventListener('abort',cancel);if(observed){observed=false;try{options.onProcess?.(null);}catch(error){logEvent('process.registration_cleanup_failed',{level:'warn',operation:'codex_cli',...classifyLogError(error)});}}};
+   const cleanup=()=>{clearTimeout(timer);options.signal?.removeEventListener('abort',cancel);if(observed){observed=false;try{options.onProcess?.(null);}catch(error){logEvent('process.registration_cleanup_failed',{level:'error',operation:'codex_cli',...classifyLogError(error)});}}};
    child.on('error',error=>{cleanup();logEvent('process.error',{level:'error',elapsed_ms:Math.round(performance.now()-started),...classifyLogError(error)});reject(new Error('Codex执行器不可用'));});
    child.on('exit',(code,signal)=>{exitRecorded=true;logEvent('process.exited',{level:code===0?'info':'warn',exit_code:code??undefined,signal:signal??undefined,elapsed_ms:Math.round(performance.now()-started),wall_elapsed_ms:Date.now()-startedAt});});
    child.on('close',async(code,signal)=>{await outputTask;cleanup();logEvent('process.closed',{level:stopped||code!==0?'warn':'info',exit_code:code??undefined,signal:signal??undefined,process_state:exitRecorded?'exited':'unknown',elapsed_ms:Math.round(performance.now()-started),wall_elapsed_ms:Date.now()-startedAt});if(stopped)reject(new Error(stopped));else resolveResult({stdout,stderr,code});});
@@ -107,8 +107,8 @@ async function runCodexInternal<T>(options:CodexOptions<T>):Promise<{result:T;se
   resultPath=join(sourceOutput,resultName);cliResultPath=join(output,fresh?'completion.txt':resultName);schemaPath=join(output,'schema.json');
   if(schema)await writeFile(schemaPath,schema,{mode:0o600});
  }catch(error){
-  try{await eventsFile?.close();}catch(closeError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.events_close_failed',{level:'warn',...classifyLogError(closeError)}));}
-  try{if(stagingRoot)await rm(stagingRoot,{recursive:true,force:true});}catch(cleanupError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.workspace_cleanup_failed',{level:'warn',...classifyLogError(cleanupError)}));}
+  try{await eventsFile?.close();}catch(closeError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.events_close_failed',{level:'error',...classifyLogError(closeError)}));}
+  try{if(stagingRoot)await rm(stagingRoot,{recursive:true,force:true});}catch(cleanupError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.workspace_cleanup_failed',{level:'error',...classifyLogError(cleanupError)}));}
   withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('call.failed',{level:'error',operation:'codex_exec',reason_code:'workspace_setup_failed',...classifyLogError(error)}));throw Object.assign(new Error('Codex执行准备失败'),{kind:'configuration',reason_code:'workspace_setup_failed'});
  }
  const filesystem={':root':'deny',':minimal':'read',[directory]:'read',[output]:'write'};
@@ -146,10 +146,10 @@ async function runCodexInternal<T>(options:CodexOptions<T>):Promise<{result:T;se
   try{await eventsFile.close();await appendFile(events_path,JSON.stringify({type:'distill.failed',message:error instanceof Error?error.message:'Codex执行失败'})+'\n');}
   catch(eventWriteError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.events_write_failed',{level:'error',...classifyLogError(eventWriteError)}));}
   try{await persistOutput();}catch(persistError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.output_persist_failed',{level:'error',...classifyLogError(persistError)}));}
-  try{if(stagingRoot)await rm(stagingRoot,{recursive:true,force:true});}catch(cleanupError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.workspace_cleanup_failed',{level:'warn',...classifyLogError(cleanupError)}));}
+  try{if(stagingRoot)await rm(stagingRoot,{recursive:true,force:true});}catch(cleanupError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.workspace_cleanup_failed',{level:'error',...classifyLogError(cleanupError)}));}
   withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('call.failed',{level:'error',operation:'codex_exec',elapsed_ms:Date.now()-startedAt,...classifyLogError(error)}));throw error;
  }
- try{if(stagingRoot)await rm(stagingRoot,{recursive:true,force:true});}catch(cleanupError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.workspace_cleanup_failed',{level:'warn',...classifyLogError(cleanupError)}));}
+ try{if(stagingRoot)await rm(stagingRoot,{recursive:true,force:true});}catch(cleanupError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.workspace_cleanup_failed',{level:'error',...classifyLogError(cleanupError)}));}
  if(invocation.code!==0){
   try{await appendFile(events_path,JSON.stringify({type:'distill.process_failed',exit_code:invocation.code,...(invocation.stderr.trim()?{stderr:invocation.stderr.trim().slice(-4096)}:{})})+'\n');}
   catch(error){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.events_write_failed',{level:'error',...classifyLogError(error)}));}
@@ -166,5 +166,5 @@ async function runCodexInternal<T>(options:CodexOptions<T>):Promise<{result:T;se
   const duration_ms=Date.now()-started;
   withLogContext({call_id,provider:'codex',model,reasoning_effort,session_id},()=>{logEvent('result.validated',{level:'info'});logEvent('call.completed',{level:'info',operation:'codex_exec',elapsed_ms:duration_ms,token_usage:completedEvent.usage});});
   return{result:validated,session_id,usage:completedEvent.usage??null,events_path,duration_ms};
- }catch(error){const reason=error&&typeof error==='object'&&'reason_code'in error&&(error as {reason_code?:unknown}).reason_code;const reason_code=typeof reason==='string'?reason:'result_invalid';withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>{const failure={level:'error',operation:'codex_exec',reason_code,...classifyLogError(error)};logEvent('result.invalid',failure);logEvent('call.failed',failure);});throw Object.assign(new Error('Codex结果缺失、无效或执行未完整结束'),{kind:classifyLogError(error).error_kind,reason_code,retryable:false});}
+ }catch(error){const reason=error&&typeof error==='object'&&'reason_code'in error&&(error as {reason_code?:unknown}).reason_code;const reason_code=typeof reason==='string'?reason:'result_invalid';withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('call.failed',{level:'error',operation:'codex_exec',reason_code,...classifyLogError(error)}));throw Object.assign(new Error('Codex结果缺失、无效或执行未完整结束'),{kind:classifyLogError(error).error_kind,reason_code,retryable:false});}
 }

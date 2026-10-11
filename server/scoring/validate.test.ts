@@ -5,7 +5,7 @@ import {test,expect} from 'bun:test';
 import {validateScore} from './validate';
 import {extractTextScore} from './validate';
 const binding={question_version:'v1',input_digest:'a'.repeat(64),rubric_version:'r1',rubric_digest:'c'.repeat(64),answer_attempt_id:'answer',answer_sha256:'b'.repeat(64)};
-const context={binding,question:'问题',materials:[{name:'附件1',text:'金额100'}],answer:'实际答案：金额100。未支付。',rubric:[{id:'one',max_score:1,criterion:'指出金额'},{id:'two',max_score:1,criterion:'指出日期'}],project_rules:{version_id:'rules',source_digest:'d'.repeat(64),snapshot_path:'rules',files:[{path:'skill/SKILL.md',sha256:'e'.repeat(64),size_bytes:1}]}};
+const context={binding,question:'问题',materials:[{name:'附件1',text:'金额100'}],answer:'实际答案：金额100。未支付。',rubric:[{id:'one',max_score:1,criterion:'指出金额'},{id:'two',max_score:1,criterion:'指出日期'}],answer_approach:'依据答案逐项核对',reference_answer:'金额100，日期未出现',project_rules:{version_id:'rules',source_digest:'d'.repeat(64),snapshot_path:'rules',files:[{path:'skill/SKILL.md',sha256:'e'.repeat(64),size_bytes:1}]}};
 const report={binding,assessment_valid:true,items:[{id:'one',score:1,reason:'金额完整',evidence:[{source:'answer',quote:'金额100'}]},{id:'two',score:0,reason:'没有日期',missing:true,evidence:[]}],total:1,max_score:2,disputes:[]};
 test('validates complete evidence-backed report and recomputes total',()=>{expect(validateScore(report,context)).toMatchObject({valid:true,total:1,max_score:2,issues:[]});});
 test.each(['question_version','input_digest','rubric_version','rubric_digest','answer_attempt_id','answer_sha256'])('rejects mismatched %s',key=>{expect(validateScore({...report,binding:{...binding,[key]:'changed'}},context).valid).toBe(false);});
@@ -31,4 +31,13 @@ test('text scoring rejects a final total when a unit-weight rubric item is missi
  const text='one：1 / 1分。证据完整。\n最终总分：1 / 2 分';
  expect(extractTextScore(text,context.rubric)).toMatchObject({valid:false,total:null,max_score:2});
  expect(extractTextScore(text,context.rubric).issues.join(' ')).toContain('条目评分缺失');
+});
+
+test('text scoring validates exact IDs and weighted rows for every rubric',()=>{
+ const rubric=[{id:'1',max_score:2,criterion:'两分项'},{id:'10',max_score:1,criterion:'单位分项'}];
+ const valid='1：2 / 2分。满足。\n10：0 / 1分。未找到。\n最终总分：2 / 3 分';
+ expect(extractTextScore(valid,rubric)).toMatchObject({valid:true,total:2,max_score:3,issues:[]});
+ const mismatched='R1：2 / 2分。满足。\nR10：0 / 1分。未找到。\n最终总分：2 / 3 分';
+ expect(extractTextScore(mismatched,rubric).valid).toBe(false);
+ expect(extractTextScore(mismatched,rubric).issues.join(' ')).toContain('ID不属于本题rubric');
 });

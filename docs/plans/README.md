@@ -5,9 +5,14 @@
 
 | 文件 | 用途 |
 | --- | --- |
+| [2026-10-11-answer-duration-and-run-followups.md](2026-10-11-answer-duration-and-run-followups.md) | 稳健整改顺序、作者能力与正常流程不退化、配置／自检收口、45分钟证据及免评分分阶段启用、内容对照、回退与验收；仅计划。 |
+| [2026-10-11-codex-workflow-cli-skill.md](2026-10-11-codex-workflow-cli-skill.md) | 将现有入库至归档/导出流程包装为本地 CLI 与 Codex Workflow Skill 的实施计划；复用 API/worker/Agent 执行器，维持显式逐步编排与当前业务边界。 |
+| [2026-10-11-codex-manual-capability-alignment.md](2026-10-11-codex-manual-capability-alignment.md) | 列出后端出题 Codex 与桌面手动使用的剩余差距、修改理由、收益、能力不退化约束和逐项验收；当前仅形成清单。 |
+| [2026-10-11-authoring-to-scoring-observation-test.md](2026-10-11-authoring-to-scoring-observation-test.md) | 记录题目2–6、8正式后端出题、作答、评分及达标流程的计划和执行边界；六题后端运行结果见对应 evidence，严格同输入桌面对照仍未完成。 |
+| [2026-10-11-worker-performance-reliability.md](2026-10-11-worker-performance-reliability.md) | Worker 数据库争用、取消、停止和队列公平性；代码与单测已实施，隔离 PostgreSQL 和真实运行指标未验收。 |
 | [2026-10-10-legal-skill-final-selected-refinements.md](2026-10-10-legal-skill-final-selected-refinements.md) | 仅保留净收益严格大于0.4的修改：F1—F4已落实并保留原有设计；第二案例F5仍待对应完整来源。已检查文本差异和链接，未测评。 |
 | [2026-10-10-legal-skill-evidence-and-research.md](2026-10-10-legal-skill-evidence-and-research.md) | 第五期 skill 的作者检索、证据相互印证及明确判分条件完善方案；skill 文本已修改并检查，未进行新出题或模型测评。 |
-| [2026-10-10-fresh-authoring-desktop-alignment.md](2026-10-10-fresh-authoring-desktop-alignment.md) | 普通出题从零生成、项目工作目录及桌面 Codex 能力对齐方案；明确旧队列兼容、私有文件交付、合格状态及分层验收。代码及定向测试已完成，真实工具能力已核对；正式配置与数据库入库验收受53000错误阻塞。取代旧普通重出历史反馈目标。 |
+| [2026-10-10-fresh-authoring-desktop-alignment.md](2026-10-10-fresh-authoring-desktop-alignment.md) | 普通出题从零生成、项目工作目录及桌面 Codex 能力对齐方案；明确旧队列兼容、私有文件交付、合格状态及分层验收。后续正式队列已完成题目2—6、8的出题至评分，工具逐项等价仍需核对；取代旧普通重出历史反馈目标。 |
 | [2026-10-10-legal-skill-final-improvement.md](2026-10-10-legal-skill-final-improvement.md) | 综合 inbox 提炼与优化清单，提出可裁决误读、必要结果及中立验收的第五期法务出题 skill 最终改进方案；skill 文本已修改，真实成题与模型测评未完成。 |
 | [2026-10-10-legal-skill-depth-improvement.md](2026-10-10-legal-skill-depth-improvement.md) | 第五期法务出题 skill 的九项修改、有效原因、实施方法、任务依赖及分层验收；仅计划，未修改 skill 或开展难度测评。 |
 | [2026-10-10-legal-skill-optimization-inventory.md](2026-10-10-legal-skill-optimization-inventory.md) | 历史普通重出反馈筛选方案及skill优化清单；其中自动带入评分的目标已被从零出题方案取代，不作为当前普通出题要求。 |

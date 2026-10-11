@@ -4,7 +4,7 @@ import {mkdtemp,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {buildAnonymousInput,buildScoreFiles,runIndependentScore} from './executor';
+import {buildAnonymousInput,buildScoreFiles,buildScoreMessage,runIndependentScore} from './executor';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '@shared/step-prompts';
 import type {ScoreContext} from './validate';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
@@ -19,6 +19,15 @@ test('default scoring prompt asks for per-item reasoning and exact answer eviden
  for(const part of ['逐项','判断理由','答案原文证据','不得使用作答思路或标准答案'])expect(prompt).toContain(part);
  expect(resolveScoreStepPrompt('依据本题题面、rubric、作答思路和标准答案，对匿名完整答案逐项评分，并引用答案原文证据。')).toBe(prompt);
  expect(resolveScoreStepPrompt('自定义提示词')).toBe('自定义提示词');expect(DEFAULT_STEP_PROMPTS[6]).toBe(prompt);
+});
+test('scoring execution names and preserves the exact rubric IDs for this task',()=>{
+ const numericRubric=[{id:'1',criterion:'第一项',max_score:1},{id:'2',criterion:'第二项',max_score:1}];
+ const input=buildAnonymousInput({...context,rubric:numericRubric,binding:{...context.binding,rubric_digest:hash(JSON.stringify(numericRubric))},step_prompt:'每项严格以rubric ID开头，示例：R1：1/1。'});
+ const message=buildScoreMessage(input);
+ expect(message).toContain('本题rubric ID及逐项格式：\n1：<得分>/1\n2：<得分>/1');
+ expect(message).toContain('优先级高于前述提示词中的任何格式示例');
+ expect(message).toContain('必须逐字使用本题清单中的 ID');
+ expect(message).toContain('R1：1/1');
 });
 test('internal anonymous context preserves binding checks while actual files exclude private references',()=>{
  const input=buildAnonymousInput({...context,provider:'secret-provider',target_score:0} as ScoreContext);

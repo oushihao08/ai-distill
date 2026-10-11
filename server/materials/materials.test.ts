@@ -4,7 +4,7 @@
 import { test, expect, spyOn } from 'bun:test';
 import { redactTexts } from './redact';
 import { createVisionClient } from './vision';
-import { extractPdf } from './pdf';
+import { extractPdf, type Page } from './pdf';
 import { processMaterials } from './process';
 import { mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
 import {join} from 'node:path';
@@ -14,6 +14,7 @@ import { loadExtractionConfig } from './config';
 import {redactExtractedMaterials} from './redaction';
 import {sameRedactionConfig} from './redaction-config';
 const strictConfig=()=>({...loadExtractionConfig(),continueOnError:false,entityReview:true});
+const fixturePdfExtractor=(extract:(path:string)=>Promise<Page[]>)=>({extract:async(path:string)=>({format:'pdf' as const,provider:'local' as const,sha256:createHash('sha256').update(await readFile(path)).digest('hex'),pages:await extract(path)})});
 
 test('redaction settings compare effective defaults rather than JSON key order',()=>{
  const defaults={model:'gpt-default',reasoning_effort:'medium'};
@@ -161,26 +162,24 @@ test('encrypted marker and page counts above 500 do not preempt readable text',a
  const pages=await extractPdf('unused',vision,async args=>args[0]==='pdfinfo'?'Pages: 501\nEncrypted: yes':args[0]==='pdfimages'?'':'text'.repeat(80));
  expect(pages.length).toBe(501);expect(pages[500]!.page).toBe(501);
 });
-test('processing stores only redacted public output and restricted mapping separately',async()=>{
+test('PDF extraction stores source text only in the private page artifact',async()=>{
  const root=await mkdtemp(join(tmpdir(),'material-test-'));
  try{
   const bytes='%PDF-fixture';await writeFile(join(root,'source.pdf'),bytes);
   let checks=0;
-  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(bytes).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>++checks===1?['张三']:[]},async()=>[{page:1,text:'张三支付100元',method:'text'}]);
-  expect(result.blocked).toBe(false);
-  const markdown=await readFile(join(root,result.artifacts[0]!.storage_path),'utf8');expect(markdown).not.toContain('张三');expect(markdown).toContain('第 1 页');
-  expect(result.artifacts[2]!.kind).toBe('private_redaction_map');
+  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(bytes).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>++checks===1?['张三']:[]},fixturePdfExtractor(async()=>[{page:1,text:'张三支付100元',method:'text'}]));
+  expect(result.blocked).toBe(false);expect(result.artifacts.map(artifact=>artifact.kind)).toEqual(['private_extracted_pages']);
+  const extracted=JSON.parse(await readFile(join(root,result.artifacts[0]!.storage_path),'utf8'));
+  expect(extracted.pages[0].text).toBe('张三支付100元');expect(result.result.pages[0]?.page).toBe(1);
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('entity-check failures record a safe diagnostic and exact page chunk without publishing text',async()=>{
+test('PDF extraction leaves entity checks to the separate redaction step',async()=>{
  const root=await mkdtemp(join(tmpdir(),'material-diagnostic-'));
  try{
   const bytes='%PDF-private-fixture';await writeFile(join(root,'source.pdf'),bytes);
   let calls=0;
-  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(bytes).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>{if(++calls===1)return[];throw new Error('脱敏实体返回格式无效 secret response');}},async()=>[{page:26,text:'private source content '.repeat(300),method:'text'}]);
-  expect(result.blocked).toBe(true);
-  expect(result.result.issues).toEqual([{page_index:0,kind:'entity_check_failed',phase:'entity_scan',chunk_index:1,diagnostic:'invalid_json'}]);
-  expect(JSON.stringify(result.result)).not.toContain('private source content');
+  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(bytes).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>{calls++;throw new Error('脱敏实体返回格式无效 secret response');}},fixturePdfExtractor(async()=>[{page:26,text:'private source content '.repeat(300),method:'text'}]));
+  expect(result.blocked).toBe(false);expect(calls).toBe(0);expect(result.result.issues).toEqual([]);
   expect(result.artifacts.map(artifact=>artifact.kind)).toEqual(['private_extracted_pages']);
  }finally{await rm(root,{recursive:true,force:true});}
 });
@@ -240,11 +239,11 @@ test('fingerprint mismatch clears unpublished files before calling extraction',a
  const root=await mkdtemp(join(tmpdir(),'fingerprint-test-'));let called=false;
  try{
   await writeFile(join(root,'source.pdf'),'%PDF-changed');
-  await expect(processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:'wrong'}],{recognize:async()=>{throw new Error('unused');},entities:async()=>[]},async()=>{called=true;return[];})).rejects.toThrow('指纹变化');
+  await expect(processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:'wrong'}],{recognize:async()=>{throw new Error('unused');},entities:async()=>[]},fixturePdfExtractor(async()=>{called=true;return[];}))).rejects.toThrow('指纹变化');
   expect(called).toBe(false);expect(await readdir(join(root,'workflow'))).toEqual([]);
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('unchanged PDF reuses private page extraction while the changed bundle is redacted together',async()=>{
+test('unchanged PDF reuses private page extraction while a changed attachment is parsed',async()=>{
  const root=await mkdtemp(join(tmpdir(),'material-cache-'));
  try{
   const source='%PDF-unchanged',changed='%PDF-changed';
@@ -255,15 +254,16 @@ test('unchanged PDF reuses private page extraction while the changed bundle is r
   const result=await processMaterials(root,'workflow','attempt',[
    {id:'one',storage_path:'one.pdf',sha256:sourceHash,extraction_cache:{storage_path:'cache.json',sha256:createHash('sha256').update(content).digest('hex'),attempt_id:'old-attempt',material_id:'old-material'}},
    {id:'two',storage_path:'two.pdf',sha256:createHash('sha256').update(changed).digest('hex')},
-  ],{recognize:async()=>{throw new Error('unused');},entities:async text=>text.includes('张三')?['张三']:[]},async path=>{
+  ],{recognize:async()=>{throw new Error('unused');},entities:async text=>text.includes('张三')?['张三']:[]},fixturePdfExtractor(async path=>{
    extractions++;expect(path).toEndWith('two.pdf');return[{page:1,text:'张三支付200元',method:'text'}];
-  },strictConfig());
+  }),strictConfig());
   expect(extractions).toBe(1);expect(result.blocked).toBe(false);
   expect(result.result.materials[0]?.extraction.mode).toBe('cached');
   expect(result.result.materials[1]?.extraction.mode).toBe('fresh');
   expect(result.result.pages[0]?.usage).toBeNull();
-  const text=await readFile(join(root,result.artifacts[0]!.storage_path),'utf8');
-  expect(text).toBe('张*支付100元\n\n张*支付200元');
+  expect(result.artifacts.map(artifact=>artifact.kind)).toEqual(['private_extracted_pages','private_extracted_pages']);
+  const fresh=JSON.parse(await readFile(join(root,result.artifacts[1]!.storage_path),'utf8'));
+  expect(fresh.pages[0].text).toBe('张三支付200元');
   const cached=result.artifacts.filter(artifact=>artifact.kind==='private_extracted_pages');
   expect(cached).toHaveLength(2);expect(cached[0]?.material_id).toBe('one');
   expect((await stat(join(root,cached[0]!.storage_path))).mode&0o777).toBe(0o600);
@@ -273,37 +273,38 @@ test('missing or corrupted extraction cache triggers fresh parsing rather than f
  const root=await mkdtemp(join(tmpdir(),'cache-missing-'));
  try{
   const source='%PDF-source';await writeFile(join(root,'source.pdf'),source);let extractions=0;
-  const result=await processMaterials(root,'workflow','attempt',[{id:'one',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex'),extraction_cache:{storage_path:'missing.json',sha256:'wrong',attempt_id:'old',material_id:'old'}}],{recognize:async()=>{throw new Error('unused');},entities:async()=>[]},async()=>{extractions++;return[{page:1,text:'公开资料',method:'text'}];},strictConfig());
+  const result=await processMaterials(root,'workflow','attempt',[{id:'one',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex'),extraction_cache:{storage_path:'missing.json',sha256:'wrong',attempt_id:'old',material_id:'old'}}],{recognize:async()=>{throw new Error('unused');},entities:async()=>[]},fixturePdfExtractor(async()=>{extractions++;return[{page:1,text:'公开资料',method:'text'}];}),strictConfig());
   expect(extractions).toBe(1);expect(result.result.materials[0]?.extraction.mode).toBe('fresh');
   expect(result.result.materials[0]?.extraction.cache_error).toBe('missing_or_invalid');
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('new configuration produces no page headings or placeholders and blocks residue',async()=>{
+test('extraction preserves raw page text and defers masking to redaction',async()=>{
  const root=await mkdtemp(join(tmpdir(),'redaction-test-'));
  try{
   const bytes='%PDF-test';await writeFile(join(root,'source.pdf'),bytes);let calls=0;
-  const processed=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(bytes).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>++calls===1?['张三']:['李四']},async()=>[{page:1,text:'张三与李四',method:'text'}],strictConfig());
-  const text=await readFile(join(root,processed.artifacts[0]!.storage_path),'utf8');expect(text).toContain('张*');expect(text).not.toContain('##');expect(text).not.toContain('【主体');expect(processed.blocked).toBe(true);expect(processed.result.issues.some(i=>i.kind==='entity_residue')).toBe(true);
-  expect((await stat(join(root,processed.artifacts[2]!.storage_path))).mode&0o777).toBe(0o600);
+  const processed=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(bytes).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>++calls===1?['张三']:['李四']},fixturePdfExtractor(async()=>[{page:1,text:'张三与李四',method:'text'}]),strictConfig());
+  const extracted=JSON.parse(await readFile(join(root,processed.artifacts[0]!.storage_path),'utf8'));
+  expect(extracted.pages[0].text).toBe('张三与李四');expect(processed.blocked).toBe(false);expect(processed.result.issues).toEqual([]);
+  expect((await stat(join(root,processed.artifacts[0]!.storage_path))).mode&0o777).toBe(0o600);
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('a newly discovered original entity gets one corrective redaction pass and a final check',async()=>{
+test('extraction does not run entity correction passes',async()=>{
  const root=await mkdtemp(join(tmpdir(),'redaction-correction-'));
  try{
   const source='%PDF-test';await writeFile(join(root,'source.pdf'),source);let checks=0;
-  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>{checks++;return checks===1?['张三']:checks===2?['李四']:[];}},async()=>[{page:1,text:'张三与李四',method:'text'}],strictConfig());
-  expect(result.blocked).toBe(false);expect(checks).toBe(3);
-  expect(await readFile(join(root,result.artifacts[0]!.storage_path),'utf8')).toBe('张*与李*');
+  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>{checks++;return checks===1?['张三']:checks===2?['李四']:[];}},fixturePdfExtractor(async()=>[{page:1,text:'张三与李四',method:'text'}]),strictConfig());
+  expect(result.blocked).toBe(false);expect(checks).toBe(0);
+  const extracted=JSON.parse(await readFile(join(root,result.artifacts[0]!.storage_path),'utf8'));
+  expect(extracted.pages[0].text).toBe('张三与李四');
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('failed entity validation preserves private extraction but publishes no document text',async()=>{
+test('entity validation errors are not part of the extraction step',async()=>{
  const root=await mkdtemp(join(tmpdir(),'private-extraction-failure-'));
  try{
   const source='%PDF-test';await writeFile(join(root,'source.pdf'),source);
-  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>{throw new Error('脱敏实体无有效原文依据');}},async()=>[{page:1,text:'张三13812345678',method:'ocr'}],strictConfig());
-  expect(result.blocked).toBe(true);expect(result.artifacts.map(a=>a.kind)).toEqual(['private_extracted_pages']);
-  expect(JSON.stringify(result.result)).not.toContain('张三');expect(JSON.stringify(result.result)).not.toContain('13812345678');
-  expect(result.result.materials[0]?.pages).toBe(1);expect(result.result.issues[0]?.kind).toBe('entity_check_failed');
+  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>{throw new Error('脱敏实体无有效原文依据');}},fixturePdfExtractor(async()=>[{page:1,text:'张三13812345678',method:'ocr'}]),strictConfig());
+  expect(result.blocked).toBe(false);expect(result.artifacts.map(a=>a.kind)).toEqual(['private_extracted_pages']);
+  expect(result.result.materials[0]?.pages).toBe(1);expect(result.result.issues).toEqual([]);
   const cache=JSON.parse(await readFile(join(root,result.artifacts[0]!.storage_path),'utf8'));
   expect(cache.pages[0].text).toBe('张三13812345678');expect((await stat(join(root,result.artifacts[0]!.storage_path))).mode&0o777).toBe(0o600);
  }finally{await rm(root,{recursive:true,force:true});}

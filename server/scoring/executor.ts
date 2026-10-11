@@ -32,7 +32,9 @@ export function buildScoreFiles(input:ReturnType<typeof buildAnonymousInput>){
 }
 /** 仅说明文件用途、完整阅读要求及用户原样评分提示词。 */
 export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>){
- return [`题面与评分标准：题面与评分标准.txt`,`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,`待评分答案：待评答案.txt`,'请完整读取上述文件。',input.step_prompt??''].join('\n\n');
+ const rubricIds=input.rubric.map(item=>item.id);
+ const formats=input.rubric.map(item=>`${item.id}：<得分>/${item.max_score}`);
+ return [`题面与评分标准：题面与评分标准.txt`,`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,`待评分答案：待评答案.txt`,'请完整读取上述文件。',input.step_prompt??'',`评分条目编号规则（优先级高于前述提示词中的任何格式示例）：必须逐字使用本题清单中的 ID，每个恰好一次；若前述示例与清单不同，以本清单和题面与评分标准文件中的实际 ID 为准，不添加、删除或改写任何前后缀。\n本题rubric ID及逐项格式：\n${formats.join('\n')}`].join('\n\n');
 }
 /** 配置界面与实际执行共用同一指令来源，不以当前指令冒充历史快照。 */
 export function scoreExecutionInstructions(){return {developer_instructions:'',task_prompt:SCORE_TASK_PROMPT,input_format:'separate_input_files_blind_v2',output_format:'text' as const,isolation_config:SCORE_ISOLATION_CONFIG};}

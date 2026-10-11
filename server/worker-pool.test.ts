@@ -2,7 +2,7 @@
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import { expect, test } from 'bun:test';
-import { runWorkerPool } from './worker-pool';
+import { createFairQueueHandler,runWorkerPool } from './worker-pool';
 
 test('worker pool runs up to the configured concurrency and drains on abort', async () => {
   const controller = new AbortController();
@@ -30,7 +30,7 @@ test('worker pool runs up to the configured concurrency and drains on abort', as
   expect(started).toBe(2);
 });
 
-test('worker pool backs off when no task is available', async () => {
+test('worker pool waits the configured idle interval when no task is available', async () => {
   const controller = new AbortController();
   let calls = 0;
   const running = runWorkerPool(async () => {
@@ -50,4 +50,25 @@ test('abort during resource check cannot claim a new job',async()=>{
  const controller=new AbortController();let calls=0;
  await runWorkerPool(async()=>{calls++;return false;},{concurrency:1,signal:controller.signal,idleMs:1,beforeDispatch:async()=>{controller.abort();return true;}});
  expect(calls).toBe(0);
+});
+
+test('worker pool preserves the configured polling interval for newly queued work',async()=>{
+ const controller=new AbortController();let calls=0;
+ const running=runWorkerPool(async()=>{calls++;return false;},{concurrency:1,signal:controller.signal,idleMs:10});
+ await Bun.sleep(56);controller.abort();await running;
+ expect(calls).toBeGreaterThanOrEqual(5);
+});
+
+test('fair queue dispatch rotates after every successful task',async()=>{
+ const order:string[]=[];
+ const dispatch=createFairQueueHandler(['skill','redaction','authoring','score'].map(name=>async()=>{order.push(name);return true;}));
+ for(let index=0;index<8;index++)expect(await dispatch()).toBe(true);
+ expect(order).toEqual(['skill','redaction','authoring','score','skill','redaction','authoring','score']);
+});
+
+test('fair queue dispatch advances even when every queue is empty',async()=>{
+ const order:string[]=[];
+ const dispatch=createFairQueueHandler(['skill','redaction','authoring','score'].map(name=>async()=>{order.push(name);return false;}));
+ expect(await dispatch()).toBe(false);expect(await dispatch()).toBe(false);
+ expect(order).toEqual(['skill','redaction','authoring','score','redaction','authoring','score','skill']);
 });

@@ -17,7 +17,7 @@ Bun + Hono + PostgreSQL（pg）的本地工作台后端。`app.ts` 装配 API，
 | `worker.ts`、`worker-pool.ts` | 业务消费池与通用并发／轮询／退避／停止信号 |
 | `task-signal.ts` | 任务取消状态和异步 AbortSignal 传播 |
 | `project-folders.ts` | 目录发现、步骤投影、前置条件统一判断、分块批量及配置校验 |
-| `intake.ts`、`intake-jobs.ts` | 材料原件接收及目录入库任务 |
+| `intake.ts`、`intake-jobs.ts`、`intake-jobs.test.ts` | 材料原件接收、目录入库任务及 worker 停止后的待处理状态恢复验证 |
 | `rules.ts`、`rule-files.ts` | 当前项目资料与 skill 文件管理、引用检查、任务级文件指纹；`rule-loading.ts` 是已停用的旧规则绑定入口 |
 | `attempts.ts`、`validation.ts` | 有限请求等待与接口输入边界 |
 | `generated-data.ts` | 工作流全量重置、文件隔离与失败恢复 |
@@ -46,7 +46,7 @@ Bun + Hono + PostgreSQL（pg）的本地工作台后端。`app.ts` 装配 API，
 
 ## 全系统后端日志
 
-`logging.ts` 是整个后端共用的安全事件记录器，覆盖 API、数据库访问、worker、业务步骤、外部调用和文件边界，不是某个服务的专属功能。JSONL 写入 `<STORAGE_DIR>/logs/<UTC日期>/`，每行带 `build_id`；部署可设置 `APP_BUILD_ID`，本机默认标记为 `local`。API 每个非健康请求生成 `request_id` 并通过 `X-Request-ID` 返回；统一 API 中间件为已登记的项目、设置、模型目录和规则管理写操作记录 `management.changed`，只记录操作类别、目标 ID 与字段名，所有请求仍有通用开始／结束事件。无任务的管理操作另有关联 `operation_id`。服务入口监视未捕获异常；致命异常同步写入安全事件，未处理 Promise 拒绝记录后以非零状态退出。返修预算调用 ID 会贯穿出题、评分与脱敏的 Agent 子进程，使预算事件与 Codex 执行时间线共享关联键。日志字段按白名单投影，不记录 SQL 参数、材料正文、提示词、答案、凭证或原始模型错误。Codex 失败元数据与脱敏 attempt/step result 中的错误摘要只保留安全类别、原因码、调用 ID、重试标记和发生时间。Codex 的 `events.jsonl` 仍是受限私有产物，不复制到普通日志。
+`logging.ts` 是整个后端共用的安全事件记录器，覆盖 API、数据库访问、worker、业务步骤、外部调用和文件边界，不是某个服务的专属功能。普通 JSONL 只保存 `error` 级失败事件；成功、进度、性能告警和正常业务状态只供调用点使用，不落盘。出题、评分、skill 生成及 Codex 脱敏失败会附带安全的 `failure_phase`，便于区分输入校验、Agent 执行、结果校验和结果保存。JSONL 写入 `<STORAGE_DIR>/logs/<UTC日期>/`，每行带 `build_id`；部署可设置 `APP_BUILD_ID`，本机默认标记为 `local`。API 每个非健康请求生成 `request_id` 并通过 `X-Request-ID` 返回；无任务的管理操作另有关联 `operation_id`。服务入口监视未捕获异常；致命异常同步写入安全事件，未处理 Promise 拒绝记录后以非零状态退出。返修预算调用 ID 会贯穿出题、评分与脱敏的 Agent 子进程，使预算事件与 Codex 执行时间线共享关联键。日志字段按白名单投影，不记录 SQL 参数、材料正文、提示词、答案、凭证或原始模型错误。Codex 失败元数据与脱敏 attempt/step result 中的错误摘要只保留安全类别、原因码、调用 ID、重试标记和发生时间。Codex 的 `events.jsonl` 仍是受限私有产物，不复制到普通日志。
 
 查询本机日志可运行 `bun scripts/read-logs.ts --attempt-id <id>`，也支持按 `--service`、`--component`、`--operation`、`--request-id`、`--operation-id`、`--project-id`、`--workflow-id`、`--skill-attempt-id`、`--call-id`、`--level`、`--from`、`--to` 过滤。脚本只读普通日志目录，并限制文件数、扫描字节和返回条数；汇总中的 `incomplete_tail_lines` 指出缺少换行结束符的末尾记录。`GET /api/monitor` 的 `logging` 字段提供写入健康状态、最近成功时间及丢弃计数。管理 API 已通过合成请求验证 request ID 回传及 project/operation 日志关联。
 
@@ -57,3 +57,10 @@ Bun + Hono + PostgreSQL（pg）的本地工作台后端。`app.ts` 装配 API，
 `GET /api/materials/:id/download` 返回附件下载。附件全文弹窗通过 fetch 读取 PDF 响应并创建临时 Blob URL，在浏览器内置查看器中预览；预览不改变下载接口的 `Content-Disposition`。
 
 2026-10-09 工作流定位补充：统一错误分类读取 `http_status` 并保留安全 `reason_code`；API 区分 JSON 解析和业务校验错误；脱敏校验补附件、页码和数量明细；PDF 提取任务补 workflow/attempt 及附件调用事件。本轮仅源码和静态检查，不代表运行进程已加载或 1–8 步故障场景全部验收，见 [定位核对](../docs/evidence/2026-10-09-workflow-log-audit.md)。
+
+
+## 2026-10-11 按需读取调整
+
+项目、工作流详情取消自动轮询和费用统计。题目记录每页批量读取轻量状态，步骤表格分块读取；业务详情保留当前题目、各模型作答和评分，移除通用输入／配置／输出弹窗。历史只返回有限元信息及当前结果引用；原始记录仍在服务端保存。更新来自页面打开、操作后刷新或手动刷新。任务监控和活动 skill 生成保留前台 10 秒刷新。
+
+`workflow-view.ts` 负责列表批量状态和详情字段投影；`task-signal.ts` 按连接池批量检查取消，普通步骤与项目 skill 分组查询、单组失败不影响另一组，并为状态 SQL 设置 2 秒 PostgreSQL `statement_timeout`；取消日志不继承单个任务的关联 ID。worker 空队列保持配置的约 3 秒发现间隔；Agent 内部的 skill、Codex 脱敏、出题和评分队列成功消费后轮转。SIGINT／SIGTERM 阻止新领取，Agent 槽位等待和提取调用接收停止信号；入库在开始原件写入前可退回等待，已进入材料接收事务的操作安全收尾。费用、价格、产量统计接口已删除；reporting 仅负责按需成果导出。

@@ -33,15 +33,21 @@ function providerError(response: Response, data: unknown, config:ModelApiConfig)
  return new ModelApiError(kind, retryable, response.status, code, requestId(response, data));
 }
 function parseCompletion(data: unknown, response: Response, config: ModelApiConfig, started_at: string, started: number): ModelApiResult {
- const invalid = () => new ModelApiError('invalid_response', false, response.status, null, requestId(response, data));
- if (!record(data) || data.error !== undefined || !Array.isArray(data.choices) || data.choices.length !== 1) throw invalid();
+ const invalid = (reason_code:string) => new ModelApiError('invalid_response', false, response.status, null, requestId(response, data),reason_code);
+ if (!record(data) || data.error !== undefined || !Array.isArray(data.choices)) throw invalid('invalid_response_shape');
+ if(data.choices.length!==1)throw invalid(data.choices.length===0?'missing_choice':'unexpected_choice_count');
  const choice = data.choices[0];
- if (!record(choice) || choice.finish_reason !== 'stop' || !record(choice.message)) throw invalid();
+ if (!record(choice)) throw invalid('invalid_choice_shape');
+ if(choice.finish_reason!=='stop')throw invalid('incomplete_finish_reason');
+ if(!record(choice.message))throw invalid('invalid_message_shape');
  const message = choice.message;
- if (message.role !== 'assistant' || typeof message.content !== 'string' || !message.content.trim() || (message.tool_calls != null && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 0)) || message.function_call != null || message.refusal != null) throw invalid();
- if (data.usage != null && !record(data.usage)) throw invalid();
- if (data.model != null && (typeof data.model !== 'string' || !data.model.trim())) throw invalid();
- if (data.id != null && typeof data.id !== 'string') throw invalid();
+ if(message.role!=='assistant')throw invalid('invalid_message_role');
+ if(typeof message.content!=='string'||!message.content.trim())throw invalid('empty_content');
+ if((message.tool_calls!=null&&(!Array.isArray(message.tool_calls)||message.tool_calls.length>0))||message.function_call!=null)throw invalid('unexpected_tool_call');
+ if(message.refusal!=null)throw invalid('refusal_response');
+ if (data.usage != null && !record(data.usage)) throw invalid('invalid_usage_shape');
+ if (data.model != null && (typeof data.model !== 'string' || !data.model.trim())) throw invalid('invalid_model_field');
+ if (data.id != null && typeof data.id !== 'string') throw invalid('invalid_completion_id');
  return {
   provider:config.provider,text: message.content, requested_model: config.model, model: typeof data.model === 'string' ? data.model : null,
   request_id: requestId(response, data), completion_id: typeof data.id === 'string' ? data.id : null,
@@ -104,7 +110,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
    catch (error) {
     if (abortKind) throw new ModelApiError(abortKind, abortKind === 'timeout');
     if (!(error instanceof SyntaxError)) throw new ModelApiError('network', true);
-    if (response.ok) throw new ModelApiError('invalid_response', false, response.status, null, requestId(response, null));
+    if (response.ok) throw new ModelApiError('invalid_response', false, response.status, null, requestId(response, null),'invalid_json');
     data = null;
    }
    if (abortKind) throw new ModelApiError(abortKind, abortKind === 'timeout');
@@ -127,7 +133,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   let parsed:unknown;
   try{parsed=JSON.parse(completion.text);}
   catch{
-   const safe=Object.assign(new ModelApiError('invalid_response'),{reason_code:'invalid_json'});
+   const safe=new ModelApiError('invalid_response',false,null,null,null,'invalid_json');
    withLogContext({component:'llm_api',provider:input.config.provider,model:input.config.model,...(input.call_id?{call_id:input.call_id}:{})},()=>logEvent('model_api.validation.failed',{level:'error',...classifyLogError(safe)}));
    throw safe;
   }
@@ -135,7 +141,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   catch(error){
    const reason=record(error)?error.reason_code:undefined;
    const reason_code=typeof reason==='string'&&/^[a-z][a-z0-9_]{0,79}$/.test(reason)?reason:'result_validation_failed';
-   const safe=Object.assign(new ModelApiError('invalid_response'),{reason_code});
+   const safe=new ModelApiError('invalid_response',false,null,null,null,reason_code);
    withLogContext({component:'llm_api',provider:input.config.provider,model:input.config.model,...(input.call_id?{call_id:input.call_id}:{})},()=>logEvent('model_api.validation.failed',{level:'error',...classifyLogError(safe)}));
    throw safe;
   }

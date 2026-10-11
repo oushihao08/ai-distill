@@ -64,26 +64,29 @@ test('missing stored files return 404 rather than an empty success',async()=>{
 });
 test('optional redacted DOCX export is separate from workflow steps and safely downloadable',async()=>{
  const root=await mkdtemp(join(tmpdir(),'redacted-docx-route-'));dirs.push(root);const materialRoot=join(root,'project','questions');await mkdir(materialRoot,{recursive:true});
- const source=[{material_id:'33333333-3333-4333-8333-333333333333',source_sha256:'source-hash',artifact_id:'44444444-4444-4444-8444-444444444444',artifact_sha256:'extract-hash'}],markdown='【附件 1】\n\n【原附件第 1 页】\n仅含脱敏内容',sha256=createHash('sha256').update(markdown).digest('hex'),attemptId='22222222-2222-4222-8222-222222222222';
+ const sourceBytes=Buffer.from('original PDF bytes'),sourcePath=join(root,id,'source.pdf');await mkdir(join(root,id),{recursive:true});await writeFile(sourcePath,sourceBytes);
+ const source=[{material_id:'33333333-3333-4333-8333-333333333333',source_sha256:createHash('sha256').update(sourceBytes).digest('hex'),artifact_id:'44444444-4444-4444-8444-444444444444',artifact_sha256:'extract-hash'}],markdown='【附件 1】\n\n【原附件第 1 页】\n仅含脱敏内容',sha256=createHash('sha256').update(markdown).digest('hex'),attemptId='22222222-2222-4222-8222-222222222222';
  const attemptInput={materials:source,digest:redactionInputDigest(source)},steps=[1,9,4,10,5,6,7,8].map(ordinal=>({ordinal,status:'succeeded'})),calls:string[]=[];let attachmentsChanged=false,exported:{id:string;workflow_id:string;attempt_id:string;storage_path:string;sha256:string}|undefined;
  const query=async(sql:string,values?:unknown[])=>{
   calls.push(sql);
-  if(sql.includes('FROM ai_distill.workflows w JOIN ai_distill.projects p')&&sql.includes('FOR UPDATE OF w'))return{rows:[{workflow_id:id,project_id:id,title:'问题1',source_key:'题目1',material_root:materialRoot}],rowCount:1};
+  if(sql.includes('FROM ai_distill.workflows w JOIN ai_distill.projects p')&&sql.includes('FOR UPDATE OF w'))return{rows:[{workflow_id:id,project_id:id,project_name:'测试项目',title:'问题1',source_key:'题目1',material_root:materialRoot}],rowCount:1};
   if(sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))return{rows:steps,rowCount:steps.length};
   if(sql.includes("status IN ('waiting','running') LIMIT 1"))return{rows:[],rowCount:0};
   if(sql.includes('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=9'))return{rows:[{status:'succeeded'}],rowCount:1};
   if(sql.includes("ar.kind='redacted_markdown'"))return{rows:[{id:attemptId,status:'succeeded',input:attemptInput,result:{redacted_sha256:sha256},content:markdown,sha256}],rowCount:1};
   if(sql.includes("ar.kind='private_extracted_pages'"))return{rows:attachmentsChanged?[{...source[0],source_sha256:'changed-source-hash'}]:source,rowCount:1};
   if(sql.startsWith('SELECT count(*)::int'))return{rows:[{count:1}],rowCount:1};
+  if(sql.startsWith('SELECT id,original_name,storage_path,sha256,size_bytes FROM ai_distill.materials'))return{rows:[{id:source[0]!.material_id,original_name:'source.pdf',storage_path:`${id}/source.pdf`,sha256:source[0]!.source_sha256,size_bytes:sourceBytes.byteLength}],rowCount:1};
   if(sql.startsWith('SELECT kind,storage_path,sha256,content')&&sql.includes('redacted_docx'))return{rows:exported?[{kind:'redacted_docx',...exported,source_key:'题目1',material_root:materialRoot}]:[],rowCount:exported?1:0};
   if(sql.includes("ar.kind='redacted_docx'"))return{rows:exported?[{...exported,source_key:'题目1',material_root:materialRoot}]:[],rowCount:exported?1:0};
   if(sql.includes("kind='redacted_docx'"))return{rows:exported?[exported]:[],rowCount:exported?1:0};
   if(sql.startsWith('INSERT INTO ai_distill.artifacts')){exported={id:String(values?.[0]),workflow_id:String(values?.[1]),attempt_id:String(values?.[2]),storage_path:String(values?.[3]),sha256:String(values?.[4])};return{rows:[],rowCount:1};}
   return{rows:[],rowCount:1};
  };
- const client={query,release(){}};const app=createApp({query,connect:async()=>client}as unknown as Pool,root);
+ const client={query,release(){}};const assetRoot=join(root,'assets','out');const app=createApp({query,connect:async()=>client}as unknown as Pool,root,assetRoot);
  const response=await app.request(`/api/workflows/${id}/redacted-docx`,{method:'POST'});expect(response.status).toBe(201);expect(await response.json()).toMatchObject({artifact_id:expect.any(String),reused:false});
- expect(exported?.storage_path).toBe('outputs/题目1/脱敏材料.docx');expect((await readFile(join(root,'project',exported!.storage_path))).readUInt32LE(0)).toBe(0x04034b50);
+ expect(exported?.storage_path).toBe('附件库/测试项目--11111111/问题1--11111111/成果/脱敏材料.docx');expect((await readFile(join(assetRoot,exported!.storage_path))).readUInt32LE(0)).toBe(0x04034b50);
+ expect(await readFile(join(assetRoot,'附件库','测试项目--11111111','问题1--11111111','原件','33333333_source.pdf'))).toEqual(sourceBytes);
  const download=await app.request(`/api/artifacts/${exported!.id}/download`);expect(download.headers.get('Content-Type')).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
  attachmentsChanged=true;expect((await app.request(`/api/artifacts/${exported!.id}/download`)).status).toBe(409);
  expect(calls.some(sql=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts|revision_chains)/.test(sql))).toBe(false);

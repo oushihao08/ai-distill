@@ -1,23 +1,20 @@
 <!--
-职责：以表格展示项目中每道题在当前步骤的状态、原因、结果和产物。
-关键方法与用法：`refresh()` 刷新逐题详情，`color()` 和 `resultValue()` 处理状态与表格结果；项目详情页按步骤打开本组件，`close` 事件关闭弹层。
+职责：以表格展示项目中每道题在当前步骤的状态、原因与业务详情入口。
+关键方法与用法：`refresh()` 分块批量读取轻量状态，`color()` 展示状态；项目详情页按步骤打开本组件，`close` 事件关闭弹层。
 -->
 
 <script setup lang="ts">
 import { api } from '../api/client';
-import { dateLabel, fileSize } from '../utils/format';
+import { dateLabel } from '../utils/format';
 import type { ProjectStage, Workflow, WorkflowDetail } from '../types/api';
-import MaterialRecordsTable from './MaterialRecordsTable.vue';
-import StepResultTable from './StepResultTable.vue';
 
 const props = defineProps<{ step: ProjectStage; workflows: Workflow[] }>();
 const emit = defineEmits<{ close: [] }>();
-const records = shallowRef<Record<string, WorkflowDetail>>({});
+const records = shallowRef<Record<string, Pick<WorkflowDetail,'steps'|'attempts'>>>({});
 const failures = shallowRef<Record<string, string>>({});
 const loading = shallowRef(false);
 const search = shallowRef('');
 const filter = shallowRef('全部');
-const expanded = shallowRef<string | null>(null);
 const filters = ['全部', '未进入', '就绪', '排队中', '处理中', '完成', '达标', '需要返修', '等待判定条件', '隔离', '失败', '跳过', '读取失败'];
 let controller: AbortController | undefined;
 async function refresh() {
@@ -26,18 +23,16 @@ async function refresh() {
  controller = new AbortController();
  const signal = controller.signal;
  try {
-  // Read existing workflow contracts in bounded groups; no task is dispatched here.
-  const next: Record<string, WorkflowDetail> = {};
+  const next: Record<string, Pick<WorkflowDetail,'steps'|'attempts'>> = {};
   const errors: Record<string, string> = {};
-  for (let start = 0; start < props.workflows.length; start += 4) {
-   const batch = props.workflows.slice(start, start + 4);
-   const results = await Promise.allSettled(batch.map(flow => api<WorkflowDetail>(`/workflows/${flow.id}`, { signal })));
-   if (signal.aborted) return;
-   results.forEach((result, index) => {
-    const id = batch[index]!.id;
-    if (result.status === 'fulfilled') next[id] = result.value;
-    else errors[id] = result.reason instanceof Error ? result.reason.message : '读取失败';
-   });
+  const projectId=props.workflows[0]?.project_id;
+  if(projectId){
+   for(let start=0;start<props.workflows.length;start+=100){
+    if(signal.aborted)return;
+    const flows=props.workflows.slice(start,start+100);
+    const views=await api<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>(`/projects/${projectId}/workflow-status?ids=${flows.map(flow=>flow.id).join(',')}`,{signal});
+    for(const flow of flows){const view=views[flow.id];if(view)next[flow.id]=view;else errors[flow.id]='题目状态不存在';}
+   }
   }
   records.value = next;
   failures.value = errors;
@@ -61,37 +56,17 @@ const rows = computed(() => props.workflows.map(flow => {
   : step.status === 'skipped' ? '跳过' : step.status === 'running' || active?.status === 'running' ? '处理中'
   : active ? '排队中' : ready ? '就绪' : '未进入';
  const issues = (Array.isArray(step?.result?.reasons) ? step.result.reasons.join('；') : '') || (Array.isArray(step?.result?.issues) && step.result.issues.length ? `${step.result.issues.length} 项处理问题，展开结果查看` : '');
- const question = typeof step?.result?.question === 'string' ? step.result.question : '';
- const summary = props.step.ordinal === 9 && detail ? `${detail.materials.filter(item => item.processing_status === 'redacted').length} / ${detail.materials.length} 份附件已脱敏`
-  : props.step.ordinal === 1 && detail ? `${detail.materials.length} 份附件入库`
-  : props.step.ordinal === 4 ? `${step?.result?.task_name ?? '暂无题目草稿'}`
+ const summary = props.step.ordinal === 1 ? `${flow.material_count ?? 0} 份当前附件`
   : props.step.ordinal === 7 && decision ? decisionLabels[decision] ?? decision
-  : step?.result ? '已有处理结果' : '暂无处理结果';
- const artifacts = detail?.artifacts.filter(item => attempts.some(attempt => attempt.id === item.attempt_id) && (!step?.result?.question_version || !item.question_version || item.question_version === step.result.question_version)) ?? [];
- const publishedArtifact = props.step.ordinal === 8 && typeof step?.result?.artifact_id === 'string' ? step.result.artifact_id : undefined;
- const issueText=step?.error??issues??(state==='未进入'?step?.ready_reason??(step?.enabled===false?'本步骤未启用':'前置步骤尚未完成'):state==='就绪'?'等待执行':'—');
- const questionPreview = question ? `${question.slice(0, 180)}${question.length > 180 ? '…' : ''}` : '';
- return { publishedArtifact, flow: detail?.workflow ?? flow, detail, step, state, summary, questionPreview, ready, active, artifacts,
+  : step?.status === 'succeeded' ? '已完成，查看题目详情了解内容' : '以本步状态为准';
+ const issueText=step?.error||issues||(state==='未进入'?step?.ready_reason??(step?.enabled===false?'本步骤未启用':'前置步骤尚未完成'):state==='就绪'?'等待执行':'—');
+ return { flow, detail, step, state, summary, ready, active,
   issue: failures.value[flow.id] ?? issueText };
 }));
 const visibleRows = computed(() => rows.value.filter(row => row.flow.title.toLowerCase().includes((search.value ?? '').trim().toLowerCase()) && (filter.value === '全部' || row.state === filter.value)));
 function color(state: string) { return ['完成','达标'].includes(state) ? 'success' : state==='需要返修'?'warning' : ['失败', '读取失败','隔离'].includes(state) ? 'error' : ['排队中', '处理中', '就绪'].includes(state) ? 'primary' : 'secondary'; }
-const resultKeys: Record<number, string[]> = {
- 1: ['material_count', 'page_count', 'validation', 'issues'], 9: ['material_count', 'page_count', 'issues'],
- 4: ['task_name', 'task_type', 'question_version', 'question', 'rubric_version', 'rubric', 'answer_requirements'],
- 5: ['models'], 6: ['models'], 7: ['decision', 'accepted', 'quarantined', 'action', 'classification', 'reason', 'reasons', 'issues', 'models', 'model_scores'],
- 8: ['question_version', 'rubric_version', 'published_at', 'question', 'models'],
-};
-function resultValue(detail: WorkflowDetail) {
- const result = detail.steps.find(item => item.ordinal === props.step.ordinal)?.result;
- if (!result) return null;
- const selected = Object.fromEntries((resultKeys[props.step.ordinal] ?? []).filter(key => key in result).map(key => [key, result[key]]));
- return Object.keys(selected).length ? selected : result;
-}
-const artifactNames: Record<string, string> = { redacted_markdown: '脱敏全文', redacted_index: '脱敏索引', authored_question: '题目包', model_answer: '模型答案', score_report: '评分报告', published_result: '发布成果' };
 onMounted(refresh);
-const timer = setInterval(() => { if (rows.value.some(row => ['排队中', '处理中'].includes(row.state))) refresh(); }, 5000);
-onUnmounted(() => { controller?.abort(); clearInterval(timer); });
+onUnmounted(() => { controller?.abort(); });
 </script>
 <template>
  <Column class="surface-card p-20 min-w-0" :gap="16">
@@ -107,28 +82,12 @@ onUnmounted(() => { controller?.abort(); clearInterval(timer); });
        <td class="min-w-180px"><Column :gap="4"><RouterLink :to="`/workflows/${row.flow.id}`" class="link-text font-medium">{{ row.flow.title }}</RouterLink></Column></td>
        <td class="whitespace-nowrap"><Column :gap="4"><v-chip :color="color(row.state)">{{ row.state }}</v-chip><span v-if="row.state==='失败' && row.ready" class="text-xs text-muted">可重试</span></Column></td>
        <td class="min-w-180px text-sm break-words">
-        <Column v-if="step.ordinal===4 && row.questionPreview" :gap="4">
-         <span class="font-medium">{{ row.summary }}</span>
-         <span class="max-w-320px max-h-64px overflow-hidden text-xs text-muted whitespace-pre-wrap break-words">{{ row.questionPreview }}</span>
-        </Column>
-        <span v-else>{{ row.summary }}</span>
+        <span>{{ row.summary }}</span>
        </td>
        <td class="min-w-220px max-w-320px text-sm break-words" :class="row.state==='失败'?'text-danger':'text-muted'">{{ row.issue }}</td>
        <td class="whitespace-nowrap text-xs">{{ row.step?.finished_at ? dateLabel(row.step.finished_at) : '—' }}</td>
-       <td><v-btn variant="text" color="primary" :disabled="!row.detail" @click="expanded=expanded===row.flow.id?null:row.flow.id">{{ expanded===row.flow.id?'收起':step.ordinal===4?'查看题面与结果':'查看结果' }}</v-btn></td>
+       <td><v-btn variant="text" color="primary" :to="`/workflows/${row.flow.id}`">查看题目、作答与评分</v-btn></td>
       </tr>
-      <tr v-if="expanded===row.flow.id && row.detail"><td colspan="6" class="py-16">
-       <Column :gap="12">
-        <MaterialRecordsTable v-if="[1,9].includes(step.ordinal)" :workflow-id="row.flow.id" :materials="row.detail.materials" :steps="row.detail.steps" :redaction-status="row.detail.steps.find(item=>item.ordinal===9)?.status" :redaction-queued="row.detail.attempts.some(attempt=>attempt.ordinal===9 && attempt.status==='waiting')" :prefer-redacted="step.ordinal===9" read-only />
-        <v-table v-if="[1,9].includes(step.ordinal) && !row.detail.materials.length && row.flow.source_manifest?.length" density="compact" class="w-full">
-         <thead><tr><th scope="col">目录附件</th><th scope="col">大小</th><th scope="col">状态</th></tr></thead>
-         <tbody><tr v-for="source in row.flow.source_manifest" :key="source.name"><td class="break-all">{{ source.name }}</td><td>{{ fileSize(source.size) }}</td><td>未入库</td></tr></tbody>
-        </v-table>
-        <StepResultTable v-if="resultValue(row.detail)" :value="resultValue(row.detail)" />
-        <span v-else-if="![1,9].includes(step.ordinal)" class="text-sm text-muted">当前步骤尚无结果。</span>
-        <Row wrap :gap="8"><v-btn v-if="row.publishedArtifact" :href="`/api/artifacts/${row.publishedArtifact}/download`" size="small" variant="text" color="primary">下载发布成果</v-btn><v-btn v-for="artifact in row.artifacts" :key="artifact.id" :href="`/api/artifacts/${artifact.id}/download`" size="small" variant="text" color="primary">下载{{ artifactNames[artifact.kind] ?? '产物' }}</v-btn><v-btn :to="`/workflows/${row.flow.id}`" size="small" variant="text">查看完整执行历史</v-btn></Row>
-       </Column>
-      </td></tr>
      </template>
      <tr v-if="!visibleRows.length"><td colspan="6" class="text-muted py-16">{{ loading?'正在读取…':'没有符合条件的题目' }}</td></tr>
     </tbody>

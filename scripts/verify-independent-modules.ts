@@ -1,5 +1,5 @@
-/** 文件职责：在隔离数据库与合成夹具中核对达标、发布、导出、费用和模型设置的模块接线。
- * 执行入口与用途：`bun scripts/verify-independent-modules.ts`；在隔离数据库与合成记录中调用达标、发布、导出、费用和模型设置模块并核对结果。
+/** 文件职责：在隔离数据库与合成夹具中核对达标、发布、导出和模型设置的模块接线。
+ * 执行入口与用途：`bun scripts/verify-independent-modules.ts`；在隔离数据库与合成记录中调用达标、发布、导出和模型设置模块并核对结果。
  */
 import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -9,8 +9,8 @@ import {createApp} from '../server/app';
 import {createHash} from 'node:crypto';
 const pool=createPool(),storage=await mkdtemp(join(tmpdir(),'independent-modules-'));
 const projectId=crypto.randomUUID(),workflowId=crypto.randomUUID(),requestId=crypto.randomUUID(),questionAttempt=crypto.randomUUID(),answerAttempt=crypto.randomUUID(),scoreAttempt=crypto.randomUUID(),extractAttempt=crypto.randomUUID(),materialArtifact=crypto.randomUUID();
-const provider='qwen',model='fixture-token-model',validFrom='2026-10-01T00:00:00.000Z';
-let report:Record<string,unknown>={checked_at:new Date().toISOString(),fixture:'synthetic data in temporary real PostgreSQL rows',real_database:true,migrations:['008_acceptance_reporting.sql','009_stale_exports.sql','011_publication_step.sql'],acceptance:false,prices:false,export_failure_isolated:false,export_retry:false,export:false,repeated_export:false,download:false,metrics:false,nonaccepted_gate:false,stale_export:false};
+const provider='qwen',model='fixture-token-model';
+let report:Record<string,unknown>={checked_at:new Date().toISOString(),fixture:'synthetic data in temporary real PostgreSQL rows',real_database:true,migrations:['008_acceptance_reporting.sql','009_stale_exports.sql','011_publication_step.sql'],acceptance:false,export_failure_isolated:false,export_retry:false,export:false,repeated_export:false,download:false,nonaccepted_gate:false,stale_export:false};
 try{
  await pool.query("INSERT INTO ai_distill.projects(id,name) VALUES($1,'independent-module-verification')",[projectId]);
  await pool.query("INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_key) VALUES($1,$2,$3,'verification question','verification-batch')",[workflowId,projectId,requestId]);
@@ -50,8 +50,6 @@ try{
  if(publicationDownload.status!==200||publicationBody.question_version!==questionResult.question_version||'reference_answer' in publicationBody)throw new Error('publication download failed');report.publication_download=true;
 
  await pool.query('UPDATE ai_distill.step_attempts SET config=jsonb_set(config,\'{provider}\',to_jsonb($2::text)),result=jsonb_set(result,\'{provider}\',to_jsonb($2::text)) WHERE id=$1',[answerAttempt,provider]);
- const priceWrite=await app.request('/api/api-model-prices',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider,model,currency:'CNY',input_per_million:2,output_per_million:8,source:'verification fixture',valid_from:validFrom})});
- const prices=await app.request('/api/api-model-prices');if(priceWrite.status!==200||!(await prices.json() as any[]).some(p=>p.provider===provider&&p.model===model))throw new Error('price endpoints failed');report.prices=true;
  const attemptsBeforeExport=(await pool.query('SELECT count(*)::int AS count FROM ai_distill.step_attempts WHERE workflow_id=$1',[workflowId])).rows[0].count;
  const blockedStorage=join(storage,'blocked-export');await mkdir(blockedStorage,{recursive:true});await writeFile(join(blockedStorage,'exports'),'not a directory');
  const blockedExport=await createApp(pool,blockedStorage).request(`/api/projects/${projectId}/export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batch:'verification-batch'})});
@@ -67,14 +65,13 @@ try{
  const repeated=await app.request(`/api/projects/${projectId}/export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batch:'verification-batch'})});const repeatedBody=await repeated.json() as any;
  if(repeated.status!==201||repeatedBody.id===exportBody.id)throw new Error('repeated export failed');report.repeated_export=true;
  const downloaded=await app.request(`/api/exports/${exportBody.id}/download`);const workbook=new Uint8Array(await downloaded.arrayBuffer());if(downloaded.status!==200||workbook[0]!==0x50||workbook[1]!==0x4b)throw new Error('download endpoint failed');report.download=true;
- const metrics=await app.request(`/api/projects/${projectId}/metrics`);const metricsBody=await metrics.json() as any;if(metrics.status!==200||metricsBody.production.accepted!==1||metricsBody.api_costs.known_calls!==1)throw new Error('metrics endpoint failed');report.metrics=true;
  await pool.query("UPDATE ai_distill.project_step_configs SET config=jsonb_set(config,'{minimum_score_by_model}',jsonb_build_object($2::text,10)) WHERE project_id=$1 AND ordinal=7",[projectId,model]);
  const below=await app.request(`/api/workflows/${workflowId}/accept`,{method:'POST'});const belowBody=await below.json() as any;const stepState=await pool.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=7',[workflowId]);const exportState=await pool.query('SELECT status FROM ai_distill.project_exports WHERE id=ANY($1::uuid[])',[ [exportBody.id,repeatedBody.id] ]);
  if(below.status!==200||belowBody.decision!=='repair'||stepState.rows[0]?.status!=='failed')throw new Error('nonaccepted result was not gated');report.nonaccepted_gate=true;
  if(exportState.rows.length!==2||exportState.rows.some((row:any)=>row.status!=='stale'))throw new Error('prior exports were not invalidated');report.stale_export=true;
- report={...report,decision:acceptanceBody.decision,api_cost:metricsBody.api_costs,export_sha256:exportBody.sha256,workbook_bytes:workbook.length};
+ report={...report,decision:acceptanceBody.decision,export_sha256:exportBody.sha256,workbook_bytes:workbook.length};
 }catch(error){report={...report,error:error instanceof Error?error.message:'verification failed'};process.exitCode=1;}
 finally{
- try{await pool.query('DELETE FROM ai_distill.project_exports WHERE project_id=$1',[projectId]);await pool.query('DELETE FROM ai_distill.artifacts WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.step_attempts WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.steps WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.workflows WHERE id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.project_step_configs WHERE project_id=$1',[projectId]);await pool.query('DELETE FROM ai_distill.projects WHERE id=$1',[projectId]);await pool.query('DELETE FROM ai_distill.api_model_prices WHERE provider=$1 AND model=$2 AND source=$3',[provider,model,'verification fixture']);const leftovers=await pool.query("SELECT (SELECT count(*) FROM ai_distill.projects WHERE id=$1)::int AS projects,(SELECT count(*) FROM ai_distill.api_model_prices WHERE provider=$2 AND model=$3 AND source=$4)::int AS prices",[projectId,provider,model,'verification fixture']);if(leftovers.rows[0].projects||leftovers.rows[0].prices)throw new Error('cleanup incomplete');report.cleanup_complete=true;}catch{report={...report,cleanup_complete:false};process.exitCode=1;}
+ try{await pool.query('DELETE FROM ai_distill.project_exports WHERE project_id=$1',[projectId]);await pool.query('DELETE FROM ai_distill.artifacts WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.step_attempts WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.steps WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.workflows WHERE id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.project_step_configs WHERE project_id=$1',[projectId]);await pool.query('DELETE FROM ai_distill.projects WHERE id=$1',[projectId]);const leftovers=await pool.query("SELECT (SELECT count(*) FROM ai_distill.projects WHERE id=$1)::int AS projects",[projectId]);if(leftovers.rows[0].projects)throw new Error('cleanup incomplete');report.cleanup_complete=true;}catch{report={...report,cleanup_complete:false};process.exitCode=1;}
  await rm(storage,{recursive:true,force:true});await pool.end();await mkdir('docs/evidence',{recursive:true});await writeFile('docs/evidence/independent-modules-integration.json',JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report));
 }

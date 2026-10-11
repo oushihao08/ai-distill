@@ -1,6 +1,6 @@
 <!--
 职责：展示单题返修链、轮次和问题依据，并启动或恢复有限返修。
-关键方法与用法：`execute()` 提交启动／恢复请求，`refreshRunning()` 轮询活动状态；工作流详情页传入当前步骤及尝试记录，并在 `updated` 事件后刷新。
+关键方法与用法：`execute()` 提交启动／恢复请求，`refresh()` 按需读取状态；工作流详情页传入当前步骤及尝试记录，并在 `updated` 事件后刷新。
 -->
 
 <script setup lang="ts">
@@ -49,11 +49,7 @@ async function execute(chain?:Chain){
  }catch(cause){failure.value=cause instanceof Error?cause.message:'返修操作失败';}
  finally{busy.value=false;}
 }
-watch(()=>props.attempts,()=>{void refresh();});
-let poll:ReturnType<typeof setInterval>|undefined;
-async function refreshRunning(){try{await refresh();emit('updated');}catch(cause){failure.value=cause instanceof Error?cause.message:'刷新返修状态失败';}}
-onMounted(()=>{poll=setInterval(()=>{if(active.value&&['waiting','running'].includes(active.value.status))void refreshRunning();},3000);});
-onUnmounted(()=>{if(poll)clearInterval(poll);});
+watch(()=>props.attempts.map(item=>`${item.id}:${item.status}`).join('|'),()=>{void refresh();});
 </script>
 
 <template>

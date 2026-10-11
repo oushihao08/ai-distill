@@ -1,6 +1,6 @@
 <!--
 职责：展示项目题目清单、当前步骤状态、详情页同款单题步骤操作和分页导航，供项目详情页面直接复用。
-关键方法与用法：接收 `workflows` 列表并读取题目详情；`actionsFor()` 按详情页条件生成单题步骤按钮，`runAction()` 调用对应工作流接口。
+关键方法与用法：接收 `workflows` 列表并批量读取当前页状态；`actionsFor()` 按详情页条件生成单题步骤按钮，`runAction()` 调用对应工作流接口。
 -->
 
 <script setup lang="ts">
@@ -8,12 +8,12 @@ import { api } from '../api/client';
 import { dateLabel } from '../utils/format';
 import { stages, statusLabels, type Attempt, type Workflow, type WorkflowDetail } from '../types/api';
 
-const props=defineProps<{workflows:Workflow[]}>();
+const props=defineProps<{workflows:Workflow[];projectId:string}>();
 const emit=defineEmits<{refresh:[]}>();
 const search=shallowRef('');
 const page=shallowRef(1);
 const pageSize=10;
-const details=shallowRef<Record<string,WorkflowDetail>>({});
+const details=shallowRef<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>({});
 const detailErrors=shallowRef<Record<string,string>>({});
 const detailLoadingByWorkflow=shallowRef<Record<string,boolean>>({});
 const runningAction=shallowRef<string|null>(null);
@@ -21,9 +21,6 @@ const actionMessages=shallowRef<Record<string,string>>({});
 const decisionDetailOpen=shallowRef(false);
 const selectedDecisionFlow=shallowRef<Workflow|null>(null);
 const selectedDecisionAttempt=computed(()=>selectedDecisionFlow.value?latestDecisionAttempt(selectedDecisionFlow.value):null);
-const expandedDecisionSections=shallowRef<string[]>(['result']);
-const copiedDecisionField=shallowRef('');
-const decisionCopyError=shallowRef('');
 const activeWorkflows=computed(()=>props.workflows.filter(flow=>flow.publication_status!=='succeeded'));
 const filteredWorkflows=computed(()=>activeWorkflows.value.filter(flow=>flow.title.toLowerCase().includes(search.value.trim().toLowerCase())));
 const pageCount=computed(()=>Math.max(1,Math.ceil(filteredWorkflows.value.length/pageSize)));
@@ -54,21 +51,14 @@ function refreshDetails(){
   try{
    do{
     refreshRequestedAgain=false;
-    for(let start=0;start<props.workflows.length;start+=4){
-     const batch=props.workflows.slice(start,start+4);
-     detailLoadingByWorkflow.value={...detailLoadingByWorkflow.value,...Object.fromEntries(batch.map(flow=>[flow.id,true]))};
-     const errors={...detailErrors.value};batch.forEach(flow=>delete errors[flow.id]);detailErrors.value=errors;
-     await Promise.all(batch.map(async flow=>{
-      const controller=new AbortController();
-      const timeout=setTimeout(()=>controller.abort(),15_000);
-      try{
-       const detail=await api<WorkflowDetail>(`/workflows/${flow.id}`,{signal:controller.signal});
-       details.value={...details.value,[flow.id]:detail};
-       const errors={...detailErrors.value};delete errors[flow.id];detailErrors.value=errors;
-      }catch(cause){detailErrors.value={...detailErrors.value,[flow.id]:controller.signal.aborted?'读取题目步骤状态超时，请刷新重试':cause instanceof Error?cause.message:'读取步骤状态失败'};}
-      finally{clearTimeout(timeout);detailLoadingByWorkflow.value={...detailLoadingByWorkflow.value,[flow.id]:false};}
-     }));
-    }
+    const flows=visibleWorkflows.value;
+    if(!flows.length){details.value={};continue;}
+    detailLoadingByWorkflow.value=Object.fromEntries(flows.map(flow=>[flow.id,true]));
+    try{
+     details.value=await api<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>(`/projects/${props.projectId}/workflow-status?ids=${flows.map(flow=>flow.id).join(',')}`);
+     detailErrors.value={};
+    }catch(cause){detailErrors.value=Object.fromEntries(flows.map(flow=>[flow.id,cause instanceof Error?cause.message:'读取步骤状态失败']));}
+    finally{detailLoadingByWorkflow.value={};}
    }while(refreshRequestedAgain);
   }catch(cause){actionMessages.value={...actionMessages.value,refresh:cause instanceof Error?cause.message:'读取题目步骤状态失败'};}
   finally{detailsRefresh=null;}
@@ -108,14 +98,8 @@ function decisionModelName(flow:Workflow,modelId:string){
  return typeof model?.name==='string'&&model.name?model.name:modelId;
 }
 function decisionPercent(value:number|undefined){return typeof value==='number'?`${Number(value.toFixed(1))}%`:'—';}
-function showDecisionDetail(flow:Workflow){selectedDecisionFlow.value=flow;expandedDecisionSections.value=['result'];copiedDecisionField.value='';decisionCopyError.value='';decisionDetailOpen.value=true;}
+function showDecisionDetail(flow:Workflow){selectedDecisionFlow.value=flow;decisionDetailOpen.value=true;}
 function decisionAttemptStatus(attempt:Attempt){const result=attempt.result;if(attempt.ordinal===7&&result&&typeof result==='object'&&'decision'in result){const decision=String((result as {decision?:unknown}).decision??'');return ({accepted:'达标',repair:'需要返修',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[decision]??statusLabels[attempt.status];}return statusLabels[attempt.status];}
-function decisionJson(value:unknown){return value==null?'暂无内容':JSON.stringify(value,null,2)??'暂无内容';}
-function toggleDecisionSection(section:string){expandedDecisionSections.value=expandedDecisionSections.value.includes(section)?expandedDecisionSections.value.filter(item=>item!==section):[...expandedDecisionSections.value,section];}
-async function copyDecisionField(label:string,value:unknown){
- try{await navigator.clipboard.writeText(decisionJson(value));copiedDecisionField.value=label;decisionCopyError.value='';window.setTimeout(()=>{if(copiedDecisionField.value===label)copiedDecisionField.value='';},1800);}
- catch(cause){decisionCopyError.value=cause instanceof Error?`复制${label}失败：${cause.message}`:`复制${label}失败，请检查浏览器剪贴板权限`;}
-}
 async function runAction(flow:Workflow,action:RowAction){
  const key=`${flow.id}:${action.ordinal}`;
  if(action.disabled||runningAction.value)return;
@@ -130,7 +114,7 @@ async function runAction(flow:Workflow,action:RowAction){
  finally{runningAction.value=null;}
 }
 onMounted(refreshDetails);
-watch(()=>props.workflows.map(flow=>`${flow.id}:${flow.current_ordinal}:${flow.current_status}`).join('|'),()=>{void refreshDetails();});
+watch([()=>props.workflows,page,search],()=>{void refreshDetails();});
 watch(search,()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 </script>
@@ -160,15 +144,12 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
     <Row x="between" y="center" :gap="12"><Column :gap="4"><h2 class="section-title">达标或返修 · 执行详情</h2><span v-if="selectedDecisionAttempt" class="text-xs text-muted">{{ dateLabel(selectedDecisionAttempt.started_at) }}</span></Column><v-btn icon="$close" aria-label="关闭达标判定详情" variant="text" @click="decisionDetailOpen=false" /></Row>
     <v-chip v-if="selectedDecisionAttempt" class="self-start" size="small" :color="selectedDecisionAttempt.status==='succeeded'?'success':selectedDecisionAttempt.status==='failed'?'error':selectedDecisionAttempt.status==='running'?'primary':'secondary'">{{ decisionAttemptStatus(selectedDecisionAttempt) }}</v-chip>
     <v-alert v-if="selectedDecisionAttempt?.error" type="error" density="compact">{{ selectedDecisionAttempt.error }}</v-alert>
-    <v-alert v-if="decisionCopyError" type="error" density="compact" closable @click:close="decisionCopyError=''">{{ decisionCopyError }}</v-alert>
     <p v-if="!selectedDecisionAttempt&&selectedDecisionFlow&&detailLoadingByWorkflow[selectedDecisionFlow.id]&&!detailErrors[selectedDecisionFlow.id]" class="text-sm text-muted">正在读取判定执行记录…</p>
     <p v-else-if="!selectedDecisionAttempt&&selectedDecisionFlow&&detailErrors[selectedDecisionFlow.id]" class="text-sm text-danger">读取失败：{{ detailErrors[selectedDecisionFlow.id] }}</p>
     <p v-else-if="!selectedDecisionAttempt" class="text-sm text-muted">暂无达标或返修执行记录。</p>
     <Column v-else class="max-h-480px overflow-y-auto" :gap="4">
      <section v-if="selectedDecisionFlow&&decisionScores(selectedDecisionAttempt).length" class="surface-panel p-8"><h3 class="px-8 py-4 text-sm font-semibold">模型评分</h3><v-table density="compact"><thead><tr><th scope="col">模型</th><th scope="col">得分</th><th scope="col">百分制</th><th scope="col">门槛</th><th scope="col">评分结果</th></tr></thead><tbody><tr v-for="[modelId,score] in decisionScores(selectedDecisionAttempt)" :key="modelId"><td>{{ decisionModelName(selectedDecisionFlow,modelId) }}</td><td>{{ score.score??'—' }} / {{ score.max_score??'—' }}</td><td>{{ decisionPercent(score.percentage) }}</td><td>{{ typeof score.threshold==='number'?`低于 ${score.threshold}%`:'—' }}</td><td><v-chip size="small" :color="score.status==='passed'?'success':score.status==='not_passed'?'warning':score.status==='invalid'?'error':'secondary'">{{ ({passed:'达标',not_passed:'未达标',pending:'待定',invalid:'无效'} as Record<string,string>)[score.status??'']??'未知' }}</v-chip></td></tr></tbody></v-table></section>
-     <section class="surface-panel overflow-hidden"><Row x="between" y="center" class="min-h-36px px-8"><v-btn size="small" variant="text" @click="toggleDecisionSection('result')">{{ expandedDecisionSections.includes('result')?'收起':'展开' }} · 结果 / 输出</v-btn><v-btn size="small" variant="text" @click="copyDecisionField('结果',selectedDecisionAttempt?.result)">{{ copiedDecisionField==='结果'?'已复制':'复制' }}</v-btn></Row><pre v-if="expandedDecisionSections.includes('result')" class="border-t border-subtle p-8 text-xs whitespace-pre-wrap break-all">{{ decisionJson(selectedDecisionAttempt.result) }}</pre></section>
-     <section class="surface-panel overflow-hidden"><Row x="between" y="center" class="min-h-36px px-8"><v-btn size="small" variant="text" @click="toggleDecisionSection('input')">{{ expandedDecisionSections.includes('input')?'收起':'展开' }} · 输入</v-btn><v-btn size="small" variant="text" @click="copyDecisionField('输入',selectedDecisionAttempt?.input)">{{ copiedDecisionField==='输入'?'已复制':'复制' }}</v-btn></Row><pre v-if="expandedDecisionSections.includes('input')" class="border-t border-subtle p-8 text-xs whitespace-pre-wrap break-all">{{ decisionJson(selectedDecisionAttempt.input) }}</pre></section>
-     <section v-if="selectedDecisionAttempt.config" class="surface-panel overflow-hidden"><Row x="between" y="center" class="min-h-36px px-8"><v-btn size="small" variant="text" @click="toggleDecisionSection('config')">{{ expandedDecisionSections.includes('config')?'收起':'展开' }} · 配置</v-btn><v-btn size="small" variant="text" @click="copyDecisionField('配置',selectedDecisionAttempt?.config)">{{ copiedDecisionField==='配置'?'已复制':'复制' }}</v-btn></Row><pre v-if="expandedDecisionSections.includes('config')" class="border-t border-subtle p-8 text-xs whitespace-pre-wrap break-all">{{ decisionJson(selectedDecisionAttempt.config) }}</pre></section>
+     <p class="text-sm text-muted">{{ (selectedDecisionAttempt.result as {reasons?:string[]}|null)?.reasons?.join('；') || '请根据模型评分决定是否返修。' }}</p>
     </Column>
    </Column>
   </v-dialog>

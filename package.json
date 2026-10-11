@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "ai-distill": "bun cli/index.ts",
     "dev": "bun run --cwd web dev",
     "server": "bun server/index.ts",
     "worker": "bun server/worker.ts",
@@ -13,6 +14,7 @@
     "start:iterm": "bash scripts/start-iterm.sh"
   },
   "dependencies": {
+    "docx": "9.9.0",
     "hono": "4.13.13",
     "pg": "8.23.1"
   },

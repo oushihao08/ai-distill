@@ -6,7 +6,7 @@
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {mkdir,rename,rm,lstat,realpath} from 'node:fs/promises';
-import {join,relative,isAbsolute,resolve,sep} from 'node:path';
+import {dirname,join,relative,isAbsolute,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {classifyLogError,enterLogContext,logEvent} from './logging';
 
@@ -16,13 +16,14 @@ type StoredPath={storage_path:string;kind:string};
 type ExportPath={id:string;storage_path:string|null;workflow_ids:string[]};
 function inside(parent:string,path:string){const rel=relative(parent,path);return rel===''||(!isAbsolute(rel)&&rel!=='..'&&!rel.startsWith(`..${sep}`));}
 
-export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string){
+export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string,assetExportRoot=join(repositoryRoot,'assets/out')){
  if(!uuid.test(id))throw new HTTPException(400,{message:'题目ID无效'});
- const db=await pool.connect();const moved:{from:string;to:string}[]=[];let commitAttempted=false;let committed=false;let attemptIds:string[]=[];let trash:string|undefined;let restoreLogContext=()=>{};
- async function discard(){if(trash)await rm(trash,{recursive:true,force:true});}
+ const db=await pool.connect();const moved:{from:string;to:string}[]=[];const trashDirs=new Map<string,string>();let commitAttempted=false;let committed=false;let attemptIds:string[]=[];let restoreLogContext=()=>{};
+ async function trashFor(root:string){const existing=trashDirs.get(root);if(existing)return existing;const path=join(root,'.generated-trash',id,crypto.randomUUID());await mkdir(path,{recursive:true,mode:0o700});if(await realpath(path)!==path)throw new HTTPException(409,{message:'清理隔离目录存在符号链接，停止重置'});trashDirs.set(root,path);return path;}
+ async function discard(){for(const path of trashDirs.values())await rm(path,{recursive:true,force:true});}
  try{
   await db.query('BEGIN');
-  const workflow=(await db.query("SELECT w.id,w.project_id,w.source_manifest FROM ai_distill.workflows w WHERE w.id=$1 FOR UPDATE OF w",[id])).rows[0];
+  const workflow=(await db.query("SELECT w.id,w.project_id,w.source_manifest,w.source_key,p.material_root FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 FOR UPDATE OF w",[id])).rows[0];
   if(!workflow)throw new HTTPException(404,{message:'题目不存在'});
   restoreLogContext=enterLogContext({component:'workflow_reset',operation:'clear_generated_data',workflow_id:id});logEvent('file.reset.started',{level:'info'});
   const activeExport=(await db.query("SELECT id FROM ai_distill.project_exports WHERE project_id=$1 AND status='running' LIMIT 1",[workflow.project_id])).rowCount;
@@ -37,13 +38,26 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string)
   const exports=(await db.query('SELECT id,storage_path,workflow_ids FROM ai_distill.project_exports WHERE $1=ANY(workflow_ids) FOR UPDATE',[id])).rows as ExportPath[];
 
   await mkdir(storageRoot,{recursive:true});const root=await realpath(storageRoot);
-  trash=join(root,'.generated-trash',id,crypto.randomUUID());await mkdir(trash,{recursive:true,mode:0o700});
-  if(await realpath(trash)!==trash)throw new HTTPException(409,{message:'清理隔离目录存在符号链接，停止重置'});
+  await trashFor(root);
 
   const workflowDirectory=join(root,id);
   const candidates:{path:string;root:string}[]=[{path:workflowDirectory,root},{path:join(root,'.extraction-checkpoints',id),root}];
   for(const artifact of artifactPaths){
    if(isAbsolute(artifact.storage_path))throw new HTTPException(409,{message:'生成产物路径无效，停止重置'});
+   if(artifact.kind==='redacted_docx'&&artifact.storage_path.startsWith('附件库/')){
+    const segments=artifact.storage_path.split('/');if(segments.length!==5||segments.some(segment=>!segment||segment==='.'||segment==='..')||segments[0]!=='附件库'||segments.at(-2)!=='成果'||segments.at(-1)!=='脱敏材料.docx')throw new HTTPException(409,{message:'附件库产物路径无效，停止重置'});
+    let exportRoot:string;try{exportRoot=await realpath(assetExportRoot);if((await lstat(assetExportRoot)).isSymbolicLink())throw new Error('symlink');}catch{throw new HTTPException(409,{message:'附件库根目录不可安全读取，停止重置'});}
+    const libraryRoot=join(exportRoot,'附件库'),docxPath=resolve(exportRoot,artifact.storage_path),questionDir=dirname(dirname(docxPath)),pathWithinLibrary=relative(libraryRoot,questionDir);
+    if(pathWithinLibrary==='..'||pathWithinLibrary.startsWith(`..${sep}`)||isAbsolute(pathWithinLibrary)||!pathWithinLibrary)throw new HTTPException(409,{message:'附件库产物路径越界，停止重置'});
+    candidates.push({path:questionDir,root:exportRoot});continue;
+   }
+   if(artifact.kind==='redacted_docx'&&artifact.storage_path.startsWith('outputs/')){
+    if(typeof workflow.source_key!=='string'||!workflow.source_key||workflow.source_key==='.'||workflow.source_key==='..'||/[\\/\u0000-\u001f]/.test(workflow.source_key)||typeof workflow.material_root!=='string')throw new HTTPException(409,{message:'旧版 DOCX 导出路径无法安全核对，停止重置'});
+    const expected=join('outputs',workflow.source_key,'脱敏材料.docx');if(artifact.storage_path!==expected)throw new HTTPException(409,{message:'旧版 DOCX 导出路径无效，停止重置'});
+    let projectRoot:string;try{projectRoot=await realpath(dirname(workflow.material_root));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+    const path=resolve(projectRoot,expected),within=relative(projectRoot,path);if(!within||within==='..'||within.startsWith(`..${sep}`)||isAbsolute(within))throw new HTTPException(409,{message:'旧版 DOCX 导出路径越界，停止重置'});
+    candidates.push({path,root:projectRoot});continue;
+   }
    const path=resolve(root,artifact.storage_path),within=relative(root,path);
    if(!within||within==='..'||within.startsWith(`..${sep}`)||isAbsolute(within))throw new HTTPException(409,{message:'生成产物路径越界，停止重置'});
    if(!inside(workflowDirectory,path))candidates.push({path,root});
@@ -63,7 +77,7 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string)
    let info;try{info=await lstat(from);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
    const actual=await realpath(from),within=relative(allowedRoot,actual);
    if(actual!==from||info.isSymbolicLink()||(!info.isDirectory()&&!info.isFile())||within==='..'||within.startsWith(`..${sep}`)||isAbsolute(within))throw new HTTPException(409,{message:'生成文件越界或不是普通文件，停止重置'});
-   const to=join(trash,String(moved.length));await rename(from,to);moved.push({from,to});
+   const to=join(await trashFor(allowedRoot),String(moved.length));await rename(from,to);moved.push({from,to});
   }
 
   await db.query('DELETE FROM ai_distill.artifacts WHERE workflow_id=$1',[id]);

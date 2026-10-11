@@ -15,15 +15,14 @@ test('writes ordered, correlated JSONL events and drops unapproved private field
  try{
   await withLogContext({request_id:'request-a',attempt_id:'attempt-a',workflow_id:'workflow-a'},async()=>{
    logger.log('attempt.started',{level:'info',operation:'redaction',model:'gpt-6-luna',prompt:'PRIVATE MATERIAL'});
-   logger.log('attempt.failed',{level:'error',error_kind:'timeout',reason_code:'codex_timeout'});
+   logger.log('attempt.failed',{level:'error',operation:'redaction',model:'gpt-6-luna',prompt:'PRIVATE MATERIAL',error_kind:'timeout',reason_code:'codex_timeout',failure_phase:'agent_execution'});
   });
   await logger.flush();
   const files=await readdir(join(root,'logs',new Date().toISOString().slice(0,10)));
   expect(files).toHaveLength(1);
   const lines=(await readFile(join(root,'logs',new Date().toISOString().slice(0,10),files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  expect(lines).toHaveLength(2);
-  expect(lines[0]).toMatchObject({service:'worker',instance_id:'instance-a',build_id:'build-2026-10-09',request_id:'request-a',attempt_id:'attempt-a',workflow_id:'workflow-a',operation:'redaction',model:'gpt-6-luna'});
-  expect(lines[1].seq).toBe(lines[0].seq+1);
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toMatchObject({event:'attempt.failed',service:'worker',instance_id:'instance-a',build_id:'build-2026-10-09',request_id:'request-a',attempt_id:'attempt-a',workflow_id:'workflow-a',operation:'redaction',model:'gpt-6-luna',failure_phase:'agent_execution'});
   expect(JSON.stringify(lines)).not.toContain('PRIVATE MATERIAL');
   expect(await logger.health()).toMatchObject({status:'healthy',dropped_count:0});
  }finally{await logger.close();await rm(root,{recursive:true,force:true});}
@@ -34,7 +33,7 @@ test('isolates concurrent async log contexts',async()=>{
  const logger=createStructuredLogger({root,service:'api',instance_id:'instance-b'});
  try{
   await Promise.all(['request-a','request-b'].map(request_id=>withLogContext({request_id},async()=>{
-   await Promise.resolve();logger.log('request.finished',{level:'info'});
+   await Promise.resolve();logger.log('request.failed',{level:'error'});
   })));
   await logger.flush();
   const files=await readdir(join(root,'logs',new Date().toISOString().slice(0,10)));
@@ -46,7 +45,7 @@ test('isolates concurrent async log contexts',async()=>{
 test('keeps concurrent process writers in separate complete JSONL segments',async()=>{
  const root=await mkdtemp(join(tmpdir(),'ai-distill-logs-processes-')),moduleUrl=new URL('./logging.ts',import.meta.url).href;
  try{
-  const source=`import {createStructuredLogger} from ${JSON.stringify(moduleUrl)};const logger=createStructuredLogger({root:${JSON.stringify(root)},service:'worker'});for(let i=0;i<25;i++)logger.log('probe.concurrent',{level:'info',event_count:i});await logger.close();`;
+  const source=`import {createStructuredLogger} from ${JSON.stringify(moduleUrl)};const logger=createStructuredLogger({root:${JSON.stringify(root)},service:'worker'});for(let i=0;i<25;i++)logger.log('probe.concurrent',{level:'error',event_count:i});await logger.close();`;
   const launch=()=>new Promise<number>((resolve,reject)=>{const child=spawn(process.execPath,['-e',source],{stdio:'ignore'});child.once('error',reject);child.once('close',code=>resolve(code??1));});
   expect(await Promise.all([launch(),launch()])).toEqual([0,0]);
   const day=new Date().toISOString().slice(0,10),directory=join(root,'logs',day),files=await readdir(directory),records=(await Promise.all(files.map(file=>readFile(join(directory,file),'utf8')))).flatMap(text=>text.split('\n').filter(Boolean).map(line=>JSON.parse(line)));
@@ -62,7 +61,7 @@ test('coordinates retention cleanup across concurrent logger processes',async()=
    const directory=join(root,'logs',`2026-08-${String(day).padStart(2,'0')}`);await mkdir(directory,{recursive:true});
    for(let index=0;index<10;index++)await writeFile(join(directory,`worker-${String(index).padStart(8,'0')}-1234-4234-8234-123456789abc-000.jsonl`),'{}\n');
   }
-  const source=`import {createStructuredLogger} from ${JSON.stringify(moduleUrl)};const logger=createStructuredLogger({root:${JSON.stringify(root)},service:'worker'});logger.log('probe.retention',{level:'info'});await logger.flush();const health=await logger.health();await logger.close();if(health.status!=='healthy')process.exit(2);`;
+  const source=`import {createStructuredLogger} from ${JSON.stringify(moduleUrl)};const logger=createStructuredLogger({root:${JSON.stringify(root)},service:'worker'});logger.log('probe.retention',{level:'error'});await logger.flush();const health=await logger.health();await logger.close();if(health.status!=='healthy')process.exit(2);`;
   const launch=()=>new Promise<number>((resolve,reject)=>{const child=spawn(process.execPath,['-e',source],{stdio:'ignore'});child.once('error',reject);child.once('close',code=>resolve(code??1));});
   expect(await Promise.all([launch(),launch(),launch(),launch()])).toEqual([0,0,0,0]);
   expect(await readdir(join(root,'logs'))).toContain(new Date().toISOString().slice(0,10));
@@ -74,9 +73,9 @@ test('rotates bounded JSONL files and removes only expired logger segments',asyn
  let now=new Date('2026-01-01T12:00:00.000Z');
  const logger=createStructuredLogger({root,service:'worker',instance_id:'12345678-1234-1234-1234-123456789abc',max_file_bytes:1,retention_days:7,now:()=>now});
  try{
-  logger.log('attempt.started',{level:'info'});await logger.flush();
+  logger.log('attempt.failed',{level:'error'});await logger.flush();
   const oldDay=join(root,'logs','2026-01-01');expect(await readdir(oldDay)).toHaveLength(1);
-  now=new Date('2026-01-10T12:00:00.000Z');logger.log('attempt.completed',{level:'info'});await logger.flush();
+  now=new Date('2026-01-10T12:00:00.000Z');logger.log('attempt.failed',{level:'error'});await logger.flush();
   expect(await readdir(oldDay)).toHaveLength(0);
   expect(await readdir(join(root,'logs','2026-01-10'))).toHaveLength(1);
  }finally{await logger.close();await rm(root,{recursive:true,force:true});}
@@ -102,14 +101,14 @@ test('marks logger degraded when its storage path cannot be written',async()=>{
  }finally{await logger.close();expect(await logger.health()).toMatchObject({status:'degraded',error_kind:'filesystem'});await rm(root.slice(0,root.lastIndexOf('/')),{recursive:true,force:true});}
 });
 
-test('records recovery after the logger storage becomes writable again',async()=>{
+test('persists failures after the logger storage becomes writable again without a recovery event',async()=>{
  const parent=await mkdtemp(join(tmpdir(),'ai-distill-logs-recovery-')),root=join(parent,'blocked');await writeFile(root,'blocker');
  const logger=createStructuredLogger({root,service:'worker',build_id:'build-recovery'});
  try{
   logger.log('attempt.failed',{level:'error'});await logger.flush();expect(await logger.health()).toMatchObject({status:'degraded',error_kind:'filesystem'});
-  await unlink(root);await mkdir(root);logger.log('attempt.completed',{level:'info'});await logger.flush();
+  await unlink(root);await mkdir(root);logger.log('attempt.failed',{level:'error',reason_code:'storage_recovered'});await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(root,'logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  expect(records).toContainEqual(expect.objectContaining({event:'logger.storage_recovered',service:'worker',level:'info',build_id:'build-recovery'}));
+  expect(records).toHaveLength(1);expect(records[0]).toMatchObject({event:'attempt.failed',service:'worker',level:'error',reason_code:'storage_recovered',build_id:'build-recovery'});
   expect(await logger.health()).toMatchObject({status:'healthy',error_kind:'none'});
  }finally{await logger.close();await rm(parent,{recursive:true,force:true});}
 });
@@ -118,19 +117,19 @@ test('marks bounded queue overflow degraded and counts dropped events',async()=>
  const root=await mkdtemp(join(tmpdir(),'ai-distill-logs-overflow-'));
  const logger=createStructuredLogger({root,service:'worker',max_queue:0});
  try{
-  logger.log('attempt.started',{level:'info'});
+  logger.log('attempt.failed',{level:'error'});
   expect(await logger.health()).toMatchObject({status:'degraded',error_kind:'queue_full',dropped_count:1});
  }finally{await logger.close();expect(await logger.health()).toMatchObject({status:'degraded',error_kind:'queue_full'});await rm(root,{recursive:true,force:true});}
 });
 
-test('keeps a critical event by evicting queued debug progress on overflow',async()=>{
+test('does not enqueue successful or progress events before persisting failures',async()=>{
  const root=await mkdtemp(join(tmpdir(),'ai-distill-logs-priority-'));
  const logger=createStructuredLogger({root,service:'worker',max_queue:1});
  try{
   logger.log('service.started',{level:'info'});logger.log('worker.progress',{level:'debug'});logger.log('attempt.failed',{level:'error'});await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(root,'logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  expect(records.map(record=>record.event).filter(event=>['service.started','worker.progress','attempt.failed'].includes(event))).toEqual(['service.started','attempt.failed']);
-  expect(await logger.health()).toMatchObject({dropped_count:1});
+  expect(records.map(record=>record.event).filter(event=>['service.started','worker.progress','attempt.failed'].includes(event))).toEqual(['attempt.failed']);
+  expect(await logger.health()).toMatchObject({dropped_count:0});
  }finally{await logger.close();await rm(root,{recursive:true,force:true});}
 });
 
@@ -203,8 +202,8 @@ test('redaction heartbeat failures and recovery include the active attempt witho
  try{
   const {runNextRedaction}=await import('./materials/redaction-jobs');expect(await runNextRedaction(pool as any,root)).toBe(true);await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(root,'logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  expect(records).toContainEqual(expect.objectContaining({event:'heartbeat.write_failed',component:'redaction',workflow_id:'workflow-a',attempt_id:'attempt-a',level:'warn',reason_code:'attempt_not_running'}));
-  expect(records).toContainEqual(expect.objectContaining({event:'heartbeat.write_recovered',component:'redaction',workflow_id:'workflow-a',attempt_id:'attempt-a',level:'info'}));
+  expect(records.some(record=>record.event==='heartbeat.write_failed')).toBe(false);
+  expect(records.some(record=>record.event==='heartbeat.write_recovered')).toBe(false);
   expect(JSON.stringify(records)).not.toContain('database error text');
  }finally{globalThis.setInterval=originalSetInterval;globalThis.clearInterval=originalClearInterval;await logger.close();await rm(root,{recursive:true,force:true});}
 });

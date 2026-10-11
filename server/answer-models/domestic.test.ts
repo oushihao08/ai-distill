@@ -40,7 +40,7 @@ for(const config of cases) describe(config.provider,()=>{
   const client=createDomesticClient({[config.key]:'own',OPEN_ROUTER_KEY:'other',QWEN_API_KEY:'other'},async(url,init)=>{
    called++;expect(url).toBe(config.base_url+'/chat/completions');expect(init?.redirect).toBe('error');
    expect((init?.headers as Record<string,string>).Authorization).toBe('Bearer own');
-   expect(JSON.parse(init!.body as string)).toEqual({model:config.model,stream:false,messages:[{role:'user',content:JSON.stringify({question:input.question,materials:input.materials})}]});
+   expect(JSON.parse(init!.body as string)).toEqual({model:config.model,stream:false,messages:[{role:'system',content:'仅依据用户消息中的题面和附件独立作答。最终答案直接写在回复正文中，只返回纯文本；不得生成、上传或附加 DOCX、PDF 等文件，也不得声称已生成文件。'},{role:'user',content:JSON.stringify({question:input.question,materials:input.materials})}]});
    return Response.json(body);
   });
   const result=await client.answer(input);expect(called).toBe(1);expect(result.text).toBe(body.choices[0].message.content);expect(result.usage).toEqual(body.usage);expect(result.model).toBe(body.model);expect(result.requested_model).toBe(config.model);expect(result.completion_id).toBe(body.id);expect(result.duration_ms).toBeGreaterThanOrEqual(0);
@@ -83,6 +83,11 @@ test('preserves missing metadata as null',async()=>{
  expect(answer.model).toBeNull();expect(answer.completion_id).toBeNull();expect(answer.request_id).toBeNull();expect(answer.usage).toBeNull();
 });
 for(const delta of [{usage:[]},{model:''},{id:42},{choices:[]},{error:{message:'private'}},{choices:[{finish_reason:'stop',message:{role:'user',content:'q'}}]},{choices:[{finish_reason:'stop',message:{role:'assistant',content:'q',tool_calls:[{}]}}]}]) test('malformed metadata or result '+JSON.stringify(delta),async()=>expect(createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>Response.json({...body,...delta})).answer(req)).rejects.toMatchObject({kind:'invalid_response'}));
+test('invalid-response failures expose a safe reason code without retaining response text',async()=>{
+ const failure=await createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>Response.json({choices:[],private:'response body'})).answer(req).then(()=>null,error=>error);
+ expect(failure).toMatchObject({kind:'invalid_response',reason_code:'missing_choice'});
+ expect(JSON.stringify(failure)).not.toContain('response body');
+});
 test('network exception strips private cause',async()=>{
  try {await createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>{throw new Error('private secret');}).answer(req);throw new Error('expected error');}catch(error){expect(error).toMatchObject({kind:'network',retryable:true});expect(String(error)).not.toContain('private secret');expect((error as Error).cause).toBeUndefined();}
 });
