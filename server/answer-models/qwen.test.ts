@@ -46,6 +46,61 @@ for (const [status, kind] of [[402, 'quota'], [408, 'timeout'], [429, 'rate_limi
 });
 const answer = { id: 'chatcmpl-fixture', model: 'qwen-plus-actual', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: '  剩余60元。\n' } }], usage: { prompt_tokens: 20, completion_tokens: 6, total_tokens: 26, prompt_tokens_details: { cached_tokens: 0 } } };
 
+test('opt-in reasoning stream keeps reasoning text private and returns only timestamp evidence',async()=>{
+ const chunks=[
+  {choices:[{delta:{reasoning_details:[{type:'reasoning.text',text:'PRIVATE reasoning content'}]}}]},
+  {choices:[{delta:{reasoning_details:[{type:'reasoning.text',text:'PRIVATE reasoning continuation'}]}}]},
+  {choices:[{delta:{content:'完整答案'}}]},
+  {id:'stream-id',model:'qwen-plus-actual',choices:[{delta:{},finish_reason:'stop'}],usage:answer.usage},
+ ];
+ const body=chunks.map(chunk=>`data: ${JSON.stringify(chunk)}\n\n`).join('')+'data: [DONE]\n\n';
+ const result=await createQwenClient({...env,OPEN_ROUTER_KEY:'router-test-secret'},async(_url,init)=>{
+  expect(JSON.parse(init!.body as string).stream).toBe(true);
+  return new Response(body,{headers:{'Content-Type':'text/event-stream','x-request-id':'12345678-1234-4234-8234-123456789abc'}});
+ }).answer({...input,config:routerConfig,observe_reasoning:true});
+ expect(result.text).toBe('完整答案');
+ expect(result.generation_activity).toMatchObject({event_count:2,source:'openrouter_reasoning_details'});
+ expect(inspect(result)).not.toContain('PRIVATE reasoning content');
+ expect(inspect(result)).not.toContain('PRIVATE reasoning continuation');
+});
+
+test('OpenRouter does not treat a provider-specific reasoning_content field as its evidence',async()=>{
+ const chunks=[
+  {choices:[{delta:{reasoning_content:'PRIVATE field from another protocol'}}]},
+  {choices:[{delta:{content:'完整答案'}}]},
+  {choices:[{delta:{},finish_reason:'stop'}]},
+ ];
+ const body=chunks.map(chunk=>`data: ${JSON.stringify(chunk)}\n\n`).join('')+'data: [DONE]\n\n';
+ const result=await createQwenClient({...env,OPEN_ROUTER_KEY:'router-test-secret'},async()=>new Response(body,{headers:{'Content-Type':'text/event-stream'}})).answer({...input,config:routerConfig,observe_reasoning:true});
+ expect(result.generation_activity).toBeUndefined();
+});
+
+test('empty OpenRouter reasoning detail metadata is not treated as generated reasoning activity',async()=>{
+ const chunks=[
+  {choices:[{delta:{reasoning_details:[{type:'reasoning.text'}]}}]},
+  {choices:[{delta:{content:'完整答案'}}]},
+  {choices:[{delta:{},finish_reason:'stop'}]},
+ ];
+ const body=chunks.map(chunk=>`data: ${JSON.stringify(chunk)}\n\n`).join('')+'data: [DONE]\n\n';
+ const result=await createQwenClient(env,async()=>new Response(body,{headers:{'Content-Type':'text/event-stream'}})).answer({...input,observe_reasoning:true});
+ expect(result.generation_activity).toBeUndefined();
+});
+
+test('local streaming deadline retains safe reasoning timing and discards reasoning text',async()=>{
+ const requestId='649b2bbc-c541-9e16-9845-db7fe4fe5b2d';
+ const stream=new ReadableStream<Uint8Array>({start(controller){
+  const encoder=new TextEncoder();
+  controller.enqueue(encoder.encode(`data: ${JSON.stringify({choices:[{delta:{reasoning_content:'PRIVATE reasoning one'}}]})}\n\n`));
+  controller.enqueue(encoder.encode(`data: ${JSON.stringify({choices:[{delta:{reasoning_content:'PRIVATE reasoning two'}}]})}\n\n`));
+ }});
+ const error=await failure(()=>createQwenClient(env,async()=>new Response(stream,{headers:{'Content-Type':'text/event-stream','x-request-id':requestId,'x-generation-id':'gen-test987654'}})).answer({...input,observe_reasoning:true,timeout_ms:30}),'timeout');
+ expect(error.reason_code).toBe('local_deadline');
+ expect(error.request_id).toBe(requestId);
+ expect(error.generation_id).toBe('gen-test987654');
+ expect(error.generation_activity).toMatchObject({source:'dashscope_reasoning_content',event_count:2});
+ expect(inspect(error)).not.toContain('PRIVATE reasoning');
+});
+
 async function failure(run: () => Promise<unknown>, kind: QwenErrorKind) {
  try { await run(); } catch (error) {
   expect(error).toBeInstanceOf(QwenError);
@@ -142,6 +197,10 @@ test('does not guess usage or actual model when the provider omits them', async 
  }).answer(input);
  expect(result.usage).toBeNull(); expect(result.model).toBeNull(); expect(result.completion_id).toBeNull();
 });
+test('ignores malformed optional metadata while preserving a complete answer', async () => {
+ const result=await createQwenClient(env,async()=>Response.json({...answer,usage:'not-usage',model:{provider:'odd'},id:44})).answer(input);
+ expect(result.text).toBe(answer.choices[0].message.content);expect(result.usage).toBeNull();expect(result.model).toBeNull();expect(result.completion_id).toBeNull();
+});
 test('takes the provider request ID from the header rather than inventing one from completion ID', async () => {
  const id = '649b2bbc-c541-9e16-9845-db7fe4fe5b2d';
  const result = await createQwenClient(env, async () => Response.json(answer, { headers: { 'x-request-id': id } })).answer(input);
@@ -209,7 +268,7 @@ test('does not turn a network failure containing secrets into a logged error cau
  expect(error.retryable).toBe(true); expect(error.cause).toBeUndefined();
  expect(inspect(error)).not.toContain(env.QWEN_API_KEY); expect(inspect(error)).not.toContain(input.question);
 });
-for (const data of [null, {}, { choices: [] }, { choices: [{ finish_reason: 'stop', message: { content: ' ' } }] }, { choices: [{ finish_reason: 'length', message: { content: 'partial' } }] }, { choices: [{ finish_reason: 'tool_calls', message: { content: 'text' } }] }, { choices: [{ message: { content: 'unfinished' } }] }, { choices: [{ finish_reason: 'content_filter', message: { content: 'partial' } }] }, { ...answer, choices: [answer.choices[0], answer.choices[0]] }, { ...answer, usage: 'bad usage' }, { ...answer, choices: [{ ...answer.choices[0], message: { content: 'text', tool_calls: [{ id: 'tool' }] } }] }]) test(`rejects incomplete or malformed answers ${JSON.stringify(data)}`, async () => {
+for (const data of [null, {}, { choices: [] }, { choices: [{ finish_reason: 'stop', message: { content: ' ' } }] }, { choices: [{ finish_reason: 'length', message: { content: 'partial' } }] }, { choices: [{ finish_reason: 'tool_calls', message: { content: 'text' } }] }, { choices: [{ message: { content: 'unfinished' } }] }, { choices: [{ finish_reason: 'content_filter', message: { content: 'partial' } }] }, { ...answer, choices: [answer.choices[0], answer.choices[0]] }, { ...answer, choices: [{ ...answer.choices[0], message: { content: 'text', tool_calls: [{ id: 'tool' }] } }] }]) test(`rejects incomplete or malformed answers ${JSON.stringify(data)}`, async () => {
  await failure(() => createQwenClient(env, async () => Response.json(data)).answer(input), 'invalid_response');
 });
 test('rejects malformed JSON without preserving parser text', async () => {

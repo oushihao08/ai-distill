@@ -4,6 +4,7 @@
  * 使用场景：由 `app.ts` 的重置接口调用；活动任务存在时拒绝竞争性清理。
  */
 import type {Pool} from 'pg';
+import {isLibraryDocxPath} from './materials/redacted-docx-export';
 import {HTTPException} from 'hono/http-exception';
 import {mkdir,rename,rm,lstat,realpath} from 'node:fs/promises';
 import {dirname,join,relative,isAbsolute,resolve,sep} from 'node:path';
@@ -26,8 +27,10 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string,
   const workflow=(await db.query("SELECT w.id,w.project_id,w.source_manifest,w.source_key,p.material_root FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 FOR UPDATE OF w",[id])).rows[0];
   if(!workflow)throw new HTTPException(404,{message:'题目不存在'});
   restoreLogContext=enterLogContext({component:'workflow_reset',operation:'clear_generated_data',workflow_id:id});logEvent('file.reset.started',{level:'info'});
-  const activeExport=(await db.query("SELECT id FROM ai_distill.project_exports WHERE project_id=$1 AND status='running' LIMIT 1",[workflow.project_id])).rowCount;
-  if(activeExport)throw new HTTPException(409,{message:'项目导出正在执行，结束后才能重置整条工作流'});
+  // 与导出使用同一项目锁；拿不到锁说明确有导出执行者，不能凭耗时回收。
+  const exportLock=(await db.query("SELECT pg_try_advisory_xact_lock(hashtext('ai-distill-project-export'),hashtext($1)) AS acquired",[workflow.project_id])).rows[0]?.acquired;
+  if(!exportLock)throw new HTTPException(409,{message:'项目导出正在执行，结束后才能重置整条工作流'});
+  await db.query("UPDATE ai_distill.project_exports SET status='failed',error='导出执行已中断，请重新导出',finished_at=now() WHERE project_id=$1 AND status='running'",[workflow.project_id]);
   const attempts=(await db.query('SELECT id,status,ordinal FROM ai_distill.step_attempts WHERE workflow_id=$1 FOR UPDATE',[id])).rows;
   if(attempts.some(a=>['waiting','running'].includes(a.status)))throw new HTTPException(409,{message:'题目任务正在排队或运行，结束后才能重置整条工作流'});
   attemptIds=attempts.map(a=>a.id);
@@ -45,7 +48,7 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string,
   for(const artifact of artifactPaths){
    if(isAbsolute(artifact.storage_path))throw new HTTPException(409,{message:'生成产物路径无效，停止重置'});
    if(artifact.kind==='redacted_docx'&&artifact.storage_path.startsWith('附件库/')){
-    const segments=artifact.storage_path.split('/');if(segments.length!==5||segments.some(segment=>!segment||segment==='.'||segment==='..')||segments[0]!=='附件库'||segments.at(-2)!=='成果'||segments.at(-1)!=='脱敏材料.docx')throw new HTTPException(409,{message:'附件库产物路径无效，停止重置'});
+    if(!isLibraryDocxPath(artifact.storage_path))throw new HTTPException(409,{message:'附件库产物路径无效，停止重置'});
     let exportRoot:string;try{exportRoot=await realpath(assetExportRoot);if((await lstat(assetExportRoot)).isSymbolicLink())throw new Error('symlink');}catch{throw new HTTPException(409,{message:'附件库根目录不可安全读取，停止重置'});}
     const libraryRoot=join(exportRoot,'附件库'),docxPath=resolve(exportRoot,artifact.storage_path),questionDir=dirname(dirname(docxPath)),pathWithinLibrary=relative(libraryRoot,questionDir);
     if(pathWithinLibrary==='..'||pathWithinLibrary.startsWith(`..${sep}`)||isAbsolute(pathWithinLibrary)||!pathWithinLibrary)throw new HTTPException(409,{message:'附件库产物路径越界，停止重置'});

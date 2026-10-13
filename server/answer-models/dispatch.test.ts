@@ -20,6 +20,14 @@ test('dispatcher selects credential and endpoint from the frozen provider',async
  await client.answer({config:resolveAnswerConfig(router,{}),question:'题面',materials:[]});
  expect(requests).toEqual([{url:'https://api.deepseek.com/chat/completions',authorization:'Bearer deepseek-fixture'},{url:'https://openrouter.ai/api/v1/chat/completions',authorization:'Bearer router-fixture'}]);
 });
+test('call correlation ID is forwarded internally without entering model messages',async()=>{
+ const requests:Record<string,unknown>[]=[];
+ const client=createAnswerClient({OPEN_ROUTER_KEY:'router-fixture'},async(_url,init)=>{requests.push(JSON.parse(init!.body as string));return Response.json({model:'actual',choices:[{finish_reason:'stop',message:{role:'assistant',content:'答案'}}]});});
+ await client.answer({config:resolveAnswerConfig(router,{}),question:'题面',materials:[{name:'附件1',text:'脱敏材料'}],call_id:'call-fixture'});
+ expect(requests).toHaveLength(1);
+ expect(JSON.stringify(requests[0]!.messages)).not.toContain('call-fixture');
+ expect(JSON.stringify(requests[0]!.messages)).toContain('题面');
+});
 test('dispatcher sends each OpenRouter model through its single gateway key',async()=>{
  const requests:{url:string;authorization:string|null;model:string}[]=[];
  const client=createAnswerClient({OPEN_ROUTER_KEY:'router-only'},async(url,init)=>{requests.push({url,authorization:new Headers(init?.headers).get('Authorization'),model:JSON.parse(init!.body as string).model});return Response.json({choices:[{finish_reason:'stop',message:{role:'assistant',content:'答案'}}]});});

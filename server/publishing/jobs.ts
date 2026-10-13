@@ -10,8 +10,8 @@ import {readFile,realpath,stat} from 'node:fs/promises';
 import {isAbsolute,join,resolve} from 'node:path';
 import {acceptanceSourceDigest,readAcceptanceSnapshot,buildAcceptanceInput} from '../decisions/jobs';
 import {decideAcceptance} from '../decisions/acceptance';
-import {validateRevisionBudget} from '../decisions/config';
 import {answerModelSetDigest,readProjectModelSet} from '../answer-models/model-set';
+import {verifyFrozenProjectPrompt} from '../rule-files';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 interface Artifact {id:string;attempt_id:string;kind:string;storage_path:string;sha256:string;content?:string|null}
@@ -40,14 +40,14 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string){
   logEvent('publication.started',{level:'info'});
   const steps=await db.query('SELECT ordinal,status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 7',[workflowId]);
   if(steps.rows.length!==4||steps.rows.some(row=>row.status!=='succeeded'))throw new HTTPException(409,{message:'当前出题、作答、评分及达标尚未全部成功'});
-  const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
   const modelSet=await readProjectModelSet(db,workflow.project_id);
   if(!modelSet.length)throw new HTTPException(409,{message:'项目尚未配置作答模型'});
-  const config={required_models:modelSet.map(model=>model.model_id),minimum_score_by_model:Object.fromEntries(modelSet.map(model=>[model.model_id,model.minimum_score])),revision_budget:validateRevisionBudget(raw?.revision_budget)};
+  const config={required_models:modelSet.map(model=>model.model_id),minimum_score_by_model:Object.fromEntries(modelSet.map(model=>[model.model_id,model.minimum_score]))};
   const accepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
   if(accepted?.status!=='succeeded'||accepted.result?.decision!=='accepted')throw new HTTPException(409,{message:'当前版本尚未达标'});
   const snapshot=await readAcceptanceSnapshot(db,workflowId,config,answerModelSetDigest(modelSet));
   const digest=acceptanceSourceDigest(snapshot),q=snapshot.question?.result;
+  await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
   if(accepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw new HTTPException(409,{message:'达标依据已变化，请重新执行第七步'});
   if(!q||!q.question?.trim()||!q.question_version||!q.rubric_version||!Array.isArray(q.rubric)||!q.rubric.length)throw new HTTPException(409,{message:'题目包不完整'});
   const models=config.required_models.map(model=>{
@@ -58,7 +58,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string){
    return {model,answer_attempt_id:answer.id,answer_sha256:answer.result.answer_sha256,score_attempt_id:score.id};
   });
   const attemptIds=[snapshot.question!.id,...models.flatMap(item=>[item.answer_attempt_id,item.score_attempt_id])];
-  const artifacts=(await db.query("SELECT id,attempt_id,kind,storage_path,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND attempt_id=ANY($2::uuid[]) AND kind IN ('authored_question','model_answer','score_report')",[workflowId,attemptIds])).rows as Artifact[];
+  const artifacts=(await db.query("SELECT id,attempt_id,kind,storage_path,sha256,content FROM ai_distill.artifacts WHERE workflow_id=$1 AND attempt_id=ANY($2::uuid[]) AND kind IN ('authored_question','model_answer','score_report')",[workflowId,attemptIds])).rows as Artifact[];
   const required=[{attempt_id:snapshot.question!.id,kind:'authored_question'},...models.flatMap(item=>[{attempt_id:item.answer_attempt_id,kind:'model_answer'},{attempt_id:item.score_attempt_id,kind:'score_report'}])];
   for(const item of required){const matching=artifacts.filter(file=>file.attempt_id===item.attempt_id&&file.kind===item.kind);if(matching.length!==1)throw new HTTPException(409,{message:'当前题目、答案或评分缺少唯一产物'});await verifyArtifact(root,matching[0]!);}
   const frozen=snapshot.question!.input;
@@ -67,6 +67,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string){
   for(const id of q.attachment_ids){const matching=attachments.filter(file=>file.id===id);if(matching.length!==1||!frozen.materials.some((item:any)=>item.id===id&&item.sha256===matching[0]!.sha256)||matching[0]!.attempt_id!==frozen.redaction_attempt_id)throw new HTTPException(409,{message:'当前脱敏附件与出题快照不一致'});await verifyArtifact(root,matching[0]!);}
   const previous=(await db.query("SELECT id,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded' AND input->>'source_digest'=$2 AND input->>'acceptance_attempt_id'=$3 ORDER BY attempt DESC LIMIT 1",[workflowId,digest,accepted.id])).rows[0];
   if(previous){
+   await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
    await db.query('COMMIT');withLogContext({attempt_id:previous.id},()=>logEvent('publication.reused',{level:'info',state:'succeeded'}));return {id:previous.id,reused:true,completed:true};
   }
   attemptId=crypto.randomUUID();
@@ -74,6 +75,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string){
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,finished_at) SELECT $2,$1::uuid,8,COALESCE(max(attempt),0)+1,'succeeded',$3,$4,now() FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=8",[workflowId,attemptId,JSON.stringify({source_digest:digest,acceptance_attempt_id:accepted.id}),JSON.stringify(result)]);
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='succeeded',result=$2,error=NULL,started_at=now(),finished_at=now() WHERE workflow_id=$1 AND ordinal=8",[workflowId,JSON.stringify(result)]);
   await db.query("UPDATE ai_distill.workflows SET status='succeeded' WHERE id=$1",[workflowId]);
+  await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
   await db.query('COMMIT');withLogContext({attempt_id:attemptId},()=>logEvent('publication.completed',{level:'info',state:'succeeded'}));return {id:attemptId,reused:false,completed:true};
  }catch(error){
   logEvent('publication.failed',{level:'error',state:'failed',...classifyLogError(error)});

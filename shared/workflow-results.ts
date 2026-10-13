@@ -1,0 +1,96 @@
+/**
+ * 职责：定义和识别工作流当前答案、评分与达标汇总的 API 结果形状。
+ * 关键方法：`readAnswerStepResult()`、`readScoreStepResult()`、`readAcceptanceResult()` 在消费 JSON 前确认其关键字段。
+ * 使用场景：服务端结果生产、Web／CLI 读取；旧记录缺少可选字段时保留为不可识别，不推断为成功。
+ */
+import type {StepStatus} from './types';
+
+export interface AnswerStepModelSummary {
+ model_id?:string|null;
+ name?:string;
+ minimum_score?:number;
+ attempt_id?:string|null;
+ status:StepStatus;
+ answer_sha256?:string|null;
+ answer?:string|null;
+ outcome?:string;
+ reason_code?:string;
+ generation_activity?:unknown;
+}
+export interface AnswerStepResult {
+ model_set_digest?:string;
+ models:AnswerStepModelSummary[];
+}
+
+export interface ScoreStepModelSummary {
+ model_id?:string|null;
+ name?:string;
+ answer_attempt_id?:string|null;
+ answer_status:StepStatus;
+ score_attempt_id?:string|null;
+ score_status:StepStatus;
+ score?:number|null;
+ max_score?:number|null;
+ extraction_status?:'parsed'|'unparsed';
+ valid?:boolean|null;
+ binding?:unknown;
+ disputes?:unknown[];
+}
+export interface ScoreStepResult {models:ScoreStepModelSummary[]}
+
+export interface ModelAcceptance {
+ status:'passed'|'not_passed'|'pending'|'invalid';
+ score?:number;
+ max_score?:number;
+ percentage?:number;
+ threshold:number;
+}
+export type AcceptanceResult =
+ | {decision:'waiting'|'quarantine';reasons:string[];model_scores?:Record<string,ModelAcceptance>}
+ | {decision:'accepted'|'repair';reasons:string[];model_scores:Record<string,ModelAcceptance>};
+
+type UnknownRecord=Record<string,unknown>;
+const isRecord=(value:unknown):value is UnknownRecord=>!!value&&typeof value==='object'&&!Array.isArray(value);
+const finite=(value:unknown):value is number=>typeof value==='number'&&Number.isFinite(value);
+const statuses=new Set<StepStatus>(['waiting','running','succeeded','failed','skipped']);
+
+export function readAnswerStepResult(value:unknown):AnswerStepResult|undefined{
+ if(!isRecord(value)||!Array.isArray(value.models))return;
+ const models:AnswerStepModelSummary[]=[];
+ for(const row of value.models){
+  if(!isRecord(row)||!statuses.has(row.status as StepStatus))return;
+  if(row.model_id!==undefined&&row.model_id!==null&&typeof row.model_id!=='string')return;
+  if(row.name!==undefined&&typeof row.name!=='string')return;
+  if(row.attempt_id!==undefined&&row.attempt_id!==null&&typeof row.attempt_id!=='string')return;
+  models.push({...row,status:row.status as StepStatus} as AnswerStepModelSummary);
+ }
+ return {...value,models} as AnswerStepResult;
+}
+
+export function readScoreStepResult(value:unknown):ScoreStepResult|undefined{
+ if(!isRecord(value)||!Array.isArray(value.models))return;
+ const models:ScoreStepModelSummary[]=[];
+ for(const row of value.models){
+  if(!isRecord(row)||!statuses.has(row.answer_status as StepStatus)||!statuses.has(row.score_status as StepStatus))return;
+  if(row.model_id!==undefined&&row.model_id!==null&&typeof row.model_id!=='string')return;
+  if(row.name!==undefined&&typeof row.name!=='string')return;
+  if(row.score!==undefined&&row.score!==null&&!finite(row.score))return;
+  if(row.max_score!==undefined&&row.max_score!==null&&!finite(row.max_score))return;
+  models.push({...row,answer_status:row.answer_status as StepStatus,score_status:row.score_status as StepStatus} as ScoreStepModelSummary);
+ }
+ return {...value,models};
+}
+
+function readModelAcceptance(value:unknown):value is ModelAcceptance{
+ if(!isRecord(value)||!['passed','not_passed','pending','invalid'].includes(String(value.status))||!finite(value.threshold))return false;
+ return ['score','max_score','percentage'].every(key=>value[key]===undefined||finite(value[key]));
+}
+
+export function readAcceptanceResult(value:unknown):AcceptanceResult|undefined{
+ if(!isRecord(value)||!['accepted','repair','waiting','quarantine'].includes(String(value.decision))||!Array.isArray(value.reasons)||!value.reasons.every(reason=>typeof reason==='string'))return;
+ const decision=value.decision;
+ const scores=value.model_scores;
+ if(scores!==undefined&&(!isRecord(scores)||!Object.values(scores).every(readModelAcceptance)))return;
+ if((decision==='accepted'||decision==='repair')&&!scores)return;
+ return value as AcceptanceResult;
+}

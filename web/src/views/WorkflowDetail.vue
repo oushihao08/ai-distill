@@ -1,14 +1,13 @@
 <!--
-职责：作为单题工作流路由，编排步骤操作、附件、模型评测、返修及有限执行摘要。
+职责：作为单题工作流路由，编排步骤操作、附件、模型评测与产物下载。
 关键方法与用法：`intake()`、`redact()`、`author()`、`answer()` 等方法派发对应阶段，`addMaterial()`／`removeMaterial()` 管理附件，`clearGenerated()` 重置生成状态；路由参数 `id` 指定题目工作流。
 -->
 
 <script setup lang="ts">
-import RevisionHistory from '../components/RevisionHistory.vue';
 import { api } from '../api/client';
 import { useResource } from '../composables/useResource';
 import { dateLabel, fileSize } from '../utils/format';
-import { statusLabels, type Attempt, type WorkflowDetail, type Step } from '../types/api';
+import { readAnswerStepResult, statusLabels, type Attempt, type WorkflowDetail, type Step } from '../types/api';
 import ModelEvaluationSummary from '../components/ModelEvaluationSummary.vue';
 import MaterialRecordsTable from '../components/MaterialRecordsTable.vue';
 const route = useRoute();
@@ -37,14 +36,15 @@ const currentStep=computed(()=>visibleSteps.value.find(step=>!['succeeded','skip
 const currentStepLabel=computed(()=>{
  const step=currentStep.value;
  if(!step)return '全部完成';
+ if(step.ordinal===6){const models=readAnswerStepResult(visibleSteps.value.find(item=>item.ordinal===5)?.result)?.models;if(models?.length&&models.every(model=>model.status==='skipped'&&model.outcome==='qualified_timeout_unscored'))return '本轮免评分，不能判定达标';}
  if(step.ordinal!==7)return statusLabels[step.status];
- const labels:Record<string,string>={accepted:'达标',repair:'需要返修',waiting:'等待判定条件',quarantine:'隔离'};
+ const labels:Record<string,string>={accepted:'达标',repair:'未达标',waiting:'等待判定条件',quarantine:'隔离'};
  return labels[String(step.result?.decision??'')]??statusLabels[step.status];
 });
 const stepStatus=(ordinal:number)=>visibleSteps.value.find(step=>step.ordinal===ordinal)?.status;
 const canExportDocx=computed(()=>Boolean(data.value&&!currentStep.value&&stepStatus(8)==='succeeded'&&stepStatus(9)==='succeeded'&&!activeTask.value));
 const currentRedactionAttempt=computed(()=>data.value?.attempts.filter(attempt=>attempt.ordinal===9).at(-1));
-const currentDocxArtifact=computed(()=>{const attempt=currentRedactionAttempt.value;if(!attempt||attempt.status!=='succeeded'||!canExportDocx.value)return undefined;return data.value?.artifacts.find(artifact=>artifact.kind==='redacted_docx'&&artifact.attempt_id===attempt.id);});
+const currentDocxArtifacts=computed(()=>{const attempt=currentRedactionAttempt.value;if(!attempt||attempt.status!=='succeeded'||!canExportDocx.value)return [];return data.value?.artifacts.filter(artifact=>artifact.kind==='redacted_docx'&&artifact.attempt_id===attempt.id)??[];});
 const answerDisabled=computed(()=>submitting.value || stepStatus(4)!=='succeeded' || data.value?.attempts.some(attempt=>attempt.ordinal===5 && ['waiting','running'].includes(attempt.status)));
 const authorDisabled=computed(()=>submitting.value || stepStatus(9)!=='succeeded' || data.value?.attempts.some(attempt=>attempt.ordinal===4 && ['waiting','running'].includes(attempt.status)));
 function addMaterial(){materialOpen.value=true;}
@@ -61,17 +61,17 @@ async function answer(){try{submitting.value=true;await api(`/workflows/${route.
 const answerReadyForScoring=computed(()=>{
  const answerStep=visibleSteps.value.find(step=>step.ordinal===5);
  if(answerStep?.status==='succeeded')return true;
- const models=answerStep?.result?.models;
- return Array.isArray(models)&&models.length>0&&models.every((model:any)=>['succeeded','failed','skipped'].includes(model?.status))&&models.some((model:any)=>model?.status==='succeeded'&&typeof model.attempt_id==='string');
+ const models=readAnswerStepResult(answerStep?.result)?.models;
+ return !!models?.length&&models.every(model=>['succeeded','failed','skipped'].includes(model.status))&&models.some(model=>model.status==='succeeded'&&typeof model.attempt_id==='string');
 });
 const scoreDisabled=computed(()=>submitting.value || !answerReadyForScoring.value || data.value?.attempts.some(attempt=>attempt.ordinal===6 && ['waiting','running'].includes(attempt.status)));
 async function score(){try{submitting.value=true;await api(`/workflows/${route.params.id}/score`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'评分提交失败';}finally{submitting.value=false;}}
 const acceptanceDecision=computed(()=>visibleSteps.value.find(step=>step.ordinal===7)?.result?.decision);
 const publishDisabled=computed(()=>submitting.value || stepStatus(7)!=='succeeded' || acceptanceDecision.value!=='accepted' || stepStatus(8)==='succeeded');
-const attemptNames:Record<number,string>={1:'入库',2:'PDF文本提取（入库内部）',3:'旧规则绑定（历史）',4:'出题',5:'模型作答',6:'独立评分',7:'达标或返修',8:'归档达标题目',9:'脱敏与检查'};
+const attemptNames:Record<number,string>={1:'入库',2:'PDF文本提取（入库内部）',3:'旧规则绑定（历史）',4:'出题',5:'模型作答',6:'独立评分',7:'达标判断',8:'归档达标题目',9:'脱敏与检查'};
 function attemptStatusLabel(attempt:Attempt){
  const decision=attempt.ordinal===7&&attempt.result&&typeof attempt.result==='object'&&'decision' in attempt.result?String(attempt.result.decision??''):'';
- return ({accepted:'达标',repair:'需要返修',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[decision]??statusLabels[attempt.status];
+ return ({accepted:'达标',repair:'未达标',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[decision]??statusLabels[attempt.status];
 }
 function attemptStatusColor(attempt:Attempt){
  if(attempt.ordinal===7&&attempt.result&&typeof attempt.result==='object'&&'decision' in attempt.result&&attempt.result.decision==='accepted')return 'success';
@@ -108,8 +108,8 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
  <p v-if="loading && !data" class="text-muted">正在读取工作流…</p>
  <template v-if="data">
   <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ currentStep ? `${currentStep.display_position ?? currentStep.position ?? currentStep.ordinal} · ${currentStep.name} · ${currentStepLabel}` : '全部完成' }}</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料 · 状态以最近一次刷新为准</p></Column><Row wrap :gap="8"><v-btn color="error" variant="text" :disabled="submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
-  <v-alert type="info">原件保留在本机。PDF由第一步调用智谱提取并入库，DOCX/TXT/MD本地解析入库；第二步读取数据库原文并脱敏。请核对脱敏产物与识别异常。</v-alert>
-  <section v-if="stepStatus(9)==='succeeded'" class="surface-card p-16"><Column :gap="12"><h2 class="section-title">可选脱敏材料 DOCX</h2><p class="text-sm text-muted">流程完成并归档后可手动生成，供后续自行上传。导出使用当前脱敏结果，不会新增或重跑工作流步骤；原件副本与 DOCX 保存在仓库的 <code>assets/out/附件库/</code> 下。<template v-if="!canExportDocx">当前还需完成：{{ currentStep?.name ?? '归档达标题目' }}。</template></p><p v-if="docxArchivePath" class="text-xs text-muted break-all">本题附件目录：{{ docxArchivePath }}</p><Row wrap :gap="8"><v-btn color="primary" variant="flat" :loading="exportingDocx" :disabled="exportingDocx||!canExportDocx" @click="exportDocx">生成脱敏 DOCX</v-btn><v-btn v-if="currentDocxArtifact" :href="`/api/artifacts/${currentDocxArtifact.id}/download`" color="secondary" variant="tonal">下载脱敏材料.docx</v-btn></Row></Column></section>
+  <v-alert type="info">原件保留在本机。PDF由第一步调用 MinerU 云端解析并入库，DOCX/TXT/MD本地解析入库；第二步读取数据库原文并脱敏。请核对脱敏产物与识别异常。</v-alert>
+  <section v-if="stepStatus(9)==='succeeded'" class="surface-card p-16"><Column :gap="12"><h2 class="section-title">可选脱敏材料 DOCX</h2><p class="text-sm text-muted">流程完成并归档后可手动生成，供后续自行上传。每个附件分别生成一份 DOCX。导出使用当前脱敏结果，不会新增或重跑工作流步骤；原件副本与 DOCX 保存在仓库的 <code>assets/out/附件库/</code> 下。<template v-if="!canExportDocx">当前还需完成：{{ currentStep?.name ?? '归档达标题目' }}。</template></p><p v-if="docxArchivePath" class="text-xs text-muted break-all">本题附件目录：{{ docxArchivePath }}</p><Row wrap :gap="8"><v-btn color="primary" variant="flat" :loading="exportingDocx" :disabled="exportingDocx||!canExportDocx" @click="exportDocx">生成脱敏 DOCX</v-btn><v-btn v-for="artifact in currentDocxArtifacts" :key="artifact.id" :href="`/api/artifacts/${artifact.id}/download`" color="secondary" variant="text">下载 {{ artifact.filename ?? '脱敏材料.docx' }}</v-btn></Row></Column></section>
   <Row stack-on-mobile y="start" :gap="16">
    <StepTimeline :steps="visibleSteps" class="w-full lg:w-650px lg:flex-none">
     <template #actions="{step}">
@@ -153,7 +153,6 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
       </v-table>
      </Column>
     </Column></section>
-    <RevisionHistory :key="data.workflow.id" :workflow-id="data.workflow.id" :attempts="data.attempts" :steps="visibleSteps" :disabled="submitting||activeTask" @updated="refresh" />
    </Column>
   </Row>
   <v-dialog v-model="clearOpen" max-width="560"><Column class="surface-card p-20" :gap="16"><h2 class="section-title">重置整条工作流</h2><p class="text-sm text-muted">删除本题从入库到发布的处理数据：材料记录、提取与脱敏文本、规则绑定、全部步骤结果和执行历史，以及本机管理目录中的附件副本、产物和提取缓存。只含本题的导出也会删除；包含其他题目的导出会标记为过期，以免影响其他题目。项目题目目录中的原始文件和本题来源清单会保留，可重新入库；单独上传的材料需重新上传。运行中的任务未结束时不能重置。</p><Row x="end" :gap="8"><v-btn :disabled="submitting" @click="clearOpen=false">取消</v-btn><v-btn color="error" :loading="submitting" @click="clearGenerated">确认重置</v-btn></Row></Column></v-dialog>

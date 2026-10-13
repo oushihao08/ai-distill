@@ -5,7 +5,8 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| [2026-10-11-answer-duration-and-run-followups.md](2026-10-11-answer-duration-and-run-followups.md) | 稳健整改顺序、作者能力与正常流程不退化、配置／自检收口、45分钟证据及免评分分阶段启用、内容对照、回退与验收；仅计划。 |
+| [2026-10-11-cli-pipeline-and-lightweight-wait.md](2026-10-11-cli-pipeline-and-lightweight-wait.md) | 同批逐题推进、CLI轻量等待及一秒状态轮询；实现与定向测试记录，保留完整读取及Codex能力边界。 |
+| [2026-10-11-answer-duration-and-run-followups.md](2026-10-11-answer-duration-and-run-followups.md) | 稳健整改顺序、作者能力与正常流程不退化、配置／自检收口、45分钟证据及免评分分阶段启用、内容对照、回退与验收；实施中，含主目录合入与运行证据及未完成门槛。 |
 | [2026-10-11-codex-workflow-cli-skill.md](2026-10-11-codex-workflow-cli-skill.md) | 将现有入库至归档/导出流程包装为本地 CLI 与 Codex Workflow Skill 的实施计划；复用 API/worker/Agent 执行器，维持显式逐步编排与当前业务边界。 |
 | [2026-10-11-codex-manual-capability-alignment.md](2026-10-11-codex-manual-capability-alignment.md) | 列出后端出题 Codex 与桌面手动使用的剩余差距、修改理由、收益、能力不退化约束和逐项验收；当前仅形成清单。 |
 | [2026-10-11-authoring-to-scoring-observation-test.md](2026-10-11-authoring-to-scoring-observation-test.md) | 记录题目2–6、8正式后端出题、作答、评分及达标流程的计划和执行边界；六题后端运行结果见对应 evidence，严格同输入桌面对照仍未完成。 |
@@ -16,7 +17,7 @@
 | [2026-10-10-legal-skill-final-improvement.md](2026-10-10-legal-skill-final-improvement.md) | 综合 inbox 提炼与优化清单，提出可裁决误读、必要结果及中立验收的第五期法务出题 skill 最终改进方案；skill 文本已修改，真实成题与模型测评未完成。 |
 | [2026-10-10-legal-skill-depth-improvement.md](2026-10-10-legal-skill-depth-improvement.md) | 第五期法务出题 skill 的九项修改、有效原因、实施方法、任务依赖及分层验收；仅计划，未修改 skill 或开展难度测评。 |
 | [2026-10-10-legal-skill-optimization-inventory.md](2026-10-10-legal-skill-optimization-inventory.md) | 历史普通重出反馈筛选方案及skill优化清单；其中自动带入评分的目标已被从零出题方案取代，不作为当前普通出题要求。 |
-| [2026-10-09-optional-redacted-docx-export.md](2026-10-09-optional-redacted-docx-export.md) | 全流程完成后手动生成脱敏 DOCX 的可选导出；代码、定向测试和本机合成文档渲染已验收，未执行真实业务工作流。 |
+| [2026-10-09-optional-redacted-docx-export.md](2026-10-09-optional-redacted-docx-export.md) | 旧版可选文字 DOCX 的实施记录；2026-10-11 补充结构化脱敏入库、无遗漏文本投影与同源样式 DOCX 计划，新增部分待实施，含兼容、回退与验收标准。 |
 | [2026-10-09-independent-agent-executor.md](2026-10-09-independent-agent-executor.md) | 独立任务执行模块边界、统一调用契约、本地 Codex 迁移清单及后续 API 替换范围；仅计划，未实施。 |
 | [2026-10-07-material-processing.md](2026-10-07-material-processing.md) | material processing相关阶段计划；结论仅限文件注明的日期与范围。 |
 | [2026-10-07-workflow-mvp.md](2026-10-07-workflow-mvp.md) | workflow mvp相关阶段计划；结论仅限文件注明的日期与范围。 |
@@ -32,3 +33,7 @@
 | [2026-10-08-step-four-authoring.md](2026-10-08-step-four-authoring.md) | step four authoring相关阶段计划；结论仅限文件注明的日期与范围。 |
 | [2026-10-09-backend-logging-design.md](2026-10-09-backend-logging-design.md) | backend logging design相关阶段计划；结论仅限文件注明的日期与范围。 |
 | [2026-10-09-project-wide-comments-and-folder-guides.md](2026-10-09-project-wide-comments-and-folder-guides.md) | project wide comments and folder guides相关阶段计划；结论仅限文件注明的日期与范围。 |
+
+- [步骤汇总性能优化](2026-10-11-step-summary-performance.md)：只收窄作答与评分汇总读取，成果不处理；47 项定向测试通过，真实数据库性能未测量。
+
+- [项目审查修复计划](2026-10-11-audit-remediation.md)：四项确认缺陷及两项条件性风险的最小修复；实现与静态差异检查已完成，未运行测试或数据库验收。

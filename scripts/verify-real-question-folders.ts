@@ -4,7 +4,7 @@
 import {readdir,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {createVisionClient} from '../server/materials/vision';
-const base='http://127.0.0.1:3100/api';
+const base='http://127.0.0.1:3700/api';
 const project='b5041cbb-0e67-410c-92d2-02bc97837f52';
 const targetNames=['题目1','题目3'];
 const reportPath=new URL('../docs/evidence/2026-10-08-real-question-folders.json',import.meta.url);
@@ -35,7 +35,7 @@ try{
    }
    const extraction=d.data.steps[1];const active=d.data.attempts.some((a:any)=>['waiting','running'].includes(a.status));pending||=active;
    const attempt=d.data.attempts.filter((a:any)=>a.ordinal===2).at(-1);
-   const row={question:name,workflow_id:w.id,attempt_id:attempt?.id,source_directory:`/Users/jack/Downloads/${name}`,project_directory:`projects/豆包高经济价值-第五期/questions/${name}`,files:d.data.materials.map((m:any)=>({name:m.original_name,sha256:m.sha256})),steps:d.data.steps.map((s:any)=>({ordinal:s.ordinal,status:s.status,implemented:s.implemented,error:s.error})),ocr_cached_pages:attempt?await checkpointCount(w.id,attempt.config):0,extracted_pages:extraction.result?.pages?.length??null,issues:extraction.result?.issues??[],markdown:md,next_step:next??null,generated_cleanup_endpoint:`DELETE /api/workflows/${w.id}/generated`,cleanup_running_guard_verified:true};
+   const row={question:name,workflow_id:w.id,attempt_id:attempt?.id,source_directory:`/Users/jack/Downloads/${name}`,project_directory:`projects/豆包高经济价值/第五期/questions/${name}`,files:d.data.materials.map((m:any)=>({name:m.original_name,sha256:m.sha256})),steps:d.data.steps.map((s:any)=>({ordinal:s.ordinal,status:s.status,implemented:s.implemented,error:s.error})),ocr_cached_pages:attempt?await checkpointCount(w.id,attempt.config):0,extracted_pages:extraction.result?.pages?.length??null,issues:extraction.result?.issues??[],markdown:md,next_step:next??null,generated_cleanup_endpoint:`DELETE /api/workflows/${w.id}/generated`,cleanup_running_guard_verified:true};
    records.push(row);const brief=JSON.stringify({question:name,stage2:extraction.status,cached:row.ocr_cached_pages,stage3:d.data.steps[2].status,md:md.length});if(previous.get(name)!==brief||Date.now()-lastLog>60000){console.log(brief);previous.set(name,brief);lastLog=Date.now();}
   }
   await writeFile(reportPath,JSON.stringify({started_at:started,checked_at:new Date().toISOString(),scope:'two real question folders through available production workflow steps',complete:!pending,original_downloads_preserved:true,records},null,2)+'\n');

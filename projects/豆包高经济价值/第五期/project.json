@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "name": "豆包高经济价值 · 第五期",
+  "period": "第五期",
+  "description": "公司内部法务任务出题与评测；本地工作流按负责人决定允许AI辅助出题和脱敏，外部平台提交资格仍待核实。",
+  "materials_dir": "../materials",
+  "questions_dir": "questions",
+  "skill_dir": "../skill",
+  "outputs_dir": "outputs",
+  "snapshots_dir": "snapshots",
+  "source_skill": "/Users/jack/Documents/codes/lvgou/豆包高经/company-legal-task",
+  "rules": [
+    {
+      "path": "materials/材料目录与重要程度.md",
+      "source": "/Users/jack/Documents/codes/lvgou/豆包高经/材料目录与重要程度.md",
+      "sha256": "81a587e356963f060e5b2a4742d583feb313da2556c1ef9fefd8fcb95e992935",
+      "source_sha256": "1825af65167ffc2d81d305f334638ed7ad2df14d14d31010c066d764fd06ab75"
+    },
+    {
+      "path": "materials/高经济价值五期任务说明文档.md",
+      "source": "/Users/jack/Documents/codes/lvgou/豆包高经/高经济价值五期任务说明文档.md",
+      "sha256": "76e1d237bbba16b9666c4115cd69a357b5738dede143c27a17cfaafdba9a7e72",
+      "source_sha256": "78cdcbf1d77537995b3ad2637eed4913d742c2f0fefec3bf3f14647f25abfd5b"
+    },
+    {
+      "path": "materials/公司法务出题准则.md",
+      "source": "/Users/jack/Documents/codes/lvgou/豆包高经/公司法务出题准则.md",
+      "sha256": "4b1420f646aa615ac300cbcf9eb3edca8be091229379eb318224cf5a83408088"
+    },
+    {
+      "path": "materials/官方评分标准.md",
+      "source": "/Users/jack/Documents/codes/lvgou/豆包高经/官方评分标准.md",
+      "sha256": "91b4c5a5a9e576c8c34b9eccd02a0f742e6f7049173d0afe54f204647607df3e"
+    },
+    {
+      "path": "materials/题目规范.md",
+      "source": "/Users/jack/Documents/codes/lvgou/豆包高经/题目规范.md",
+      "sha256": "952f44e05ed9eaa0d53e0e140e9ff6503b5216a1447831605fe26a5c353068d2",
+      "source_sha256": "e07d97cdca5e61433c2bc2ecf4138d3a75d563bb4c14e557047244bc9fe1fac7"
+    },
+    {
+      "path": "materials/C端任务全流程操作指南.md",
+      "source": "/Users/jack/Documents/codes/lvgou/豆包高经/C端任务全流程操作指南.md",
+      "sha256": "10dbd3eea83b7f21351e3c0f45a20d117ec3a63b3cfffb0ecf206182156d8f9d"
+    }
+  ],
+  "skill_files": [
+    {
+      "path": "skill/SKILL.md",
+      "sha256": "b87191535149d62114ee823427e1081fe3628a0415ac341d057be68dc73224d2"
+    },
+    {
+      "path": "skill/assets/案例模板集.docx",
+      "sha256": "337ce9ecaaadf22d60304e6626c45d12387a174681799906fb82a5ca764b10a9"
+    },
+    {
+      "path": "skill/assets/题目模板.docx",
+      "sha256": "3c7bae85c84acea3c9a3363add77b4b4ecf06f9e0e472412ee2a18a7c3fe228a"
+    },
+    {
+      "path": "skill/references/出题设计方法.md",
+      "sha256": "f2e599178e431a39fc82dd0fb9f50b130efd67346822e6bf790e56793f541af2"
+    },
+    {
+      "path": "skill/references/失败模式与自检清单.md",
+      "sha256": "42123c6cb54f728c4f7e19994835bd14ae3b85104d7cc0184b5271d95085fc53"
+    },
+    {
+      "path": "skill/references/评分与难度验证.md",
+      "sha256": "9686236b03d16be8af73bf6b0be75705098c67ac93c2bfeeeef734640499a2b9"
+    },
+    {
+      "path": "skill/references/资料索引.md",
+      "sha256": "ffaa27619fa5e15aa858cf6e53465665656b9872ac3a5a9c781909fb4c8cd965"
+    },
+    {
+      "path": "skill/references/题目格式与交付.md",
+      "sha256": "9be0b6a28adbe357243ffb137066a4e2376efef246f7245eb7b15a61ca94bd5e"
+    }
+  ],
+  "assessment": {
+    "status": "draft",
+    "official_score_max_percent": 50,
+    "length_condition": {
+      "min_primary_assistant_messages": 50,
+      "or_runtime_minutes_exclusive": 40
+    },
+    "rubric": "binary_equal_weight",
+    "official_score_separate_from_self_test": true
+  },
+  "unresolved": [
+    {
+      "id": "source-date-and-industry",
+      "sources": [
+        "materials/高经济价值五期任务说明文档.md",
+        "materials/C端任务全流程操作指南.md"
+      ],
+      "detail": "材料含2025年更新及9月30日至10月8日收题描述；现行期限、正式行业锁定及缺少的引用原文待核实，不填成2026年已确认要求。"
+    }
+  ],
+  "database_project_id": "b5041cbb-0e67-410c-92d2-02bc97837f52",
+  "local_policy_override": {
+    "authorized_by": "project_owner",
+    "authorized_at": "2026-10-08",
+    "ai_assisted_authoring": "allowed_for_this_local_project",
+    "ai_assisted_redaction": "allowed_for_this_local_project",
+    "authoring_output": "plain_text_package_stored_in_database",
+    "authoring_output_authorized_at": "2026-10-09",
+    "blocks_internal_workflow": false,
+    "source_document": "/Users/jack/Documents/codes/lvgou/豆包高经/附件脱敏不可使用AI.md",
+    "source_sha256": "bb3e57204f14963c29254a02be83cf95424e058a934d10dd5cb227ade0052a61",
+    "external_platform_eligibility": "unverified"
+  },
+  "resolutions": [
+    {
+      "id": "delivery-format",
+      "resolved_at": "2026-10-09",
+      "authorized_by": "project_owner",
+      "decision": "本地工作台以纯文本题目包入库，不生成Word或Markdown成稿文件；保留规则要求的全部内容章节。",
+      "scope": "本地工作台交付载体，不代表外部平台接受该格式。"
+    }
+  ]
+}

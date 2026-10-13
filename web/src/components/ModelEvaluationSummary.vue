@@ -5,53 +5,35 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { Attempt, Step } from '../types/api';
+import {readAcceptanceResult,readAnswerStepResult,readScoreStepResult,type AnswerStepModelSummary,type Attempt,type ModelAcceptance,type ScoreStepModelSummary,type Step} from '../types/api';
 import { dateLabel } from '../utils/format';
 import { scorePercentage } from '../../../shared/score';
 
-interface ModelAnswer {
- model_id:string;
- name:string;
- minimum_score?:number|null;
- attempt_id?:string|null;
- status:string;
- answer?:string|null;
-}
-interface ModelScore {
- model_id:string;
- name:string;
- answer_status:string;
- score_attempt_id?:string|null;
- score_status:string;
- score?:number|null;
- max_score?:number|null;
- valid?:boolean|null;
- extraction_status?:string;
-}
+type ModelAnswer=AnswerStepModelSummary&{model_id:string;name:string};
+type ModelScore=ScoreStepModelSummary&{model_id:string;name:string};
 interface ScoreItemCounts {fullScore:number;belowFull:number;total:number}
-interface ModelAcceptance {status:'passed'|'not_passed'|'pending'|'invalid';percentage?:number;threshold:number}
 const props=defineProps<{steps:Step[];attempts:Attempt[]}>();
 const answerDialog=shallowRef(false);const answerTab=shallowRef('');
 const failedScoreDialog=shallowRef(false);const selectedFailureId=shallowRef('');
 const executionDialog=shallowRef(false),selectedExecutionId=shallowRef('');
 const executionAttempts=computed(()=>props.attempts.filter(item=>item.ordinal===6&&item.result!=null).sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at)));
 const executionAttempt=computed(()=>executionAttempts.value.find(item=>item.id===selectedExecutionId.value));
+const acceptanceResult=computed(()=>readAcceptanceResult(props.steps.find(step=>step.ordinal===7)?.result));
 const scoringOriginal=computed(()=>{const result=executionAttempt.value?.result as {raw_text?:string;report?:unknown}|null;return result?.raw_text??(result?.report?JSON.stringify(result.report,null,2):executionAttempt.value?.error??'暂无评分内容');});
 const executionValidationIssues=computed(()=>{const result=executionAttempt.value?.result as {validation?:{issues?:unknown}}|null;return Array.isArray(result?.validation?.issues)?result.validation.issues.filter((issue):issue is string=>typeof issue==='string'):[];});
 function openExecution(id?:string|null){selectedExecutionId.value=id??executionAttempts.value[0]?.id??'';executionDialog.value=true;}
 const answers=computed(()=>{
- const models=props.steps.find(step=>step.ordinal===5)?.result?.models;
- return Array.isArray(models)?models as ModelAnswer[]:[];
+ const models=readAnswerStepResult(props.steps.find(step=>step.ordinal===5)?.result)?.models;
+ return models?.filter((model):model is ModelAnswer=>typeof model.model_id==='string'&&typeof model.name==='string')??[];
 });
 const scores=computed(()=>{
- const models=props.steps.find(step=>step.ordinal===6)?.result?.models;
- return Array.isArray(models)?models as ModelScore[]:[];
+ const models=readScoreStepResult(props.steps.find(step=>step.ordinal===6)?.result)?.models;
+ return models?.filter((model):model is ModelScore=>typeof model.model_id==='string'&&typeof model.name==='string')??[];
 });
 const acceptance=computed(()=>{
- const value=props.steps.find(step=>step.ordinal===7)?.result?.model_scores;
- return value&&typeof value==='object'?value as Record<string,ModelAcceptance>:{};
+ return acceptanceResult.value?.model_scores??{};
 });
-const overallDecision=computed(()=>props.steps.find(step=>step.ordinal===7)?.result?.decision);
+const overallDecision=computed(()=>acceptanceResult.value?.decision);
 function modelDecision(answer:ModelAnswer,score:ModelScore|undefined,saved:ModelAcceptance|undefined):ModelAcceptance['status']{
  if(saved)return saved.status;
  if(answer.status!=='succeeded'||!score)return 'pending';
@@ -97,12 +79,12 @@ const evaluations=computed(()=>answers.value.map(answer=>{
 }));
 const overallLabel=computed(()=>{
  if(overallDecision.value==='accepted')return '全部模型通过';
- if(overallDecision.value==='repair')return '未全部通过，需返修';
+ if(overallDecision.value==='repair')return '未全部通过，题目未达标';
  if(overallDecision.value==='waiting')return '等待全部模型完成';
  if(overallDecision.value==='quarantine')return '题目或材料版本变化，判定已隔离';
  if(!evaluations.value.length)return '';
  if(evaluations.value.every(item=>item.decision==='passed'))return '各模型均通过，待最终判定';
- if(evaluations.value.some(item=>item.decision==='not_passed'))return '存在模型未通过，待返修判定';
+ if(evaluations.value.some(item=>item.decision==='not_passed'))return '存在模型未通过，待达标判定';
  return '等待有效作答与评分';
 });
 const overallColor=computed(()=>overallDecision.value==='accepted'?'success':overallDecision.value==='quarantine'||overallDecision.value==='repair'||evaluations.value.some(item=>item.decision==='not_passed')?'error':'secondary');

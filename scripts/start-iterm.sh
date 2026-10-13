@@ -102,10 +102,10 @@ check_worker_freshness() {
 
 # Only restart project-owned processes, and only when the persisted monitor
 # confirms there is no running task. A queued task remains safe for the worker.
-check_service_freshness 3100 后端 'bun server/index.ts' "$ROOT_DIR"
+check_service_freshness 3700 后端 'bun server/index.ts' "$ROOT_DIR"
 check_worker_freshness
 if (( ${#STALE_SERVICE_PIDS[@]} > 0 )); then
-  MONITOR_JSON="$(curl -fsS --max-time 3 http://127.0.0.1:3100/api/monitor 2>/dev/null || true)"
+  MONITOR_JSON="$(curl -fsS --max-time 3 http://127.0.0.1:3700/api/monitor 2>/dev/null || true)"
   if [[ -z "$MONITOR_JSON" ]] || ! RUNNING_TASKS="$(printf '%s' "$MONITOR_JSON" | "$BUN_BIN" -e 'const record=JSON.parse(await Bun.stdin.text());const tasks=record.snapshot?.tasks;const heartbeat=Date.parse(record.heartbeat_at);if(!["running","paused"].includes(record.status)||!Number.isFinite(heartbeat)||Date.now()-heartbeat>30000||heartbeat-Date.now()>5000||tasks?.status!=="known"||!Number.isSafeInteger(tasks.value?.running)||tasks.value.running<0)process.exit(2);console.log(tasks.value.running)' 2>/dev/null)"; then
     printf '检测到服务代码已更新，但无法确认是否有任务正在运行；为避免中断任务，本次未重启任何服务。请检查运行状态后再启动。\n' >&2
     exit 1
@@ -153,8 +153,8 @@ service_command() {
   printf "printf '%s已运行（端口%s），复用现有服务。\\n'" "$role" "$port"
 }
 
-BACKEND_COMMAND="$(service_command 3100 后端 server 'bun server/index.ts' "$ROOT_DIR")"
-FRONTEND_COMMAND="$(service_command 5173 前端 dev "/node_modules/.bin/vite" "$ROOT_DIR/web")"
+BACKEND_COMMAND="$(service_command 3700 后端 server 'bun server/index.ts' "$ROOT_DIR")"
+FRONTEND_COMMAND="$(service_command 3800 前端 dev "/node_modules/.bin/vite" "$ROOT_DIR/web")"
 
 WORKER_COMMAND="cd $ROOT_Q && $BUN_Q run worker"
 for worker_pid in $(pgrep -f 'bun (run )?server/worker\.ts([[:space:]]|$)' || true); do
@@ -181,4 +181,4 @@ on run argv
 end run
 APPLESCRIPT
 
-printf '已在 iTerm2 三个页签启动或复用前后端与材料处理进程，请检查各页签输出。前端地址：http://127.0.0.1:5173/\n'
+printf '已在 iTerm2 三个页签启动或复用前后端与材料处理进程，请检查各页签输出。前端地址：http://127.0.0.1:3800/\n'

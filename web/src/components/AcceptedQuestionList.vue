@@ -1,6 +1,6 @@
 <!--
 职责：在项目详情页列出当前版本已达标题目，汇总各模型分数并打开全文弹窗。
-关键方法与用法：接收项目工作流、发出 `export` 事件；负责搜索、异常筛选和分页。
+关键方法与用法：接收项目工作流、导出状态与错误，发出 `export` 事件；负责搜索、异常筛选和分页。
 -->
 
 <script setup lang="ts">
@@ -8,7 +8,7 @@ import type { Workflow } from '../types/api';
 import AcceptedQuestionDetail from './AcceptedQuestionDetail.vue';
 
 interface ModelResult { status:string; score?:number; max_score?:number; percentage?:number; threshold:number }
-const props=defineProps<{workflows:Workflow[];exporting?:boolean}>();
+const props=defineProps<{workflows:Workflow[];exporting?:boolean;exportError?:string}>();
 const emit=defineEmits<{export:[]}>();
 const search=shallowRef('');
 const filter=shallowRef<'全部'|'异常'|'待归档'|'已归档'>('全部');
@@ -44,7 +44,8 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
     <v-select v-model="filter" :items="['全部','异常','待归档','已归档']" label="筛选" hide-details class="filter-field-compact w-140px" />
    </Row>
   </Row>
-  <p class="text-xs text-muted">Excel 汇总全部当前达标题目的题面、模型答案、逐项评分和返修记录，生成后由浏览器下载。</p>
+  <v-alert v-if="props.exportError" type="error" density="compact" role="alert">{{ props.exportError }}</v-alert>
+  <p class="text-xs text-muted">Excel 每题一行，包含题目字段、输入附件地址、rubric、作答思路和标准答案，生成后由浏览器下载。</p>
   <p v-if="!visible.length" class="text-sm text-muted">{{ accepted.length?'没有符合筛选条件的达标题目':'暂无当前版本已达标题目。' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="comfortable" class="min-w-900px">

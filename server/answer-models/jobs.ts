@@ -5,8 +5,7 @@
  */
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
-import {bindRevisionAttempt,readRevisionSettings} from '../decisions/revision-binding';
-import {runRevisionCall} from '../decisions/revision-calls';
+import {runExternalCall} from '../external-call';
 import {HTTPException} from 'hono/http-exception';
 import {mkdir,writeFile,rm} from 'node:fs/promises';
 import {resolve,join,relative} from 'node:path';
@@ -17,7 +16,9 @@ import {DomesticError} from './domestic';
 import {resolveAnswerConfig,createAnswerClient,type ResolvedAnswerConfig} from './dispatch';
 import type {AnswerRequest} from './provider';
 import {answerModelSetDigest,readProjectModelSet,type RegisteredAnswerModel} from './model-set';
+import {DEFAULT_ANSWER_GENERATION_POLICY,answerProviderConfigFromStepConfig,isQualifiedLongGenerationTimeout,readAnswerGenerationPolicyFromStepConfig,resolveAnswerCallSettings,resolveAnswerGenerationPolicy} from './generation-policy';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
+import type {AnswerStepModelSummary,AnswerStepResult} from '../../shared/workflow-results';
 const activeWorkflow="SELECT w.project_id FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) FOR UPDATE OF w";
 async function currentQuestion(db:PoolClient,id:string){
  try {
@@ -37,7 +38,7 @@ export async function readAnswerAttachment(_root:string,artifact:{storage_path?:
  * 只为当前成功题面和获准脱敏附件创建作答尝试，并冻结题目、材料及模型集合配置。
  * 按模型分别去重和排队；作答输入不包含 rubric、标答或目标分数。
  */
-export async function enqueueAnswer(pool:Pool,id:string,root:string,revisionRoundId?:string){
+export async function enqueueAnswer(pool:Pool,id:string,root:string){
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
@@ -48,21 +49,20 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,revisionRoun
   const sources=[];for(const artifact of artifacts.rows)sources.push({...artifact,text:await readAnswerAttachment(root,artifact)});
   const input=buildAnswerInput({...question,answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}},sources);
   const snapshot={...input,question_attempt_id:question.question_attempt_id,input_digest:inputDigest(input)};
-  const settings=await readRevisionSettings(db,id,revisionRoundId);
-  const overrides=settings?settings.configs?.['5']??{}:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5',[workflow.project_id])).rows[0]?.config??{};
-  const selected=settings?settings.model_set:await readProjectModelSet(db,workflow.project_id);const hasModelSet=selected.length>0;
+  const rawStepConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5',[workflow.project_id])).rows[0]?.config??{};
+  const generationPolicy=readAnswerGenerationPolicyFromStepConfig(rawStepConfig),overrides=answerProviderConfigFromStepConfig(rawStepConfig);
+  const selected=await readProjectModelSet(db,workflow.project_id);const hasModelSet=selected.length>0;
   const models:RegisteredAnswerModel[]=selected.length?selected:[{model_id:'',name:'',minimum_score:0,config:resolveAnswerConfig(overrides)}];
   const modelSetDigest=answerModelSetDigest(models);
   const modelSet=models.map(({model_id,name,minimum_score,config})=>({model_id,name,minimum_score,config}));
   const queued:{id:string;reused:boolean}[]=[];
   for(const model of models){
-   const input={...snapshot,model_id:model.model_id||null,model_name:model.name||null,...(hasModelSet?{model_set_digest:modelSetDigest,model_set:modelSet}:{})};
+   const input={...snapshot,model_id:model.model_id||null,model_name:model.name||null,answer_generation_policy:generationPolicy,...(hasModelSet?{model_set_digest:modelSetDigest,model_set:modelSet}:{})};
    // Workflow row lock serializes a whole model-set enqueue. Each model is deduplicated independently.
-   const previous=await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND input->>'question_attempt_id'=$2 AND input->>'input_digest'=$3 AND input->>'model_id' IS NOT DISTINCT FROM $4 AND config=$5::jsonb AND (($6::boolean AND input->>'model_set_digest'=$7) OR (NOT $6::boolean AND input->>'model_set_digest' IS NULL)) AND status IN ('waiting','running','succeeded') ORDER BY attempt DESC LIMIT 1",[id,question.question_attempt_id,snapshot.input_digest,model.model_id||null,JSON.stringify(model.config),hasModelSet,modelSetDigest]);
+   const previous=await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND input->>'question_attempt_id'=$2 AND input->>'input_digest'=$3 AND input->>'model_id' IS NOT DISTINCT FROM $4 AND config=$5::jsonb AND (($6::boolean AND input->>'model_set_digest'=$7) OR (NOT $6::boolean AND input->>'model_set_digest' IS NULL)) AND COALESCE(input->'answer_generation_policy',$9::jsonb)=$8::jsonb AND status IN ('waiting','running','succeeded') ORDER BY attempt DESC LIMIT 1",[id,question.question_attempt_id,snapshot.input_digest,model.model_id||null,JSON.stringify(model.config),hasModelSet,modelSetDigest,JSON.stringify(generationPolicy),JSON.stringify(DEFAULT_ANSWER_GENERATION_POLICY)]);
  if(previous.rowCount){queued.push({id:previous.rows[0].id,reused:true});continue;}
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,5,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=5",[id,attempt,JSON.stringify(input),JSON.stringify(model.config)]);
-   await bindRevisionAttempt(db,id,attempt,revisionRoundId);
    queued.push({id:attempt,reused:false});
   }
   const existingQueued=await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND status IN ('waiting','running') AND input->>'model_set_digest' IS DISTINCT FROM $2 AND id<>ALL($3::uuid[]) LIMIT 1",[id,modelSetDigest,queued.map(item=>item.id)]);
@@ -90,18 +90,20 @@ async function matchesModelSet(db:PoolClient,job:any){
 }
 async function refreshAnswerStep(db:PoolClient,job:any){
  if(!Array.isArray(job.input.model_set)||!job.input.model_set.length){
-  const latest=await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=5 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)",[job.workflow_id,job.status==='succeeded'?'succeeded':'failed',JSON.stringify(job.result)]);
+  const result=job.status==='skipped'&&job.result?.outcome==='qualified_timeout_unscored'?{...job.result,models:[{model_id:job.input.model_id??null,name:job.input.model_name??job.config.model,attempt_id:job.id,status:'skipped',outcome:job.result.outcome,reason_code:job.result.reason_code,generation_activity:job.result.generation_activity}]}:job.result;
+  const latest=await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,finished_at=CASE WHEN $2 IN ('succeeded','skipped','failed') THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=5 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)",[job.workflow_id,job.status==='succeeded'?'succeeded':job.status==='skipped'?'skipped':'failed',JSON.stringify(result)]);
   return latest.rowCount;
  }
- const rows=await db.query("SELECT id,input,result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND input->>'model_set_digest'=$2 AND input->>'question_attempt_id'=$3 AND input->>'input_digest'=$4 ORDER BY attempt DESC",[job.workflow_id,job.input.model_set_digest,job.input.question_attempt_id,job.input.input_digest]);
+ // 只传回同一输入下各模型最新尝试；完整当前答案仍供详情展示。
+ const rows=await db.query("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input->>'model_id') id,jsonb_build_object('model_id',input->'model_id') AS input,jsonb_build_object('text',result->'text','answer_sha256',result->'answer_sha256','outcome',result->'outcome','reason_code',result->'reason_code','generation_activity',result->'generation_activity') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND input->>'model_set_digest'=$2 AND input->>'question_attempt_id'=$3 AND input->>'input_digest'=$4 ORDER BY input->>'model_id',attempt DESC) latest",[job.workflow_id,job.input.model_set_digest,job.input.question_attempt_id,job.input.input_digest]);
  const latest=new Map<string,any>();
  for(const row of rows.rows){const id=row.input?.model_id;if(typeof id==='string'&&id&&!latest.has(id))latest.set(id,row);}
- const models=job.input.model_set.map((model:any)=>{const row=latest.get(model.model_id);return {model_id:model.model_id,name:model.name,minimum_score:model.minimum_score,attempt_id:row?.id??null,status:row?.status??'waiting',answer_sha256:row?.result?.answer_sha256??null,answer:row?.status==='succeeded'?row.result.text:null};});
+ const models:AnswerStepModelSummary[]=job.input.model_set.map((model:any)=>{const row=latest.get(model.model_id);return {model_id:model.model_id,name:model.name,minimum_score:model.minimum_score,attempt_id:row?.id??null,status:row?.status??'waiting',answer_sha256:row?.result?.answer_sha256??null,answer:row?.status==='succeeded'?row.result.text:null,...(row?.result?.outcome==='qualified_timeout_unscored'?{outcome:row.result.outcome,reason_code:row.result.reason_code,generation_activity:row.result.generation_activity}:{})};});
  const settled=models.every((model:any)=>['succeeded','failed','skipped'].includes(model.status));
  const active=models.some((model:any)=>model.status==='running');
- const status=settled?(models.every((model:any)=>model.status==='succeeded')?'succeeded':'failed'):active?'running':'waiting';
- const result={model_set_digest:job.input.model_set_digest,models};
- return (await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,finished_at=CASE WHEN $2='succeeded' THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=5 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)",[job.workflow_id,status,JSON.stringify(result)])).rowCount;
+ const status=settled?(models.every((model:any)=>model.status==='succeeded')?'succeeded':models.every((model:any)=>model.status==='skipped')?'skipped':'failed'):active?'running':'waiting';
+ const result:AnswerStepResult={model_set_digest:job.input.model_set_digest,models};
+ return (await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,finished_at=CASE WHEN $2 IN ('succeeded','skipped','failed') THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=5 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)",[job.workflow_id,status,JSON.stringify(result)])).rowCount;
 }
 /**
  * 领取一个当前版本的单模型作答任务，校验冻结输入后调用对应供应商并保存完整答案及 usage。
@@ -111,13 +113,16 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
  const db=await pool.connect();let job:any,staleRows:any[]=[];
  try{
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  const stale=await db.query("SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=5 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED");
+  const stale=await db.query("SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,a.config,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=5 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED");
   for(const row of stale.rows){
    const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='作答进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);
-   await db.query("UPDATE ai_distill.steps SET status='failed',error='作答进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=5 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1)",[row.workflow_id]);
-   if(updated.rowCount)staleRows.push(row);
+   if(updated.rowCount)staleRows.push({...row,status:'failed',result:{error:{kind:'unknown',message:'作答进程中断，可重试'}}});
   }
-  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.status='waiting' AND (a.revision_round_id IS NULL OR NOT EXISTS(SELECT 1 FROM ai_distill.step_attempts active WHERE active.workflow_id=a.workflow_id AND active.revision_round_id IS NOT NULL AND active.status='running')) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
+  for(const workflowId of new Set(staleRows.map(row=>row.workflow_id))){
+   const row=staleRows.find(item=>item.workflow_id===workflowId)!;
+   if(await matchesQuestion(db,row)&&await matchesModelSet(db,row))await refreshAnswerStep(db,row);
+  }
+  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
   if(!job){await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'answer',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:5,attempt_id:row.id,operation:'answer'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false;}
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=5",[job.workflow_id]);
@@ -136,7 +141,9 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
   const packaged:AnswerPackage={question_version:job.input.question_version,question:job.input.question,materials:job.input.materials,attachments:job.input.attachments};
   if(inputDigest(packaged)!==job.input.input_digest)throw new AnswerInputError();
   const before=await pool.connect();try{await before.query('BEGIN');const w=(await before.query(activeWorkflow,[job.workflow_id])).rows[0];if(!w||!await matchesQuestion(before,job)||!await matchesModelSet(before,job))throw new AnswerInputError('题目或项目模型配置已变化');await before.query('COMMIT');}catch(error){await before.query('ROLLBACK');throw error;}finally{before.release();}
-  const result=await runRevisionCall(pool,job.id,'answer',remaining=>answer({config:resolveAnswerConfig(job.config),question:packaged.question,materials:packaged.materials,signal,timeout_ms:Math.min(3600000,remaining??3600000)}));
+  const generationPolicy=resolveAnswerGenerationPolicy(job.input.answer_generation_policy);
+  const callSettings=resolveAnswerCallSettings(generationPolicy);
+  const result=await runExternalCall({attempt_id:job.id,operation:'answer'},call_id=>answer({config:resolveAnswerConfig(job.config),question:packaged.question,materials:packaged.materials,signal,call_id,timeout_ms:callSettings.timeout_ms,...(callSettings.observe_reasoning?{observe_reasoning:true}:{})}));
   const directory=join(resolve(root),job.workflow_id,job.id);await mkdir(directory,{recursive:true});
   const bytes=Buffer.from(result.text);const path=join(directory,'answer.txt');wrote=true;logEvent('file.write.started',{level:'info',file_kind:'model_answer',output_bytes:bytes.length});await writeFile(path,bytes,{mode:0o600});logEvent('file.write.completed',{level:'info',file_kind:'model_answer',output_bytes:bytes.length});
   const answer_sha256=createHash('sha256').update(bytes).digest('hex');
@@ -154,14 +161,18 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
    logEvent('attempt.completed',{level:'info',state:'succeeded',output_bytes:bytes.length,token_usage:result.usage});
   }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
  }catch(error){
-  logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)});
+  let qualifiedTimeout=false;
+  try{qualifiedTimeout=isQualifiedLongGenerationTimeout(error,resolveAnswerGenerationPolicy(job.input.answer_generation_policy));}catch{qualifiedTimeout=false;}
+  if(qualifiedTimeout)logEvent('attempt.long_generation_timeout_unscored',{level:'warn',state:'skipped',...classifyLogError(error)});
+  else logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)});
   if(wrote)try{const published=await pool.query('SELECT id FROM ai_distill.artifacts WHERE attempt_id=$1 LIMIT 1',[job.id]);if(!published.rowCount)await rm(join(resolve(root),job.workflow_id,job.id),{recursive:true,force:true});}catch(cleanupError){logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'model_answer',...classifyLogError(cleanupError)});console.error('无法确认答案发布状态，保留文件等待核对');}
-  const message=error instanceof QwenError||error instanceof DomesticError||error instanceof AnswerInputError?error.message:'模型作答失败，请检查服务配置或存储状态';
-  const result=error instanceof QwenError||error instanceof DomesticError?{error:{kind:error.kind,retryable:error.retryable,http_status:error.http_status,provider_code:error.provider_code,request_id:error.request_id,reason_code:error.reason_code??null}}:null;
+  const message=qualifiedTimeout?'已观测到推理增量超过设置阈值后本地请求截止；本次未得到完整答案，不计分':error instanceof QwenError||error instanceof DomesticError||error instanceof AnswerInputError?error.message:'模型作答失败，请检查服务配置或存储状态';
+  const result=qualifiedTimeout?{outcome:'qualified_timeout_unscored',reason_code:'qualified_long_generation_timeout',generation_activity:(error as {generation_activity?:unknown}).generation_activity,request_id:(error as {request_id?:unknown}).request_id??null,generation_id:(error as {generation_id?:unknown}).generation_id??null,answer_generation_policy:job.input.answer_generation_policy,question_attempt_id:job.input.question_attempt_id,question_version:job.input.question_version,input_digest:job.input.input_digest,model_id:job.input.model_id??null,model_name:job.input.model_name??job.config.model}:error instanceof QwenError||error instanceof DomesticError?{error:{kind:error.kind,retryable:error.retryable,http_status:error.http_status,provider_code:error.provider_code,request_id:error.request_id,generation_id:error.generation_id??null,reason_code:error.reason_code??null}}:null;
   const tx=await pool.connect();try{
    await tx.query('BEGIN');const w=(await tx.query(activeWorkflow,[job.workflow_id])).rows[0];
-   const failed=await tx.query("UPDATE ai_distill.step_attempts SET status='failed',error=$2,result=$3,finished_at=now() WHERE id=$1 AND status='running'",[job.id,message,JSON.stringify(result)]);
-   if(failed.rowCount&&w&&await matchesQuestion(tx,job)){job.status='failed';job.result=result;await refreshAnswerStep(tx,job);}
+   const terminal=qualifiedTimeout?'skipped':'failed';
+   const updated=await tx.query("UPDATE ai_distill.step_attempts SET status=$4,error=$2,result=$3,finished_at=now() WHERE id=$1 AND status='running'",[job.id,message,JSON.stringify(result),terminal]);
+   if(updated.rowCount&&w&&await matchesQuestion(tx,job)){job.status=terminal;job.result=result;await refreshAnswerStep(tx,job);}
    await tx.query('COMMIT');
   }catch(failure){await tx.query('ROLLBACK');throw failure;}finally{tx.release();}
  }finally{cancellation.dispose();clearInterval(heartbeat);restoreLogContext();}

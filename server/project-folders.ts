@@ -4,10 +4,11 @@
  * 使用场景：`app.ts` 提供目录同步与列表接口，入库队列按扫描结果处理材料。
  */
 import {mergeRedactionDefaults,validateRedactionConfig,type RedactionConfig} from './materials/redaction-config';
-import type {ModelApiConfig} from './llm-api';
+import {resolveModelApiConfig,type ModelApiConfig} from './llm-api';
 import {mergeCodexDefaults,validateAgentModel,readProjectAgentSettings} from './agent/config';
 import { readdir, realpath, readFile, stat } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import {resolveRepositoryPath} from './paths';
 import { createHash } from 'node:crypto';
 import { HTTPException } from 'hono/http-exception';
 import {invalidateMaterialResults} from './materials/state';
@@ -17,7 +18,7 @@ import { DEFAULT_STEP_PROMPTS } from '../shared/step-prompts';
 import {resolveQwenConfig,QwenError} from './answer-models/qwen';
 import {resolveAnswerConfig} from './answer-models/dispatch';
 import {DomesticError} from './answer-models/domestic';
-import {validateAcceptanceBudgetConfig,validateAcceptanceConfig} from './decisions/config';
+import {validateAcceptanceConfig} from './decisions/config';
 import { text } from './validation';
 export interface FolderFile { name: string; path: string; sha256: string; size: number }
 export interface QuestionFolder { key: string; files: FolderFile[] }
@@ -61,8 +62,7 @@ export async function readProjectWorkflowStepRows(pool:Pool,projectId:string,wor
 }
 export async function validateFolder(value: unknown, label = '材料文件夹') {
  const path = text(value, label, 4096);
- if (!isAbsolute(path)) throw new HTTPException(400, { message: `${label}须为本机绝对路径` });
- try { const actual = await realpath(path); if (!(await stat(actual)).isDirectory()) throw new Error('not directory'); return actual; }
+ try { const actual = await realpath(resolveRepositoryPath(path)); if (!(await stat(actual)).isDirectory()) throw new Error('not directory'); return actual; }
  catch { throw new HTTPException(400, { message: `${label}不存在或无法读取` }); }
 }
 export async function scanProjectFolder(root: string): Promise<QuestionFolder[]> {
@@ -125,25 +125,36 @@ export async function registerQuestionFolders(db: PoolClient, projectId: string,
  }
  return {discovered:questions.length,added:added.length,changed:changed.length};
 }
+export type ScoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string}|{provider:'api';api:ModelApiConfig;prompt:string};
 export function validateStepConfig(ordinal:9,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):RedactionConfig;
-export function validateStepConfig(ordinal:4|6,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):{provider:'codex';model:string;reasoning_effort:string;prompt:string};
+export function validateStepConfig(ordinal:4,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):{provider:'codex';model:string;reasoning_effort:string;prompt:string};
+export function validateStepConfig(ordinal:6,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ScoringStepConfig;
 export function validateStepConfig(ordinal:5,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ModelApiConfig;
-export function validateStepConfig(ordinal:7,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ReturnType<typeof validateAcceptanceConfig>|ReturnType<typeof validateAcceptanceBudgetConfig>;
+export function validateStepConfig(ordinal:7,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ReturnType<typeof validateAcceptanceConfig>;
 export function validateStepConfig(ordinal:number,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):object;
-export function validateStepConfig(ordinal: number, raw: unknown, modelCatalog?:Parameters<typeof validateAgentModel>[2]) {
+export function validateStepConfig(ordinal: number, raw: unknown, modelCatalog?:Parameters<typeof validateAgentModel>[2]):object {
  return validateStepConfigInternal(ordinal,raw,modelCatalog,true);
 }
 /** Validate persisted author/reviewer settings for execution without treating a cached model list as an execution allowlist. */
-export function validateStepConfigForExecution(ordinal:4|6,raw:unknown){
- return validateStepConfigInternal(ordinal,raw,undefined,false) as {provider:'codex';model:string;reasoning_effort:string;prompt:string};
+export function validateStepConfigForExecution(ordinal:4,raw:unknown):{provider:'codex';model:string;reasoning_effort:string;prompt:string};
+export function validateStepConfigForExecution(ordinal:6,raw:unknown):ScoringStepConfig;
+export function validateStepConfigForExecution(ordinal:4|6,raw:unknown):{provider:'codex';model:string;reasoning_effort:string;prompt:string}|ScoringStepConfig {
+ return validateStepConfigInternal(ordinal,raw,undefined,false) as {provider:'codex';model:string;reasoning_effort:string;prompt:string}|ScoringStepConfig;
 }
 function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Parameters<typeof validateAgentModel>[2]|undefined,validateAdvertisedModel:boolean) {
  if (![4,5,6,7,9].includes(ordinal)) throw new HTTPException(400, { message: '此步骤没有模型设置' });
  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HTTPException(400, { message: '步骤设置须为JSON对象' });
  if(ordinal===5){try{return resolveAnswerConfig(raw);}catch(error){if(error instanceof QwenError||error instanceof DomesticError)throw new HTTPException(400,{message:error.message});throw error;}}
- if(ordinal===7){const value=raw as Record<string,unknown>;return 'required_models' in value||'minimum_score_by_model' in value?validateAcceptanceConfig(raw):validateAcceptanceBudgetConfig(raw);}
+ if(ordinal===7)throw new HTTPException(400,{message:'达标判断由评分结果自动完成，不需要单独配置'});
  if(ordinal===9)return validateRedactionConfig(raw,modelCatalog);
  const value = raw as Record<string,unknown>;
+ if(ordinal===6&&value.provider==='api'){
+  if(Object.keys(value).some(key=>!['provider','api','prompt'].includes(key))||!value.api||typeof value.api!=='object'||Array.isArray(value.api))throw new HTTPException(400,{message:'评分API设置格式无效'});
+  let api:ModelApiConfig;try{api=resolveModelApiConfig(value.api);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'评分API设置无效'});}
+  const prompt=value.prompt??DEFAULT_STEP_PROMPTS[6];
+  if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)throw new HTTPException(400,{message:'请填写有效的步骤提示词'});
+  return{provider:'api',api,prompt};
+ }
  const provider = 'codex';
  if (value.provider !== undefined && value.provider !== provider) throw new HTTPException(400, { message: `此步骤使用${provider}` });
  const model = text(value.model, '模型ID', 160);
@@ -185,7 +196,7 @@ export async function projectStepSummary(pool: Pool, projectId: string) {
   const explicit=Boolean(stored&&(stored.provider==='api'||typeof stored.model==='string'&&typeof stored.reasoning_effort==='string'));
   const defaults={model:codexSettings.model,reasoning_effort:codexSettings.reasoning_effort};
   const config=stage.ordinal===9?mergeRedactionDefaults(stored,defaults):stage.ordinal===5?stored??defaultAnswerConfig():isCodex?{
-   provider:'codex',...mergeCodexDefaults({...(stage.ordinal===4||stage.ordinal===6?{prompt:DEFAULT_STEP_PROMPTS[stage.ordinal]}:{}),...(stored??{})},defaults),
+   ...(stage.ordinal===6&&stored?.provider==='api'?stored:{provider:'codex',...mergeCodexDefaults({...(stage.ordinal===4||stage.ordinal===6?{prompt:DEFAULT_STEP_PROMPTS[stage.ordinal]}:{}),...(stored??{})},defaults)}),
   }:stored??{};
   return{ordinal:stage.ordinal,position:stage.position,name:stage.name,key:stage.key,implemented:stage.defaultEnabled,...totals.get(stage.ordinal),config,...(isCodex?{config_source:explicit?'step':stage.ordinal===9&&config.provider==='api'?'system':codexSettings.source}:{})};
  });

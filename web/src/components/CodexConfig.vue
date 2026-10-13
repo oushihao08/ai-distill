@@ -23,7 +23,8 @@ const probe=shallowRef<CodexProbe|null>(null);
 const probeFailed=shallowRef(false);
 const modelItems=computed(()=>availableModels.value.map(item=>({title:item.slug,value:item.slug})));
 const effortItems=computed(()=>availableModels.value.find(item=>item.slug===model.value)?.supported_reasoning_levels.map(level=>level.effort)??[]);
-const canSaveDefaults=computed(()=>effortItems.value.includes(effort.value));
+const canSaveDefaults=computed(()=>Boolean((model.value??'').trim()&&(effort.value??'').trim()));
+watch(model,clearProbe);watch(effort,clearProbe);
 const changed=computed(()=>path.value!==savedPath.value||model.value!==savedModel.value||effort.value!==savedEffort.value);
 
 function applyConfig(config:CodexConfig){
@@ -33,17 +34,10 @@ function applyConfig(config:CodexConfig){
  savedModel.value=model.value;
  effort.value=config.reasoning_effort??'';
  savedEffort.value=effort.value;
- const supported=availableModels.value.find(item=>item.slug===model.value)?.supported_reasoning_levels.map(level=>level.effort)??[];
- if(!supported.includes(effort.value))effort.value=supported.includes('medium')?'medium':supported[0]??'';
 }
 function requestBody(){
  return{credential_home:path.value.trim()||null,...(canSaveDefaults.value?{model:model.value,reasoning_effort:effort.value}:{})};
 }
-watch(model,selected=>{
- const supported=availableModels.value.find(item=>item.slug===selected)?.supported_reasoning_levels.map(level=>level.effort)??[];
- if(!supported.includes(effort.value))effort.value=supported.includes('medium')?'medium':supported[0]??'';
- clearProbe();
-});
 
 async function load(){
  try{
@@ -80,10 +74,10 @@ onMounted(load);
  <p class="text-xs text-muted">接受绝对路径或 ~/ 开头路径；填写 auth.json 时自动取其所在目录。</p>
  <Column class="border-t border-line-subtle pt-12" :gap="8">
   <Column :gap="4"><h3 class="text-sm font-semibold">默认 Codex 模型</h3><p class="text-xs text-muted">仅作为未单独设置模型的后续任务默认值；项目步骤自定义设置和已入队任务保持不变。</p></Column>
-  <Row wrap :gap="12"><v-select v-model="model" label="默认模型" :items="modelItems" hide-details :disabled="loading||busy||!modelItems.length" @update:model-value="clearProbe" /><v-select v-model="effort" label="默认推理强度" :items="effortItems" hide-details :disabled="loading||busy||!effortItems.length" @update:model-value="clearProbe" /></Row>
-  <p v-if="!loading&&!modelItems.length" class="text-xs text-warning">本机 Codex 模型清单不可用，请先登录并刷新模型清单。</p>
+  <Row wrap :gap="12"><v-combobox :return-object="false" v-model="model" label="默认模型" :items="modelItems" hide-details :disabled="loading||busy" @update:model-value="clearProbe" /><v-combobox :return-object="false" v-model="effort" label="默认推理强度" :items="effortItems" hide-details :disabled="loading||busy" @update:model-value="clearProbe" /></Row>
+  <p v-if="!loading&&!modelItems.length" class="text-xs text-warning">本机模型建议暂不可用，可直接输入模型和推理强度；实际可用性由执行时反馈。</p>
  </Column>
  <v-alert v-if="error" :type="probeFailed?'error':'warning'" density="compact">{{ error }}</v-alert>
  <p v-if="probe" class="text-sm text-success">连接正常 · {{ probe.model }} · 推理 {{ probe.reasoning_effort }} · {{ (probe.duration_ms/1000).toFixed(1) }} 秒</p>
- <Row x="between" wrap :gap="8"><span class="text-xs text-muted">{{ savedPath?'已配置自定义凭证目录':'使用运行环境默认凭证' }}</span><Row :gap="8"><v-btn size="small" :disabled="loading||busy||!changed" @click="save">保存设置</v-btn><v-btn size="small" color="primary" variant="flat" :loading="busy" :disabled="loading||busy||!canSaveDefaults" @click="test">保存并测试</v-btn></Row></Row>
+ <Row x="between" wrap :gap="8"><span class="text-xs text-muted">{{ savedPath?'已配置自定义凭证目录':'使用运行环境默认凭证' }}</span><Row :gap="8"><v-btn size="small" :disabled="loading||busy||!changed||!canSaveDefaults" @click="save">保存设置</v-btn><v-btn size="small" color="primary" variant="flat" :loading="busy" :disabled="loading||busy||!canSaveDefaults" @click="test">保存并测试</v-btn></Row></Row>
 </Column></section></template>

@@ -4,10 +4,22 @@
  * 只调用冻结配置指定的供应商；不自动换模型或供应商，不在模块内重试收费请求。
  */
 import {resolveModelApiConfig,readModelApiKey} from './config';
-import {ModelApiError,type ModelApiErrorKind,type ModelApiConfig,type ModelApiRequest,type ModelApiResult} from './types';
+import {ModelApiError,type ModelApiErrorKind,type ModelApiConfig,type ModelApiRequest,type ModelApiResult,type ReasoningActivityEvidence} from './types';
 import {classifyLogError,logEvent,withLogContext} from '../logging';
 function record(value:unknown):value is Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function onlyFields(value:unknown,fields:string[]):asserts value is Record<string,unknown>{if(!record(value)||Object.keys(value).some(key=>!fields.includes(key)))throw new ModelApiError('configuration');}
+function networkFailureReason(error:unknown):string{
+ let current:unknown=error;
+ for(let depth=0;depth<4&&current;depth++){
+  if(!record(current))break;
+  const code=typeof current.code==='string'?current.code:'';
+  const known:Record<string,string>={ENOTFOUND:'dns_lookup_failed',EAI_NONAME:'dns_lookup_failed',EAI_AGAIN:'dns_temporary_failure',ECONNREFUSED:'connection_refused',ECONNRESET:'connection_reset',ETIMEDOUT:'connection_timeout',EHOSTUNREACH:'host_unreachable',ENETUNREACH:'network_unreachable',EPIPE:'connection_broken',UND_ERR_CONNECT_TIMEOUT:'connect_timeout',UND_ERR_SOCKET:'socket_failure'};
+  if(known[code])return known[code]!;
+  if(code.startsWith('ERR_TLS')||code.startsWith('CERT_'))return'tls_failure';
+  current=current.cause;
+ }
+ return'fetch_failed';
+}
 // Only documented codes are retained. Provider message/type/param and unknown codes
 // can echo private inputs, so they never become error properties or causes.
 const quotaCodes = new Set(['Arrearage', 'isv.OUT_OF_SERVICE', 'PrepaidBillOverdue', 'CommodityNotPurchased']);
@@ -18,6 +30,10 @@ const providerCodes = new Set(['InternalError', 'ServiceUnavailable', 'DataInspe
 function requestId(response: Response, data: unknown): string | null {
  const ids = [response.headers.get('x-request-id'), response.headers.get('x-dashscope-request-id'), record(data) ? data.request_id : null];
  return ids.find((id): id is string => typeof id === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) ?? null;
+}
+function generationId(response:Response|null):string|null{
+ const id=response?.headers.get('x-generation-id');
+ return typeof id==='string'&&/^gen-[A-Za-z0-9_-]{6,128}$/.test(id)?id:null;
 }
 function providerError(response: Response, data: unknown, config:ModelApiConfig): ModelApiError {
  const details = record(data) && record(data.error) ? data.error : data;
@@ -30,7 +46,7 @@ function providerError(response: Response, data: unknown, config:ModelApiConfig)
  else if ((code && rateCodes.has(code)) || response.status === 429) kind = 'rate_limit';
  else if ((code && configCodes.has(code)) || response.status === 400 || response.status === 404 || response.status === 422) kind = 'configuration';
  const retryable = kind === 'timeout' || kind === 'rate_limit' || (kind === 'provider' && response.status >= 500);
- return new ModelApiError(kind, retryable, response.status, code, requestId(response, data));
+ return new ModelApiError(kind, retryable, response.status, code, requestId(response, data),response.status===408?'provider_http_408':undefined);
 }
 function parseCompletion(data: unknown, response: Response, config: ModelApiConfig, started_at: string, started: number): ModelApiResult {
  const invalid = (reason_code:string) => new ModelApiError('invalid_response', false, response.status, null, requestId(response, data),reason_code);
@@ -45,9 +61,6 @@ function parseCompletion(data: unknown, response: Response, config: ModelApiConf
  if(typeof message.content!=='string'||!message.content.trim())throw invalid('empty_content');
  if((message.tool_calls!=null&&(!Array.isArray(message.tool_calls)||message.tool_calls.length>0))||message.function_call!=null)throw invalid('unexpected_tool_call');
  if(message.refusal!=null)throw invalid('refusal_response');
- if (data.usage != null && !record(data.usage)) throw invalid('invalid_usage_shape');
- if (data.model != null && (typeof data.model !== 'string' || !data.model.trim())) throw invalid('invalid_model_field');
- if (data.id != null && typeof data.id !== 'string') throw invalid('invalid_completion_id');
  return {
   provider:config.provider,text: message.content, requested_model: config.model, model: typeof data.model === 'string' ? data.model : null,
   request_id: requestId(response, data), completion_id: typeof data.id === 'string' ? data.id : null,
@@ -56,9 +69,80 @@ function parseCompletion(data: unknown, response: Response, config: ModelApiConf
  };
 }
 
+function isRecord(value:unknown):value is Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value);}
+function hasOpenRouterReasoningText(value:unknown):boolean{
+ return Array.isArray(value)&&value.some(item=>isRecord(item)&&item.type==='reasoning.text'&&typeof item.text==='string'&&item.text.trim().length>0);
+}
+type AbortableReadResult={done:true;value?:Uint8Array}|{done:false;value:Uint8Array};
+function readWithAbort(reader:ReadableStreamDefaultReader<Uint8Array>,signal:AbortSignal):Promise<AbortableReadResult>{
+ return new Promise((resolve,reject)=>{
+  let settled=false;
+  const cleanup=()=>signal.removeEventListener('abort',onAbort);
+  const onAbort=()=>{if(settled)return;settled=true;cleanup();reject(new Error('aborted'));};
+  signal.addEventListener('abort',onAbort,{once:true});
+  if(signal.aborted){onAbort();return;}
+  reader.read().then(value=>{if(settled)return;settled=true;cleanup();resolve(value as AbortableReadResult);},error=>{if(settled)return;settled=true;cleanup();reject(error);});
+ });
+}
+async function parseStreamingCompletion(response:Response,config:ModelApiConfig,started_at:string,started:number,signal:AbortSignal):Promise<ModelApiResult>{
+ const reader=response.body?.getReader();
+ if(!reader)throw new ModelApiError('invalid_response',false,response.status,null,requestId(response,null),'missing_stream_body');
+ const openRouter=new URL(config.base_url).hostname==='openrouter.ai';
+ const dashScopeQwen=config.provider==='qwen'&&!openRouter;
+ const decoder=new TextDecoder();let buffer='',dataLines:string[]=[],text='',model:string|null=null,completion_id:string|null=null,usage:Record<string,unknown>|null=null,finished=false,done=false;
+ let firstReasoningAt:number|undefined,lastReasoningAt:number|undefined,maxGap=0,eventCount=0,activitySource:ReasoningActivityEvidence['source']|undefined,firstEventAt:string|undefined,lastEventAt:string|undefined;
+ const activity=():ReasoningActivityEvidence|undefined=>firstReasoningAt===undefined||lastReasoningAt===undefined||!activitySource?undefined:{source:activitySource,first_event_at:firstEventAt!,last_event_at:lastEventAt!,span_ms:Math.max(0,Math.round(lastReasoningAt-firstReasoningAt)),max_gap_ms:maxGap,event_count:eventCount};
+ const invalid=(reason_code:string)=>new ModelApiError('invalid_response',false,response.status,null,requestId(response,null),reason_code,activity());
+ const observe=(source:ReasoningActivityEvidence['source'])=>{
+  const elapsed=performance.now()-started,at=new Date().toISOString();
+  if(firstReasoningAt===undefined){firstReasoningAt=elapsed;firstEventAt=at;activitySource=source;}
+  else if(activitySource!==source){return;}
+  if(lastReasoningAt!==undefined)maxGap=Math.max(maxGap,Math.round(elapsed-lastReasoningAt));
+  lastReasoningAt=elapsed;lastEventAt=at;eventCount++;
+ };
+ const handleEvent=(raw:string)=>{
+  const payload=raw.trim();if(!payload)return;
+  if(payload==='[DONE]'){done=true;return;}
+  let data:unknown;try{data=JSON.parse(payload);}catch{throw invalid('invalid_stream_json');}
+  if(!isRecord(data)||data.error!==undefined)throw invalid('invalid_stream_event');
+  if(typeof data.model==='string')model=data.model;
+  if(typeof data.id==='string')completion_id=data.id;
+  if(isRecord(data.usage))usage=data.usage;
+  if(!Array.isArray(data.choices))throw invalid('invalid_stream_choices');
+  if(data.choices.length===0)return;
+  if(data.choices.length!==1||!isRecord(data.choices[0]))throw invalid(data.choices.length>1?'unexpected_choice_count':'invalid_choice_shape');
+  const choice=data.choices[0];
+  if(choice.finish_reason!==undefined&&choice.finish_reason!==null){if(choice.finish_reason!=='stop')throw invalid('incomplete_finish_reason');finished=true;}
+  const delta=choice.delta;
+  if(delta===undefined||delta===null)return;
+  if(!isRecord(delta))throw invalid('invalid_stream_delta');
+  if(typeof delta.role==='string'&&delta.role!=='assistant')throw invalid('invalid_message_role');
+  if(typeof delta.content==='string')text+=delta.content;
+  if(openRouter&&hasOpenRouterReasoningText(delta.reasoning_details))observe('openrouter_reasoning_details');
+  else if(openRouter&&typeof delta.reasoning==='string'&&delta.reasoning.length)observe('openrouter_reasoning');
+  else if(dashScopeQwen&&typeof delta.reasoning_content==='string'&&delta.reasoning_content.length)observe('dashscope_reasoning_content');
+ };
+ const consumeLine=(line:string)=>{
+  if(line===''){const raw=dataLines.join('\n');dataLines=[];if(raw)handleEvent(raw);return;}
+  if(line.startsWith('data:'))dataLines.push(line.slice(5).replace(/^ /,''));
+ };
+ try{
+  while(!done){
+   const {done:ended,value}=await readWithAbort(reader,signal);
+   if(ended){buffer+=decoder.decode();for(const line of buffer.split(/\r?\n/))consumeLine(line);buffer='';if(dataLines.length)handleEvent(dataLines.join('\n'));break;}
+   buffer+=decoder.decode(value,{stream:true});
+   const lines=buffer.split(/\r?\n/);buffer=lines.pop()??'';for(const line of lines)consumeLine(line);
+  }
+ }catch(error){if(error instanceof ModelApiError)throw error;throw new ModelApiError('network',true,response.status,null,requestId(response,null),networkFailureReason(error),activity());}
+ if(!finished)throw invalid('incomplete_finish_reason');
+ if(!text.trim())throw invalid('empty_content');
+ return{provider:config.provider,text,requested_model:config.model,model,request_id:requestId(response,{id:completion_id}),completion_id,usage,started_at,finished_at:new Date().toISOString(),duration_ms:Math.max(0,Math.round(performance.now()-started)),...(activity()?{generation_activity:activity()!}:{})};
+}
+
 export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, request: (input: string, init?: RequestInit) => Promise<Response> = fetch) {
  const client={ async complete(input: ModelApiRequest): Promise<ModelApiResult> {
-  onlyFields(input,['config','messages','timeout_ms','signal','response_format','call_id']);
+  onlyFields(input,['config','messages','timeout_ms','signal','response_format','call_id','observe_reasoning']);
+  if(input.observe_reasoning!==undefined&&typeof input.observe_reasoning!=='boolean')throw new ModelApiError('configuration');
   if(!Array.isArray(input.messages)||!input.messages.length)throw new ModelApiError('configuration');
   const messages=input.messages.map(message=>{
    onlyFields(message,['role','content']);
@@ -83,10 +167,13 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   const started_at = new Date().toISOString(); const started = performance.now();
   const controller = new AbortController();
   let abortKind: 'timeout' | 'cancelled' | undefined;
+  let generationActivity:ReasoningActivityEvidence|undefined;
+  let receivedResponse:Response|null=null;
   const abort = (kind: 'timeout' | 'cancelled') => {
    if (!controller.signal.aborted) { abortKind = kind; controller.abort(); }
   };
   const cancel = () => abort('cancelled');
+  const abortError=()=>abortKind==='timeout'?new ModelApiError('timeout',true,null,null,receivedResponse?requestId(receivedResponse,null):null,'local_deadline',generationActivity,generationId(receivedResponse)):new ModelApiError('cancelled',false,null,null,null,'caller_cancelled');
   input.signal?.addEventListener('abort', cancel, { once: true });
   const timer = setTimeout(() => abort('timeout'), timeout);
   const callContext={component:'llm_api',provider:config.provider,model:config.model,call_id:input.call_id??crypto.randomUUID()};
@@ -96,7 +183,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
     method: 'POST', redirect: 'error', signal: controller.signal,
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-     model: config.model, stream: false,
+     model: config.model, stream: input.observe_reasoning===true,
      ...(config.enable_thinking !== undefined ? (router ? {reasoning:{enabled:config.enable_thinking}} : {enable_thinking:config.enable_thinking}) : {}),
      ...(input.response_format?{response_format:input.response_format}:{}),
      ...(router&&(input.response_format||config.enable_thinking!==undefined)?{provider:{require_parameters:true}}:{}),
@@ -104,25 +191,34 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
      messages,
     }),
    });
-   if (abortKind) throw new ModelApiError(abortKind, abortKind === 'timeout');
+   receivedResponse=response;
+   if (abortKind) throw abortError();
+   if(input.observe_reasoning===true&&response.ok){
+    try{
+     const result=await parseStreamingCompletion(response,config,started_at,started,controller.signal);
+     generationActivity=result.generation_activity;
+     withLogContext(callContext,()=>logEvent('model_api.call.completed',{level:'info',elapsed_ms:result.duration_ms,token_usage:result.usage,output_bytes:Buffer.byteLength(result.text),...(result.generation_activity?{reasoning_event_count:result.generation_activity.event_count,reasoning_span_ms:result.generation_activity.span_ms,reasoning_max_gap_ms:result.generation_activity.max_gap_ms}:{})}));
+     return result;
+    }catch(error){if(error instanceof ModelApiError){generationActivity=error.generation_activity??generationActivity;throw error;}throw error;}
+   }
    let data: unknown;
    try { data = await response.json(); }
    catch (error) {
-    if (abortKind) throw new ModelApiError(abortKind, abortKind === 'timeout');
-    if (!(error instanceof SyntaxError)) throw new ModelApiError('network', true);
+    if (abortKind) throw abortError();
+    if (!(error instanceof SyntaxError)) throw new ModelApiError('network', true,response.status, null,requestId(response,null),networkFailureReason(error));
     if (response.ok) throw new ModelApiError('invalid_response', false, response.status, null, requestId(response, null),'invalid_json');
     data = null;
    }
-   if (abortKind) throw new ModelApiError(abortKind, abortKind === 'timeout');
+   if (abortKind) throw abortError();
    if (!response.ok) throw providerError(response, data,config);
    const result=parseCompletion(data,response,config,started_at,started);
    withLogContext(callContext,()=>logEvent('model_api.call.completed',{level:'info',elapsed_ms:result.duration_ms,token_usage:result.usage,output_bytes:Buffer.byteLength(result.text)}));
    return result;
   } catch (error) {
    withLogContext(callContext,()=>logEvent('model_api.call.failed',{level:'error',elapsed_ms:Math.round(performance.now()-started),...classifyLogError(error)}));
-   if (abortKind) throw new ModelApiError(abortKind, abortKind === 'timeout');
+   if (abortKind) throw abortError();
    if (error instanceof ModelApiError) throw error;
-   throw new ModelApiError('network', true);
+   throw new ModelApiError('network', true,null,null,null,networkFailureReason(error));
   } finally {
    clearTimeout(timer);
    input.signal?.removeEventListener('abort', cancel);

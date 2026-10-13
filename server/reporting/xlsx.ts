@@ -6,7 +6,9 @@
 import {deflateRawSync} from 'node:zlib';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
-export interface WorkbookSheet {name:string;columns:string[];rows:Record<string,unknown>[]}
+export interface WorkbookHyperlink {text:string;target:string}
+export interface WorkbookSheet {name:string;columns:string[];rows:Record<string,unknown>[];columnWidths?:Record<string,number>;rowHeight?:number}
+const hyperlink=(value:unknown):value is WorkbookHyperlink=>Boolean(value&&typeof value==='object'&&'text'in value&&typeof value.text==='string'&&'target'in value&&typeof value.target==='string');
 const MAX_CELL=30_000;
 const xml=(value:string)=>value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g,'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
 function columnName(index:number){let name='';for(index++;index;index=Math.floor((index-1)/26))name=String.fromCharCode(65+(index-1)%26)+name;return name;}
@@ -27,13 +29,20 @@ function sheetXml(sheet:WorkbookSheet){
   return [value??''];
  }))];
  if(rows.length>1_048_576||columns.length>16_384)throw new Error('Excel工作表超过行列上限');
- const data=rows.map((row,r)=>`<row r="${r+1}">${row.map((value,c)=>{
+ const widths=sheet.columns.flatMap(column=>Array.from({length:partCount.get(column)!},()=>sheet.columnWidths?.[column]??24));
+ const cols=widths.map((width,index)=>`<col min="${index+1}" max="${index+1}" width="${width}" customWidth="1"/>`).join('');
+ const links:{ref:string;id:string;target:string}[]=[];
+ const data=rows.map((row,r)=>`<row r="${r+1}" ht="${r===0?30:sheet.rowHeight??90}" customHeight="1">${row.map((value,c)=>{
   const ref=`${columnName(c)}${r+1}`;
-  if(typeof value==='number'&&Number.isFinite(value))return `<c r="${ref}"><v>${value}</v></c>`;
-  if(typeof value==='boolean')return `<c r="${ref}" t="b"><v>${value?1:0}</v></c>`;
-  return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xml(String(value??''))}</t></is></c>`;
+  const linked=hyperlink(value);
+  if(linked){if(!/^(file|https?):\/\//i.test(value.target))throw new Error('Excel附件链接无效');links.push({ref,id:`link${links.length+1}`,target:value.target});}
+  const style=r===0?2:linked?3:1;
+  if(typeof value==='number'&&Number.isFinite(value))return `<c r="${ref}" s="${style}"><v>${value}</v></c>`;
+  if(typeof value==='boolean')return `<c r="${ref}" s="${style}" t="b"><v>${value?1:0}</v></c>`;
+  return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xml(linked?value.text:String(value??''))}</t></is></c>`;
  }).join('')}</row>`).join('');
- return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${data}</sheetData></worksheet>`;
+ const linkXml=links.length?`<hyperlinks>${links.map(link=>`<hyperlink ref="${link.ref}" r:id="${link.id}"/>`).join('')}</hyperlinks>`:'';
+ return {xml:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><cols>${cols}</cols><sheetData>${data}</sheetData>${linkXml}</worksheet>`,relationships:links.length?`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${links.map(link=>`<Relationship Id="${link.id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${xml(link.target)}" TargetMode="External"/>`).join('')}</Relationships>`:null};
 }
 function crc32(bytes:Buffer){let crc=0xffffffff;for(const byte of bytes){crc^=byte;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return (crc^0xffffffff)>>>0;}
 function zip(files:{name:string;data:string}[]){
@@ -49,9 +58,10 @@ function zip(files:{name:string;data:string}[]){
 export function buildXlsx(sheets:WorkbookSheet[]):Uint8Array{
  if(!Array.isArray(sheets)||!sheets.length||sheets.length>200)throw new Error('Excel工作表数量无效');
  const names=uniqueSheetNames(sheets);
- const contentTypes=`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
+ const contentTypes=`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
  const workbook=`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${names.map((name,i)=>`<sheet name="${xml(name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets></workbook>`;
- const relationships=`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}</Relationships>`;
- return zip([{name:'[Content_Types].xml',data:contentTypes},{name:'_rels/.rels',data:'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'},{name:'xl/workbook.xml',data:workbook},{name:'xl/_rels/workbook.xml.rels',data:relationships},...sheets.map((sheet,i)=>({name:`xl/worksheets/sheet${i+1}.xml`,data:sheetXml(sheet)}))]);
+ const relationships=`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="styles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+ const styles=`<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><u/><color rgb="FF0563C1"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+ return zip([{name:'[Content_Types].xml',data:contentTypes},{name:'_rels/.rels',data:'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'},{name:'xl/workbook.xml',data:workbook},{name:'xl/_rels/workbook.xml.rels',data:relationships},{name:'xl/styles.xml',data:styles},...sheets.flatMap((sheet,i)=>{const rendered=sheetXml(sheet);return [{name:`xl/worksheets/sheet${i+1}.xml`,data:rendered.xml},...(rendered.relationships?[{name:`xl/worksheets/_rels/sheet${i+1}.xml.rels`,data:rendered.relationships}]:[])];})]);
 }
 export async function writeXlsx(path:string,sheets:WorkbookSheet[]){const bytes=buildXlsx(sheets);await mkdir(dirname(path),{recursive:true,mode:0o700});await writeFile(path,bytes,{mode:0o600});return bytes;}

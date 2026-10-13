@@ -35,6 +35,13 @@ test('step configuration accepts the correct provider and rejects unsupported pa
  expect(() => validateStepConfig(1, { model: 'x' })).toThrow();
 });
 
+test('评分步骤可选择 API 且仅冻结经验证的 API 连接参数',()=>{
+ const config=validateStepConfig(6,{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b'},prompt:'逐项评分'});
+ expect(config).toEqual({provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b'},prompt:'逐项评分'});
+ expect(()=>validateStepConfig(6,{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b',api_key:'secret'},prompt:'逐项评分'})).toThrow();
+ expect(validateStepConfigForExecution(6,{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b'},prompt:'逐项评分'})).toMatchObject({provider:'api'});
+});
+
 test('saved Codex step settings are not blocked by a stale advertised model catalog at dispatch',()=>{
  expect(validateStepConfigForExecution(4,{provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'low'})).toMatchObject({provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'low'});
 });

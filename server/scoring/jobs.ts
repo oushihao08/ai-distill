@@ -5,16 +5,16 @@
  */
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
-import {bindRevisionAttempt,readRevisionSettings} from '../decisions/revision-binding';
-import {runRevisionCall} from '../decisions/revision-calls';
+import {runExternalCall} from '../external-call';
 import {runAcceptance} from '../decisions/jobs';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
+import type {ScoreStepModelSummary} from '../../shared/workflow-results';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
 import {mkdir,writeFile,rm} from 'node:fs/promises';
 import {join,resolve,relative} from 'node:path';
 import {readScoreContext} from './context';
-import {buildAnonymousInput,runIndependentScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
+import {buildAnonymousInput,runIndependentScore,runIndependentApiScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
 import {extractTextScore,validateScore,type ScoreContext} from './validate';
 import {validateStepConfigForExecution} from '../project-folders';
 import {mergeCodexDefaults,readProjectAgentDefaults} from '../agent/config';
@@ -28,7 +28,7 @@ const workflowSql="SELECT w.project_id FROM ai_distill.workflows w WHERE w.id=$1
  * 从当前作答结果中选取成功答案，为每份答案读取并冻结匿名评分上下文后分别入队。
  * 上下文摘要与配置用于去重和防止跨题面、rubric、附件、答案或评分提示词混用评分结果。
  */
-export async function enqueueScore(pool:Pool,id:string,revisionRoundId?:string){
+export async function enqueueScore(pool:Pool,id:string){
  const db=await pool.connect();
  try{
   await db.query('BEGIN');const w=(await db.query(workflowSql,[id])).rows[0];if(!w)throw new HTTPException(404,{message:'工作流不存在'});
@@ -48,29 +48,28 @@ export async function enqueueScore(pool:Pool,id:string,revisionRoundId?:string){
    answerIds=answer?[answer.id]:[];
   }
   if(!answerIds.length)throw new HTTPException(409,{message:'当前模型集合没有成功答案可评分'});
-  const settings=await readRevisionSettings(db,id,revisionRoundId);
-  const raw=settings?settings.configs?.['6']:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[w.project_id])).rows[0]?.config;
-  const config=validateStepConfigForExecution(6,mergeCodexDefaults(raw,await readProjectAgentDefaults(db,w.project_id))),loggingConfig=config as {model?:string;reasoning_effort?:string},queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
+  const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[w.project_id])).rows[0]?.config;
+  const mergedConfig=raw?.provider==='api'?raw:mergeCodexDefaults(raw,await readProjectAgentDefaults(db,w.project_id));
+  const config=validateStepConfigForExecution(6,mergedConfig),loggingConfig=config.provider==='api'?{model:config.api.model,provider:'api'}:{model:config.model,reasoning_effort:config.reasoning_effort,provider:'codex'},queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
   config.prompt=resolveScoreStepPrompt(config.prompt);
   for(const answerId of answerIds){
    const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];buildAnonymousInput(context);
-   const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions()};
+   const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider)};
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
-   await bindRevisionAttempt(db,id,attempt,revisionRoundId);
    queued.push({id:attempt,reused:false,answer_attempt_id:answerId});
   }
-  if(queued.every(item=>item.reused)){await db.query('COMMIT');for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
+  if(queued.every(item=>item.reused)){await db.query('COMMIT');for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=6",[id]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal>6 AND ordinal<=8",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='评分更新，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal>6 AND ordinal<=8 AND status IN ('waiting','running')",[id]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[id]);
-  await db.query('COMMIT');for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent(item.reused?'attempt.reused':'attempt.enqueued',{level:'info',state:item.reused?'reused':'waiting'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:false}:{id:queued[0]!.id,reused:false};
+  await db.query('COMMIT');for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent(item.reused?'attempt.reused':'attempt.enqueued',{level:'info',state:item.reused?'reused':'waiting'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:false}:{id:queued[0]!.id,reused:false};
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
 interface ScoreRun {report:unknown;session_id:string;usage:unknown;duration_ms:number;execution_request?:unknown;raw_text?:string}
-type Grader=(context:ScoreContext,options:{root:string;model:string;reasoning_effort:string;step_prompt?:string;signal?:AbortSignal;call_id?:string;timeout_ms?:number})=>Promise<ScoreRun>;
+type Grader=(context:ScoreContext,options:any)=>Promise<ScoreRun>;
 async function stillCurrent(db:PoolClient,job:any){
  const w=(await db.query(workflowSql,[job.workflow_id])).rows[0];if(!w)return false;
  try{const current=await readScoreContext(db,job.workflow_id,job.input.context.binding.answer_attempt_id,!!job.input.context.project_rules,!!job.input.context.project_prompt);if(job.input.context.step_prompt!==undefined)current.step_prompt=job.input.context.step_prompt;if(job.input.context.project_name===undefined){delete current.project_name;delete current.question_id;}return scoreContextDigest(current)===job.input.digest;}
@@ -83,10 +82,11 @@ async function refreshScoreStep(db:PoolClient,job:any){
   await db.query('UPDATE ai_distill.steps SET status=$2,result=$3,error=$4,finished_at=now() WHERE workflow_id=$1 AND ordinal=6',[job.workflow_id,job.status,JSON.stringify(job.result),job.status==='failed'?'评分存在争议或执行失败':null]);
   return job.status;
  }
- const rows=await db.query("SELECT id,input,result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 ORDER BY attempt DESC",[job.workflow_id]);
+ // 只汇总当前答案的最新评分；历史上下文和逐项报告仍保存在原记录。
+ const rows=await db.query("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input #>> '{context,binding,answer_attempt_id}') id,jsonb_build_object('context',jsonb_build_object('binding',jsonb_build_object('answer_attempt_id',input #> '{context,binding,answer_attempt_id}'))) AS input,jsonb_build_object('report',jsonb_build_object('total',result #> '{report,total}','max_score',result #> '{report,max_score}','disputes',result #> '{report,disputes}'),'validation',jsonb_build_object('valid',result #> '{validation,valid}'),'score_extraction',result->'score_extraction','binding',result->'binding') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input #>> '{context,binding,answer_attempt_id}'=ANY($2::text[]) ORDER BY input #>> '{context,binding,answer_attempt_id}',attempt DESC) latest",[job.workflow_id,answers.filter((answer:any)=>answer.status==='succeeded'&&typeof answer.attempt_id==='string').map((answer:any)=>answer.attempt_id)]);
  const latest=new Map<string,any>();
  for(const row of rows.rows){const answerId=row.input?.context?.binding?.answer_attempt_id;if(typeof answerId==='string'&&!latest.has(answerId))latest.set(answerId,row);}
- const models=answers.map((answer:any)=>{
+ const models:ScoreStepModelSummary[]=answers.map((answer:any)=>{
   if(answer.status!=='succeeded'||typeof answer.attempt_id!=='string')return {model_id:answer.model_id,name:answer.name,answer_attempt_id:answer.attempt_id??null,answer_status:answer.status,score_attempt_id:null,score_status:'skipped'};
   const score=latest.get(answer.attempt_id);
   const report=score?.result?.report;const validation=score?.result?.validation;
@@ -101,7 +101,7 @@ async function refreshScoreStep(db:PoolClient,job:any){
  return status;
 }
 async function automaticallyJudgeAfterScoring(job:any,status:string,judge:(workflowId:string)=>Promise<unknown>){
- if(job.revision_round_id||!['succeeded','failed'].includes(status))return;
+ if(!['succeeded','failed'].includes(status))return;
  try{await judge(job.workflow_id);}
  catch(error){logEvent('acceptance.auto_failed',{level:'error',workflow_id:job.workflow_id,...classifyLogError(error)});}
 }
@@ -109,21 +109,22 @@ async function automaticallyJudgeAfterScoring(job:any,status:string,judge:(workf
  * 领取一份答案的评分任务，在隔离 Codex 会话中评分并校验上下文摘要和报告结构。
  * 结果写入前再次确认版本绑定；无效或争议报告保留为失败结果，不计入达标分数。
  */
-export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndependentScore,signal?:AbortSignal,judgeAcceptance:(workflowId:string)=>Promise<unknown>=(workflowId)=>runAcceptance(pool,workflowId)){
+export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndependentScore,signal?:AbortSignal,judgeAcceptance:(workflowId:string)=>Promise<unknown>=(workflowId)=>runAcceptance(pool,workflowId),provider:'codex'|'api'='codex'){
  if(signal?.aborted)return false;
- const db=await pool.connect();let job:any,staleRows:any[]=[];const staleScoreStatuses=new Map<string,{status:string;revision_round_id?:string|null}>();
+ const db=await pool.connect();let job:any,staleRows:any[]=[];const staleScoreStatuses=new Map<string,string>();
  try{
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  const stale=await db.query("SELECT a.id,a.workflow_id,a.heartbeat_at,a.revision_round_id,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=6 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED");
+  const stale=await db.query("SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED",[provider]);
   for(const row of stale.rows){const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=6 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1)",[row.workflow_id]);if(updated.rowCount)staleRows.push(row);}
-  for(const workflowId of new Set(staleRows.map(row=>row.workflow_id))){const row=staleRows.find(item=>item.workflow_id===workflowId)!;staleScoreStatuses.set(workflowId,{status:await refreshScoreStep(db,{workflow_id:workflowId,status:'failed',result:null}),revision_round_id:row.revision_round_id});}
-  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1")).rows[0];
-  if(!job){await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'scoring',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:6,attempt_id:row.id,operation:'score'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));for(const [workflowId,item] of staleScoreStatuses)await automaticallyJudgeAfterScoring({workflow_id:workflowId,revision_round_id:item.revision_round_id},item.status,judgeAcceptance);return false;}
-  await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=6",[job.workflow_id]);await db.query('COMMIT');
+  for(const workflowId of new Set(staleRows.map(row=>row.workflow_id))){staleScoreStatuses.set(workflowId,await refreshScoreStep(db,{workflow_id:workflowId,status:'failed',result:null}));}
+  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1",[provider])).rows[0];
+  if(!job){await db.query('COMMIT');}
+  else{await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=6",[job.workflow_id]);await db.query('COMMIT');}
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  for(const row of staleRows)withLogContext({component:'scoring',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:6,attempt_id:row.id,operation:'score'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));
- for(const [workflowId,item] of staleScoreStatuses)await automaticallyJudgeAfterScoring({workflow_id:workflowId,revision_round_id:item.revision_round_id},item.status,judgeAcceptance);
- const restoreLogContext=enterLogContext({component:'scoring',workflow_id:job.workflow_id,project_id:job.project_id,ordinal:6,attempt_id:job.id,operation:'score',provider:'codex',model:job.config?.model,reasoning_effort:job.config?.reasoning_effort});
+ for(const [workflowId,status] of staleScoreStatuses)await automaticallyJudgeAfterScoring({workflow_id:workflowId},status,judgeAcceptance);
+ if(!job)return false;
+ const restoreLogContext=enterLogContext({component:'scoring',workflow_id:job.workflow_id,project_id:job.project_id,ordinal:6,attempt_id:job.id,operation:'score',provider:job.config?.provider??'codex',model:job.config?.provider==='api'?job.config?.api?.model:job.config?.model,...(job.config?.reasoning_effort?{reasoning_effort:job.config.reasoning_effort}:{})});
  logEvent('attempt.claimed',{level:'info',state:'running'});logEvent('attempt.started',{level:'info',state:'running'});
  const cancellation=watchTaskCancellation(pool,job.id,signal,false);signal=cancellation.signal;
  let heartbeatFailed=false,lastHeartbeatAt=new Date().toISOString();
@@ -135,17 +136,19 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
   buildAnonymousInput(job.input.context);
   const before=await pool.connect();try{await before.query('BEGIN');if(!await stillCurrent(before,job))throw new Error('obsolete');await before.query('COMMIT');}catch(error){await before.query('ROLLBACK');throw error;}finally{before.release();}
   const config=job.config;
-  if(job.input.execution_instructions&&scoreExecutionDigest(job.input.execution_instructions)!==scoreExecutionDigest())throw new Error('评分执行指令已变化，请重新派发评分');
-  if(config?.provider!=='codex'||typeof config.model!=='string'||!config.model.trim()||typeof config.reasoning_effort!=='string'||!['low','medium','high','xhigh','max','ultra'].includes(config.reasoning_effort))throw new Error('invalid frozen config');
+  const executionProvider=config?.provider==='api'?'api':'codex';
+  if(job.input.execution_instructions&&scoreExecutionDigest(executionProvider,job.input.execution_instructions)!==scoreExecutionDigest(executionProvider))throw new Error('评分执行指令已变化，请重新派发评分');
+  if(executionProvider==='codex'&&(typeof config.model!=='string'||!config.model.trim()||typeof config.reasoning_effort!=='string'||!['low','medium','high','xhigh','max','ultra'].includes(config.reasoning_effort)))throw new Error('invalid frozen config');
+  if(executionProvider==='api'&&(!config.api||typeof config.api.model!=='string'))throw new Error('invalid frozen config');
   failurePhase='agent_execution';
-  const invocation=await runRevisionCall(pool,job.id,'score',(remaining,call_id)=>grade(job.input.context,{root:join(directory,'private'),model:config.model,reasoning_effort:config.reasoning_effort,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:Math.min(1800000,remaining??1800000)}));
+  const invocation=await runExternalCall({attempt_id:job.id,operation:'score'},call_id=>grade(job.input.context,executionProvider==='api'?{config:config.api,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:1800000}:{root:join(directory,'private'),model:config.model,reasoning_effort:config.reasoning_effort,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:1800000}));
   if(signal?.aborted)throw new Error('cancelled');
   failurePhase='result_validation';
   const validation=typeof invocation.raw_text==='string'?extractTextScore(invocation.raw_text,job.input.context.rubric):validateScore(invocation.report,job.input.context);
   const textReturned=typeof invocation.raw_text==='string'&&!!invocation.raw_text.trim();
   const context=job.input.context;
   const projectBinding=context.project_prompt?{project_prompt_digest:context.project_prompt.source_digest,project_prompt_files:context.project_prompt.files.map((file:{path:string;sha256:string;size_bytes:number})=>({path:file.path,sha256:file.sha256,size_bytes:file.size_bytes}))}:context.project_rules?{project_rule_version_id:context.project_rules.version_id,project_rule_source_digest:context.project_rules.source_digest,project_rule_files:context.project_rules.files.map((file:{path:string;sha256:string;size_bytes:number})=>({path:file.path,sha256:file.sha256,size_bytes:file.size_bytes}))}:{};
-  const publication={question_version:context.binding.question_version,rubric_version:context.binding.rubric_version,...projectBinding,...(invocation.execution_request?{execution_request:invocation.execution_request}:{}),...(textReturned?{raw_text:invocation.raw_text,score_extraction:validation}:{}),report:invocation.report,validation,binding:context.binding,session_id:invocation.session_id,usage:invocation.usage,duration_ms:invocation.duration_ms,model:config.model,reasoning_effort:config.reasoning_effort};
+  const publication={question_version:context.binding.question_version,rubric_version:context.binding.rubric_version,...projectBinding,provider:executionProvider,...(invocation.execution_request?{execution_request:invocation.execution_request}:{}),...(textReturned?{raw_text:invocation.raw_text,score_extraction:validation}:{}),report:invocation.report,validation,binding:context.binding,session_id:invocation.session_id,usage:invocation.usage,duration_ms:invocation.duration_ms,model:executionProvider==='api'?config.api.model:config.model,...(executionProvider==='codex'?{reasoning_effort:config.reasoning_effort}:{})};
   failurePhase='result_persistence';
   const bytes=Buffer.from(JSON.stringify(publication,null,2)+'\n'),path=join(directory,'score.json');await mkdir(directory,{recursive:true});wrote=true;logEvent('file.write.started',{level:'info',file_kind:'score_report',output_bytes:bytes.length});await writeFile(path,bytes,{mode:0o600});logEvent('file.write.completed',{level:'info',file_kind:'score_report',output_bytes:bytes.length});
   const tx=await pool.connect();let scoreStepStatus='';try{

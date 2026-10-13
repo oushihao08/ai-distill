@@ -42,7 +42,7 @@ test('project model snapshot preserves an unconfigured threshold as null',async(
 
 test('saving project model set preserves requested order and writes only model references',async()=>{
  const values:any[]=[];const catalog=[{model_id:deepseek.model_id,name:deepseek.name,config:deepseek.config,enabled:true},{model_id:qwen.model_id,name:qwen.name,config:qwen.config,enabled:true}];
- const query=async(sql:string,args:any[]=[])=>{values.push({sql,args});if(sql.startsWith('SELECT id FROM ai_distill.projects'))return {rowCount:1,rows:[{id:'project'}]};if(sql.startsWith('SELECT id AS model_id'))return {rowCount:2,rows:catalog};return {rowCount:1,rows:[]};};
+ const query=async(sql:string,args:any[]=[])=>{values.push({sql,args});if(sql.startsWith('SELECT id FROM ai_distill.projects'))return {rowCount:1,rows:[{id:'project'}]};if(sql.startsWith('SELECT id AS model_id'))return {rowCount:2,rows:catalog};if(sql.includes('FROM ai_distill.project_answer_models'))return {rowCount:0,rows:[]};return {rowCount:1,rows:[]};};
  const pool={query,connect:async()=>({query,release(){}})} as unknown as Pool;
  const result=await saveProjectModelSet(pool,'project',[{model_id:qwen.model_id,minimum_score:8},{model_id:deepseek.model_id,minimum_score:7}]);
  expect(result.map(row=>row.model_id)).toEqual([qwen.model_id,deepseek.model_id]);
@@ -50,7 +50,7 @@ test('saving project model set preserves requested order and writes only model r
 });
 test('saving project model set permits unknown acceptance threshold without substituting zero',async()=>{
  const values:any[]=[];const catalog=[{model_id:qwen.model_id,name:qwen.name,config:qwen.config,enabled:true}];
- const query=async(sql:string,args:any[]=[])=>{values.push({sql,args});if(sql.startsWith('SELECT id FROM ai_distill.projects'))return {rowCount:1,rows:[{id:'project'}]};if(sql.startsWith('SELECT id AS model_id'))return {rowCount:1,rows:catalog};return {rowCount:1,rows:[]};};
+ const query=async(sql:string,args:any[]=[])=>{values.push({sql,args});if(sql.startsWith('SELECT id FROM ai_distill.projects'))return {rowCount:1,rows:[{id:'project'}]};if(sql.startsWith('SELECT id AS model_id'))return {rowCount:1,rows:catalog};if(sql.includes('FROM ai_distill.project_answer_models'))return {rowCount:0,rows:[]};return {rowCount:1,rows:[]};};
  const pool={query,connect:async()=>({query,release(){}})} as unknown as Pool;
  const saved=await saveProjectModelSet(pool,'project',[{model_id:qwen.model_id,minimum_score:null}]);
  expect(saved[0]?.minimum_score).toBeNull();expect(values.find(row=>row.sql.startsWith('INSERT INTO ai_distill.project_answer_models'))?.args[2]).toBeNull();

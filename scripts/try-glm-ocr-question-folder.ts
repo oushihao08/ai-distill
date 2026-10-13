@@ -2,7 +2,7 @@
  * 执行入口与用途：`bun scripts/try-glm-ocr-question-folder.ts`；逐个上传指定题目目录 PDF 到 layout_parsing，保存页级响应及试跑清单。
  */
 import{mkdir,writeFile,stat}from'node:fs/promises';import{join,resolve,basename}from'node:path';import{createHash}from'node:crypto';
-const base=resolve('projects/豆包高经济价值-第五期/questions'),out=resolve('.storage/.glm-ocr-question-folder'),report:any={started_at:new Date().toISOString(),model:'glm-ocr',source_directory:'projects/豆包高经济价值-第五期/questions',files:[],complete:false};
+const base=resolve('projects/豆包高经济价值/第五期/questions'),out=resolve('.storage/.glm-ocr-question-folder'),report:any={started_at:new Date().toISOString(),model:'glm-ocr',source_directory:'projects/豆包高经济价值/第五期/questions',files:[],complete:false};
 try{
  const key=process.env.ZHIPU_API_KEY;if(!key)throw new Error('未配置智谱API密钥');await mkdir(out,{recursive:true,mode:0o700});
  const qdirs=['题目1','题目3'];

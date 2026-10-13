@@ -6,15 +6,17 @@ import type {ModelApiConfig,ModelApiProvider} from '@shared/types';
 export type {ModelApiConfig,ModelApiProvider} from '@shared/types';
 export interface ModelApiMessage {role:'system'|'user'|'assistant';content:string}
 export type ModelApiResponseFormat={type:'json_object'}|{type:'json_schema';json_schema:{name:string;strict:true;schema:Record<string,unknown>}};
-export interface ModelApiRequest {config:ModelApiConfig;messages:ModelApiMessage[];response_format?:ModelApiResponseFormat;timeout_ms?:number;signal?:AbortSignal;call_id?:string}
+export interface ModelApiRequest {config:ModelApiConfig;messages:ModelApiMessage[];response_format?:ModelApiResponseFormat;timeout_ms?:number;signal?:AbortSignal;call_id?:string;observe_reasoning?:boolean}
 export interface ModelApiResult {
  text:string;requested_model:string;model:string|null;provider:ModelApiProvider;
  request_id:string|null;completion_id:string|null;usage:Record<string,unknown>|null;
  started_at:string;finished_at:string;duration_ms:number;
+ generation_activity?:ReasoningActivityEvidence;
 }
+export interface ReasoningActivityEvidence {source:'openrouter_reasoning_details'|'openrouter_reasoning'|'dashscope_reasoning_content';first_event_at:string;last_event_at:string;span_ms:number;max_gap_ms:number;event_count:number}
 export type ModelApiErrorKind = 'configuration' | 'authentication' | 'quota' | 'rate_limit' | 'network' | 'timeout' | 'cancelled' | 'provider' | 'invalid_response';
 export class ModelApiError extends Error {
- constructor(public readonly kind: ModelApiErrorKind, public readonly retryable = false, public readonly http_status: number | null = null, public readonly provider_code: string | null = null, public readonly request_id: string | null = null, public readonly reason_code?: string) {
+ constructor(public readonly kind: ModelApiErrorKind, public readonly retryable = false, public readonly http_status: number | null = null, public readonly provider_code: string | null = null, public readonly request_id: string | null = null, public readonly reason_code?: string, public readonly generation_activity?:ReasoningActivityEvidence, public readonly generation_id?:string|null) {
   const messages: Record<ModelApiErrorKind, string> = {
    configuration: '大模型 API 配置或请求输入无效，请核对凭证、端点和模型参数',
    authentication: '大模型 API 认证或访问权限失败', quota: '大模型 API 账户欠费或订购状态阻断',

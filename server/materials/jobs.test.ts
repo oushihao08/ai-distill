@@ -3,7 +3,34 @@
  */
 import { test,expect } from 'bun:test';
 import type {Pool} from 'pg';
-import {enqueueExtraction} from './jobs';
+import {enqueueExtraction,resolvePdfProvider} from './jobs';
+import {MineruApiFirstPdfExtractor} from './pdf-extraction/mineru-api';
+import type {PdfExtractionProvider} from './pdf-extraction/types';
+test('new extraction defaults to MinerU and rejects GLM OCR',()=>{
+ expect(resolvePdfProvider({MINERU_KEY:'token'})).toBe('mineru-api');
+ expect(resolvePdfProvider({MINERU_KEY:'token',PDF_EXTRACTION_PROVIDER:'mineru-cli'})).toBe('mineru-cli');
+ expect(()=>resolvePdfProvider({MINERU_KEY:'token',PDF_EXTRACTION_PROVIDER:'glm-ocr'})).toThrow('仅支持MinerU');
+ expect(()=>resolvePdfProvider({})).toThrow('MINERU_KEY');
+});
+test('MinerU API success does not call CLI fallback',async()=>{
+ let apiCalls=0,cliCalls=0;const result={provider:'mineru-api',sha256:'sha',pages:[]} as any;
+ const api={id:'mineru-api',extract:async()=>{apiCalls++;return result;}} as PdfExtractionProvider;
+ const cli={id:'mineru-cli',extract:async()=>{cliCalls++;return result;}} as PdfExtractionProvider;
+ expect(await new MineruApiFirstPdfExtractor(api,cli).extract('file.pdf')).toBe(result);
+ expect(apiCalls).toBe(1);expect(cliCalls).toBe(0);
+});
+test('MinerU API failure falls back to CLI and preserves CLI provider identity',async()=>{
+ let cliCalls=0;const result={provider:'mineru-cli',sha256:'sha',pages:[]} as any;
+ const api={id:'mineru-api',extract:async()=>{throw new TypeError('network unavailable');}} as PdfExtractionProvider;
+ const cli={id:'mineru-cli',extract:async()=>{cliCalls++;return result;}} as PdfExtractionProvider;
+ expect(await new MineruApiFirstPdfExtractor(api,cli).extract('file.pdf')).toBe(result);expect(cliCalls).toBe(1);
+});
+test('MinerU API cancellation does not start CLI fallback',async()=>{
+ const controller=new AbortController();controller.abort();let cliCalls=0;
+ const api={id:'mineru-api',extract:async()=>{throw new Error('cancelled');}} as PdfExtractionProvider;
+ const cli={id:'mineru-cli',extract:async()=>{cliCalls++;throw new Error('must not run');}} as PdfExtractionProvider;
+ await expect(new MineruApiFirstPdfExtractor(api,cli).extract('file.pdf',controller.signal)).rejects.toThrow('cancelled');expect(cliCalls).toBe(0);
+});
 function fake(previous=false,received=true){const calls:string[]=[];const client={release(){},async query(sql:string){calls.push(sql);if(sql.startsWith('SELECT id FROM ai_distill.workflows'))return {rowCount:1,rows:[{}]};if(sql.startsWith('SELECT id,sha256'))return {rowCount:1,rows:[{id:'material',sha256:'source-hash'}]};if(sql.startsWith('SELECT count(*)::int AS total'))return {rowCount:1,rows:[{total:1,pdfs:1}]};if(sql.startsWith('SELECT ordinal'))return {rowCount:8,rows:[{status:received?'succeeded':'skipped'}]};if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return {rowCount:previous?1:0,rows:previous?[{id:'existing'}]:[]};return {rowCount:1,rows:[]};}};return {pool:{connect:async()=>client} as unknown as Pool,calls};}
 test('queue serializes workflows and reuses pending attempt',async()=>{const {pool,calls}=fake(true);expect(await enqueueExtraction(pool,'workflow')).toEqual({id:'existing',reused:true});expect(calls.some(c=>c.includes('FOR UPDATE'))).toBe(true);expect(calls.some(c=>c.startsWith('INSERT'))).toBe(false);});
 test('queue records attempt and rejects missing upstream success',async()=>{const ready=fake();expect((await enqueueExtraction(ready.pool,'workflow')).reused).toBe(false);expect(ready.calls.some(c=>c.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(true);const failed=fake(false,false);await expect(enqueueExtraction(failed.pool,'workflow')).rejects.toThrow('入库尚未完成');expect(failed.calls).toContain('ROLLBACK');});
@@ -18,7 +45,7 @@ import type {processMaterials}from'./process';
 import{loadExtractionConfig}from'./config';
 function executionFake(options:{empty?:boolean;invalidated?:boolean;publishError?:boolean;published?:boolean;cached?:boolean}={}){
  const calls:{sql:string;values?:unknown[]}[]=[];
- const job={id:'attempt',workflow_id:'workflow',input:{materials:[{id:'material',sha256:'source-hash'}]},config:{model:'test-model',extraction:loadExtractionConfig()}};
+ const job={id:'attempt',workflow_id:'workflow',input:{materials:[{id:'material',sha256:'source-hash'}]},config:{pdf_provider:'mineru-api',model:'mineru-vlm',base_url:'https://mineru.net',extraction:loadExtractionConfig()}};
  let failed=false;
  const query=async(sql:string,values?:unknown[])=>{
   calls.push({sql,values});
@@ -48,7 +75,10 @@ test('worker stop prevents late extraction publication and requeues the claimed 
  const {pool,calls}=executionFake(),controller=new AbortController();
  expect(await runNextExtraction(pool,'unused',async()=>{controller.abort();return publication();},undefined,controller.signal)).toBe(true);
  expect(calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
- expect(calls.some(call=>call.sql.includes("SET status='waiting'")&&call.values?.[0]==='attempt')).toBe(true);
+ const requeue=calls.find(call=>call.sql.includes("SET status='waiting'")&&call.values?.[0]==='attempt');
+ expect(requeue).toBeDefined();
+ expect(requeue?.sql).toContain('started_at=now()');
+ expect(requeue?.sql).not.toContain('started_at=NULL');
  expect(calls.some(call=>call.sql.includes('ordinal IN (1,2)'))).toBe(true);
 });
 test.each([false,true])('executor publishes %s blocked result atomically',async blocked=>{
@@ -70,12 +100,12 @@ test('executor checks current attachments against the claimed snapshot',async()=
  const sources=calls.find(c=>c.sql.startsWith('SELECT id,storage_path,sha256 FROM ai_distill.materials'));
  expect(sources?.sql).toContain('deleted_at IS NULL');expect(sources?.values).toEqual(['workflow']);
 });
-test('executor reuses OCR pages when only entity-check effort changes',async()=>{
+test('executor caches MinerU independently of legacy entity-check settings',async()=>{
  const {pool,calls}=executionFake({cached:true});let inputs:any;
  await runNextExtraction(pool,'unused',async(_root,_workflow,_attempt,materials)=>{inputs=materials;return publication();});
  const cacheQuery=calls.find(c=>c.sql.startsWith('SELECT DISTINCT ON (m.sha256)'))?.sql??'';
- expect(cacheQuery).toContain("'{extraction,extractionPrompt}'");
- expect(cacheQuery).toContain("'{extraction,ocrReasoningEffort}'");
+ expect(cacheQuery).not.toContain("'{extraction,extractionPrompt}'");
+ expect(cacheQuery).not.toContain("'{extraction,ocrReasoningEffort}'");
  expect(cacheQuery).not.toContain('a.config=$2::jsonb');
  expect(inputs[0].extraction_cache).toMatchObject({attempt_id:'old-attempt',material_id:'material',sha256:'cache-hash'});
 });
@@ -102,4 +132,13 @@ test('uncertain commit retains files already referenced by artifacts',async()=>{
   });
   expect(await readdir(join(root,'workflow'))).toEqual(['attempt']);
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+// Authentication and local response defects must not repeat a long upload.
+test.each(['MinerU API 上传地址申请返回HTTP 401','MinerU API content_list.json无效','未配置 MINERU_KEY'])('MinerU does not fall back for %s',async(message)=>{
+ let calls=0;
+ const api={id:'mineru-api',extract:async()=>{throw new Error(message);}} as PdfExtractionProvider;
+ const cli={id:'mineru-cli',extract:async()=>{calls++;return {} as any;}} as PdfExtractionProvider;
+ await expect(new MineruApiFirstPdfExtractor(api,cli).extract('file.pdf')).rejects.toThrow(message);
+ expect(calls).toBe(0);
 });

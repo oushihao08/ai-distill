@@ -7,6 +7,7 @@ import {mkdir,realpath,readFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {runAgent,SCORE_ISOLATION_CONFIG} from '../agent';
+import {createModelApiClient,type ModelApiConfig} from '../llm-api';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '../../shared/step-prompts';
 import {extractTextScore,type ScoreContext} from './validate';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -37,9 +38,9 @@ export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>){
  return [`题面与评分标准：题面与评分标准.txt`,`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,`待评分答案：待评答案.txt`,'请完整读取上述文件。',input.step_prompt??'',`评分条目编号规则（优先级高于前述提示词中的任何格式示例）：必须逐字使用本题清单中的 ID，每个恰好一次；若前述示例与清单不同，以本清单和题面与评分标准文件中的实际 ID 为准，不添加、删除或改写任何前后缀。\n本题rubric ID及逐项格式：\n${formats.join('\n')}`].join('\n\n');
 }
 /** 配置界面与实际执行共用同一指令来源，不以当前指令冒充历史快照。 */
-export function scoreExecutionInstructions(){return {developer_instructions:'',task_prompt:SCORE_TASK_PROMPT,input_format:'separate_input_files_blind_v2',output_format:'text' as const,isolation_config:SCORE_ISOLATION_CONFIG};}
+export function scoreExecutionInstructions(provider:'codex'|'api'='codex'){return {provider,developer_instructions:'',task_prompt:SCORE_TASK_PROMPT,input_format:provider==='api'?'inline_text_blind_v2':'separate_input_files_blind_v2',output_format:'text' as const,isolation_config:provider==='codex'?SCORE_ISOLATION_CONFIG:{}};}
 /** JSONB 不保留键顺序，绑定比较按固定字段与排序后的配置项计算。 */
-export function scoreExecutionDigest(instructions=scoreExecutionInstructions()){
+export function scoreExecutionDigest(provider:'codex'|'api'='codex',instructions=scoreExecutionInstructions(provider)){
  return hash(JSON.stringify([instructions.developer_instructions,instructions.task_prompt,instructions.input_format,instructions.output_format,Object.entries(instructions.isolation_config).sort(([a],[b])=>a.localeCompare(b))]));
 }
 export async function runIndependentScore(context:ScoreContext,options:{root:string;model:string;reasoning_effort:string;step_prompt?:string;signal?:AbortSignal;timeout_ms?:number;call_id?:string;execute?:typeof runAgent}){
@@ -65,4 +66,29 @@ export async function runIndependentScore(context:ScoreContext,options:{root:str
   const cli_request=options.execute?undefined:JSON.parse(await readFile(join(directory,'output','request.json'),'utf8'));
   return {...invocation,execution_request:{...execution_request,...(cli_request?{cli_request}:{})},raw_text,report,score_extraction,validation:score_extraction,directory};
  }catch(error){throw error;}
+}
+
+/** API评分接收与Agent相同的脱敏文件正文和评分指令；不读取宿主资料或会话记忆。 */
+export async function runIndependentApiScore(context:ScoreContext,options:{config:ModelApiConfig;step_prompt?:string;signal?:AbortSignal;timeout_ms?:number;call_id?:string;complete?:ReturnType<typeof createModelApiClient>['complete']}){
+ const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:resolveScoreStepPrompt(options.step_prompt??context.step_prompt??DEFAULT_STEP_PROMPTS[6])});
+ if(options.signal?.aborted)throw new Error('评分执行已取消');
+ const input_files=buildScoreFiles(input),prompt=buildScoreMessage(input);
+ const body=[prompt,'【以下为本次评分文件的完整正文】',...input_files.map(file=>`<file name="${file.name}">\n${file.text}\n</file>`)].join('\n\n');
+ const call=options.complete??createModelApiClient().complete;
+ const result=await call({config:options.config,messages:[{role:'user',content:body}],timeout_ms:options.timeout_ms??1800000,signal:options.signal,call_id:options.call_id});
+ const score_extraction=extractTextScore(result.text,context.rubric);
+ const session_id=result.completion_id??result.request_id??randomUUID();
+ const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
+ return{
+  raw_text:result.text,
+  report:{binding:structuredClone(context.binding),total:score_extraction.total,max_score:score_extraction.max_score,disputes:[]},
+  validation:score_extraction,
+  score_extraction,
+  session_id,
+  usage:result.usage,
+  duration_ms:result.duration_ms,
+  provider:result.provider,
+  model:result.model??result.requested_model,
+  execution_request:{provider:result.provider,model:result.requested_model,returned_model:result.model,request_id:result.request_id,completion_id:result.completion_id,input_sha256:digest(body),input_files:input_files.map(file=>({name:file.name,sha256:digest(file.text),size_bytes:Buffer.byteLength(file.text)})),started_at:result.started_at,finished_at:result.finished_at},
+ };
 }

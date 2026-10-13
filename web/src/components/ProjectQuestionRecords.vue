@@ -6,7 +6,7 @@
 <script setup lang="ts">
 import { api } from '../api/client';
 import { dateLabel } from '../utils/format';
-import { stages, statusLabels, type Attempt, type Workflow, type WorkflowDetail } from '../types/api';
+import { readAcceptanceResult, readAnswerStepResult, stages, statusLabels, type Attempt, type Workflow, type WorkflowDetail } from '../types/api';
 
 const props=defineProps<{workflows:Workflow[];projectId:string}>();
 const emit=defineEmits<{refresh:[]}>();
@@ -27,18 +27,18 @@ const pageCount=computed(()=>Math.max(1,Math.ceil(filteredWorkflows.value.length
 const visibleWorkflows=computed(()=>filteredWorkflows.value.slice((page.value-1)*pageSize,page.value*pageSize));
 function currentStage(flow:Workflow){return stages[(flow.current_ordinal??1)-1]??'状态未知';}
 function currentState(flow:Workflow){
- if(flow.current_ordinal===6&&flow.current_decision==='repair')return '需要返修';
+ if(flow.current_ordinal===6&&flow.current_decision==='repair')return '未达标';
  return flow.current_status?statusLabels[flow.current_status]:'已完成';
 }
 function stateColor(flow:Workflow){
  const state=currentState(flow);
- return state==='失败'?'error':state==='执行中'?'primary':state==='需要返修'?'warning':state==='成功'||state==='已完成'?'success':'secondary';
+ return state==='失败'?'error':state==='执行中'?'primary':state==='未达标'?'warning':state==='成功'||state==='已完成'?'success':'secondary';
 }
 function nextAction(flow:Workflow){
  const state=currentState(flow);
  if(state==='失败')return '查看失败原因，再按提示重试或修正';
  if(state==='执行中')return '任务正在执行，查看当前进度';
- if(state==='需要返修')return '查看返修原因，再启动返修';
+ if(state==='未达标')return '查看各模型评分和未达标原因';
  if(state==='等待')return '查看前置步骤和派发条件';
  if(state==='已完成')return '流程已完成';
  return '查看步骤结果和可用操作';
@@ -73,8 +73,8 @@ function actionsFor(flow:Workflow):RowAction[]{
  const active=(ordinals:number[])=>detail.attempts.some(attempt=>ordinals.includes(attempt.ordinal)&&['waiting','running'].includes(attempt.status));
  const hasAuthored=detail.attempts.some(attempt=>attempt.ordinal===4&&attempt.status==='succeeded');
  const answerStep=detail.steps.find(step=>step.ordinal===5);
- const models=answerStep?.result?.models;
- const answerReady=answerStep?.status==='succeeded'||(Array.isArray(models)&&models.length>0&&models.every((model:any)=>['succeeded','failed','skipped'].includes(model?.status))&&models.some((model:any)=>model?.status==='succeeded'&&typeof model.attempt_id==='string'));
+ const models=readAnswerStepResult(answerStep?.result)?.models;
+ const answerReady=answerStep?.status==='succeeded'||(!!models?.length&&models.every(model=>['succeeded','failed','skipped'].includes(model.status))&&models.some(model=>model.status==='succeeded'&&typeof model.attempt_id==='string'));
  const decision=detail.steps.find(step=>step.ordinal===7)?.result?.decision;
  const actions:RowAction[]=[];
  if(status(1)!=='succeeded')actions.push({ordinal:1,path:'/intake',label:'入库',disabled:active([1,2])});
@@ -87,19 +87,18 @@ function actionsFor(flow:Workflow):RowAction[]{
 }
 function latestDecisionAttempt(flow:Workflow){const attempts=details.value[flow.id]?.attempts.filter(attempt=>attempt.ordinal===7)??[];return [...attempts].sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at))[0]??null;}
 function decisionScores(attempt:Attempt|null){
- const result=attempt?.result;
- if(!result||typeof result!=='object'||!('model_scores'in result)||!result.model_scores||typeof result.model_scores!=='object')return [];
- return Object.entries(result.model_scores as Record<string,{status?:string;score?:number;max_score?:number;percentage?:number;threshold?:number}>);
+ const result=readAcceptanceResult(attempt?.result);
+ return Object.entries(result?.model_scores??{});
 }
 function decisionModelName(flow:Workflow,modelId:string){
- const models=details.value[flow.id]?.steps.find(step=>step.ordinal===5)?.result?.models;
- if(!Array.isArray(models))return modelId;
- const model=models.find((item:any)=>item?.model_id===modelId);
+ const models=readAnswerStepResult(details.value[flow.id]?.steps.find(step=>step.ordinal===5)?.result)?.models;
+ if(!models)return modelId;
+ const model=models.find(item=>item.model_id===modelId);
  return typeof model?.name==='string'&&model.name?model.name:modelId;
 }
 function decisionPercent(value:number|undefined){return typeof value==='number'?`${Number(value.toFixed(1))}%`:'—';}
 function showDecisionDetail(flow:Workflow){selectedDecisionFlow.value=flow;decisionDetailOpen.value=true;}
-function decisionAttemptStatus(attempt:Attempt){const result=attempt.result;if(attempt.ordinal===7&&result&&typeof result==='object'&&'decision'in result){const decision=String((result as {decision?:unknown}).decision??'');return ({accepted:'达标',repair:'需要返修',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[decision]??statusLabels[attempt.status];}return statusLabels[attempt.status];}
+function decisionAttemptStatus(attempt:Attempt){const result=readAcceptanceResult(attempt.result);if(attempt.ordinal===7&&result){return ({accepted:'达标',repair:'未达标',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[result.decision]??statusLabels[attempt.status];}return statusLabels[attempt.status];}
 async function runAction(flow:Workflow,action:RowAction){
  const key=`${flow.id}:${action.ordinal}`;
  if(action.disabled||runningAction.value)return;
@@ -134,22 +133,22 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
       <td class="min-w-240px"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium break-words">{{ flow.title }}</RouterLink></td>
       <td class="whitespace-nowrap">{{ flow.material_count || flow.source_manifest?.length || 0 }} 份</td>
       <td class="min-w-220px"><Row wrap :gap="4"><span class="text-sm font-medium">{{ currentStage(flow) }}</span><v-btn v-if="flow.current_ordinal===6" size="small" density="compact" variant="text" color="primary" @click="showDecisionDetail(flow)">查看执行详情</v-btn><v-chip size="small" :color="stateColor(flow)">{{ currentState(flow) }}</v-chip></Row></td>
-      <td class="min-w-320px"><Column :gap="4"><Row wrap :gap="4"><v-btn v-for="action in actionsFor(flow)" :key="action.ordinal" size="small" density="compact" color="primary" variant="text" :loading="runningAction===`${flow.id}:${action.ordinal}`" :disabled="action.disabled||runningAction!==null||detailLoadingByWorkflow[flow.id]" @click="runAction(flow,action)">{{ action.label }}</v-btn></Row><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-sm text-muted">正在读取可用操作…</span><span v-else-if="detailErrors[flow.id]" class="text-sm text-danger">步骤状态读取失败：{{ detailErrors[flow.id] }}</span><span v-if="actionMessages[flow.id]" class="text-xs text-muted">{{ actionMessages[flow.id] }}</span><span v-else-if="actionMessages.refresh" class="text-xs text-danger">{{ actionMessages.refresh }}</span><span v-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]&&!detailErrors[flow.id]&&currentState(flow)!=='需要返修'" class="text-sm text-muted">{{ nextAction(flow) }}</span></Column></td>
+      <td class="min-w-320px"><Column :gap="4"><Row wrap :gap="4"><v-btn v-for="action in actionsFor(flow)" :key="action.ordinal" size="small" density="compact" color="primary" variant="text" :loading="runningAction===`${flow.id}:${action.ordinal}`" :disabled="action.disabled||runningAction!==null||detailLoadingByWorkflow[flow.id]" @click="runAction(flow,action)">{{ action.label }}</v-btn></Row><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-sm text-muted">正在读取可用操作…</span><span v-else-if="detailErrors[flow.id]" class="text-sm text-danger">步骤状态读取失败：{{ detailErrors[flow.id] }}</span><span v-if="actionMessages[flow.id]" class="text-xs text-muted">{{ actionMessages[flow.id] }}</span><span v-else-if="actionMessages.refresh" class="text-xs text-danger">{{ actionMessages.refresh }}</span><span v-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]&&!detailErrors[flow.id]&&currentState(flow)!=='未达标'" class="text-sm text-muted">{{ nextAction(flow) }}</span></Column></td>
      </tr>
     </tbody>
    </v-table>
   </Column>
   <v-dialog v-model="decisionDetailOpen" max-width="960" scrollable>
    <Column class="surface-card p-16" :gap="12">
-    <Row x="between" y="center" :gap="12"><Column :gap="4"><h2 class="section-title">达标或返修 · 执行详情</h2><span v-if="selectedDecisionAttempt" class="text-xs text-muted">{{ dateLabel(selectedDecisionAttempt.started_at) }}</span></Column><v-btn icon="$close" aria-label="关闭达标判定详情" variant="text" @click="decisionDetailOpen=false" /></Row>
+    <Row x="between" y="center" :gap="12"><Column :gap="4"><h2 class="section-title">达标判断 · 执行详情</h2><span v-if="selectedDecisionAttempt" class="text-xs text-muted">{{ dateLabel(selectedDecisionAttempt.started_at) }}</span></Column><v-btn icon="$close" aria-label="关闭达标判定详情" variant="text" @click="decisionDetailOpen=false" /></Row>
     <v-chip v-if="selectedDecisionAttempt" class="self-start" size="small" :color="selectedDecisionAttempt.status==='succeeded'?'success':selectedDecisionAttempt.status==='failed'?'error':selectedDecisionAttempt.status==='running'?'primary':'secondary'">{{ decisionAttemptStatus(selectedDecisionAttempt) }}</v-chip>
     <v-alert v-if="selectedDecisionAttempt?.error" type="error" density="compact">{{ selectedDecisionAttempt.error }}</v-alert>
     <p v-if="!selectedDecisionAttempt&&selectedDecisionFlow&&detailLoadingByWorkflow[selectedDecisionFlow.id]&&!detailErrors[selectedDecisionFlow.id]" class="text-sm text-muted">正在读取判定执行记录…</p>
     <p v-else-if="!selectedDecisionAttempt&&selectedDecisionFlow&&detailErrors[selectedDecisionFlow.id]" class="text-sm text-danger">读取失败：{{ detailErrors[selectedDecisionFlow.id] }}</p>
-    <p v-else-if="!selectedDecisionAttempt" class="text-sm text-muted">暂无达标或返修执行记录。</p>
+    <p v-else-if="!selectedDecisionAttempt" class="text-sm text-muted">暂无达标判断执行记录。</p>
     <Column v-else class="max-h-480px overflow-y-auto" :gap="4">
      <section v-if="selectedDecisionFlow&&decisionScores(selectedDecisionAttempt).length" class="surface-panel p-8"><h3 class="px-8 py-4 text-sm font-semibold">模型评分</h3><v-table density="compact"><thead><tr><th scope="col">模型</th><th scope="col">得分</th><th scope="col">百分制</th><th scope="col">门槛</th><th scope="col">评分结果</th></tr></thead><tbody><tr v-for="[modelId,score] in decisionScores(selectedDecisionAttempt)" :key="modelId"><td>{{ decisionModelName(selectedDecisionFlow,modelId) }}</td><td>{{ score.score??'—' }} / {{ score.max_score??'—' }}</td><td>{{ decisionPercent(score.percentage) }}</td><td>{{ typeof score.threshold==='number'?`低于 ${score.threshold}%`:'—' }}</td><td><v-chip size="small" :color="score.status==='passed'?'success':score.status==='not_passed'?'warning':score.status==='invalid'?'error':'secondary'">{{ ({passed:'达标',not_passed:'未达标',pending:'待定',invalid:'无效'} as Record<string,string>)[score.status??'']??'未知' }}</v-chip></td></tr></tbody></v-table></section>
-     <p class="text-sm text-muted">{{ (selectedDecisionAttempt.result as {reasons?:string[]}|null)?.reasons?.join('；') || '请根据模型评分决定是否返修。' }}</p>
+     <p class="text-sm text-muted">{{ (selectedDecisionAttempt.result as {reasons?:string[]}|null)?.reasons?.join('；') || '请核对各模型评分与分数上限。' }}</p>
     </Column>
    </Column>
   </v-dialog>

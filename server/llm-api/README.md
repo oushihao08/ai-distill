@@ -1,6 +1,6 @@
 # 独立大模型 API 调用
 
-与 `server/agent/` 并列。统一管理大模型 API 的配置、端点、凭证选择、文字/JSON 请求、完整响应、用量、安全错误、超时与取消。供模型作答、API 脱敏等业务直接调用；不依赖 Agent 或作答模块，不管理业务队列、返修预算、文件目录和产物发布。
+与 `server/agent/` 并列。统一管理大模型 API 的配置、端点、凭证选择、文字/JSON 请求、完整响应、用量、安全错误、超时与取消。供模型作答、API 脱敏等业务直接调用；不依赖 Agent 或作答模块，不管理业务队列、文件目录和产物发布。
 
 | 文件 | 职责 |
 | --- | --- |
@@ -25,7 +25,7 @@ const result=await createModelApiClient().complete({
 // result.text / result.usage / result.provider / result.model / result.completion_id
 ```
 
-业务层显式提供消息。模型不能自行读取本地文件、聊天记忆或工作区；原始数据需要由调用方在消息中提供。仅使用当前请求的消息，没有隐式会话。`completeJson(request, validate)` 默认发送 `json_object`，消息需包含 JSON 要求；调用方提供结构/业务校验器。需要供应商原生 Schema 时显式传 `response_format:{type:'json_schema',json_schema:{name,strict:true,schema}}`，选择支持此参数的模型/端点；不支持则报错，不降级为无约束文本。OpenRouter 使用 `require_parameters:true` 防止静默丢弃输出或思考参数。脱敏目前采用 JSON Object 加材料/页码/非空正文校验，不代表脱敏语义已正确。
+业务层显式提供消息。模型不能自行读取本地文件、聊天记忆或工作区；原始数据需要由调用方在消息中提供。仅使用当前请求的消息，没有隐式会话。`completeJson(request, validate)` 默认发送 `json_object`，消息需包含 JSON 要求；调用方提供结构/业务校验器。需要供应商原生 Schema 时显式传 `response_format:{type:'json_schema',json_schema:{name,strict:true,schema}}`，选择支持此参数的模型/端点；不支持则报错，不降级为无约束文本。OpenRouter 使用 `require_parameters:true` 防止静默丢弃输出或思考参数。脱敏使用 JSON Object 和调用方字段映射校验；附件与页序由任务输入恢复，不依赖模型复述元数据。
 
 ## 配置与凭证
 
@@ -43,7 +43,7 @@ Qwen 原生使用 `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY`，Kimi 使用 `KIMI_API
 - `materials/redaction.ts` 在 API 模式下直接传入已入库原文；Agent 模式沿用本地隔离目录。两种方式由脱敏业务选择。
 - `agent/` 继续提供本地 Codex 任务执行，没有 API 适配器，也不依赖本模块。
 - 不自动改供应商/模型、不自动重试收费请求。队列和返修调用账本继续由业务模块管理。
-- 只接受完整 `finish_reason=stop` 的非空文本，拒绝工具调用、拒答字段和截断结果。拒绝时日志使用安全的 `reason_code` 区分响应结构、结束状态、空正文、工具调用、拒答及元数据问题；不记录请求/响应正文及密钥。
+- 只接受完整 `finish_reason=stop` 的非空 assistant 文本，拒绝工具调用、拒答字段和截断结果。usage、实际模型名和 completion ID 仅作可选元数据；格式异常时忽略该字段，不使完整正文失败。拒绝时日志使用安全的 `reason_code`；不记录请求/响应正文及密钥。
 
 当前支持纯文字非流式调用。长文仍受模型上下文与最大输出长度限制；没有在此模块增加自动拆文或批处理调度。真实 API、模型输出质量和浏览器操作需另外取得证据。
 

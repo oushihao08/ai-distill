@@ -3,6 +3,7 @@
  */
 import {readdir,readFile,stat} from 'node:fs/promises';
 import {join} from 'node:path';
+import {storageDirectory} from '../server/paths';
 import {sanitizeLogRecord} from '../server/logging';
 
 const values=new Map<string,string>();
@@ -21,12 +22,22 @@ for(const key of ['--request-id','--operation-id','--project-id','--workflow-id'
 const level=values.get('--level');if(level&&!['debug','info','warn','error'].includes(level))throw new Error('--level 必须是 debug、info、warn 或 error');
 const parseDate=(key:string)=>{const value=values.get(key);if(!value)return undefined;const parsed=Date.parse(value);if(!Number.isFinite(parsed))throw new Error(`${key} 必须是可解析的时间`);return parsed;};
 const from=parseDate('--from'),to=parseDate('--to');if(from!==undefined&&to!==undefined&&from>to)throw new Error('--from 不能晚于 --to');
-const root=join(process.env.STORAGE_DIR??'.storage','logs');
+const root=join(storageDirectory(),'logs');
 const dayPattern=/^\d{4}-\d{2}-\d{2}$/;
 const filePattern=/^[a-z0-9-]+-[a-f0-9-]{36}-\d{3}\.jsonl$/;
 let entries;try{entries=await readdir(root,{withFileTypes:true});}catch(error){if(error&&typeof error==='object'&&'code'in error&&(error as {code?:unknown}).code==='ENOENT'){console.error(JSON.stringify({matched:0,files_scanned:0,bytes_scanned:0,malformed_lines:0,incomplete_tail_lines:0,truncated:false}));process.exit(0);}throw error;}
 const days=entries.filter(entry=>entry.isDirectory()&&dayPattern.test(entry.name)).map(entry=>entry.name).sort().reverse();
-const files:string[]=[];for(const day of days){const entries=await readdir(join(root,day),{withFileTypes:true});for(const entry of entries.filter(entry=>entry.isFile()&&filePattern.test(entry.name)).sort((a,b)=>b.name.localeCompare(a.name))){files.push(join(root,day,entry.name));if(files.length>=50)break;}if(files.length>=50)break;}
+// UUID file names do not encode recency; select by mtime so fresh workers are visible.
+const candidates:{path:string;modified:number}[]=[];
+for(const day of days){
+ if(from!==undefined&&day<new Date(from).toISOString().slice(0,10)||to!==undefined&&day>new Date(to).toISOString().slice(0,10))continue;
+ const entries=await readdir(join(root,day),{withFileTypes:true});
+ for(const entry of entries.filter(entry=>entry.isFile()&&filePattern.test(entry.name))){
+  const path=join(root,day,entry.name),info=await stat(path);
+  candidates.push({path,modified:info.mtimeMs});
+ }
+}
+const files=candidates.sort((a,b)=>b.modified-a.modified||a.path.localeCompare(b.path)).slice(0,50).map(item=>item.path);
 let scanned=0,malformed=0,incompleteTailLines=0,shown=0;const matches:any[]=[];
 for(const path of files){if(shown>=500||scanned>=20*1024*1024)break;const info=await stat(path);if(info.size>20*1024*1024-scanned)continue;const text=await readFile(path,'utf8');scanned+=info.size;
  const lines=text.split('\n');if(text.length>0&&!text.endsWith('\n'))incompleteTailLines++;
@@ -41,4 +52,4 @@ for(const path of files){if(shown>=500||scanned>=20*1024*1024)break;const info=a
 }
 matches.sort((a,b)=>String(a.occurred_at).localeCompare(String(b.occurred_at))||Number(a.seq)-Number(b.seq));
 for(const record of matches)console.log(JSON.stringify(record));
-console.error(JSON.stringify({matched:matches.length,files_scanned:files.length,bytes_scanned:scanned,malformed_lines:malformed,incomplete_tail_lines:incompleteTailLines,truncated:matches.length>=500||scanned>=20*1024*1024}));
+console.error(JSON.stringify({matched:matches.length,files_scanned:files.length,bytes_scanned:scanned,malformed_lines:malformed,incomplete_tail_lines:incompleteTailLines,truncated:candidates.length>50||matches.length>=500||scanned>=20*1024*1024}));

@@ -7,6 +7,7 @@ import { mkdtemp, rm, readdir,readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from './app';
+import {stepResultProjection,readWorkflowAttempts} from './workflow-view';
 import {closeAgentConcurrencyGate,createAgentConcurrencyGate,readConcurrencySettings} from './concurrency';
 import { validateFile } from './validation';
 import { createHash } from 'node:crypto';
@@ -134,6 +135,21 @@ test('malformed ID and cross-origin mutations are rejected before DB access', as
   expect((await app.request('/api/projects', { method: 'POST', headers: { Origin: 'https://unrelated.example', 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(403);
   expect(calls).toHaveLength(0);
  } catch (error) { throw error; }
+});
+
+
+test('unscored timeout projections expose only aggregate evidence, never answer or reasoning text',async()=>{
+ const projection=stepResultProjection('s',false);
+ expect(projection).toContain("'outcome',m->'outcome'");
+ expect(projection).toContain("'reason_code',m->'reason_code'");
+ expect(projection).toContain("'generation_activity',m->'generation_activity'");
+ expect(projection).not.toContain("m->'answer'");
+ expect(projection).not.toContain("m->'reasoning_text'");
+ let sql='';
+ await readWorkflowAttempts({query:async(query:string)=>{sql=query;return{rows:[],rowCount:0};}} as unknown as Pool,'workflow',false);
+ expect(sql).toContain("a.result->'outcome'");
+ expect(sql).toContain("a.result->'generation_activity'");
+ expect(sql).not.toContain("a.result->'text'");
 });
 
 test('results library lists only current accepted workflows with safe summary fields',async()=>{
@@ -288,4 +304,40 @@ test('project batch dispatch accepts the decision step and chunks all project wo
   expect(stateBatches.map(batch=>batch.length)).toEqual([2,2,1]);
   expect((await app.request(`/api/projects/${projectId}/steps/10/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status).toBe(400);
  }finally{if(previousChunkSize===undefined)delete process.env.BATCH_DISPATCH_CHUNK_SIZE;else process.env.BATCH_DISPATCH_CHUNK_SIZE=previousChunkSize;await logger.close();}
+});
+
+test('answer generation policy GET is read-only and PUT preserves provider settings across step config updates',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'answer-generation-policy-api-'));directories.push(root);
+ const logger=configureLogger({root,service:'api'});
+ const policy={request_timeout_ms:3_600_000,reasoning_threshold_ms:2_700_000,skip_scoring_on_qualified_timeout:false};
+ let config:Record<string,unknown>={provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',answer_generation_policy:policy};
+ const calls:{sql:string;values?:unknown[]}[]=[];
+ const query=async(sql:string,values?:unknown[])=>{
+  calls.push({sql,values});
+  if(['BEGIN','COMMIT','ROLLBACK'].includes(sql))return{rows:[],rowCount:1};
+  if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
+  if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config}],rowCount:1};
+  if(sql.startsWith('INSERT INTO ai_distill.project_step_configs')){
+   const incoming=JSON.parse(String(values?.[2])) as Record<string,unknown>;
+   config=Object.hasOwn(incoming,'answer_generation_policy')?incoming:sql.includes('answer_generation_policy')?{...incoming,...(config.answer_generation_policy?{answer_generation_policy:config.answer_generation_policy}:{})}:incoming;
+   return{rows:[{config}],rowCount:1};
+  }
+  throw new Error(`Unexpected query: ${sql}`);
+ };
+ const pool={query,connect:async()=>({query,release(){}})} as unknown as Pool;
+ try{
+  const app=createApp(pool,root);
+  const initial=await app.request(`/api/projects/${projectId}/answer-generation-policy`);
+  expect(initial.status).toBe(200);expect(await initial.json()).toEqual({request_timeout_minutes:60,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:false,source:'project'});
+  expect(calls.some(call=>call.sql.startsWith('INSERT'))).toBe(false);
+  const unverified=await app.request(`/api/projects/${projectId}/answer-generation-policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_timeout_minutes:75,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:true})});
+  expect(unverified.status).toBe(400);expect(await unverified.json()).toMatchObject({error:'供应商／模型的推理流连续性尚未验证，自动免评分暂不可用'});expect(config).toMatchObject({answer_generation_policy:{skip_scoring_on_qualified_timeout:false}});
+  const saved=await app.request(`/api/projects/${projectId}/answer-generation-policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_timeout_minutes:75,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:false})});
+  const savedBody=await saved.json();expect({status:saved.status,body:savedBody,queries:calls.map(call=>call.sql)}).toMatchObject({status:200,body:{request_timeout_minutes:75,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:false,source:'project'}});
+  expect(config).toMatchObject({provider:'qwen',model:'qwen/qwen-plus',answer_generation_policy:{request_timeout_ms:4_500_000,reasoning_threshold_ms:2_700_000,skip_scoring_on_qualified_timeout:false}});
+  const providerUpdate=await app.request(`/api/projects/${projectId}/steps/5/config`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-turbo'})});
+  expect(providerUpdate.status).toBe(200);expect(config).toMatchObject({model:'qwen/qwen-turbo',answer_generation_policy:{request_timeout_ms:4_500_000,skip_scoring_on_qualified_timeout:false}});
+  const invalid=await app.request(`/api/projects/${projectId}/answer-generation-policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_timeout_minutes:45,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:true})});
+  expect(invalid.status).toBe(400);expect(config).toMatchObject({answer_generation_policy:{request_timeout_ms:4_500_000,skip_scoring_on_qualified_timeout:false}});
+ }finally{await logger.close();}
 });

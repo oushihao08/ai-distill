@@ -4,7 +4,7 @@ import {mkdtemp,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {buildAnonymousInput,buildScoreFiles,buildScoreMessage,runIndependentScore} from './executor';
+import {buildAnonymousInput,buildScoreFiles,buildScoreMessage,runIndependentApiScore,runIndependentScore} from './executor';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '@shared/step-prompts';
 import type {ScoreContext} from './validate';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
@@ -57,6 +57,21 @@ test('independent sessions receive only split files and frozen output bindings s
   expect(result.raw_text).toBe(report);expect(result.session_id).toBe('independent-session');
   const second=await runIndependentScore(context,{root,model:'fixture',reasoning_effort:'low',execute});expect(second.directory).not.toBe(result.directory);
  }finally{await rm(root,{recursive:true,force:true});}
+});
+test('API评分接收相同完整脱敏材料并复用逐项总分校验，不泄漏内部答案或身份',async()=>{
+ let sent:any;
+ const result=await runIndependentApiScore(context,{config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b'},complete:async(request:any)=>{
+  sent=request;
+  return{provider:'openrouter',requested_model:'qwen/qwen3.8-27b',model:'qwen/qwen3.8-27b',request_id:'req-1',completion_id:'completion-1',usage:{prompt_tokens:20,completion_tokens:10,cost:0.01},started_at:'2026-10-12T00:00:00.000Z',finished_at:'2026-10-12T00:00:01.000Z',duration_ms:1000,text:report};
+ }});
+ expect(sent.messages).toHaveLength(1);
+ expect(sent.messages[0].content).toContain('题面与评分标准.txt');
+ expect(sent.messages[0].content).toContain('金额100元');
+ expect(sent.messages[0].content).toContain('100元');
+ for(const secret of ['private-id','原模型名称','私有作答思路','私有标准答案','skill/SKILL.md'])expect(sent.messages[0].content).not.toContain(secret);
+ expect(result.validation.valid).toBe(true);expect(result.report).toMatchObject({binding:context.binding,total:1,max_score:1});
+ expect(result.model).toBe('qwen/qwen3.8-27b');expect(result.usage).toMatchObject({cost:0.01});
+ expect(result.execution_request.input_files.map((file:any)=>file.name)).toEqual(['题面与评分标准.txt','附件1.txt','待评答案.txt']);
 });
 test('project skill, identity and reference answers never enter the scoring request',async()=>{
  const root=await mkdtemp(join(tmpdir(),'grading-private-'));

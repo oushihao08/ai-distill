@@ -1,18 +1,19 @@
 /**
  * 职责：达标纯决策：将必需模型原始分数换算为百分制，逐模型比较难度阈值。
- * 关键方法与用途：`decideAcceptance()` 所有必需模型得分率严格低于各自阈值时题目达标；任一达到或超过则返修。
+ * 关键方法与用途：`decideAcceptance()` 所有必需模型得分率严格低于各自阈值时题目达标；任一达到或超过则题目未达标。
  * 使用场景：由 `jobs.ts` 组装当前快照后调用；不访问数据库或模型。
  */
 import {scorePercentage} from '../../shared/score';
+import type {AcceptanceResult,ModelAcceptance} from '../../shared/workflow-results';
+export type {AcceptanceResult,ModelAcceptance} from '../../shared/workflow-results';
 export interface AcceptanceConfig {
  required_models: string[];
  // 保留历史字段名；值为 0—100 的百分制分数上限，不是原始最低分。
  minimum_score_by_model: Record<string, number|null>;
- revision_budget?:{max_content_revisions?:number;max_technical_retries?:number;max_duration_ms?:number;max_calls?:number};
 }
 export interface ModelAssessment {
  model: string;
- answer_status: 'waiting'|'running'|'succeeded'|'failed';
+ answer_status: 'waiting'|'running'|'succeeded'|'failed'|'skipped';
  score_status?: 'waiting'|'running'|'succeeded'|'failed';
  score_valid?: boolean;
  score?: number;
@@ -22,16 +23,6 @@ export interface AcceptanceInput {
  question_current: boolean;
  config?: AcceptanceConfig;
  models: ModelAssessment[];
-}
-export type AcceptanceResult =
- | {decision:'waiting'|'quarantine';reasons:string[];model_scores?:Record<string,ModelAcceptance>}
- | {decision:'accepted'|'repair';reasons:string[];model_scores:Record<string,ModelAcceptance>};
-export interface ModelAcceptance {
- status:'passed'|'not_passed'|'pending'|'invalid';
- score?:number;
- max_score?:number;
- percentage?:number;
- threshold:number;
 }
 const validScore=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v);
 export function decideAcceptance(input:AcceptanceInput):AcceptanceResult{
@@ -49,7 +40,7 @@ export function decideAcceptance(input:AcceptanceInput):AcceptanceResult{
   const threshold=config.minimum_score_by_model[model]!;
   if(!result){scores[model]={status:'pending',threshold};pending=true;reasons.push(`required_model_missing:${model}`);continue;}
   if(result.answer_status!=='succeeded'){
-   scores[model]={status:'pending',threshold};pending=true;reasons.push(`required_model_incomplete:${model}`);continue;
+   scores[model]={status:'pending',threshold};pending=true;reasons.push(result.answer_status==='skipped'?`required_model_unscored:${model}`:`required_model_incomplete:${model}`);continue;
   }
   if(result.score_valid===false){
    scores[model]={status:'invalid',threshold};pending=true;reasons.push(`score_invalid_or_disputed:${model}`);continue;

@@ -3,17 +3,18 @@
  * 关键方法与用途：启动入口创建连接池和 Hono 应用、绑定回环地址，并在进程退出时关闭连接。
  * 使用场景：通过 `bun run server/index.ts` 启动本地 API；业务路由由 `createApp()` 提供。
  */
+import {storageDirectory} from './paths';
 import { createPool } from './db';
 import { createApp } from './app';
 import {configureLogger,installFatalErrorLogging,logEvent,classifyLogError} from './logging';
-const logger=configureLogger({root:process.env.STORAGE_DIR??'.storage',service:'api'});
+const logger=configureLogger({root:storageDirectory(),service:'api'});
 installFatalErrorLogging();
 let pool:ReturnType<typeof createPool>|undefined;
 let server:ReturnType<typeof Bun.serve>;
 try{
  pool=createPool();
- const app = createApp(pool, process.env.STORAGE_DIR ?? '.storage');
- server = Bun.serve({ hostname: '127.0.0.1', port: Number(process.env.PORT ?? 3100), fetch: app.fetch, maxRequestBodySize: 101 * 1024 * 1024, idleTimeout: 60 });
+ const app = createApp(pool, storageDirectory());
+ server = Bun.serve({ hostname: '127.0.0.1', port: Number(process.env.PORT ?? 3700), fetch: app.fetch, maxRequestBodySize: 101 * 1024 * 1024, idleTimeout: 60 });
 }catch(error){logEvent('service.start_failed',{level:'error',component:'http',...classifyLogError(error)});try{if(pool)await pool.end();}finally{await logger.close();}throw error;}
 console.log(`接口已启动：http://127.0.0.1:${server.port}`);
 logEvent('service.started',{level:'info',component:'http',pid:process.pid});

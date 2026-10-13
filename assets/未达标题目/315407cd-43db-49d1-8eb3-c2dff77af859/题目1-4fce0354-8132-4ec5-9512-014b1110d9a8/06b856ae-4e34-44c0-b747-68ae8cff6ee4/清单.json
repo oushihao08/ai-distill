@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "project_id": "315407cd-43db-49d1-8eb3-c2dff77af859",
+  "workflow_id": "4fce0354-8132-4ec5-9512-014b1110d9a8",
+  "question_id": "题目1",
+  "decision": "repair",
+  "decision_attempt_id": "06b856ae-4e34-44c0-b747-68ae8cff6ee4",
+  "author_attempt_id": "d3111e1c-9097-42a5-b023-04bc503ae418",
+  "question_version": "5a41b382d888a204996f252d185cfdb256229aae3d2fc195b6c11cef412d9bda",
+  "rubric_version": "ec0d939e0c6ee33004ef5e5a6402bf00d45e34d988e762b3631afafbc5021332",
+  "models": [
+    {
+      "model_id": "4ce14aae-8bb2-42ba-858c-b5d9ebbdb95c",
+      "model_name": "qwen/qwen3.8-max-0902",
+      "answer_attempt_id": "c0cae30a-6226-429d-b266-5762878fa231",
+      "score_attempt_id": "5885c3d0-3773-430d-af90-8aaf486b463c",
+      "score": 13,
+      "max_score": 20,
+      "percentage": 65,
+      "threshold": 50,
+      "status": "not_passed"
+    }
+  ],
+  "files": [
+    {
+      "path": "出题.txt",
+      "sha256": "464000155444b29f4a8643badf92c58dc176f3fe06309ecb32e8bfbde44ddc97",
+      "size_bytes": 20434
+    },
+    {
+      "path": "模型-4ce14aae-8bb2-42ba-858c-b5d9ebbdb95c/作答.txt",
+      "sha256": "c7090cbaae7170059d43671116630b23752b46e8983928b9eba128b7eecab429",
+      "size_bytes": 47491
+    },
+    {
+      "path": "模型-4ce14aae-8bb2-42ba-858c-b5d9ebbdb95c/评分.txt",
+      "sha256": "7e097164af2fa36b93dbb191a4574bf82ff99e1a3097e40b096fc38bc585df9b",
+      "size_bytes": 16259
+    },
+    {
+      "path": "模型-4ce14aae-8bb2-42ba-858c-b5d9ebbdb95c/评分.json",
+      "sha256": "12a05c88f100c05833b3f0d62a3227e194523ae631050d01d324c7c2a9f6b026",
+      "size_bytes": 27134
+    }
+  ]
+}

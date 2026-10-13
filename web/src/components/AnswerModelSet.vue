@@ -35,14 +35,14 @@ onMounted(refresh);
 
 <template>
  <Column :gap="16">
-  <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">作答模型</h2><p class="text-xs text-muted">项目会对所选模型分别作答、评分；每个模型的百分制得分低于各自分数上限，题目才算达标，达到或超过则需要返修。</p></Column><v-btn :loading="loading" @click="refresh">刷新</v-btn></Row>
+  <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">作答模型</h2><p class="text-xs text-muted">项目会对所选模型分别作答、评分；每个模型的百分制得分低于各自分数上限，题目才算达标，达到或超过则题目未达标。</p></Column><v-btn :loading="loading" @click="refresh">刷新</v-btn></Row>
   <v-alert v-if="error" type="error" density="compact">{{ error }}</v-alert><v-alert v-if="message" type="success" density="compact">{{ message }}</v-alert>
   <Column :gap="8"><h3 class="text-sm font-semibold">系统模型目录</h3><p v-if="!catalog.length" class="text-sm text-muted">还没有登记模型。</p>
    <Row v-for="item in catalog" :key="item.id" wrap x="between" :gap="8" class="border-t border-line-subtle pt-8">
     <v-checkbox :model-value="selected.some(row=>row.model_id===item.id)" :disabled="!item.enabled||(!selected.some(row=>row.model_id===item.id)&&selected.length>=8)" :label="`${item.name} · ${item.provider} · ${item.model}${item.enabled?'':' · 已停用'}`" hide-details @update:model-value="toggle(item)" />
    </Row>
   </Column>
-  <Column v-for="item in selected" :key="item.model_id" :gap="4" class="border-t border-line-subtle pt-8"><span class="text-sm font-medium">{{ item.name }} · 分数上限（百分制）</span><v-text-field :model-value="item.minimum_score??''" type="number" min="0" max="100" step="0.5" label="低于此分通过，等于或超过需返修（可留空）" hide-details @update:model-value="updateMinimumScore(item.model_id,$event)" /></Column>
+  <Column v-for="item in selected" :key="item.model_id" :gap="4" class="border-t border-line-subtle pt-8"><span class="text-sm font-medium">{{ item.name }} · 分数上限（百分制）</span><v-text-field :model-value="item.minimum_score??''" type="number" min="0" max="100" step="0.5" label="低于此分通过，等于或超过则未达标（可留空）" hide-details @update:model-value="updateMinimumScore(item.model_id,$event)" /></Column>
   <Row x="end"><v-btn color="primary" variant="flat" :loading="saving" :disabled="saving||!selected.length" @click="save">保存项目模型集合</v-btn></Row>
   <v-divider />
   <Column :gap="8"><h3 class="text-sm font-semibold">登记系统模型</h3><v-text-field v-model="model" label="OpenRouter 模型 ID" placeholder="例如：deepseek/deepseek-v4.1-flash" hide-details /><v-btn :disabled="saving||!model.trim()" :loading="saving" @click="register">登记模型</v-btn></Column>

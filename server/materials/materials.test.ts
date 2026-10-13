@@ -23,12 +23,12 @@ test('redaction settings compare effective defaults rather than JSON key order',
 });
 
 test.each([
- ['material_count_mismatch',{materials:[]}],
- ['page_count_mismatch',{materials:[{material_id:'material-a',pages:[]}]}],
+ ['fields_missing',{}],
+ ['target_coverage_mismatch',{fields:[]}],
 ])('redaction validation rejects structural errors with a stable reason code for %s',async(reason_code:string,result:unknown)=>{
  const root=await mkdtemp(join(tmpdir(),'redaction-validation-'));
  try{
-  await expect(redactExtractedMaterials({directory:root,materials:[{material_id:'material-a',source_sha256:'sha256',pages:[{page:1,text:'private source',method:'text'}]}],prompt:'fixture',model:'fixture',reasoning_effort:'low',execute:(async (options:any)=>options.validate(result)) as any})).rejects.toMatchObject({kind:'invalid_response',reason_code});
+  await expect(redactExtractedMaterials({directory:root,materials:[{material_id:'material-a',source_sha256:'sha256',pages:[{page:1,text:'private source',method:'text'}]}],config:{provider:'codex',prompt:'fixture',model:'fixture',reasoning_effort:'low'},execute:(async (options:any)=>options.validate(result)) as any})).rejects.toMatchObject({kind:'invalid_response',reason_code});
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -41,19 +41,16 @@ test('API redaction batches pages and keeps empty pages in the exact output sequ
  const result=await redactExtractedMaterials({directory:'unused',materials,config:{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture-model'},prompt:'Skip pages with no readable text.'},executeApi:(async(request:any,callKey:string)=>{
   requests.push({request,callKey});
   const input=JSON.parse(request.messages[1].content);
-  const output={materials:input.materials.map((material:any)=>({...material,pages:material.pages.map((page:any)=>({...page}))}))};
+  const output={fields:input.targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))};
   return{text:JSON.stringify(output),usage:{prompt_tokens:10,completion_tokens:2,total_tokens:12},duration_ms:3,completion_id:`completion-${requests.length}`,call_id:request.call_id};
  }) as any});
- expect(requests).toHaveLength(3);
- expect(requests.map(({request}:any)=>JSON.parse(request.messages.at(-1).content).materials[0].pages.length)).toEqual([1,12,1]);
- expect(requests.map(({request}:any)=>JSON.parse(request.messages.at(-1).content).materials[0].material_id)).toEqual(['material-b','material-a','material-a']);
- expect(requests.map(({callKey}:any)=>callKey)).toEqual(['redaction-batch-1','redaction-batch-2','redaction-batch-3']);
- expect(requests[1].request.messages[0].content).toContain('即使页面没有可转写正文，也必须保留该页并返回空字符串');
+ expect(requests).toHaveLength(2);
+ expect(requests.map(({request}:any)=>JSON.parse(request.messages.at(-1).content).targets.length)).toEqual([1,12]);
  expect(result.materials.map(material=>material.material_id)).toEqual(['material-b','material-a']);
  expect(result.materials[1]?.pages.map(page=>page.page)).toEqual(Array.from({length:13},(_,index)=>index+1));
  expect(result.materials[1]?.pages[4]?.text).toBe('');
- expect(result.usage).toEqual({prompt_tokens:30,completion_tokens:6,total_tokens:36});
- expect(result.duration_ms).toBe(9);
+ expect(result.usage).toEqual({prompt_tokens:20,completion_tokens:4,total_tokens:24});
+ expect(result.duration_ms).toBe(6);
  expect(result.completion_id).toBeNull();
  expect(result.call_ids).toEqual(requests.map(({request}:any)=>request.call_id));
 });
@@ -63,14 +60,14 @@ test('API redaction retries one structurally incomplete batch and accounts for b
  const requests:any[]=[];
  const result=await redactExtractedMaterials({directory:'unused',materials,config:{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture-model'},prompt:'fixture'},executeApi:(async(request:any,callKey:string)=>{
   requests.push({request,callKey});
-  const input=JSON.parse(request.messages.at(-1).content),pages=input.materials[0].pages;
-  const output={materials:[{...input.materials[0],pages:requests.length===1?pages.slice(0,-1):pages}]};
+  const input=JSON.parse(request.messages.at(-1).content);
+  const output={fields:requests.length===1?[]:input.targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))};
   return{text:JSON.stringify(output),usage:{prompt_tokens:10,completion_tokens:2,total_tokens:12},duration_ms:4,completion_id:`completion-${requests.length}`,call_id:request.call_id};
  }) as any});
  expect(requests).toHaveLength(2);
- expect(requests.map(({callKey}:any)=>callKey)).toEqual(['redaction-batch-1','redaction-batch-1-retry-1']);
+ expect(requests.slice(0,2).map(({callKey}:any)=>callKey)).toEqual(['redaction-structured-1','redaction-structured-1-retry-1']);
  expect(requests[1].request.messages).toHaveLength(3);
- expect(requests[1].request.messages[1].content).toContain('上一轮输出未通过');
+ expect(requests[1].request.messages[1].content).toContain('上一轮校验失败');
  expect(result.materials[0]?.pages).toHaveLength(12);
  expect(result.usage).toEqual({prompt_tokens:20,completion_tokens:4,total_tokens:24});
  expect(result.duration_ms).toBe(8);
@@ -249,7 +246,7 @@ test('unchanged PDF reuses private page extraction while a changed attachment is
   const source='%PDF-unchanged',changed='%PDF-changed';
   await writeFile(join(root,'one.pdf'),source);await writeFile(join(root,'two.pdf'),changed);
   const sourceHash=createHash('sha256').update(source).digest('hex');
-  const content=JSON.stringify({source_sha256:sourceHash,pages:[{page:1,text:'张三支付100元',method:'text',usage:{total_tokens:100}}]});
+  const content=JSON.stringify({source_sha256:sourceHash,structure_version:'document-structure-v1',pages:[{page:1,text:'张三支付100元',method:'text',usage:{total_tokens:100},structure:[{id:'p1-b1',kind:'paragraph',text:'张三支付100元'}]}]});
   await writeFile(join(root,'cache.json'),content);let extractions=0;
   const result=await processMaterials(root,'workflow','attempt',[
    {id:'one',storage_path:'one.pdf',sha256:sourceHash,extraction_cache:{storage_path:'cache.json',sha256:createHash('sha256').update(content).digest('hex'),attempt_id:'old-attempt',material_id:'old-material'}},
@@ -276,6 +273,29 @@ test('missing or corrupted extraction cache triggers fresh parsing rather than f
   const result=await processMaterials(root,'workflow','attempt',[{id:'one',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex'),extraction_cache:{storage_path:'missing.json',sha256:'wrong',attempt_id:'old',material_id:'old'}}],{recognize:async()=>{throw new Error('unused');},entities:async()=>[]},fixturePdfExtractor(async()=>{extractions++;return[{page:1,text:'公开资料',method:'text'}];}),strictConfig());
   expect(extractions).toBe(1);expect(result.result.materials[0]?.extraction.mode).toBe('fresh');
   expect(result.result.materials[0]?.extraction.cache_error).toBe('missing_or_invalid');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('legacy text-only extraction cache is rejected for a structured extraction attempt',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'legacy-cache-'));
+ try{
+  const source='%PDF-legacy-cache';await writeFile(join(root,'source.pdf'),source);
+  const sourceHash=createHash('sha256').update(source).digest('hex');
+  const oldCache=JSON.stringify({source_sha256:sourceHash,pages:[{page:1,text:'旧版纯文本',method:'text'}]});
+  await writeFile(join(root,'legacy.json'),oldCache);let extractions=0;
+  const result=await processMaterials(root,'workflow','attempt',[{id:'one',storage_path:'source.pdf',sha256:sourceHash,extraction_cache:{storage_path:'legacy.json',sha256:createHash('sha256').update(oldCache).digest('hex'),attempt_id:'old',material_id:'old'}}],{recognize:async()=>{throw new Error('unused');},entities:async()=>[]},fixturePdfExtractor(async()=>{extractions++;return[{page:1,text:'新版结构化正文',method:'ocr',structure:[{id:'p1-b1',kind:'paragraph',text:'新版结构化正文'}]}];}),strictConfig());
+  expect(extractions).toBe(1);expect(result.result.materials[0]?.extraction).toMatchObject({mode:'fresh',cache_error:'missing_or_invalid'});
+  expect(result.artifacts[0]?.content).toContain('新版结构化正文');expect(result.artifacts[0]?.content).not.toContain('旧版纯文本');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('new extraction artifacts persist a structured text projection with exact source content',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'structured-extraction-'));
+ try{
+  const source='%PDF-structured';await writeFile(join(root,'source.pdf'),source);
+  const pageText=' 标题\n正文  ';
+  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>[]},fixturePdfExtractor(async()=>[{page:1,text:pageText,method:'ocr'}]),strictConfig());
+  const artifact=JSON.parse(await readFile(join(root,result.artifacts[0]!.storage_path),'utf8'));
+  expect(artifact.structure_version).toBe('document-structure-v1');
+  expect(artifact.pages[0].structure).toEqual([{id:'p1-b1',kind:'paragraph',text:pageText}]);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 test('extraction preserves raw page text and defers masking to redaction',async()=>{

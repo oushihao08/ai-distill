@@ -9,7 +9,10 @@ import {join} from 'node:path';
 import {createWorkerMonitor,readWorkerMonitor} from './worker-monitor';
 import {sampleResources,type MonitorInput} from './resources';
 import{configureLogger}from'../logging';
-const db=(rows:any[]=[])=>({query:async(sql:string)=>{expect(sql).toContain("a.status IN ('waiting','running')");expect(sql).toContain('w.deleted_at IS NULL');expect(sql).not.toContain('a.error');return{rows};}} as unknown as Pool);
+const db=(rows:any[]=[])=>{
+ const query=async(sql:string)=>{if(sql.startsWith('SELECT')){expect(sql).toContain("a.status IN ('waiting','running')");expect(sql).toContain('w.deleted_at IS NULL');expect(sql).not.toContain('a.error');}return{rows};};
+ return{query,connect:async()=>({query,release(){}})} as unknown as Pool;
+};
 const sampler=(percent:number|null)=>async(input:MonitorInput)=>sampleResources(input,{platform:'darwin',read:async(file,args)=>file.endsWith('memory_pressure')?percent===null?'':`The system has 1000000 (100 pages).\nSystem-wide memory free percentage: ${percent}%\n`:`${args[1]} 100`});
 async function directory(run:(root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'distill-monitor-'));try{await run(root);}finally{await rm(root,{recursive:true,force:true});}}
 test('low memory pauses and recovery resumes using shared cached sample',async()=>directory(async root=>{
@@ -25,6 +28,25 @@ test('concurrent dispatch callers merge one sampling operation',async()=>directo
  let calls=0;const monitor=createWorkerMonitor(db(),root,{min_available_percent:10,sample:async input=>{calls++;await Bun.sleep(10);return sampler(30)(input);}});
  try{expect(await Promise.all(Array.from({length:8},()=>monitor.beforeDispatch()))).toEqual(Array(8).fill(true));expect(calls).toBe(1);}finally{await monitor.stop();}
 }));
+test('dispatch memory check does not wait for a pending database task query',async()=>directory(async root=>{
+ let releaseQuery!:()=>void,notifyQueryStarted!:()=>void,sampled=false,taskQueries=0;
+ const queryStarted=new Promise<void>(resolve=>{notifyQueryStarted=resolve;});
+ const pool={connect:async()=>({query:async(sql:string)=>{
+  if(sql.includes('FROM ai_distill.step_attempts')){taskQueries++;notifyQueryStarted();return new Promise<{rows:any[]}>(resolve=>{releaseQuery=()=>resolve({rows:[]});});}
+  return{rows:[]};
+ },release(){}})} as unknown as Pool;
+ const monitor=createWorkerMonitor(pool,root,{min_available_percent:10,sample:async input=>{sampled=true;return sampler(30)(input);}});
+ let starting:Promise<void>|undefined;
+ try{
+  starting=monitor.start();await queryStarted;
+  const allowed=await Promise.race([monitor.beforeDispatch().then(value=>value),Bun.sleep(100).then(()=>false)]);
+  expect(allowed).toBe(true);expect(sampled).toBe(true);expect(taskQueries).toBe(1);
+  const stopping=monitor.stop();releaseQuery();await stopping;
+  expect((await readWorkerMonitor(root)).status).toBe('stopped');
+ }finally{
+  releaseQuery?.();await starting;await monitor.stop();
+ }
+}));
 test('unknown memory permits existing dispatch but reports unknown readiness',async()=>directory(async root=>{
  const monitor=createWorkerMonitor(db([{status:'running',started_at:new Date(),heartbeat_at:new Date(),error:'SECRET'}]),root,{min_available_percent:10,sample:sampler(null)});
  try{
@@ -35,8 +57,21 @@ test('unknown memory permits existing dispatch but reports unknown readiness',as
  }finally{await monitor.stop();}
 }));
 test('database query failure is task unknown, not zero',async()=>directory(async root=>{
- const monitor=createWorkerMonitor({query:async()=>{throw new Error('DB_SECRET');}} as unknown as Pool,root,{min_available_percent:10,sample:sampler(30)});
+ const monitor=createWorkerMonitor({connect:async()=>({query:async()=>{throw new Error('DB_SECRET');},release(){}})} as unknown as Pool,root,{min_available_percent:10,sample:sampler(30)});
  try{await monitor.start();const result=await readWorkerMonitor(root);expect(result.snapshot?.tasks.status).toBe('unknown');expect(JSON.stringify(result)).not.toContain('DB_SECRET');}finally{await monitor.stop();}
+}));
+test('reads task status with a server-side timeout and releases its connection',async()=>directory(async root=>{
+ const queries:string[]=[];let released=false;
+ const client={query:async(sql:string)=>{queries.push(sql);return{rows:[]};},release:()=>{released=true;}};
+ const pool={connect:async()=>client,query:async()=>{throw new Error('pool query should not be used');}} as unknown as Pool;
+ const monitor=createWorkerMonitor(pool,root,{min_available_percent:10,sample:sampler(30)});
+ try{
+  await monitor.start();
+  await monitor.stop();
+  expect(queries).toContain("SET LOCAL statement_timeout = '2000ms'");
+  expect(queries.some(sql=>sql.includes('FROM ai_distill.step_attempts'))).toBe(true);
+  expect(released).toBe(true);
+ }finally{await monitor.stop();}
 }));
 test('failed write cannot bypass known low memory',async()=>directory(async root=>{
  const rootFile=join(root,'file');await writeFile(rootFile,'x');const monitor=createWorkerMonitor(db(),rootFile,{min_available_percent:10,sample:sampler(2)});

@@ -41,3 +41,12 @@ test('text scoring validates exact IDs and weighted rows for every rubric',()=>{
  expect(extractTextScore(mismatched,rubric).valid).toBe(false);
  expect(extractTextScore(mismatched,rubric).issues.join(' ')).toContain('ID不属于本题rubric');
 });
+
+
+test('Markdown headings are presentation, not rubric ID prefixes',()=>{
+ const rubric=[{id:'R01',max_score:1,criterion:'第一项'},{id:'R02',max_score:1,criterion:'第二项'}];
+ const text='### R01：1/1\n证据与理由。\n### **R02：0/1**\n未找到。\n## 最终总分：1 / 2 分';
+ expect(extractTextScore(text,rubric)).toMatchObject({valid:true,total:1,max_score:2,issues:[]});
+ expect(extractTextScore(text.replace('R02','R03'),rubric).valid).toBe(false);
+ expect(extractTextScore(text+'\nR01：1/1',rubric).valid).toBe(false);
+});

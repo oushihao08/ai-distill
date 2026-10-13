@@ -213,9 +213,9 @@ test('redaction failure stores a safe Codex summary while keeping the user-facin
  await writeFile(join(catalogHome,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'low'}]}]}));
  const priorCodexHome=process.env.CODEX_HOME;process.env.CODEX_HOME=catalogHome;
  const sourceSha='a'.repeat(64),raw=JSON.stringify({source_sha256:sourceSha,pages:[{page:1,text:'private material'}]}),artifactSha=createHash('sha256').update(raw).digest('hex');
- const item={material_id:'material-a',source_sha256:sourceSha,artifact_id:'artifact-a',artifact_sha256:artifactSha},input={input_revision:7,materials:[item]};
+ const item={material_id:'material-a',source_sha256:sourceSha,artifact_id:'artifact-a',artifact_sha256:artifactSha},input={materials:[item]};
  const digest=createHash('sha256').update(JSON.stringify(input)).digest('hex');
- const job={id:'attempt-a',workflow_id:'workflow-a',project_id:'project-a',input_revision:7,input:{...input,digest},config:{provider:'codex',model:'fixture-model',reasoning_effort:'low',prompt:'redact'}};
+ const job={id:'attempt-a',workflow_id:'workflow-a',project_id:'project-a',input:{...input,digest},config:{provider:'codex',model:'fixture-model',reasoning_effort:'low',prompt:'redact'}};
  const writes:{sql:string;values:unknown[]|undefined}[]=[];
  let executed=false;
  const client={release(){},async query(sql:string,values?:unknown[]){

@@ -9,30 +9,26 @@ import {access,realpath,stat} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {basename,dirname,isAbsolute,resolve} from 'node:path';
 import {HTTPException} from 'hono/http-exception';
-import {readCodexModelCatalog,validateCodexModelSettings,type AdvertisedModel} from './models';
+import {validateCodexModelSettings,type AdvertisedModel} from './models';
 
 export const DEFAULT_CODEX_SETTINGS={model:'gpt-6.1-sol',reasoning_effort:'medium'};
 export interface CodexModelSettings {model:string;reasoning_effort:string}
 export type CodexSettingsSource='step'|'project'|'system';
 type CodexSettingsQuery=Pick<Pool,'query'>;
 
-function supportedModelSettings(model:string,reasoning_effort:string):CodexModelSettings{
- return model==='gpt-6-astra'?{model:'gpt-6-luna',reasoning_effort:reasoning_effort==='ultra'?'max':reasoning_effort}:{model,reasoning_effort};
-}
-
 export function mergeCodexDefaults(raw:unknown,defaults:CodexModelSettings):Record<string,unknown>&CodexModelSettings{
  const overrides=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Record<string,unknown>:{};
  const merged={...defaults,...overrides} as Record<string,unknown>&CodexModelSettings;
- return{...merged,...supportedModelSettings(merged.model,merged.reasoning_effort)};
+ return merged;
 }
 
 export async function readCodexSettings(pool:CodexSettingsQuery):Promise<{credential_home:string|null}&CodexModelSettings>{
  const result=await pool.query('SELECT credential_home,model,reasoning_effort FROM ai_distill.system_codex_config WHERE id=1');
  const row=result.rows[0];
- const settings=supportedModelSettings(
+ const settings={model:
   typeof row?.model==='string'?row.model:DEFAULT_CODEX_SETTINGS.model,
-  typeof row?.reasoning_effort==='string'?row.reasoning_effort:DEFAULT_CODEX_SETTINGS.reasoning_effort,
- );
+  reasoning_effort:typeof row?.reasoning_effort==='string'?row.reasoning_effort:DEFAULT_CODEX_SETTINGS.reasoning_effort,
+ };
  return{
   credential_home:typeof row?.credential_home==='string'?row.credential_home:null,
   ...settings,
@@ -51,7 +47,7 @@ export async function readProjectCodexSettings(pool:CodexSettingsQuery,id:string
  ]);
  const row=project.rows[0];
  if(!row)throw new HTTPException(404,{message:'项目不存在'});
- if(typeof row.codex_model==='string'&&typeof row.codex_reasoning_effort==='string')return{...supportedModelSettings(row.codex_model,row.codex_reasoning_effort),source:'project'};
+ if(typeof row.codex_model==='string'&&typeof row.codex_reasoning_effort==='string')return{model:row.codex_model,reasoning_effort:row.codex_reasoning_effort,source:'project'};
  return{...system,source:'system'};
 }
 
@@ -61,8 +57,7 @@ export async function readProjectCodexDefaults(pool:CodexSettingsQuery,id:string
 }
 
 export async function saveProjectCodexSettings(pool:CodexSettingsQuery,id:string,value:unknown,catalog?:AdvertisedModel[]):Promise<CodexModelSettings&{source:'project'}>{
- const system=await readCodexSettings(pool);
- const settings=validateCodexModelSettings(value,catalog??readCodexModelCatalog(system.credential_home??undefined));
+ const settings=validateCodexModelSettings(value,catalog);
  const saved=await pool.query(`UPDATE ai_distill.projects SET codex_model=$2,codex_reasoning_effort=$3
   WHERE id=$1 AND deleted_at IS NULL RETURNING codex_model,codex_reasoning_effort`,[id,settings.model,settings.reasoning_effort]);
  if(!saved.rowCount)throw new HTTPException(404,{message:'项目不存在'});
@@ -114,7 +109,7 @@ export async function saveCodexSettings(pool:Pool,value:unknown,catalog?:Adverti
  const credentialHome=Object.hasOwn(body,'credential_home')?await normalizeCredentialHome(body.credential_home):current.credential_home;
  const hasModelSettings=Object.hasOwn(body,'model')||Object.hasOwn(body,'reasoning_effort');
  const modelSettings=hasModelSettings
-  ?validateCodexModelSettings({model:body.model??current.model,reasoning_effort:body.reasoning_effort??current.reasoning_effort},catalog??readCodexModelCatalog(credentialHome??undefined))
+  ?validateCodexModelSettings({model:body.model??current.model,reasoning_effort:body.reasoning_effort??current.reasoning_effort},catalog)
   :{model:current.model,reasoning_effort:current.reasoning_effort};
  const saved=await pool.query(`INSERT INTO ai_distill.system_codex_config(id,credential_home,model,reasoning_effort) VALUES(1,$1,$2,$3)
   ON CONFLICT(id) DO UPDATE SET credential_home=EXCLUDED.credential_home,model=EXCLUDED.model,reasoning_effort=EXCLUDED.reasoning_effort,updated_at=now()

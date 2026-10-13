@@ -8,7 +8,7 @@ export class CliError extends Error {
 export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 export class ApiClient {
   readonly base: string;
-  constructor(base = 'http://127.0.0.1:3100', private fetcher: Fetcher = fetch) {
+  constructor(base = 'http://127.0.0.1:3700', private fetcher: Fetcher = fetch) {
     let url: URL;
     try { url=new URL(base); } catch { throw new CliError('API 地址无效'); }
     if (!['http:','https:'].includes(url.protocol) || !['127.0.0.1','localhost','[::1]'].includes(url.hostname)

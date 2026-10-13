@@ -4,13 +4,13 @@
  * 使用场景：项目资料 API、出题／审查／评分和 skill 生成；不创建编号项目规则版本。
  */
 import {readdir,lstat,readFile,mkdir,writeFile,rename,rm} from 'node:fs/promises';
-import {join,dirname,resolve,posix} from 'node:path';
+import {join,dirname,resolve,posix,isAbsolute,relative,sep} from 'node:path';
 import {createHash} from 'node:crypto';
 import {HTTPException} from 'hono/http-exception';
 import {classifyLogError,logEvent} from './logging';
 import {validateFolder} from './project-folders';
 export interface RuleFile {path:string;sha256:string;size_bytes:number}
-export interface RuleWorkspace {workspace_path:string;skill_path:string;files:RuleFile[];source_digest:string;assessment:Record<string,unknown>;unresolved:{id:string;detail?:string}[];issues:string[]}
+export interface RuleWorkspace {workspace_path:string;materials_path:string;skill_path:string;files:RuleFile[];source_digest:string;assessment:Record<string,unknown>;unresolved:{id:string;detail?:string}[];issues:string[]}
 export interface ProjectPromptSnapshot {workspace_path:string;skill_path:string;source_digest:string;files:RuleFile[]}
 const hash=(bytes:Uint8Array|string)=>createHash('sha256').update(bytes).digest('hex');
 const fileSignature=(files:RuleFile[])=>JSON.stringify(files.map(file=>[file.path,file.sha256,file.size_bytes]));
@@ -33,22 +33,31 @@ async function inventory(root:string,prefix='',ignoreHidden=true):Promise<RuleFi
   await visit(root,prefix);return files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
  }catch(error){throw error;}
 }
-function sourcePath(view:RuleWorkspace,path:string){return path.startsWith('skill/')?join(view.skill_path,path.slice(6)):join(view.workspace_path,path);}
-export async function scanRuleWorkspace(root:string,skill:string,scope:'workspace'|'skill'='workspace'):Promise<RuleWorkspace>{
+function sourcePath(view:RuleWorkspace,path:string){return path.startsWith('skill/')?join(view.skill_path,path.slice(6)):path.startsWith('materials/')?join(view.materials_path,path.slice(10)):join(view.workspace_path,path);}
+export async function resolveRuleWorkspacePaths(project:{material_root?:string|null;local_skill_path?:string|null}){
+ const workspace=dirname(project.material_root??project.local_skill_path??'');
+ const shared=project.local_skill_path?dirname(project.local_skill_path):workspace;
+ const relativeWorkspace=relative(shared,workspace),sharedIsAncestor=relativeWorkspace===''||(!isAbsolute(relativeWorkspace)&&relativeWorkspace!=='..'&&!relativeWorkspace.startsWith(`..${sep}`));
+ return{workspace_path:workspace,materials_path:join(sharedIsAncestor?shared:workspace,'materials')};
+}
+export async function scanRuleWorkspace(root:string,skill:string,scope:'workspace'|'skill'='workspace',materialsRoot=join(root,'materials')):Promise<RuleWorkspace>{
  try{
   root=await validateFolder(root,'项目工作区');skill=await validateFolder(skill,'本地skill目录');
+  materialsRoot=resolve(materialsRoot);const materialsInfo=await info(materialsRoot);
+  if(materialsInfo?.isSymbolicLink()||materialsInfo&&!materialsInfo.isDirectory())throw new HTTPException(400,{message:'规则资料目录无效'});
+  if(materialsInfo)materialsRoot=await validateFolder(materialsRoot,'项目规则资料目录');
   const manifestInfo=scope==='workspace'?await info(join(root,'project.json')):undefined;
   if(manifestInfo?.isSymbolicLink())throw new HTTPException(400,{message:'规则目录不支持符号链接'});
   let metadata:Record<string,unknown>={};const manifestBytes=manifestInfo?await readFile(join(root,'project.json')):undefined;
   if(manifestBytes){try{metadata=JSON.parse(manifestBytes.toString('utf8'));if(!metadata||typeof metadata!=='object'||Array.isArray(metadata))throw new Error('invalid');}catch{throw new HTTPException(400,{message:'项目project.json格式无效'});}}
-  const files=[...(scope==='workspace'?await inventory(join(root,'materials'),'materials'):[]),...await inventory(skill,'skill')];
+  const files=[...(scope==='workspace'?await inventory(materialsRoot,'materials'):[]),...await inventory(skill,'skill')];
   if(manifestBytes)files.push({path:'project.json',sha256:hash(manifestBytes),size_bytes:manifestBytes.length});
   files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
   if(files.reduce((total,file)=>total+file.size_bytes,0)>100*1024*1024)throw new HTTPException(400,{message:'规则包超过100MB限制'});
   const known=new Set(files.map(file=>file.path));const issues:string[]=[];
   if(scope==='workspace'&&!files.some(file=>file.path.startsWith('materials/')))issues.push('缺少本期规则资料');
   if(!known.has('skill/SKILL.md'))issues.push('缺少skill/SKILL.md入口');
-  const view:RuleWorkspace={workspace_path:root,skill_path:skill,files,issues,source_digest:hash(JSON.stringify([root,skill,fileSignature(files)])),assessment:metadata.assessment&&typeof metadata.assessment==='object'&&!Array.isArray(metadata.assessment)?metadata.assessment as Record<string,unknown>:{},unresolved:Array.isArray(metadata.unresolved)?metadata.unresolved.filter(item=>item&&typeof item==='object'&&typeof item.id==='string'):[]};
+  const view:RuleWorkspace={workspace_path:root,materials_path:materialsRoot,skill_path:skill,files,issues,source_digest:hash(JSON.stringify([root,materialsRoot,skill,fileSignature(files)])),assessment:metadata.assessment&&typeof metadata.assessment==='object'&&!Array.isArray(metadata.assessment)?metadata.assessment as Record<string,unknown>:{},unresolved:Array.isArray(metadata.unresolved)?metadata.unresolved.filter(item=>item&&typeof item==='object'&&typeof item.id==='string'):[]};
   for(const file of files.filter(file=>file.path.startsWith('skill/')&&file.path.endsWith('.md'))){
    const body=await readFile(sourcePath(view,file.path),'utf8');
    if(file.path==='skill/SKILL.md'&&!/^---\r?\n[\s\S]*?\bname:\s*\S+[\s\S]*?\bdescription:\s*\S+[\s\S]*?\r?\n---/.test(body))issues.push('SKILL.md缺少name或description元数据');
@@ -87,6 +96,14 @@ export async function readProjectPrompt(snapshot:ProjectPromptSnapshot):Promise<
   return result;
  }catch(error){if(error instanceof HTTPException)throw error;throw new HTTPException(409,{message:'本次任务的项目提示文件无法读取'});}
 }
+/** 归档／导出验证题目绑定的历史 skill 快照自洽；不拿后续编辑的当前 skill 覆盖历史输入。 */
+export async function verifyFrozenProjectPrompt(snapshot:ProjectPromptSnapshot|undefined):Promise<void>{
+ if(!snapshot||typeof snapshot.workspace_path!=='string'||typeof snapshot.skill_path!=='string'||typeof snapshot.source_digest!=='string'||!Array.isArray(snapshot.files))throw new HTTPException(409,{message:'缺少出题时绑定的项目 skill 指纹，不能归档或导出'});
+ const invalidPath=!isAbsolute(snapshot.workspace_path)||!isAbsolute(snapshot.skill_path)||resolve(snapshot.workspace_path)!==snapshot.workspace_path||resolve(snapshot.skill_path)!==snapshot.skill_path;
+ const invalidFiles=!snapshot.files.some(file=>file?.path==='skill/SKILL.md')||snapshot.files.some((file,index)=>!file||typeof file.path!=='string'||!file.path.startsWith('skill/')||!/^[a-f0-9]{64}$/.test(file.sha256)||!Number.isSafeInteger(file.size_bytes)||file.size_bytes<0||(index>0&&(!snapshot.files[index-1]||snapshot.files[index-1]!.path>=file.path)));
+ const expectedDigest=invalidFiles?'':hash(JSON.stringify([snapshot.workspace_path,snapshot.skill_path,fileSignature(snapshot.files)]));
+ if(invalidPath||invalidFiles||!/^[a-f0-9]{64}$/.test(snapshot.source_digest)||snapshot.source_digest!==expectedDigest)throw new HTTPException(409,{message:'出题时绑定的项目 skill 快照无效，不能归档或导出'});
+}
 export async function verifyRuleSnapshot(root:string,files:RuleFile[]):Promise<void>{
  try{const actual=await inventory(root,'',false);if(fileSignature(actual)!==fileSignature(files))throw new Error('changed');}
  catch{throw new HTTPException(409,{message:'规则快照缺失、被修改或混入其他文件，停止使用'});}
@@ -101,7 +118,7 @@ export async function freezeRuleWorkspace(view:RuleWorkspace,id:string):Promise<
   if((await lstat(parent)).isSymbolicLink())throw new HTTPException(400,{message:'快照目录不支持符号链接'});
   destination=join(parent,id);await mkdir(destination,{mode:0o700});created=true;
   for(const file of view.files){const bytes=await readFile(sourcePath(view,file.path));if(hash(bytes)!==file.sha256)throw new HTTPException(409,{message:'规则资料已变化，请刷新后发布'});const target=join(destination,file.path);await mkdir(dirname(target),{recursive:true,mode:0o700});await writeFile(target,bytes,{mode:0o600,flag:'wx'});}
-  if((await scanRuleWorkspace(view.workspace_path,view.skill_path)).source_digest!==view.source_digest)throw new HTTPException(409,{message:'规则资料已变化，请刷新后发布'});
+  if((await scanRuleWorkspace(view.workspace_path,view.skill_path,'workspace',view.materials_path)).source_digest!==view.source_digest)throw new HTTPException(409,{message:'规则资料已变化，请刷新后发布'});
   await verifyRuleSnapshot(destination,view.files);logEvent('file.snapshot.completed',{level:'info',component:'rules',file_kind:'rule_snapshot',material_count:view.files.length});return destination;
  }catch(error){logEvent('file.snapshot.failed',{level:'error',component:'rules',file_kind:'rule_snapshot',...classifyLogError(error)});if(created&&destination)await rm(destination,{recursive:true,force:true});throw error;}
 }
@@ -113,15 +130,24 @@ export async function readRuleFile(root:string,path:string):Promise<Uint8Array>{
   const bytes=await readFile(current);logEvent('file.read.completed',{level:'info',component:'rules',file_kind:'project_rule_file',output_bytes:bytes.length});return bytes;
  }catch(error){logEvent('file.read.failed',{level:'error',component:'rules',file_kind:'project_rule_file',...classifyLogError(error)});throw error;}
 }
-export async function changeRuleFile(root:string,path:string,bytes:Uint8Array|null,expected:string|null):Promise<void>{
+export async function changeRuleFile(root:string,path:string,bytes:Uint8Array|null,expected:string|null,materialsRoot=join(root,'materials')):Promise<void>{
  let temporary:string|undefined;
  try{
   logEvent('file.change.started',{level:'info',component:'rules',file_kind:'project_rule_file',...(bytes?{input_bytes:bytes.length}:{})});
   localPath(path);
   if(!path.startsWith('materials/')||! /\.(md|txt|json|csv|docx|xlsx|pdf|png|jpe?g|html)$/i.test(path))throw new HTTPException(400,{message:'只能修改materials目录中的支持文件，路径无效'});
   if(bytes&&(!bytes.length||bytes.length>30*1024*1024))throw new HTTPException(400,{message:'规则资料须大于0且不超过30MB'});
-  let parent=resolve(root);for(const part of path.split('/').slice(0,-1)){parent=join(parent,part);await mkdir(parent,{recursive:true,mode:0o700});if((await lstat(parent)).isSymbolicLink())throw new HTTPException(400,{message:'规则目录不支持符号链接'});}
-  const target=join(resolve(root),path),current=await info(target);
+  let parent=resolve(materialsRoot);const rootInfo=await info(parent);
+  if(rootInfo?.isSymbolicLink()||rootInfo&&!rootInfo.isDirectory())throw new HTTPException(400,{message:'规则目录不支持符号链接或文件'});
+  if(bytes&&!rootInfo)await mkdir(parent,{recursive:true,mode:0o700});
+  const relativePath=path.slice('materials/'.length),parts=relativePath.split('/');
+  for(const part of parts.slice(0,-1)){
+   parent=join(parent,part);const directory=await info(parent);
+   if(!directory&&bytes)await mkdir(parent,{recursive:true,mode:0o700});
+   const currentDirectory=await info(parent);if(currentDirectory?.isSymbolicLink()||currentDirectory&&!currentDirectory.isDirectory())throw new HTTPException(400,{message:'规则目录不支持符号链接或文件'});
+   if(!currentDirectory&&!bytes)throw new HTTPException(404,{message:'规则文件不存在'});
+  }
+  const target=join(resolve(materialsRoot),relativePath),current=await info(target);
   if(current?.isSymbolicLink()||current?.isDirectory())throw new HTTPException(400,{message:'规则文件路径不支持符号链接或目录'});
   if(current ? !expected||hash(await readFile(target))!==expected : expected!==null)throw new HTTPException(409,{message:'规则文件已变化，请刷新后修改'});
   if(!bytes){if(!current)throw new HTTPException(404,{message:'规则文件不存在'});await rm(target);logEvent('file.change.completed',{level:'info',component:'rules',file_kind:'project_rule_file',state:'deleted'});return;}

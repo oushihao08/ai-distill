@@ -1,4 +1,4 @@
-/** 验证出题队列拒绝过期材料版本，并稳定核验返修快照指纹。
+/** 验证出题队列拒绝过期材料版本并稳定核验输入指纹。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import {test,expect} from 'bun:test';
@@ -8,21 +8,10 @@ import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
 
-import {enqueueAuthoring,hydrateRevisionEvaluationEvidence,runNextAuthoring,inputDigest} from './jobs';
+import {enqueueAuthoring,runNextAuthoring,inputDigest} from './jobs';
 import {scanProjectPrompt} from '../rule-files';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const empty={rows:[],rowCount:0};
-
-test('revision history hydrates only the referenced answer and matching score record',async()=>{
- const answerText='模型完整答案',scoreText='考点1：1/2分，理由：答案没有写明条件。';
- const db={async query(sql:string){
-  if(sql.includes('ordinal=5'))return{rows:[{id:'answer-1',status:'succeeded',result:{text:answerText,question_version:'qv1',answer_sha256:hash(answerText)}}]};
-  if(sql.includes('ordinal=6'))return{rows:[{id:'score-1',status:'succeeded',input:{context:{binding:{answer_attempt_id:'answer-1',question_version:'qv1',rubric_version:'rv1'}}},result:{validation:{valid:true},raw_text:scoreText,report:{total:1,max_score:2}}}]};
-  return empty;
- }} as any;
- const evidence={evaluation_records:[{attempt:1,models:[{model_id:'model-a',status:'not_passed',answer_attempt_id:'answer-1',score_attempt_id:'score-1',question_version:'qv1',rubric_version:'rv1',answer_sha256:hash(answerText),score_sha256:hash(scoreText)},{model_id:'legacy',status:'passed'}]}]};
- await expect(hydrateRevisionEvaluationEvidence(db,'workflow',evidence)).resolves.toEqual({evaluation_records:[{attempt:1,models:[{...evidence.evaluation_records[0]!.models[0],details_available:true,answer_text:answerText,score_text:scoreText,score_text_source:'raw_text',score_report:{total:1,max_score:2}},{model_id:'legacy',status:'passed',details_available:false}]}]});
-});
 
 async function projectFixture(){
  const root=await mkdtemp(join(tmpdir(),'fresh-author-jobs-')),skill=join(root,'skill');await mkdir(skill);
@@ -95,14 +84,6 @@ test.each([false,true])('old ordinary queued inputs never dispatch even with fee
   expect(called).toBe(false);expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
-
- test('revision snapshot digest survives JSONB object key ordering without hiding evidence changes',()=>{
- const frozen:any={title:'题目',rule_version_id:'rule',rule_attempt_id:'rules',rule_source_digest:'digest',rule_snapshot_path:'path',rule_files:[],redaction_attempt_id:'redaction',materials:[],revision:{mode:'rubric',source_attempt_id:'source',chain_id:'chain',round_id:'round',evidence:{quality_check:{checks:{rubric_consistent:false,material_grounding:true},issues:[]}}}};
- const reordered=JSON.parse(JSON.stringify(frozen,(_key,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.keys(value).reverse().map(key=>[key,value[key]])):value));
- expect(inputDigest(frozen)).toBe(inputDigest(reordered));
- reordered.revision.evidence.quality_check.checks.material_grounding=false;
- expect(inputDigest(frozen)).not.toBe(inputDigest(reordered));
- });
 
 
 test('project identity participates in author input digest without changing legacy digests',()=>{

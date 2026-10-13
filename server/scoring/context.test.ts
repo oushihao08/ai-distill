@@ -8,6 +8,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {readScoreContext} from './context';
 import {inputDigest} from '../answer-models/input';
+import type{PoolClient}from'pg';
 
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 test.each([false,true])('scoring context identifies the project and supports legacy=%s',async(legacy)=>{
@@ -28,6 +29,42 @@ test.each([false,true])('scoring context identifies the project and supports leg
   const context=await readScoreContext(db,'workflow','answer',legacy);
   expect(context).toMatchObject({project_name:'本期项目',question_id:'题目1',answer_approach:'先核对材料',reference_answer:'依据材料作答'});
   if(legacy)expect(context.project_rules).toEqual({version_id:'rules-v1',source_digest:hash('rules'),snapshot_path:snapshot,files});
-  else{expect(context.project_rules).toBeUndefined();expect(context.project_prompt?.files).toEqual(files);}
+  else{expect(context.project_rules).toBeUndefined();expect(context.project_prompt).toBeUndefined();}
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+function failedAggregateContext(options:{summary?:readonly {attempt_id:string;status:string;answer_sha256:string}[];question_attempt_id?:string;result_input_digest?:string}={}){
+ const answerInput={question_version:'q1',question:'题目',question_attempt_id:options.question_attempt_id??'author',materials:[{name:'附件1',text:'材料'}],attachments:[{id:'attachment',sha256:hash('材料')}],input_digest:''};
+ answerInput.input_digest=inputDigest({question_version:answerInput.question_version,question:answerInput.question,materials:answerInput.materials,attachments:answerInput.attachments});
+ const answerResult={text:'答案',input_digest:options.result_input_digest??answerInput.input_digest,answer_sha256:hash('答案')};
+ const authorResult={question_version:'q1',question:'题目',attachment_ids:['attachment'],answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:'r1',rubric:[{id:'fact',criterion:'依据材料',max_score:1}],answer_approach:'核对材料',reference_answer:'依据材料作答'};
+ const summary=options.summary??[{attempt_id:'answer',status:'succeeded',answer_sha256:answerResult.answer_sha256}];
+ const db={query:async(sql:string)=>{
+  if(sql.startsWith('SELECT w.rule_version_id'))return{rows:[{project_name:'本期项目',title:'题目1',source_key:'题目1',local_skill_path:'/tmp/skill',material_root:'/tmp/questions'}]};
+  if(sql.startsWith('SELECT a.input,a.result')){
+   expect(sql).toContain("s.status='failed'");expect(sql).toContain("model->>'attempt_id'=a.id::text");expect(sql).toContain("model->>'status'='succeeded'");expect(sql).toContain("model->>'answer_sha256'=a.result->>'answer_sha256'");
+   const visible=summary.some(item=>item.attempt_id==='answer'&&item.status==='succeeded'&&item.answer_sha256===answerResult.answer_sha256);
+   return{rows:visible?[{input:answerInput,result:answerResult}]:[]};
+  }
+  if(sql.startsWith('SELECT a.id,a.input,a.result'))return{rows:[{id:'author',input:{},result:authorResult}]};
+  throw new Error(`unexpected query: ${sql}`);
+ }} as unknown as PoolClient;
+ return{db};
+}
+
+test('failed model aggregate still permits its current successful answer to be scored',async()=>{
+ const {db}=failedAggregateContext();
+ const context=await readScoreContext(db,'workflow','answer');
+ expect(context).toMatchObject({binding:{answer_attempt_id:'answer',answer_sha256:hash('答案')},answer:'答案'});
+});
+
+test.each([
+ {summary:[{attempt_id:'older-answer',status:'succeeded',answer_sha256:hash('答案')}]},
+ {summary:[{attempt_id:'answer',status:'failed',answer_sha256:hash('答案')}]},
+ {summary:[{attempt_id:'answer',status:'succeeded',answer_sha256:hash('旧答案')}]},
+ {result_input_digest:'wrong-digest'},
+ {question_attempt_id:'older-author'},
+])('rejects a failed aggregate answer with stale or mismatched binding: %o',async options=>{
+ const {db}=failedAggregateContext(options);
+ await expect(readScoreContext(db,'workflow','answer')).rejects.toThrow();
 });

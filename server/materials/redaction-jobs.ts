@@ -3,8 +3,7 @@
  * 关键方法与用途：`enqueueRedaction()` 冻结原文与模型配置；`runNextRedaction()` 消费任务并保存当前版本清洁附件；摘要函数固定输入。
  * 使用场景：`app.ts` 派发，`worker.ts` 执行；不会改写来源文件。
  */
-import {readRevisionSettings,bindRevisionAttempt} from '../decisions/revision-binding';
-import {runRevisionCall} from '../decisions/revision-calls';
+import {runExternalCall} from '../external-call';
 import {runAgent} from '../agent';
 import {createModelApiClient} from '../llm-api';
 import {mergeRedactionDefaults} from './redaction-config';
@@ -15,9 +14,9 @@ import {mkdir,writeFile,rm} from 'node:fs/promises';
 import {join,resolve,relative} from 'node:path';
 import {watchTaskCancellation} from '../task-signal';
 import {validateStepConfig} from '../project-folders';
-import {readConfiguredAgentModelCatalog,readProjectAgentDefaults} from '../agent/config';
+import {readProjectAgentDefaults} from '../agent/config';
 import {DEFAULT_REDACTION_PROMPT} from '@shared/step-registry';
-import {redactExtractedMaterials,type ExtractedMaterial} from './redaction';
+import {REDACTION_PROTOCOL_VERSION,redactExtractedMaterials,type ExtractedMaterial} from './redaction';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 function redactionFailureSummary(error:unknown){
@@ -36,15 +35,7 @@ function redactionFailureSummary(error:unknown){
 type RedactionSource={material_id:string;original_name?:string;source_sha256:string;artifact_id:string;artifact_sha256:string};
 const digestMaterials=(materials:RedactionSource[])=>materials.map(item=>({material_id:item.material_id,source_sha256:item.source_sha256,artifact_id:item.artifact_id,artifact_sha256:item.artifact_sha256}));
 export const redactionInputDigest=(materials:RedactionSource[])=>hash(JSON.stringify({materials:digestMaterials(materials)}));
-function matchingRedactionDigest(materials:RedactionSource[],digest:unknown,legacyRevision?:unknown):'current'|'legacy'|null{
- if(typeof digest!=='string')return null;
- if(redactionInputDigest(materials)===digest)return'current';
- if(Number.isSafeInteger(legacyRevision)){
-  const legacy=hash(JSON.stringify({input_revision:legacyRevision,materials:digestMaterials(materials)}));
-  if(legacy===digest)return'legacy';
- }
- return null;
-}
+function matchingRedactionDigest(materials:RedactionSource[],digest:unknown):boolean{return typeof digest==='string'&&redactionInputDigest(materials)===digest;}
 const defaultConfig={provider:'api',prompt:DEFAULT_REDACTION_PROMPT};
 
 async function currentSources(db:Pool|PoolClient,id:string){
@@ -59,7 +50,7 @@ async function currentSources(db:Pool|PoolClient,id:string){
  * 仅在当前材料入库及文本提取已完成、脱敏步骤启用时创建任务，并冻结材料指纹与所选执行方式配置。
  * 相同版本、输入摘要和配置复用已有尝试；创建新输入后使依赖旧脱敏结果的下游状态失效。
  */
-export async function enqueueRedaction(pool:Pool,id:string,roundId?:string){
+export async function enqueueRedaction(pool:Pool,id:string){
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
@@ -69,11 +60,9 @@ export async function enqueueRedaction(pool:Pool,id:string,roundId?:string){
   if(gate.length!==3||!gate.find(row=>row.ordinal===9)?.enabled)throw new HTTPException(409,{message:'此项目未启用脱敏步骤'});
   if(gate.find(row=>row.ordinal===1)?.status!=='succeeded'||!['succeeded','skipped'].includes(gate.find(row=>row.ordinal===2)?.status))throw new HTTPException(409,{message:'原始文本尚未完成入库'});
   const sources=await currentSources(db,id);
-  const settings=await readRevisionSettings(db,id,roundId);
-  const frozen=settings?.configs?.['9'];
-  const raw=settings?{...defaultConfig,...(frozen??{})}:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=9',[workflow.project_id])).rows[0]?.config??defaultConfig;
+  const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=9',[workflow.project_id])).rows[0]?.config??defaultConfig;
   const merged=mergeRedactionDefaults(raw,raw?.provider==='codex'||!raw?.provider&&typeof raw?.model==='string'?await readProjectAgentDefaults(db,workflow.project_id):{model:'',reasoning_effort:''});
-  const config={...validateStepConfig(9,merged,merged.provider==='codex'?await readConfiguredAgentModelCatalog(db):undefined),text_layout:'attachment-page-boundaries'};
+  const config={...validateStepConfig(9,merged),text_layout:REDACTION_PROTOCOL_VERSION};
   const input={materials:sources};
   const digest=redactionInputDigest(input.materials);
   // A settings change invalidates the current step, even when an older attempt used identical settings.
@@ -81,7 +70,6 @@ export async function enqueueRedaction(pool:Pool,id:string,roundId?:string){
   if(previous){await db.query('COMMIT');withLogContext({component:'redaction',workflow_id:id,project_id:workflow.project_id,ordinal:9,attempt_id:previous.id,operation:'redaction_enqueue'},()=>logEvent('attempt.reused',{level:'info',state:'waiting'}));return{id:previous.id,reused:true};}
   const attempt=crypto.randomUUID();
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,9,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=9",[id,attempt,JSON.stringify({...input,digest}),JSON.stringify(config)]);
-  await bindRevisionAttempt(db,id,attempt,roundId);
   await db.query("UPDATE ai_distill.steps SET status='waiting',implemented=true,result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=9",[id]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal IN (4,5,6,7,8,10)",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='脱敏输入或设置变化，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal IN (4,5,6,7,8,10) AND status IN ('waiting','running')",[id]);
@@ -126,28 +114,28 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
  let heartbeatFailed=false,lastHeartbeatAt=new Date().toISOString();
  let heartbeatInFlight=false;
  const heartbeat=setInterval(()=>{if(heartbeatInFlight)return;heartbeatInFlight=true;withLogContext(taskContext,()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('脱敏任务心跳写入失败');}heartbeatFailed=true;}).finally(()=>{heartbeatInFlight=false;}));},10000);
- const directory=join(resolve(root),job.workflow_id,job.id);let wrote=false,digestMode:'current'|'legacy'|null=null,failurePhase='input_validation';
+ const directory=join(resolve(root),job.workflow_id,job.id),checkpointDirectory=join(resolve(root),job.workflow_id,'redaction-checkpoints');let wrote=false,failurePhase='input_validation';
  try{
+  if(job.config?.text_layout!==REDACTION_PROTOCOL_VERSION)throw Object.assign(new Error('脱敏任务协议已更新，请重新派发'),{reason_code:'redaction_protocol_mismatch'});
   const {digest,...input}=job.input;
-  digestMode=matchingRedactionDigest(input.materials,digest,input.input_revision);
-  if(!input||!digestMode||(digestMode==='legacy'&&job.input_revision!==input.input_revision))throw new Error('stale snapshot');
+  if(!input||!matchingRedactionDigest(input.materials,digest))throw new Error('stale snapshot');
   const sources=await currentSources(pool,job.workflow_id);
-  if(matchingRedactionDigest(sources,digest,input.input_revision)!==digestMode)throw new Error('stale source');
+  if(!matchingRedactionDigest(sources,digest))throw new Error('stale source');
 
   const materials:ExtractedMaterial[]=[];
   for(const item of input.materials)materials.push(await readSource(pool,item,job.workflow_id));
   // text_layout 是任务产物格式标记，不是用户可编辑的模型设置。
   const executionConfig={...job.config};delete executionConfig.text_layout;
-  const config=validateStepConfig(9,executionConfig,job.config?.provider==='codex'?await readConfiguredAgentModelCatalog(pool):undefined);
+  const config=validateStepConfig(9,executionConfig);
   if(!('prompt' in config)||typeof config.prompt!=='string')throw new Error('脱敏设置缺少提示词');
   const provider=config.provider==='api'?config.api.provider:'codex',model=config.provider==='api'?config.api.model:config.model;
   failurePhase='agent_execution';
   const output=await withLogContext({...taskContext,model,provider},()=>{
    logEvent('attempt.input_validated',{level:'info',material_count:materials.length,page_count:materials.reduce((sum,item)=>sum+item.pages.length,0)});
-   return redactExtractedMaterials({directory:join(directory,'private'),materials,config,signal,
-    execute:options=>runRevisionCall(pool,job.id,'redaction',(remaining,call_id)=>execute({...options,call_id,timeout_ms:Math.min(options.timeout_ms??1800000,remaining??1800000)})),
-    executeApi:(request,callKey)=>runRevisionCall(pool,job.id,callKey,async(remaining,call_id)=>{
-     try{return{...await createModelApiClient().complete({...request,call_id,timeout_ms:Math.min(request.timeout_ms??1800000,remaining??1800000)}),call_id};}
+   return redactExtractedMaterials({directory:join(directory,'private'),checkpointDirectory,materials,config,signal,
+    execute:options=>runExternalCall({attempt_id:job.id,operation:'redaction'},call_id=>execute({...options,call_id,timeout_ms:Math.min(options.timeout_ms??1800000,1800000)})),
+    executeApi:(request,callKey)=>runExternalCall({attempt_id:job.id,operation:callKey},async call_id=>{
+     try{return{...await createModelApiClient().complete({...request,call_id,timeout_ms:Math.min(request.timeout_ms??1800000,1800000)}),call_id};}
      catch(error){if(error instanceof Error)Object.assign(error,{call_id});throw error;}
     }),
    });
@@ -172,16 +160,18 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
    const current=await tx.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[job.workflow_id]);
    const active=await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE",[job.id]);
    const sourcesNow=await currentSources(tx,job.workflow_id);
-   if(!current.rowCount||!active.rowCount||matchingRedactionDigest(sourcesNow,digest,input.input_revision)!==digestMode)throw new Error('任务附件已失效，结果未发布');
+   if(!current.rowCount||!active.rowCount||!matchingRedactionDigest(sourcesNow,digest))throw new Error('任务附件已失效，结果未发布');
    for(const file of files)await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[crypto.randomUUID(),job.workflow_id,job.id,file.kind,file.storage_path,file.sha256,file.size_bytes,file.content]);
    await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1",[job.id,JSON.stringify(result),output.session_id]);
    await tx.query("UPDATE ai_distill.steps SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=9",[job.workflow_id,JSON.stringify(result)]);
    await tx.query("UPDATE ai_distill.materials SET processing_status='redacted' WHERE workflow_id=$1 AND deleted_at IS NULL",[job.workflow_id]);
    await tx.query('COMMIT');
    withLogContext({...taskContext,provider,model},()=>logEvent('state_update.committed',{level:'info',state:'succeeded',material_count:materials.length,page_count:result.page_count,output_bytes:files.reduce((sum,file)=>sum+file.size_bytes,0)}));
+   if(output.checkpoint_path)try{await rm(output.checkpoint_path,{force:true});}catch(cleanupError){withLogContext(taskContext,()=>logEvent('file.cleanup_or_commit_check_failed',{level:'warn',file_kind:'redaction_checkpoint',...classifyLogError(cleanupError)}));}
   }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
  }catch(error){
-  withLogContext(taskContext,()=>logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error),failure_phase:failurePhase}));
+  const classified=classifyLogError(error),effectiveFailurePhase=classified.error_kind==='invalid_response'?'output_validation':failurePhase;
+  withLogContext(taskContext,()=>logEvent('attempt.failed',{level:'error',state:'failed',...classified,failure_phase:effectiveFailurePhase}));
   if(wrote)try{const status=await pool.query('SELECT status FROM ai_distill.step_attempts WHERE id=$1',[job.id]);if(status.rows[0]?.status!=='succeeded')await rm(directory,{recursive:true,force:true});}catch(cleanupError){withLogContext(taskContext,()=>logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'redacted_outputs',...classifyLogError(cleanupError)}));console.error('无法确认脱敏结果发布状态，保留文件等待核对');}
   const failed=await pool.connect(),summary=redactionFailureSummary(error),safeError='脱敏执行失败或结果校验未通过，可检查配置后重试';
   try{await failed.query('BEGIN');const current=await failed.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[job.workflow_id]);const updated=await failed.query("UPDATE ai_distill.step_attempts SET status='failed',result=COALESCE(result,'{}'::jsonb)||jsonb_build_object('error',$3::jsonb),error=$2,finished_at=now() WHERE id=$1 AND status='running'",[job.id,safeError,JSON.stringify(summary)]);if(updated.rowCount)await failed.query("UPDATE ai_distill.steps SET status='failed',result=COALESCE(result,'{}'::jsonb)||jsonb_build_object('error',$3::jsonb),error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=9 AND status='running'",[job.workflow_id,safeError,JSON.stringify(summary)]);await failed.query('COMMIT');withLogContext(taskContext,()=>logEvent(updated.rowCount?'state_update.committed':'state_update.unchanged',{level:updated.rowCount?'info':'warn',state:updated.rowCount?'failed':'unchanged'}));}catch(failure){withLogContext(taskContext,()=>logEvent('state_update.failed',{level:'error',...classifyLogError(failure)}));await failed.query('ROLLBACK');throw failure;}finally{failed.release();}

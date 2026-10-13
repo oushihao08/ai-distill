@@ -3,19 +3,24 @@
  * 关键方法与用途：`enqueueExtraction()` 冻结解析设置并排队；`runNextExtraction()` 领取当前版本任务、复用缓存并发布页级文本。
  * 使用场景：`app.ts` 与目录入库队列派发，`worker.ts` 消费。
  */
-import {runRevisionCall} from '../decisions/revision-calls';
+import {runExternalCall} from '../external-call';
 import {ProjectDocumentExtractor,DocumentProviderError,type DocumentExtractor} from './document';
 import {invalidateMaterialResults} from './state';
 import {MINERU_OCR_VERSION,MineruCliPdfExtractor} from './pdf-extraction/mineru-cli';
+import {MineruApiFirstPdfExtractor,MineruApiPdfExtractor} from './pdf-extraction/mineru-api';
 import {watchTaskCancellation,withTaskSignal} from '../task-signal';
 import type { Pool } from 'pg';
 import { HTTPException } from 'hono/http-exception';
-import { createVisionClient } from './vision';
-import { clearExtractionCheckpoints, processMaterials, type InputMaterial, type ExtractionCache } from './process';
-import { loadExtractionConfig } from './config';
+import { processMaterials, type InputMaterial, type ExtractionCache } from './process';
 import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
+export function resolvePdfProvider(env:NodeJS.ProcessEnv=process.env):'mineru-api'|'mineru-cli'{
+ const provider=env.PDF_EXTRACTION_PROVIDER||'mineru-api';
+ if(provider!=='mineru-api'&&provider!=='mineru-cli')throw new HTTPException(503,{message:'当前仅支持MinerU API或CLI解析'});
+ if(!env.MINERU_KEY)throw new HTTPException(503,{message:'使用MinerU前请配置MINERU_KEY'});
+ return provider;
+}
 export async function enqueueExtraction(pool: Pool, id: string) {
  const client = await pool.connect();
  try {
@@ -29,14 +34,8 @@ export async function enqueueExtraction(pool: Pool, id: string) {
   if(!materialCheck.rows[0]?.pdfs){await client.query("UPDATE ai_distill.steps SET status='skipped',enabled=false,result=$2::jsonb,finished_at=now() WHERE workflow_id=$1 AND ordinal=2",[id,JSON.stringify({reason:'没有PDF，无需单独OCR'})]);await client.query("UPDATE ai_distill.steps SET status='succeeded',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[id]);await client.query('COMMIT');return{id:'',reused:true,completed:true,status:'skipped'};}
   if(!['succeeded','waiting','running','failed'].includes(steps.rows[0].status)) throw new HTTPException(409,{message:'材料入库尚未完成'});
   const materials=(await client.query("SELECT id,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND lower(original_name) LIKE '%.pdf' ORDER BY id",[id])).rows;
-  const extraction=loadExtractionConfig();
-  const pdfProvider=process.env.PDF_EXTRACTION_PROVIDER||(process.env.MINERU_KEY?'mineru-cli':'glm-ocr');
-  if(!['mineru-cli','glm-ocr'].includes(pdfProvider))throw new HTTPException(503,{message:'PDF_EXTRACTION_PROVIDER只支持mineru-cli或glm-ocr'});
-  if(pdfProvider==='mineru-cli'&&!process.env.MINERU_KEY)throw new HTTPException(503,{message:'使用MinerU CLI前请配置MINERU_KEY'});
-  const model=pdfProvider==='mineru-cli'?'mineru-vlm':'glm-ocr';
-  const baseUrl=pdfProvider==='mineru-cli'?'https://mineru.net':'https://open.bigmodel.cn/api/paas/v4';
-  const ocrVersion=pdfProvider==='mineru-cli'?MINERU_OCR_VERSION:'glm-ocr-layout-v1';
-  const config={pdf_provider:pdfProvider,model,base_url:pdfProvider==='glm-ocr'?(process.env.ZHIPU_BASE_URL??baseUrl):baseUrl,ocr_version:ocrVersion,processor:'pdf-text-ingestion-v2',extraction};
+  const pdfProvider=resolvePdfProvider();
+  const config={pdf_provider:pdfProvider,model:'mineru-vlm',base_url:'https://mineru.net',ocr_version:MINERU_OCR_VERSION,processor:'pdf-text-ingestion-structured-v1'};
   // Keep active work unique; only successful work with the same frozen configuration is reusable.
   const previous=await client.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=2 AND input->'materials'=$2::jsonb AND (status IN ('waiting','running') OR (status='succeeded' AND config=$3::jsonb)) ORDER BY attempt DESC LIMIT 1",[id,JSON.stringify(materials),JSON.stringify(config)]);
   if(previous.rowCount){await client.query('COMMIT');return{id:previous.rows[0].id,reused:true};}
@@ -76,26 +75,21 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
  try{
   const materials=await pool.query("SELECT id,storage_path,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND lower(original_name) LIKE '%.pdf' ORDER BY created_at,id",[job.workflow_id]);
   if(JSON.stringify(materials.rows.map(({id,sha256})=>({id,sha256})).sort((a,b)=>a.id.localeCompare(b.id)))!==JSON.stringify(job.input?.materials))throw new Error('任务附件已变化，结果未发布');
-  const cacheRows=await pool.query("SELECT DISTINCT ON (m.sha256) m.sha256 AS source_sha256,ar.storage_path,ar.sha256,a.id AS attempt_id,m.id AS material_id FROM ai_distill.artifacts ar JOIN ai_distill.materials m ON m.id=ar.material_id JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE m.workflow_id=$1 AND lower(m.original_name) LIKE '%.pdf' AND ar.kind='private_extracted_pages' AND a.ordinal=2 AND COALESCE(a.config->>'pdf_provider','glm-ocr')=COALESCE($2::jsonb->>'pdf_provider','glm-ocr') AND (a.config->>'ocr_version')=($2::jsonb->>'ocr_version') AND (a.config->>'model')=($2::jsonb->>'model') AND (a.config->>'base_url')=($2::jsonb->>'base_url') AND (a.config#>>'{extraction,extractionPrompt}')=($2::jsonb#>>'{extraction,extractionPrompt}') AND COALESCE(a.config#>>'{extraction,ocrReasoningEffort}',a.config#>>'{extraction,reasoningEffort}') IS NOT DISTINCT FROM COALESCE($2::jsonb#>>'{extraction,ocrReasoningEffort}',$2::jsonb#>>'{extraction,reasoningEffort}') ORDER BY m.sha256,ar.created_at DESC,ar.id DESC",[job.workflow_id,JSON.stringify(job.config)]);
+  const cacheRows=await pool.query("SELECT DISTINCT ON (m.sha256) m.sha256 AS source_sha256,ar.storage_path,ar.sha256,a.id AS attempt_id,m.id AS material_id FROM ai_distill.artifacts ar JOIN ai_distill.materials m ON m.id=ar.material_id JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE m.workflow_id=$1 AND lower(m.original_name) LIKE '%.pdf' AND ar.kind='private_extracted_pages' AND a.ordinal=2 AND COALESCE(a.config->>'pdf_provider','glm-ocr')=COALESCE($2::jsonb->>'pdf_provider','glm-ocr') AND (a.config->>'ocr_version')=($2::jsonb->>'ocr_version') AND (a.config->>'model')=($2::jsonb->>'model') AND (a.config->>'base_url')=($2::jsonb->>'base_url') ORDER BY m.sha256,ar.created_at DESC,ar.id DESC",[job.workflow_id,JSON.stringify(job.config)]);
   const caches = new Map<string,ExtractionCache>(cacheRows.rows.map(row=>[row.source_sha256,row]));
-  const repairIds=job.input?.material_repair?.material_ids as string[]|undefined;
-  const inputs:InputMaterial[] = materials.rows.map(material=>({...material,extraction_cache:repairIds?.includes(material.id)?undefined:caches.get(material.sha256)}));
-  const config=job.config.extraction;
-  const vision=createVisionClient({...process.env,ZHIPU_MODEL:job.config.pdf_provider==='glm-ocr'?job.config.model:process.env.ZHIPU_MODEL,ZHIPU_BASE_URL:job.config.pdf_provider==='glm-ocr'?(job.config.base_url??process.env.ZHIPU_BASE_URL):process.env.ZHIPU_BASE_URL},fetch,config);
-  const pdfProvider=job.config.pdf_provider==='mineru-cli'?new MineruCliPdfExtractor(process.env):undefined;
-  if(job.config.pdf_provider&& !['mineru-cli','glm-ocr'].includes(job.config.pdf_provider))throw new Error('任务快照中的PDF解析器不受支持');
-  const original=new ProjectDocumentExtractor({...process.env,ZHIPU_BASE_URL:job.config.pdf_provider==='glm-ocr'?(job.config.base_url??process.env.ZHIPU_BASE_URL):process.env.ZHIPU_BASE_URL},fetch,pdfProvider);
+  const inputs:InputMaterial[] = materials.rows.map(material=>({...material,extraction_cache:caches.get(material.sha256)}));
+  if(job.config.pdf_provider!=='mineru-api'&&job.config.pdf_provider!=='mineru-cli')throw new Error('任务未冻结为MinerU解析配置，已停止调用');
+  const cliProvider=new MineruCliPdfExtractor(process.env);
+  const pdfProvider=job.config.pdf_provider==='mineru-cli'?cliProvider:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cliProvider);
+  const original=new ProjectDocumentExtractor(pdfProvider);
   const extractor:DocumentExtractor={extract:async(path,signal)=>{
    const material=inputs.find(item=>join(resolve(root),item.storage_path)===path);
-   if(repairIds&&(!material||!repairIds.includes(material.id)))throw new Error('原件健康缓存缺失，需核对后恢复');
-   return await runRevisionCall(pool,job.id,`material:${material?.id??path}`,async (remaining,call_id)=>withLogContext({call_id},async()=>{
-    logEvent('call.started',{level:'info',material_id:material?.id});
-    const bounded=remaining===undefined?signal:AbortSignal.any([AbortSignal.timeout(remaining),...(signal?[signal]:[])]);
-    try{const result=await original.extract(path,bounded);logEvent('call.completed',{level:'info',material_id:material?.id,page_count:result.pages.length});return{...result,duration_ms:0};}
-    catch(error){logEvent('call.failed',{level:'error',material_id:material?.id,...classifyLogError(error)});throw error;}
-   }));
+   return await runExternalCall({attempt_id:job.id,operation:`material:${material?.id??path}`,...(material?.id?{material_id:material.id}:{})},async()=>{
+    const result=await original.extract(path,signal);
+    return{...result,duration_ms:0};
+   });
   }};
-  publication=await withTaskSignal(cancellation.signal,()=>processor(root,job.workflow_id,job.id,inputs,vision,extractor,config));
+  publication=await withTaskSignal(cancellation.signal,()=>processor(root,job.workflow_id,job.id,inputs,undefined,extractor));
   if(signal?.aborted){await requeueExtraction(pool,job);return true;}
   const db=await pool.connect();
   try{
@@ -114,7 +108,6 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
    await db.query('COMMIT');
    logEvent('attempt.completed',{level:publication.blocked?'error':'info',state:status});
   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
-  try{await clearExtractionCheckpoints(root,job.workflow_id,inputs,vision,config);}catch{console.error('已发布提取结果，但无法清理私有逐页缓存。');}
  }catch(error){
   if(signal?.aborted){await requeueExtraction(pool,job);return true;}
   logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)});
@@ -135,7 +128,7 @@ async function requeueExtraction(pool:Pool,job:any){
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
-  const updated=await db.query("UPDATE ai_distill.step_attempts SET status='waiting',started_at=NULL,heartbeat_at=NULL WHERE id=$1 AND status='running' RETURNING id",[job.id]);
+  const updated=await db.query("UPDATE ai_distill.step_attempts SET status='waiting',started_at=now(),heartbeat_at=NULL WHERE id=$1 AND status='running' RETURNING id",[job.id]);
   if(updated.rowCount){
    await db.query("UPDATE ai_distill.steps SET status='waiting',started_at=NULL,error=NULL WHERE workflow_id=$1 AND ordinal IN (1,2) AND status='running'",[job.workflow_id]);
    await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[job.workflow_id]);

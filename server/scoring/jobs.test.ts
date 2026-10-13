@@ -3,6 +3,7 @@
  */
 import {test,expect,beforeAll,afterAll} from 'bun:test';
 import {enqueueScore,runNextScore,scoreContextDigest} from './jobs';
+import {scoreExecutionInstructions} from './executor';
 import type {Pool} from 'pg';
 import {createHash} from 'node:crypto';
 import {inputDigest} from '../answer-models/input';
@@ -17,21 +18,23 @@ afterAll(async()=>{if(previousCodexHome===undefined)delete process.env.CODEX_HOM
 const rubric=[{id:'amount',criterion:'指出100元',max_score:1}];
 const input={question_version:'v1',question:'多少',materials:[{name:'附件1',text:'欠款100元'}],attachments:[{id:'attachment',sha256:hash('欠款100元')}]};
 const context={question:input.question,materials:input.materials,answer:'100元',rubric,answer_approach:'核对金额',reference_answer:'100元',project_rules:projectRules,binding:{question_version:'v1',input_digest:inputDigest(input),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'answer',answer_sha256:hash('100元')}};
-function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:boolean;inactive?:boolean;stale?:boolean;answers?:{id:string;text:string}[];bundle?:any[];scoreRows?:any[]}={}){
+function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:boolean;inactive?:boolean;stale?:boolean;answerStepStatus?:string;answers?:{id:string;text:string}[];bundle?:any[];scoreRows?:any[];provider?:'codex'|'api'}={}){
  const calls:{sql:string;values:any[]}[]=[];let claim=false,activeConnections=0;
- const job:any={id:'grade',workflow_id:'workflow',input:{context:structuredClone(context),digest:scoreContextDigest(context)},config:{provider:'codex',model:'gpt-6-luna',reasoning_effort:'medium'}};
+ const provider=options.provider??'codex';
+ const job:any={id:'grade',workflow_id:'workflow',input:{context:structuredClone(context),digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(provider)},config:provider==='api'?{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b'},prompt:'逐项评分'}:{provider:'codex',model:'gpt-6-luna',reasoning_effort:'medium'}};
  const query=async(sql:string,values:any[]=[])=>{
   calls.push({sql,values});
   if(sql.startsWith('SELECT w.project_id'))return {rowCount:1,rows:[{project_id:'project',rule_version_id:'rules-v1'}]};
   if(sql.startsWith('SELECT w.rule_version_id'))return {rowCount:1,rows:[{rule_version_id:'rules-v1',project_name:'本期项目',title:'本期项目-题目1',source_key:'题目1',local_skill_path:join(snapshot,'skill'),material_root:join(snapshot,'questions')}]};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rowCount:1,rows:[{codex_model:null,codex_reasoning_effort:null}]};
-  if(sql.startsWith('SELECT a.input,a.result')){const answerId=values[0]??'answer',text=options.answers?.find(answer=>answer.id===answerId)?.text??'100元';return {rowCount:1,rows:[{input:{...input,question_attempt_id:'author',input_digest:inputDigest(input)},result:{text,input_digest:inputDigest(input),answer_sha256:hash(text)}}]};}
+  if(sql.startsWith('SELECT a.input,a.result')){if(options.bundle?.some(item=>item.status==='failed')){expect(sql).toContain("s.status='failed'");expect(sql).toContain("model->>'status'='succeeded'");}const answerId=values[0]??'answer',text=options.answers?.find(answer=>answer.id===answerId)?.text??'100元';return {rowCount:1,rows:[{input:{...input,question_attempt_id:'author',input_digest:inputDigest(input)},result:{text,input_digest:inputDigest(input),answer_sha256:hash(text)}}]};}
   if(sql.startsWith('SELECT a.id,a.input,a.result'))return {rowCount:1,rows:[{id:'author',input:{rule_version_id:projectRules.version_id,rule_source_digest:projectRules.source_digest,rule_snapshot_path:snapshot,rule_files:projectRules.files},result:{...input,attachment_ids:['attachment'],answer_approach:'核对金额',reference_answer:'100元',quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:options.late&&claim?'r2':'r1',rubric}}]};
   if(sql.includes('a.id=ANY($2::uuid[])'))return {rowCount:options.unready?0:(options.answers?.length??0),rows:options.unready?[]:(options.answers??[]).map(answer=>({id:answer.id}))};
   if(sql.startsWith('SELECT a.id FROM'))return {rowCount:options.unready?0:1,rows:options.unready?[]:[{id:'answer'}]};
-  if(sql.startsWith('SELECT status,result FROM ai_distill.steps'))return {rowCount:1,rows:[{status:'succeeded',result:options.bundle?{models:options.bundle}:null}]};
+  if(sql.startsWith('SELECT status,result FROM ai_distill.steps'))return {rowCount:1,rows:[{status:options.answerStepStatus??'succeeded',result:options.bundle?{models:options.bundle}:null}]};
   if(sql.startsWith('SELECT result FROM ai_distill.steps'))return {rowCount:1,rows:[{result:options.bundle?{models:options.bundle}:null}]};
-  if(sql.startsWith('SELECT id,input,result,status FROM ai_distill.step_attempts'))return {rowCount:options.scoreRows?.length??0,rows:options.scoreRows??[]};
+  if(sql.startsWith('SELECT id,input,result,status FROM (SELECT DISTINCT ON')){expect(sql).toContain("=ANY($2::text[])");expect(sql).toContain("ORDER BY input #>> '{context,binding,answer_attempt_id}',attempt DESC");expect(sql).toContain("'binding',result->'binding'");}
+  if(sql.startsWith('SELECT id,input,result,status FROM (SELECT DISTINCT ON'))return {rowCount:options.scoreRows?.length??0,rows:options.scoreRows??[]};
   if(sql.startsWith('SELECT config'))return {rowCount:1,rows:[{config:job.config}]};
   if(sql.startsWith('SELECT id FROM')&&sql.includes("status IN ('waiting','running')"))return {rowCount:options.reuse?1:0,rows:options.reuse?[{id:'existing'}]:[]};
   if(sql.startsWith('SELECT a.id,a.workflow_id'))return {rowCount:options.stale?1:0,rows:options.stale?[{id:'lost',workflow_id:'workflow'}]:[]};
@@ -59,9 +62,38 @@ test('enqueue scores every succeeded answer in the current model bundle',async()
  expect((result as any).ids).toHaveLength(2);expect(inserts).toHaveLength(2);
  expect(inserts.map(call=>JSON.parse(call.values[2]).context.binding.answer_attempt_id)).toEqual(answers.map(answer=>answer.id));
 });
+test('enqueue allows a succeeded answer after another model fails',async()=>{
+ const answer={id:'answer-qwen',text:'100元'};
+ const bundle=[{model_id:'model-1',name:'模型一',status:'succeeded',attempt_id:answer.id,answer_sha256:hash(answer.text)},{model_id:'model-2',name:'模型二',status:'failed',attempt_id:'failed-answer'}];
+ const a=fake({answers:[answer],bundle});
+ const result=await enqueueScore(a.pool,'workflow');
+ expect((result as any).ids).toHaveLength(1);
+ expect(a.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toHaveLength(1);
+});
+test('enqueue rejects a mixed model bundle while an answer is still running',async()=>{
+ const bundle=[{model_id:'model-1',name:'模型一',status:'succeeded',attempt_id:'answer',answer_sha256:hash('100元')},{model_id:'model-2',name:'模型二',status:'running',attempt_id:'running-answer'}];
+ const a=fake({answers:[{id:'answer',text:'100元'}],bundle,answerStepStatus:'running'});
+ await expect(enqueueScore(a.pool,'workflow')).rejects.toThrow('请先完成当前题目作答');
+ expect(a.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
+});
+test('enqueue rejects a model bundle with no successful answer',async()=>{
+ const bundle=[{model_id:'model-1',name:'模型一',status:'failed',attempt_id:'failed-answer'}];
+ const a=fake({bundle,answerStepStatus:'failed'});
+ await expect(enqueueScore(a.pool,'workflow')).rejects.toThrow('请先完成当前题目作答');
+ expect(a.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
+});
 test('missing answer cannot create score attempt',async()=>{const a=fake({unready:true});await expect(enqueueScore(a.pool,'workflow')).rejects.toThrow();expect(a.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);});
 test('idle scoring worker does not call Codex',async()=>{const a=fake({empty:true});let called=false;expect(await runNextScore(a.pool,'unused',async c=>{called=true;return grade(c);})).toBe(false);expect(called).toBe(false);});
 test('valid grade saves report, binding, usage, session and downloadable artifact',async()=>fixture(async root=>{const a=fake();await runNextScore(a.pool,root,grade);expect(a.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(true);const saved=a.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'));expect(saved?.values[1]).toBe('succeeded');expect(JSON.parse(saved!.values[2])).toMatchObject({validation:{valid:true},report:{binding:context.binding},session_id:'grade-session',usage:{input_tokens:5}});}));
+test('API score claims only API-configured attempts and freezes provider and model in the published result',async()=>fixture(async root=>{
+ const a=fake({provider:'api'});let received:any;
+ const apiGrade=async(c:any,o:any)=>{received=o;return grade(c);};
+ await runNextScore(a.pool,root,apiGrade,undefined,async()=>{},'api');
+ expect(a.calls.find(call=>call.sql.includes("COALESCE(a.config->>'provider','codex')=$1"))?.values).toEqual(['api']);
+ expect(received.config).toEqual(a.job.config.api);
+ const saved=a.calls.find(call=>call.sql.startsWith('UPDATE ai_distill.step_attempts SET status=$2'));
+ expect(JSON.parse(saved!.values[2])).toMatchObject({provider:'api',model:'qwen/qwen3.8-27b'});
+}));
 test('one completed grade keeps the shared score step waiting for other model answers',async()=>fixture(async root=>{
  const answers=[{id:'answer-qwen',text:'100元'},{id:'answer-deepseek',text:'90元'}];
  const bundle=answers.map((answer,index)=>({model_id:`model-${index}`,name:`model-${index}`,status:'succeeded',attempt_id:answer.id,answer_sha256:hash(answer.text)}));
@@ -80,13 +112,6 @@ test('ordinary scoring automatically judges once all required model scores are t
  const a=fake({bundle,scoreRows});let judged=0;
  await runNextScore(a.pool,root,grade,undefined,async workflowId=>{expect(workflowId).toBe('workflow');judged++;});
  expect(judged).toBe(1);
-}));
-test('revision scoring leaves its frozen acceptance decision to the revision runner',async()=>fixture(async root=>{
- const bundle=[{model_id:'model-1',name:'模型一',status:'succeeded',attempt_id:'answer',answer_sha256:hash('100元')}];
- const scoreRows=[{id:'grade',input:{context:{binding:{answer_attempt_id:'answer'}}},result:{report:{total:1,max_score:1},validation:{valid:true}},status:'succeeded'}];
- const a=fake({bundle,scoreRows});a.job.revision_round_id='revision-round';let judged=0;
- await runNextScore(a.pool,root,grade,undefined,async()=>{judged++;});
- expect(judged).toBe(0);
 }));
 test('a failed model score marks the shared score step failed',async()=>fixture(async root=>{
  const bundle=[{model_id:'model-1',name:'模型一',status:'succeeded',attempt_id:'answer',answer_sha256:hash('100元')},{model_id:'model-2',name:'模型二',status:'succeeded',attempt_id:'answer-2',answer_sha256:hash('90元')}];
@@ -118,3 +143,11 @@ test('releases failed scoring transaction connection before automatic acceptance
  await runNextScore(a.pool,root,async()=>{throw new Error('private provider error');},undefined,async()=>{connectionsDuringJudge=a.activeConnections();judged++;});
  expect(judged).toBe(1);expect(connectionsDuringJudge).toBe(0);
 }));
+
+test('releases the recovery connection before automatic acceptance',async()=>{
+ const bundle=[{model_id:'model-1',name:'模型一',status:'succeeded',attempt_id:'answer',answer_sha256:hash('100元')}];
+ const scoreRows=[{id:'grade',input:{context:{binding:{answer_attempt_id:'answer'}}},result:{report:{total:1,max_score:1},validation:{valid:true}},status:'succeeded'}];
+ const a=fake({empty:true,stale:true,bundle,scoreRows});let judged=0,connectionsDuringJudge=-1;
+ await runNextScore(a.pool,'unused',grade,undefined,async()=>{connectionsDuringJudge=a.activeConnections();judged++;});
+ expect(judged).toBe(1);expect(connectionsDuringJudge).toBe(0);
+});

@@ -1,23 +1,72 @@
 /**
- * 职责：成果工作簿结构：按批次组织题面、模型答案、逐项评分、返修表。
- * 关键方法与用途：`buildResultWorkbook()` 按批次组装题面、答案、评分、返修工作表。
- * 使用场景：由 `buildProjectExport()` 提供规范化记录后调用。
+ * 职责：构造达标题目数据工作簿。
+ * 关键方法与用途：`buildResultWorkbook()` 将每题的题面、可读考点、逐模型评分、答案思路和标答写入主表，附件名称与本机路径写入独立清单。
+ * 使用场景：由 `buildProjectExport()` 筛选当前达标题目后调用。
  */
+import {basename} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {buildXlsx,type WorkbookSheet} from './xlsx';
+
 export interface ResultExportRecord {
- project_id:string;project_name:string;batch:string;workflow_id:string;title:string;
- question:string;question_version:string;rubric_version:string;accepted:boolean;published?:boolean;quarantined:boolean;
- answers:{model:string;status:string;answer:string;score_status:string;score_valid:boolean;total:number|null;max_score:number|null;items:{id:string;score:number;max_score:number;reason:string}[]}[];
- revisions:{kind:string;reason:string;from_step:number|null;content_revision:number;technical_retry:number;summary:string;duration_ms?:number;calls?:number}[];
+ workflow_id:string;title:string;accepted:boolean;
+ task_name:string;question:string;input_attachments:string[];
+ model_scores:{model_id:string;name:string;score:number|null;max_score:number|null;percentage:number|null}[];
+ rubric:unknown[];answer_approach:string;reference_answer:string;reference_answer_attachment:string;
 }
-const key=(value:string)=>value.trim()||'未分组';
+
+function rubricText(items:unknown[]):string{
+ return items.map((value,index)=>{
+  if(typeof value==='string')return `${index+1}. ${value}`;
+  if(!value||typeof value!=='object'||Array.isArray(value))return '';
+  const item=value as Record<string,unknown>;
+  const criterion=typeof item.criterion==='string'?item.criterion.trim():'';
+  if(!criterion)return '';
+  const id=typeof item.id==='string'&&item.id.trim()?`${item.id.trim()}｜`:'';
+  const points=typeof item.max_score==='number'&&Number.isFinite(item.max_score)?`（${item.max_score}分）`:'';
+  return `${id}${criterion}${points}`;
+ }).filter(Boolean).join('\n');
+}
+
+function modelScoresText(scores:ResultExportRecord['model_scores']):string{
+ return scores.map(item=>{
+  const value=item.score===null?'未评分':`${item.score}/${item.max_score??'?'}`;
+  const percentage=item.percentage===null?'':`（${Number(item.percentage.toFixed(2))}%）`;
+  return `${item.name}：${value}${item.score===null?'':' 分'}${percentage}`;
+ }).join('\n');
+}
+
 export function buildResultWorkbook(records:ResultExportRecord[]):Uint8Array{
- const grouped=new Map<string,ResultExportRecord[]>();
- for(const record of records){if(!record.workflow_id)throw new Error('成果工作流标识无效');const batch=key(record.batch);grouped.set(batch,[...(grouped.get(batch)??[]),record]);}
- const sheets:WorkbookSheet[]=[{name:'成果汇总',columns:['项目','批次','工作流ID','标题','题面','题目版本','rubric版本','达标','隔离'],rows:records.map(r=>({'项目':r.project_name,'批次':key(r.batch),'工作流ID':r.workflow_id,'标题':r.title,'题面':r.question,'题目版本':r.question_version,'rubric版本':r.rubric_version,'达标':r.accepted?'是':'否','隔离':r.quarantined?'是':'否'}))}];
- for(const [batch,items] of grouped){
-  sheets.push({name:`答案评分-${batch}`,columns:['项目','工作流ID','标题','模型','作答状态','答案','评分状态','评分有效','总分','满分','考点ID','考点得分','考点满分','评分理由'],rows:items.flatMap(r=>r.answers.flatMap(a=>a.items.length?a.items.map(i=>({'项目':r.project_name,'工作流ID':r.workflow_id,'标题':r.title,'模型':a.model,'作答状态':a.status,'答案':a.answer,'评分状态':a.score_status,'评分有效':a.score_valid?'是':'否','总分':a.total,'满分':a.max_score,'考点ID':i.id,'考点得分':i.score,'考点满分':i.max_score,'评分理由':i.reason})): [{'项目':r.project_name,'工作流ID':r.workflow_id,'标题':r.title,'模型':a.model,'作答状态':a.status,'答案':a.answer,'评分状态':a.score_status,'评分有效':a.score_valid?'是':'否','总分':a.total,'满分':a.max_score}]))});
-  sheets.push({name:`返修记录-${batch}`,columns:['项目','工作流ID','类型','原因','返回步骤','内容返修轮次','技术重试次数','返修摘要','链累计有效耗时毫秒','链累计调用次数'],rows:items.flatMap(r=>r.revisions.map(x=>({'项目':r.project_name,'工作流ID':r.workflow_id,'类型':x.kind,'原因':x.reason,'返回步骤':x.from_step,'内容返修轮次':x.content_revision,'技术重试次数':x.technical_retry,'返修摘要':x.summary,'链累计有效耗时毫秒':x.duration_ms??'','链累计调用次数':x.calls??''})))});
- }
- return buildXlsx(sheets);
+ const attachments=records.map(record=>record.input_attachments.map(target=>{
+  const path=fileURLToPath(target);
+  return {name:basename(path),path,target};
+ }));
+ const sheet:WorkbookSheet={
+  name:'题目数据',
+  columns:['题目','任务名称','评分','prompt','输入附件','考点','作答思路','标准答案-文本','标准答案-附件'],
+  columnWidths:{'题目':32,'任务名称':28,'评分':36,'prompt':72,'输入附件':52,'考点':72,'作答思路':64,'标准答案-文本':80,'标准答案-附件':40},
+  rowHeight:150,
+  rows:records.map((record,index)=>({
+   '题目':record.title,
+   '任务名称':record.task_name,
+   'prompt':record.question,
+   '输入附件':attachments[index]!.map(attachment=>attachment.name).join('\n'),
+   '考点':rubricText(record.rubric),
+   '评分':modelScoresText(record.model_scores),
+   '作答思路':record.answer_approach,
+   '标准答案-文本':record.reference_answer,
+   '标准答案-附件':record.reference_answer_attachment,
+  })),
+ };
+ const attachmentSheet:WorkbookSheet={
+  name:'附件清单',
+  columns:['题目','工作流ID','附件序号','文件名','本机完整路径','打开文件'],
+  columnWidths:{'题目':32,'工作流ID':40,'附件序号':12,'文件名':40,'本机完整路径':100,'打开文件':40},
+  rowHeight:45,
+  rows:records.flatMap((record,index)=>attachments[index]!.map((attachment,attachmentIndex)=>({
+   '题目':record.title,'工作流ID':record.workflow_id,'附件序号':attachmentIndex+1,
+   '文件名':attachment.name,'本机完整路径':attachment.path,
+   '打开文件':{text:attachment.name,target:attachment.target},
+  }))),
+ };
+ return buildXlsx([sheet,attachmentSheet]);
 }

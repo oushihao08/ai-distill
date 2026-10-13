@@ -4,9 +4,10 @@
  * 使用场景：通过 `bun run server/migrate.ts` 人工启动；不会由 API 请求自动触发。
  */
 import { readdir } from 'node:fs/promises';
+import {storageDirectory} from './paths';
 import { createPool } from './db';
 import {classifyLogError,configureLogger,installFatalErrorLogging,logEvent} from './logging';
-const logger=configureLogger({root:process.env.STORAGE_DIR??'.storage',service:'migration'});
+const logger=configureLogger({root:storageDirectory(),service:'migration'});
 installFatalErrorLogging();
 let pool:ReturnType<typeof createPool>|undefined;
 let client;

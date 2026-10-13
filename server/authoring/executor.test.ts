@@ -113,35 +113,6 @@ test('ordinary authoring schema only allows capabilities supported by the answer
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-for(const changed of [false,true])test(`rubric-only revision ${changed?'rejects question changes':'preserves question and keeps private evidence'}`,async()=>{
- const root=await mkdtemp(join(tmpdir(),'authoring-revision-'));
- try{
-  const result=await runAuthoring({...options(root,async(call:any)=>({result:call.validate({...draft,question:changed?'更换问题':draft.question,rubric:[{id:'amount',criterion:'写明100元且引用合同；否则零分',max_score:1}]}),session_id:'author',usage:null,events_path:'private',duration_ms:1})),revision:{mode:'rubric',source_attempt_id:'old',draft,evidence:{issues:['缺少金额评分依据']}}});
-  if(changed)throw new Error('rubric-only revision unexpectedly accepted a question change');
-  expect(result.draft.question).toBe(draft.question);expect(result.draft.rubric[0]?.criterion).toContain('引用合同');
- }catch(error){if(changed)expect(error).toMatchObject({message:expect.stringContaining('rubric-only')});else throw error;}
- finally{await rm(root,{recursive:true,force:true});}
-});
-
-test('revision author receives all frozen model answers and per-model scoring rationale',async()=>{
- const root=await mkdtemp(join(tmpdir(),'authoring-evaluation-history-'));
- try{
-  const evidence={evaluation_records:[{acceptance_attempt_id:'accept-1',attempt:1,models:[{model_id:'model-a',status:'passed',details_available:true,answer_text:'完整答案A',score_text:'考点1：1/2分，因为缺少条件。',question_version:'qv1',rubric_version:'rv1'},{model_id:'model-b',status:'not_passed',details_available:true,answer_text:'完整答案B',score_text:'考点1：2/2分，答案引用充分。',question_version:'qv1',rubric_version:'rv1'}]}]};
-  await runAuthoring({...options(root,async(call:any)=>{
-   const input=JSON.parse(await Bun.file(join(call.directory,'input/input.json')).text());
-   const revision=await Bun.file(join(call.directory,input.revision_path)).json();
-   expect(revision.evidence).toEqual(evidence);expect(call.prompt).toContain('最近最多三条未达标评测记录');expect(call.prompt).toContain('已通过模型的答案');
-   return{result:call.validate(draft),session_id:'author',usage:null,events_path:'private',duration_ms:1};
-  }),revision:{mode:'question',source_attempt_id:'old',draft,evidence}});
- }finally{await rm(root,{recursive:true,force:true});}
-});
-
-test('question repair can replace historical attachment references but only current attachments survive validation',async()=>{
- const root=await mkdtemp(join(tmpdir(),'material-authoring-'));
- try{const result=await runAuthoring({...options(root,async(call:any)=>({result:call.validate({...draft,attachment_ids:['new-artifact']}),session_id:'author',usage:null,events_path:'private',duration_ms:1})),materials:[{id:'new-artifact',sha256:'a'.repeat(64),text:'重新提取并脱敏金额100元'}],revision:{mode:'question',source_attempt_id:'old',draft,evidence:{materials:[{material_id:'original',pages:[1]}]}}});expect(result.draft.attachment_ids).toEqual(['new-artifact']);}
- finally{await rm(root,{recursive:true,force:true});}
-});
-
 
 test('project task inputs preserve skill files and put task instructions before skill and attachment paths',async()=>{
  const root=await mkdtemp(join(tmpdir(),'project-authoring-'));

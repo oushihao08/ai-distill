@@ -8,7 +8,7 @@ import{extractPdf,type Page,type PageCheckpoint}from'../server/materials/pdf';
 import{createVisionClient}from'../server/materials/vision';
 import{loadExtractionConfig}from'../server/materials/config';
 
-const questionRoot=resolve('projects/豆包高经济价值-第五期/questions');
+const questionRoot=resolve('projects/豆包高经济价值/第五期/questions');
 const storageRoot=resolve('.storage');
 const outputRoot=join(storageRoot,'.flash-max-all-pdfs');
 const checkpointRoot=join(storageRoot,'.flash-max-question-checkpoints');

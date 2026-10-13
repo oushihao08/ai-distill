@@ -15,7 +15,6 @@
 | `verify-codex-client.ts`、`verify-independent-score.ts` | 合成输入，真实 Codex 冒烟／独立评分 |
 | `verify-authoring-flow.ts` | 临时数据库、合成材料，真实 Codex 出题与质检及发布检查 |
 | `verify-answer-flow.ts` | 临时数据库及注入作答／评分；`--real-score` 可实际调用评分 |
-| `verify-revision-loop.ts` | 临时数据库验证返修；`--real-author`、`--real-grading`、`--real-answer` 可启用相应真实调用 |
 | `verify-independent-modules.ts` | 合成数据库夹具验证达标、发布、导出和模型设置模块 |
 | `verify-qwen.ts` | 单次合成请求，真实供应商调用，保存安全摘要 |
 | `verify-domestic-models.ts` | 默认配置检查；`--call` 才对指定供应商发送一次合成请求 |
@@ -31,3 +30,5 @@
 常见输出在 `docs/evidence/`，包含私有原文的中间结果位于 `.storage/` 下。临时 schema 脚本通常在 finally 清理，但中断和网络故障仍需核查残留；不能把临时 schema 解释为没有数据库写入。固定历史 ID、日期或样本路径仅适用于当时调查，不是系统默认配置。
 
 运行限制见根 [AGENTS.md](../AGENTS.md)。文档和注释任务不授权执行上述脚本，命令通过也只证明其注明的范围。
+
+`start.sh` 定位仓库并执行 `start.ts`，后者同时启动 API、worker 和 Vite。退出或 Ctrl+C 会停止本次启动的进程组；不安装依赖、不迁移、不停止已有服务。`read-logs.ts` 的相对 STORAGE_DIR 与服务一致，按仓库根目录解析。

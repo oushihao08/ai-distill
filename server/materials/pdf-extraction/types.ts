@@ -5,7 +5,7 @@
  */
 import type { Page } from '../pdf';
 
-export type PdfExtractionProviderId = 'glm-ocr' | 'mineru-cli';
+export type PdfExtractionProviderId = 'glm-ocr' | 'mineru-api' | 'mineru-cli';
 
 export interface PdfExtractionResult {
  pages: Page[];

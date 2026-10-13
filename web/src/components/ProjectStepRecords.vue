@@ -15,7 +15,7 @@ const failures = shallowRef<Record<string, string>>({});
 const loading = shallowRef(false);
 const search = shallowRef('');
 const filter = shallowRef('全部');
-const filters = ['全部', '未进入', '就绪', '排队中', '处理中', '完成', '达标', '需要返修', '等待判定条件', '隔离', '失败', '跳过', '读取失败'];
+const filters = ['全部', '未进入', '就绪', '排队中', '处理中', '完成', '达标', '未达标', '等待判定条件', '隔离', '失败', '跳过', '读取失败'];
 let controller: AbortController | undefined;
 async function refresh() {
  if (loading.value) return;
@@ -48,7 +48,7 @@ const rows = computed(() => props.workflows.map(flow => {
  const active = attempts.find(item => ['waiting', 'running'].includes(item.status));
  const ready = step?.ready === true;
  const decision = String(step?.result?.decision ?? '');
- const decisionLabels: Record<string, string> = { accepted: '达标', repair: '需要返修', waiting: '等待判定条件', quarantine: '隔离' };
+ const decisionLabels: Record<string, string> = { accepted: '达标', repair: '未达标', waiting: '等待判定条件', quarantine: '隔离' };
  const state = failures.value[flow.id] ? '读取失败' : !detail ? '读取中' : !step ? '未进入'
   : props.step.ordinal===7&&decision==='waiting'&&ready ? '就绪'
   : props.step.ordinal===7&&decision ? decisionLabels[decision]??decision
@@ -64,7 +64,7 @@ const rows = computed(() => props.workflows.map(flow => {
   issue: failures.value[flow.id] ?? issueText };
 }));
 const visibleRows = computed(() => rows.value.filter(row => row.flow.title.toLowerCase().includes((search.value ?? '').trim().toLowerCase()) && (filter.value === '全部' || row.state === filter.value)));
-function color(state: string) { return ['完成','达标'].includes(state) ? 'success' : state==='需要返修'?'warning' : ['失败', '读取失败','隔离'].includes(state) ? 'error' : ['排队中', '处理中', '就绪'].includes(state) ? 'primary' : 'secondary'; }
+function color(state: string) { return ['完成','达标'].includes(state) ? 'success' : state==='未达标'?'warning' : ['失败', '读取失败','隔离'].includes(state) ? 'error' : ['排队中', '处理中', '就绪'].includes(state) ? 'primary' : 'secondary'; }
 onMounted(refresh);
 onUnmounted(() => { controller?.abort(); });
 </script>

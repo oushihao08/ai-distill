@@ -16,7 +16,6 @@ test('empty full reference and invalid score cannot become a valid draft',()=>{
  expect(()=>validateDraft({...draft,reference_answer:' '},materials)).toThrow();
  for(const max_score of [0,-1,NaN,Infinity])expect(()=>validateDraft({...draft,rubric:[{...draft.rubric[0],max_score}]},materials)).toThrow();
 });
-test('unsupported delivery requirements are retained for capability rejection',()=>{
- const result=validateDraft({...draft,answer_requirements:{input_mode:'text',output_mode:'file',tools:['python']}},materials);
- expect(result.answer_requirements.output_mode).toBe('file');expect(result.answer_requirements.tools).toEqual(['python']);
+test('unsupported delivery requirements are rejected before publication',()=>{
+ expect(()=>validateDraft({...draft,answer_requirements:{input_mode:'text',output_mode:'file',tools:['python']}},materials)).toThrow('被测作答器只接收文字');
 });

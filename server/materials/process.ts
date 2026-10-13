@@ -7,7 +7,7 @@ import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { currentTaskSignal } from '../task-signal';
-import type { Page } from './pdf';
+import { DOCUMENT_STRUCTURE_VERSION, documentBlocksToText, type Page } from './pdf';
 import type { VisionClient } from './vision';
 import type { ExtractionConfig } from './config';
 import { ProjectDocumentExtractor,type DocumentExtractor } from './document';
@@ -26,7 +26,7 @@ export async function clearExtractionCheckpoints(root:string,workflow:string,mat
 }
 
 /** Step 1 stores extracted PDF text. Redaction is a separate, project-configured step. */
-export async function processMaterials(root:string,workflow:string,attempt:string,materials:InputMaterial[],_vision:VisionClient,_extract?:unknown,config?:ExtractionConfig){
+export async function processMaterials(root:string,workflow:string,attempt:string,materials:InputMaterial[],_vision?:VisionClient,_extract?:unknown,config?:ExtractionConfig){
  const directory=join(resolve(root),workflow,attempt);
  await mkdir(directory,{recursive:true,mode:0o700});
  if(!materials.length)throw new Error('原件材料为空');
@@ -48,14 +48,18 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
      const bytes=await Bun.file(path).arrayBuffer();
      if(createHash('sha256').update(Buffer.from(bytes)).digest('hex')!==cache.sha256)throw new Error('invalid cache hash');
      const value=JSON.parse(new TextDecoder().decode(bytes));
-     if(value.source_sha256!==material.sha256||!Array.isArray(value.pages)||!value.pages.length||value.pages.some((page:Page,index:number)=>!page||page.page!==index+1||typeof page.text!=='string'||!['text','ocr'].includes(page.method)||page.issues?.length))throw new Error('invalid cached pages');
+    if(value.source_sha256!==material.sha256||value.structure_version!==DOCUMENT_STRUCTURE_VERSION||!Array.isArray(value.pages)||!value.pages.length||value.pages.some((page:Page,index:number)=>!page||page.page!==index+1||typeof page.text!=='string'||!Array.isArray(page.structure)||documentBlocksToText(page.structure)!==page.text||!['text','ocr'].includes(page.method)))throw new Error('invalid cached pages');
      pages=value.pages;provider=typeof value.provider==='string'?value.provider:'glm-ocr';mode='cached';from_attempt_id=cache.attempt_id;from_material_id=cache.material_id;
     }catch{cache_error='missing_or_invalid';}
    }
    if(!pages){
     const result=await extractor.extract(sourcePath,currentTaskSignal());
     if(result.sha256!==material.sha256||result.format!=='pdf')throw new Error('OCR返回与原件不匹配');
-    pages=result.pages;provider=result.provider;
+    pages=result.pages.map(page=>{
+     const structured=page.structure?.length?page.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:page.text}];
+     if(documentBlocksToText(structured)!==page.text)throw new Error('提取正文与结构化文字投影不一致');
+     return{...page,structure:structured};
+    });provider=result.provider;
    }
    extracted.push({material_id:material.id,sha256:material.sha256,format,pages,provider,mode,from_attempt_id,from_material_id,...(cache_error?{cache_error}:{})});
   }
@@ -66,7 +70,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    ...(/无法辨认|�/.test(page.text)?[{page_index:index,material_id:page.material_id,page:page.page,kind:'unreadable'}]:[]),
   ]);
   for(const material of extracted){
-   const content=JSON.stringify({source_sha256:material.sha256,format:material.format,provider:material.provider,pages:material.pages.map(({reused:_,...page})=>page)});
+   const content=JSON.stringify({source_sha256:material.sha256,format:material.format,provider:material.provider,structure_version:DOCUMENT_STRUCTURE_VERSION,pages:material.pages.map(({reused:_,...page})=>page)});
    const storage_path=workflow+'/'+attempt+'/material-'+material.material_id+'-extracted.json';
    await writeFile(join(resolve(root),storage_path),content,{mode:0o600,flag:'wx'});
    artifacts.push({kind:'private_extracted_pages',material_id:material.material_id,storage_path,sha256:createHash('sha256').update(content).digest('hex'),size_bytes:Buffer.byteLength(content),content});

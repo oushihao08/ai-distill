@@ -3,13 +3,14 @@
  * 关键方法与用途：`enqueueProjectSkill()` 冻结来源和配置；`runNextProjectSkill()` 生成并保存候选；`listProjectSkillAttempts()` 查询尝试历史。
  * 使用场景：`app.ts` 提交／查询，`worker.ts` 执行生成任务。
  */
+import {resolveRepositoryPath} from '../paths';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
-import {dirname,join,resolve} from 'node:path';
+import {join,resolve} from 'node:path';
 import {rm} from 'node:fs/promises';
-import {scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot} from '../rule-files';
-import {mergeCodexDefaults,readConfiguredAgentModelCatalog,readProjectAgentDefaults,validateAgentModel} from '../agent/config';
+import {resolveRuleWorkspacePaths,scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot} from '../rule-files';
+import {mergeCodexDefaults,readProjectAgentDefaults,validateAgentModel} from '../agent/config';
 import {generateProjectSkill} from './generate';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 const projectSql="SELECT p.* FROM ai_distill.projects p WHERE p.id=$1 AND p.deleted_at IS NULL FOR UPDATE OF p";
@@ -19,11 +20,11 @@ export async function enqueueProjectSkill(pool:Pool,id:string,raw:unknown,option
   await db.query('BEGIN');const project=(await db.query(projectSql,[id])).rows[0];if(!project)throw new HTTPException(404,{message:'项目不存在'});
   const validated=mergeCodexDefaults(raw,await readProjectAgentDefaults(db,id));
   if(typeof validated.model!=='string'||typeof validated.reasoning_effort!=='string')throw new HTTPException(400,{message:'skill生成需要Codex配置'});
-  validateAgentModel(validated.model,validated.reasoning_effort,await readConfiguredAgentModelCatalog(db));
+  validateAgentModel(validated.model,validated.reasoning_effort);
   const config={provider:'codex',model:validated.model,reasoning_effort:validated.reasoning_effort};
-  const workspace=dirname(project.material_root??project.local_skill_path??'');
-  const template=options.template??process.env.SKILL_BASE_TEMPLATE_DIR??'/Users/jack/Documents/codes/lvgou/豆包高经/company-legal-task';
-  const source=await scanRuleWorkspace(workspace,template);if(source.issues.length)throw new HTTPException(409,{message:'基础模板或本期资料不完整'});
+  const paths=await resolveRuleWorkspacePaths(project),workspace=paths.workspace_path;
+  const template=resolveRepositoryPath(options.template??process.env.SKILL_BASE_TEMPLATE_DIR??'templates/company-legal-task');
+  const source=await scanRuleWorkspace(workspace,template,'workspace',paths.materials_path);if(source.issues.length)throw new HTTPException(409,{message:'基础模板或本期资料不完整'});
   const existing=(await db.query("SELECT id,status,input,config FROM ai_distill.project_skill_attempts WHERE project_id=$1 AND status IN ('waiting','running','succeeded') ORDER BY created_at DESC",[id])).rows;
   const previous=existing.find(row=>row.input.source_digest===source.source_digest&&JSON.stringify(row.config)===JSON.stringify(config));
   // JSONB property order is irrelevant to frozen config equality.
@@ -31,14 +32,14 @@ export async function enqueueProjectSkill(pool:Pool,id:string,raw:unknown,option
   if(matching){await db.query('COMMIT');withLogContext({component:'skill_generation',project_id:id,skill_attempt_id:matching.id,operation:'skill_generation'},()=>logEvent('attempt.reused',{level:'info',state:matching.status}));return{id:matching.id,reused:true};}
   if(existing.some(row=>['waiting','running'].includes(row.status)))throw new HTTPException(409,{message:'已有skill生成任务，请等待完成'});
   attempt=crypto.randomUUID();snapshot=await freezeRuleWorkspace(source,`skill-input-${attempt}`);
-  const input={workspace_path:source.workspace_path,template_path:source.skill_path,source_digest:source.source_digest,snapshot_path:snapshot,files:source.files};
+  const input={workspace_path:source.workspace_path,materials_path:source.materials_path,template_path:source.skill_path,source_digest:source.source_digest,snapshot_path:snapshot,files:source.files};
   await db.query("INSERT INTO ai_distill.project_skill_attempts(id,project_id,status,input,config) VALUES($1,$2,'waiting',$3,$4)",[attempt,id,JSON.stringify(input),JSON.stringify(config)]);await db.query('COMMIT');withLogContext({component:'skill_generation',project_id:id,skill_attempt_id:attempt,operation:'skill_generation',provider:'codex',model:config.model,reasoning_effort:config.reasoning_effort},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting'}));return{id:attempt,reused:false};
  }catch(error){await db.query('ROLLBACK');if(snapshot&&attempt)try{if(!(await pool.query('SELECT id FROM ai_distill.project_skill_attempts WHERE id=$1',[attempt])).rowCount)await rm(snapshot,{recursive:true,force:true});}catch(cleanupError){withLogContext({component:'skill_generation',project_id:id,skill_attempt_id:attempt,operation:'skill_generation'},()=>logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'skill_input_snapshot',...classifyLogError(cleanupError)}));console.error('无法确认skill输入快照提交状态，保留文件');}throw error;}finally{db.release();}
 }
 async function current(db:PoolClient,job:any){
  const project=(await db.query(projectSql,[job.project_id])).rows[0];if(!project)return false;
- const workspace=dirname(project.material_root??project.local_skill_path??'');
- try{return (await scanRuleWorkspace(workspace,job.input.template_path)).source_digest===job.input.source_digest;}catch{return false;}
+ const paths=await resolveRuleWorkspacePaths(project);
+ try{return (await scanRuleWorkspace(paths.workspace_path,job.input.template_path,'workspace',paths.materials_path)).source_digest===job.input.source_digest;}catch{return false;}
 }
 export async function runNextProjectSkill(pool:Pool,root:string,generate:typeof generateProjectSkill=generateProjectSkill,signal?:AbortSignal){
  if(signal?.aborted)return false;

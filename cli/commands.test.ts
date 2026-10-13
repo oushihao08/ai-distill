@@ -1,4 +1,4 @@
-/** CLI 命令契约测试：题目1为合成夹具，验证范围、稳定步骤身份、多模型派发、等待和只读结果边界。 */
+/** CLI 命令契约测试：题目1为合成夹具，验证范围、稳定步骤身份、多模型派发、轻量／完整等待和只读结果边界。 */
 import {describe, expect, test} from 'bun:test';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -20,6 +20,21 @@ function fixture(reply: (url: URL, init?: RequestInit) => unknown) {
 }
 
 describe('命令范围和结果', () => {
+  test('等待默认请求轻量视图，即使旧服务返回正文也只保留状态元信息',async()=>{
+    const {client,calls}=fixture(()=>({id:attempt,workflow_id:question,ordinal:5,status:'failed',completed:true,error:'可检查后重试',result:{text:'大段答案'},input:{secret:'不应输出'}}));
+    const result=await runCommand(['attempt','wait','--ids',attempt],client);
+    expect(calls[0].url.searchParams.get('view')).toBe('status');
+    expect(result.attempts[0]).toMatchObject({id:attempt,workflow_id:question,ordinal:5,status:'failed',error:'可检查后重试',completed:true});
+    expect(result.attempts[0]).not.toHaveProperty('result');expect(result.attempts[0]).not.toHaveProperty('input');
+    expect(result.outcome).toBe('partial');
+  });
+  test('显式full等待与attempt show保留完整结果读取能力',async()=>{
+    const {client,calls}=fixture(()=>({id:attempt,status:'succeeded',completed:true,result:{text:'完整答案'}}));
+    const waited=await runCommand(['attempt','wait','--ids',attempt,'--full'],client);
+    expect(waited.attempts[0].result.text).toBe('完整答案');expect(calls[0].url.searchParams.has('view')).toBe(false);
+    const shown=await runCommand(['attempt','show','--attempt',attempt],client);
+    expect(shown.data.result.text).toBe('完整答案');
+  });
   test('两个模型完整合成流程可显式判定、归档与导出，任务关系不丢失', async () => {
     const posts:string[]=[];
     const {client}=fixture((url,init)=>{
@@ -140,17 +155,15 @@ describe('命令范围和结果', () => {
       [['models','show','--project',project],`/api/projects/${project}/answer-models`,'GET'],
       [['attempt','show','--attempt',attempt],`/api/attempts/${attempt}`,'GET'],
       [['result','list'],'/api/results','GET'],
-      [['revision','list','--workflow',question],`/api/workflows/${question}/revisions`,'GET'],
       [['export','list','--project',project],`/api/projects/${project}/exports`,'GET'],
       [['monitor','show'],'/api/monitor','GET'],
       [['project','sync','--project',project],`/api/projects/${project}/sync-folder`,'POST',{}],
-      [['revision','start','--workflow',question,'--source-attempt',attempt],`/api/workflows/${question}/revisions`,'POST',{source_attempt_id:attempt}],
-      [['revision','resume','--workflow',question,'--chain',second],`/api/workflows/${question}/revisions/${second}/resume`,'POST',{}],
       [['export','create','--project',project,'--batch','本批'],`/api/projects/${project}/export`,'POST',{batch:'本批'}],
       [['project','create','--name','测试','--material-root','/tmp/questions','--skill-path','/tmp/skill'], '/api/projects','POST',{name:'测试',description:'',material_root:'/tmp/questions',local_skill_path:'/tmp/skill'}],
+      [['project','create','--name','测试 - 第五期','--parent-name','测试','--phase-name','第五期','--material-root','/tmp/测试/第五期/questions'], '/api/projects','POST',{name:'测试 - 第五期',description:'',material_root:'/tmp/测试/第五期/questions',parent_name:'测试',phase_name:'第五期'}],
     ];
     for(const [args,path,method,body] of matrix) {
-      const {client,calls}=fixture(()=>({workflows:[]}));await runCommand(args,client);
+      const {client,calls}=fixture((url,init)=>init?.method==='POST'&&url.pathname==='/api/projects'?{id:project}:{workflows:[]});await runCommand(args,client);
       expect(calls[0].url.pathname).toBe(path);expect(calls[0].init?.method).toBe(method);
       if(body)expect(JSON.parse(String(calls[0].init?.body))).toEqual(body);
     }

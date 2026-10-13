@@ -1,6 +1,6 @@
 /**
- * 职责：统一文档提取：本地解析 DOCX/TXT/MD，PDF 使用 GLM-OCR 或注入的提取供应商。
- * 关键方法与用途：`extractLocalDocument()` 解析 DOCX／TXT／MD；`ProjectDocumentExtractor` 将 PDF provider 接入统一提取契约。
+ * 职责：统一文档提取：本地解析 DOCX/TXT/MD，PDF 必须注入 MinerU provider。
+ * 关键方法与用途：`extractLocalDocument()` 解析 DOCX／TXT／MD；`ProjectDocumentExtractor` 校验并调用 MinerU 页级提取。
  * 使用场景：`intake.ts` 和提取队列调用；PDF 文本、页码与识别问题统一返回。
  */
 import { readFile } from 'node:fs/promises';
@@ -15,7 +15,7 @@ export class DocumentProviderError extends Error {
  constructor(readonly http_status:number){super(`GLM-OCR返回HTTP ${http_status}`);this.kind=http_status===401||http_status===403?'authentication':[402,429].includes(http_status)?'quota':'service';this.retryable=[408,500,502,503,504].includes(http_status);}
 }
 
-export interface DocumentExtraction { format: 'pdf' | 'docx' | 'txt' | 'md'; pages: Page[]; provider: 'glm-ocr' | 'mineru-cli' | 'local'; sha256: string }
+export interface DocumentExtraction { format: 'pdf' | 'docx' | 'txt' | 'md'; pages: Page[]; provider: 'glm-ocr' | 'mineru-api' | 'mineru-cli' | 'local'; sha256: string }
 export interface DocumentExtractor { extract(path: string, signal?: AbortSignal): Promise<DocumentExtraction> }
 
 function decodeXml(value: string) {
@@ -43,25 +43,15 @@ function extractDocxXml(xml: string) {
  }
  return paragraphs;
 }
-function responsePageText(page: unknown) {
- if(!Array.isArray(page))return '';
- return page.map(item=>item&&typeof item==='object'&&typeof (item as {content?:unknown}).content==='string'?(item as {content:string}).content:'').filter(Boolean).join('\n');
-}
-
 export class ProjectDocumentExtractor implements DocumentExtractor {
- constructor(private readonly env=process.env,private readonly request:typeof fetch=fetch,private readonly pdfProvider?:PdfExtractionProvider){}
+ constructor(private readonly pdfProvider?:PdfExtractionProvider){}
  async extract(path:string,signal?:AbortSignal):Promise<DocumentExtraction>{
   const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex'),extension=path.split('.').at(-1)?.toLowerCase();
   if(extension==='pdf'){
-   if(this.pdfProvider){const result=await this.pdfProvider.extract(path,signal);if(result.sha256!==sha256)throw new Error('PDF提取结果与原件指纹不匹配');return{format:'pdf',...result};}
-   const key=this.env.ZHIPU_API_KEY;if(!key)throw new Error('未配置 ZHIPU_API_KEY');
-   let response:Response;
-   try{response=await this.request(`${this.env.ZHIPU_BASE_URL??'https://open.bigmodel.cn/api/paas/v4'}/layout_parsing`,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:'glm-ocr',file:`data:application/pdf;base64,${bytes.toString('base64')}`,request_id:crypto.randomUUID()}),signal:AbortSignal.any([AbortSignal.timeout(30*60*1000),...(signal?[signal]:[])])});}catch{throw new Error('GLM-OCR请求失败或30分钟超时');}
-   if(!response.ok)throw new DocumentProviderError(response.status);
-   const result=await response.json() as {data_info?:{num_pages?:number};layout_details?:unknown[];md_results?:string};
-   const count=result.data_info?.num_pages,pages=result.layout_details;
-   if(!Number.isInteger(count)||!pages||pages.length!==count)throw new Error('GLM-OCR未返回完整页级结果');
-   return{format:'pdf',provider:'glm-ocr',sha256,pages:pages.map((page,index)=>({page:index+1,text:responsePageText(page),method:'ocr'}))};
+   if(!this.pdfProvider)throw new Error('MinerU PDF解析器未配置');
+   const result=await this.pdfProvider.extract(path,signal);
+   if(result.sha256!==sha256)throw new Error('PDF提取结果与原件指纹不匹配');
+   return{format:'pdf',...result};
   }
   if(extension==='docx'||extension==='txt'||extension==='md')return extractLocalDocument(bytes,extension);
   throw new HTTPException(400,{message:'只支持PDF、DOCX、TXT和MD材料'});
@@ -72,9 +62,10 @@ export function extractLocalDocument(input:Uint8Array,format:'docx'|'txt'|'md') 
  const bytes=Buffer.from(input),sha256=createHash('sha256').update(bytes).digest('hex');
  if(format==='docx'){
   if(bytes.length<4||bytes.readUInt32LE(0)!==0x04034b50)throw new Error('DOCX压缩包标识无效');
-  const text=extractDocxXml(unzipEntry(bytes,'word/document.xml').toString('utf8')).join('\n');
-  return{format,provider:'local',sha256,pages:[{page:1,text,method:'text'}]};
+  const paragraphs=extractDocxXml(unzipEntry(bytes,'word/document.xml').toString('utf8'));
+  const text=paragraphs.join('\n');
+  return{format,provider:'local',sha256,pages:[{page:1,text,method:'text',structure:paragraphs.map((text,index)=>({id:`p1-b${index+1}`,kind:'paragraph' as const,text}))}]};
  }
  let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes).replace(/^\uFEFF/,'');}catch{throw new Error(`${format.toUpperCase()}不是有效UTF-8文本`);}
- return{format,provider:'local',sha256,pages:[{page:1,text,method:'text'}]};
+ return{format,provider:'local',sha256,pages:[{page:1,text,method:'text',structure:[{id:'p1-b1',kind:'paragraph',text}]}]};
 }

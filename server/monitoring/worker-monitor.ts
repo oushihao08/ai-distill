@@ -94,25 +94,46 @@ export async function readWorkerMonitor(root:string):Promise<WorkerMonitorStatus
 export function createWorkerMonitor(pool:Pool,root:string,options:{min_available_percent:number;sample_interval_ms?:number;sample?:typeof sampleResources}) {
  const threshold=options.min_available_percent,interval=options.sample_interval_ms??5000;
  if(!Number.isFinite(threshold)||threshold<0||threshold>100||!Number.isSafeInteger(interval)||interval<1)throw new Error('监控参数无效');
- let timer:ReturnType<typeof setTimeout>|undefined,inflight:Promise<void>|undefined,stopped=false,started=false,lastSample=0,record:WorkerMonitorStatus|undefined,lastDispatchAllowed:boolean|undefined,tasksReadFailed=false,resourceSampleFailed=false,snapshotWriteFailed=false;
+ let timer:ReturnType<typeof setTimeout>|undefined,memoryInflight:Promise<void>|undefined,tasksInflight:Promise<void>|undefined,stopped=false,started=false,lastSample=0,record:WorkerMonitorStatus|undefined,lastDispatchAllowed:boolean|undefined,tasksReadFailed=false,resourceSampleFailed=false,snapshotWriteFailed=false,tasks:ExecutorStatus[]|undefined;
  const write=async()=>{
   const temporary=join(root,`.worker-monitor-${randomUUID()}.tmp`);
  try{await mkdir(root,{recursive:true});await writeFile(temporary,JSON.stringify(record),{mode:0o600,flag:'wx'});await rename(temporary,join(root,'.worker-monitor.json'));if(snapshotWriteFailed)logEvent('monitor.snapshot_write_recovered',{level:'info',component:'worker_monitor'});snapshotWriteFailed=false;}
   catch(error){if(!snapshotWriteFailed)logEvent('monitor.snapshot_write_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});snapshotWriteFailed=true;}
   finally{try{await rm(temporary,{force:true});}catch(error){logEvent('monitor.temporary_cleanup_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});}}
  };
- const update=async()=>{
-  let tasks:ExecutorStatus[]|undefined;
+ const refreshTasks=async()=>{
+  if(stopped)return;
+  if(tasksInflight)return tasksInflight;
+  tasksInflight=(async()=>{
+   let next:ExecutorStatus[]|undefined;
   try{
-   const result=await pool.query("SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status IN ('waiting','running')");
-   tasks=result.rows.map(row=>{
+   const db=await pool.connect();let transaction=false;
+   try{
+    await db.query('BEGIN');transaction=true;
+    await db.query("SET LOCAL statement_timeout = '2000ms'");
+    const result=await db.query("SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status IN ('waiting','running')");
+    next=result.rows.map(row=>{
     if(row.status!=='waiting'&&row.status!=='running')throw new Error('invalid');
     const at=row.heartbeat_at??row.started_at;
     const date=at instanceof Date?at:new Date(at);
     return{state:row.status,authentication:'unknown',quota:'unknown',error:row.error_kind??'unknown',...(at&&Number.isFinite(date.getTime())?{last_event:{type:row.heartbeat_at?'heartbeat' as const:'started' as const,at:date.toISOString()}}:{})};
-   });
-  }catch(error){tasks=undefined;if(!tasksReadFailed)logEvent('monitor.tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});tasksReadFailed=true;}
-  if(tasks&&tasksReadFailed){logEvent('monitor.tasks_read_recovered',{level:'info',component:'worker_monitor'});tasksReadFailed=false;}
+    });
+    await db.query('COMMIT');transaction=false;
+   }catch(error){
+    if(transaction)try{await db.query('ROLLBACK');}catch(rollbackError){logEvent('monitor.tasks_read_rollback_failed',{level:'error',component:'worker_monitor',...classifyLogError(rollbackError)});}
+    throw error;
+   }finally{db.release();}
+   }catch(error){next=undefined;if(!tasksReadFailed)logEvent('monitor.tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});tasksReadFailed=true;}
+   if(stopped)return;
+   tasks=next;
+   if(tasks&&tasksReadFailed){logEvent('monitor.tasks_read_recovered',{level:'info',component:'worker_monitor'});tasksReadFailed=false;}
+  })();
+  try{await tasksInflight;}finally{tasksInflight=undefined;}
+ };
+ const refreshMemory=async()=>{
+  if(memoryInflight)return memoryInflight;
+  if(stopped)return;
+  memoryInflight=(async()=>{
   let snapshot:ResourceSnapshot;
   try{snapshot=projectSnapshot(await (options.sample??sampleResources)({registered_pids:listAgentProcessIds(),tasks}));}
   catch(error){if(!resourceSampleFailed)logEvent('monitor.resource_sample_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});resourceSampleFailed=true;snapshot={sampled_at:new Date().toISOString(),system:{status:'unknown'},processes:[{pid:process.pid,rss_bytes:{status:'unknown'}}],tasks:{status:'unknown'}};}
@@ -124,15 +145,13 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
   else if(lastDispatchAllowed!==dispatch.allowed)logEvent(dispatch.allowed?'worker.dispatch.resumed':'worker.dispatch.paused',{level:dispatch.allowed?'info':'warn',component:'worker_monitor',state:record.status,reason_code:dispatch.reason});
   lastDispatchAllowed=dispatch.allowed;
   lastSample=Date.now();await write();
+  })();
+  try{await memoryInflight;}finally{memoryInflight=undefined;}
  };
- const refresh=async()=>{
-  if(inflight)return inflight;
-  inflight=update();try{await inflight;}finally{inflight=undefined;}
- };
- const schedule=()=>{if(stopped||!started)return;timer=setTimeout(()=>{void refresh().catch(()=>{/* Sampling failures are contained. */}).finally(schedule);},interval);timer.unref();};
+ const schedule=()=>{if(stopped||!started)return;timer=setTimeout(()=>{void refreshTasks();void refreshMemory().catch(()=>{/* Sampling failures are contained. */});schedule();},interval);timer.unref();};
  return{
-  async start(){if(started||stopped)return;started=true;await refresh();schedule();},
-  async beforeDispatch(){if(stopped)return false;if(inflight||!record||Date.now()-lastSample>=interval)await refresh();return record?.dispatch?.allowed??true;},
-  async stop(){stopped=true;if(timer)clearTimeout(timer);if(inflight)await inflight;if(record){record={...record,status:'stopped',heartbeat_at:new Date().toISOString(),dispatch:record.dispatch?{...record.dispatch,allowed:false,reason:'stopped'}:null};logEvent('worker.dispatch.stopped',{level:'info',component:'worker_monitor',state:'stopped'});await write();}},
+  async start(){if(started||stopped)return;started=true;await refreshMemory();void refreshTasks();schedule();},
+  async beforeDispatch(){if(stopped)return false;if(memoryInflight)await memoryInflight;else if(!record||Date.now()-lastSample>=interval)await refreshMemory();return record?.dispatch?.allowed??true;},
+  async stop(){stopped=true;if(timer)clearTimeout(timer);await Promise.all([memoryInflight,tasksInflight]);if(record){record={...record,status:'stopped',heartbeat_at:new Date().toISOString(),dispatch:record.dispatch?{...record.dispatch,allowed:false,reason:'stopped'}:null};logEvent('worker.dispatch.stopped',{level:'info',component:'worker_monitor',state:'stopped'});await write();}},
  };
 }

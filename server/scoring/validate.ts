@@ -13,7 +13,8 @@ export function extractTextScore(text:string,rubric:RubricItem[]){
  const max_score=Number(rubric.reduce((sum,item)=>sum+item.max_score,0).toFixed(8));
  const candidates=new Set<number>();
  for(const rawLine of text.split('\n')){
-  const line=rawLine.replace(/\*\*/g,'').trim();
+  // Markdown 标题与加粗只影响展示；编号、满分和合计仍严格核对。
+  const line=rawLine.replace(/\*\*/g,'').trim().replace(/^#{1,6}\s+/,'');
   if(/假设|如果|若|补充后|修订后|改进后|例如|可能达到/.test(line))continue;
   const match=line.match(/^(?:最终总分|最终得分|总分|合计得分|得分)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:[／/]\s*(\d+(?:\.\d+)?)\s*分?|分\s*[（(]?满分\s*(\d+(?:\.\d+)?)\s*分?[）)]?)\s*$/);
   if(match){
@@ -31,7 +32,8 @@ export function extractTextScore(text:string,rubric:RubricItem[]){
   const linePattern=(id:string)=>new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\s*[：:]\\s*(?:得分\\s*)?(\\d+(?:\\.\\d+)?)\\s*[／/]\\s*(\\d+(?:\\.\\d+)?)(?:\\s*分)?(?:\\s|[，。；;|]|$)`);
   const totalLabels=new Set(['最终总分','最终得分','总分','合计得分','得分']);
   for(const rawLine of text.split('\n')){
-   const line=rawLine.replace(/\*\*/g,'').trim();
+   // Markdown 标题与加粗只影响展示；编号、满分和合计仍严格核对。
+  const line=rawLine.replace(/\*\*/g,'').trim().replace(/^#{1,6}\s+/,'');
    const item=ordered.find(candidate=>line.startsWith(`${candidate.id}：`)||line.startsWith(`${candidate.id}:`));
    if(item){
     const match=line.match(linePattern(item.id));

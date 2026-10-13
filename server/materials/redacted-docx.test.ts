@@ -6,6 +6,7 @@
 import {test,expect} from 'bun:test';
 import {inflateRawSync} from 'node:zlib';
 import {buildRedactedDocx} from './redacted-docx';
+import type {DocumentBlock} from './pdf';
 
 function docxParts(bytes:Uint8Array){
  const buffer=Buffer.from(bytes),parts=new Map<string,string>();let offset=0;
@@ -29,4 +30,23 @@ test('DOCX uses only supplied redacted text and preserves attachment/page struct
 
 test('DOCX rejects an empty redacted source',async()=>{
  await expect(buildRedactedDocx(' \n ')).rejects.toThrow('脱敏文本为空');
+});
+
+test('structured DOCX keeps exact text in headings, lists, tables and footnotes without image content',async()=>{
+ const document={format:'redacted-structure-v1',pages:[
+  {page:1,blocks:[
+   {id:'h1',kind:'heading',level:1,text:' 标题 & <脱敏> '},
+   {id:'l1',kind:'list',items:['第一项  ','第二项']},
+   {id:'t1',kind:'table',caption:'付款表',rows:[{cells:[{text:'日期'},{text:'金额'}]},{cells:[{text:'2025-01-02'},{text:'甲某 100 元'}]}],footnotes:['脚注内容']},
+  ] as DocumentBlock[]},
+  {page:3,blocks:[{id:'p2',kind:'paragraph',text:'重复文本\n重复文本  '}] as DocumentBlock[]},
+ ]};
+ const parts=docxParts(await buildRedactedDocx(document as any)),xml=parts.get('word/document.xml')!;
+ expect(xml).toContain(' 标题 &amp; &lt;脱敏&gt; ');
+ expect(xml).toContain('第一项  ');expect(xml).toContain('第二项');
+ expect(xml).toContain('付款表');expect(xml).toContain('2025-01-02');expect(xml).toContain('甲某 100 元');expect(xml).toContain('脚注内容');
+ expect(xml.match(/重复文本/g)).toHaveLength(2);expect(xml).toContain('<w:tbl>');expect(xml).toContain('<w:pageBreakBefore');
+ const renderedText=[...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map(match=>match[1]!.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'"));
+ expect(renderedText).toEqual([' 标题 & <脱敏> ','第一项  ','第二项','付款表','日期','金额','2025-01-02','甲某 100 元','脚注内容','重复文本\n重复文本  ']);
+ expect(parts.get('word/_rels/document.xml.rels')??'').not.toContain('/media/');
 });

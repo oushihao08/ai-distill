@@ -45,7 +45,7 @@
 
 ```text
 cwd = 本次冻结的 project_prompt.workspace_path
-      例如 projects/豆包高经济价值-第五期/
+      例如 projects/豆包高经济价值/第五期/
 
 .storage/[workflow_id]/[attempt_id]/private/[现有作者角色目录]/
   input/

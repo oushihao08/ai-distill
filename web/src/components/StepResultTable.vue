@@ -24,7 +24,7 @@ function nested(value: unknown) { return value !== null && typeof value === 'obj
 function display(value: unknown) {
  if (value === null || value === undefined) return '—';
  if (typeof value === 'boolean') return value ? '是' : '否';
- const states: Record<string, string> = { waiting: '等待', queued: '排队中', running: '处理中', succeeded: '完成', failed: '失败', skipped: '跳过', accepted: '达标', repair: '需要返修', quarantine: '隔离' };
+ const states: Record<string, string> = { waiting: '等待', queued: '排队中', running: '处理中', succeeded: '完成', failed: '失败', skipped: '跳过', accepted: '达标', repair: '未达标', quarantine: '隔离' };
  return states[String(value)] ?? String(value);
 }
 </script>

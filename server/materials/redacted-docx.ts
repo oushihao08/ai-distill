@@ -4,6 +4,10 @@
  * 使用场景：由手动脱敏 DOCX 导出流程调用；不读取原件或修改数据库。
  */
 import {Document,HeadingLevel,Packer,Paragraph,Table,TableCell,TableRow,TextRun,WidthType} from 'docx';
+import type {DocumentBlock} from './pdf';
+
+export interface RedactedDocumentStructure {format:'redacted-structure-v1';pages:{page:number;blocks:DocumentBlock[]}[]}
+export const REDACTED_DOCX_RENDERER_VERSION='redacted-structure-docx-v1';
 
 function tableCells(line:string){return line.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(cell=>cell.trim());}
 function isTableSeparator(line:string){return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);}
@@ -25,8 +29,48 @@ function asTable(lines:string[]){
  return new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:rows.map((row,rowIndex)=>new TableRow({children:Array.from({length:columnCount},(_,columnIndex)=>new TableCell({children:[new Paragraph({children:textRuns(row[columnIndex]??'',rowIndex===0)})]}))}))});
 }
 
-/** Convert the already-redacted database text; no original source is opened here. */
-export async function buildRedactedDocx(markdown:string):Promise<Uint8Array>{
+function plainRuns(value:string){return value?[new TextRun({text:value})]:[new TextRun({text:''})];}
+function structuredTable(block:Extract<DocumentBlock,{kind:'table'}>){
+ const rows=block.rows.map(row=>new TableRow({children:row.cells.map(cell=>new TableCell({
+  ...(cell.rowSpan?{rowSpan:cell.rowSpan}:{}),...(cell.columnSpan?{columnSpan:cell.columnSpan}:{}),
+  children:[new Paragraph({children:plainRuns(cell.text)})],
+ }))}));
+ return new Table({width:{size:100,type:WidthType.PERCENTAGE},rows});
+}
+function structuredPageChildren(blocks:DocumentBlock[]):(Paragraph|Table)[]{
+ const children:(Paragraph|Table)[]=[];
+ for(const block of blocks){
+  if(block.kind==='table'){
+   if(block.caption!==undefined)children.push(new Paragraph({children:plainRuns(block.caption),style:'Caption'}));
+   children.push(structuredTable(block));
+   for(const footnote of block.footnotes??[])children.push(new Paragraph({children:plainRuns(footnote),style:'Caption'}));
+  }else if(block.kind==='list'){
+   for(const item of block.items)children.push(new Paragraph({children:plainRuns(item),bullet:{level:0},spacing:{after:100}}));
+  }else if(block.kind==='heading'){
+   const level=Math.max(1,Math.min(3,Number.isSafeInteger(block.level)?block.level!:1));
+   const heading=level===1?HeadingLevel.HEADING_1:level===2?HeadingLevel.HEADING_2:HeadingLevel.HEADING_3;
+   children.push(new Paragraph({children:plainRuns(block.text),heading}));
+  }else{
+   children.push(new Paragraph({children:plainRuns(block.text),...(block.kind==='footnote'?{style:'Caption'}:{})}));
+  }
+ }
+ return children;
+}
+
+/** Convert the redacted source text or its redacted structure; never opens original material. */
+export async function buildRedactedDocx(source:string|RedactedDocumentStructure):Promise<Uint8Array>{
+ if(typeof source==='string')return buildMarkdownRedactedDocx(source);
+ if(!source||source.format!=='redacted-structure-v1'||!Array.isArray(source.pages)||!source.pages.length||source.pages.some(page=>!Number.isSafeInteger(page.page)||!Array.isArray(page.blocks)))throw new Error('脱敏文档结构无效');
+ const children:(Paragraph|Table)[]=[];
+ for(const [index,page] of source.pages.entries()){
+  if(index)children.push(new Paragraph({text:'',pageBreakBefore:true}));
+  children.push(...structuredPageChildren(page.blocks));
+ }
+ const document=new Document({creator:'',lastModifiedBy:'',revision:0,sections:[{properties:{page:{margin:{top:1134,right:1134,bottom:1134,left:1134}}},children}]});
+ return new Uint8Array(await Packer.toBuffer(document));
+}
+
+async function buildMarkdownRedactedDocx(markdown:string):Promise<Uint8Array>{
  if(typeof markdown!=='string'||!markdown.trim())throw new Error('脱敏文本为空');
  const lines=markdown.replace(/\r\n?/g,'\n').split('\n'),children:(Paragraph|Table)[]=[];let seenPage=false,pendingPageBreak=false;
  for(let index=0;index<lines.length;){

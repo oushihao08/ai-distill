@@ -5,6 +5,9 @@
 
 | 文件 | 格式 | 用途 |
 | --- | --- | --- |
+| [2026-10-13-redaction-output-validation-audit.md](2026-10-13-redaction-output-validation-audit.md) | Markdown | 脱敏输出校验取舍、题目6最近失败的日志证据边界、v14 扁平协议及161项定向测试；未完成真实模型整卷验收。 |
+| [2026-10-11-cli-pipeline-and-lightweight-wait.md](2026-10-11-cli-pipeline-and-lightweight-wait.md) | Markdown | 同批逐题推进、轻量等待、一秒轮询；38项定向验证通过，完整路由集11项失败的临时基线对照及真实运行验收边界。 |
+| [2026-10-11-question1-workflow-live-run.md](2026-10-11-question1-workflow-live-run.md) | Markdown | 题目1隔离副本七步及Excel真实跑通；227项定向单测，记录评分解析、归档查询与跨worktree存储问题及验收边界。 |
 | [2026-10-11-workflow-cli-skill.md](2026-10-11-workflow-cli-skill.md) | Markdown | CLI/流程Skill实施、定向单测与类型检查、题目1真实归档末步；未重跑前序模型步骤，未对整个项目生成Excel。 |
 | [2026-10-11-workflow-api-inventory.md](2026-10-11-workflow-api-inventory.md) | Markdown | 从材料入库到单题归档/项目导出的步骤、查询与派发接口、异步 worker 契约及当前领域 CLI 缺口；仅为当前工作树静态核查。 |
 | [2026-10-10-fresh-authoring-alignment.md](2026-10-10-fresh-authoring-alignment.md) | Markdown | 普通出题从零生成、75项定向测试和真实工具验证；注明数据库53000及正式入库验收缺口。 |

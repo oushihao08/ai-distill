@@ -12,7 +12,7 @@ export function resolveAnswerConfig(raw:unknown,env:NodeJS.ProcessEnv=process.en
  return provider===undefined||provider==='qwen'?resolveQwenConfig(raw,env):resolveModelApiConfig(raw,env);
 }
 export function answerMessages(input:AnswerRequest){
- if(!input||typeof input!=='object'||Object.keys(input).some(key=>!['config','question','materials','timeout_ms','signal'].includes(key))||typeof input.question!=='string'||!input.question.trim()||!Array.isArray(input.materials))throw new ModelApiError('configuration');
+ if(!input||typeof input!=='object'||Object.keys(input).some(key=>!['config','question','materials','timeout_ms','signal','call_id','observe_reasoning'].includes(key))||typeof input.question!=='string'||!input.question.trim()||!Array.isArray(input.materials)||input.call_id!==undefined&&(typeof input.call_id!=='string'||!input.call_id.trim())||input.observe_reasoning!==undefined&&typeof input.observe_reasoning!=='boolean')throw new ModelApiError('configuration');
  const materials=input.materials.map(material=>{
   if(!material||typeof material!=='object'||Object.keys(material).some(key=>!['name','text'].includes(key))||typeof material.name!=='string'||!material.name.trim()||typeof material.text!=='string'||!material.text.trim())throw new ModelApiError('configuration');
   return{name:material.name,text:material.text};
@@ -23,7 +23,7 @@ export function createAnswerClient(env:NodeJS.ProcessEnv=process.env,request:(in
  const api=createModelApiClient(env,request);
  return{async answer(input){try{
   const messages=answerMessages(input),config=resolveAnswerConfig(input.config,env);
-  const {provider,...result}=await api.complete({config,messages,timeout_ms:input.timeout_ms,signal:input.signal});
+  const {provider,...result}=await api.complete({config,messages,timeout_ms:input.timeout_ms,signal:input.signal,...(input.call_id?{call_id:input.call_id}:{}),...(input.observe_reasoning?{observe_reasoning:true}:{})});
   return result;
  }catch(error){throw error;}}};
 }

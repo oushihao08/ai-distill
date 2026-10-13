@@ -14,7 +14,7 @@ defineSlots<{
 const completed = computed(() => props.steps.filter(step => step.status === 'succeeded').length);
 function decisionLabel(step:Step){
  const decision=String(step.result?.decision??'');
- return ({accepted:'达标',repair:'需要返修',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[decision];
+ return ({accepted:'达标',repair:'未达标',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[decision];
 }
 function statusLabel(step:Step){return step.ordinal===7&&decisionLabel(step)?decisionLabel(step):statusLabels[step.status];}
 function statusColor(step:Step){
@@ -25,7 +25,7 @@ function statusColor(step:Step){
 }
 function stepMessage(step: Step) {
  if(step.ordinal===7&&step.result?.decision==='accepted')return '全部所选模型均低于各自分数上限，题目达标';
- if(step.ordinal===7&&step.result?.decision==='repair')return '并非所有所选模型都低于分数上限，题目需要返修';
+ if(step.ordinal===7&&step.result?.decision==='repair')return '并非所有所选模型都低于分数上限，题目未达标';
  if(step.ordinal===7&&step.result?.decision==='waiting')return '尚有模型未完成作答或有效评分；查看右侧模型状态';
  if(step.ordinal===7&&step.result?.decision==='quarantine')return '题目或材料版本已变化，当前判定已隔离';
  if (step.status === 'running') return '正在执行';

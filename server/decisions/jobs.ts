@@ -1,13 +1,12 @@
 /**
  * 职责：达标事务服务：读取当前题目和模型评分快照，计算依据指纹并保存第七阶段决策。
  * 关键方法与用途：`readAcceptanceSnapshot()` 读取当前版本证据；`buildAcceptanceInput()` 组装纯决策输入；`runAcceptance()` 锁定并保存第七阶段结果；指纹函数固定来源。
- * 使用场景：由 `app.ts` 手动派发或 `revision-runner.ts` 接续调用。
+ * 使用场景：由 `app.ts` 在评分结束后执行一次达标判断。
  */
 import type {Pool,PoolClient} from 'pg';
-import {readRevisionSettings} from './revision-binding';
 import {HTTPException} from 'hono/http-exception';
 import {decideAcceptance,type AcceptanceConfig,type AcceptanceInput,type ModelAssessment} from './acceptance';
-import {validateAcceptanceConfig,validateRevisionBudget} from './config';
+import {validateAcceptanceConfig} from './config';
 import {createHash} from 'node:crypto';
 import {answerModelSetDigest,readProjectModelSet} from '../answer-models/model-set';
 import {classifyLogError,enterLogContext,logEvent} from '../logging';
@@ -39,7 +38,7 @@ export function buildAcceptanceInput(snapshot:{config:AcceptanceConfig;question?
   const result=score?.result;
   const report=result?.report;
   const questionResult=questionAttempt?.result;
-  const answerMatches=!!answer&&(answer.result?.question_attempt_id===questionAttempt?.id||Array.isArray(questionResult?.answer_source_attempt_ids)&&questionResult.answer_source_attempt_ids.includes(answer.result?.question_attempt_id))&&answer.result?.question_version===questionResult?.question_version;
+  const answerMatches=!!answer&&answer.result?.question_attempt_id===questionAttempt?.id&&answer.result?.question_version===questionResult?.question_version;
   const binding=result?.binding??score?.input_binding;
   const rubricDigest=createHash('sha256').update(JSON.stringify((questionResult?.rubric??[]).map((item:any)=>({id:item.id,criterion:item.criterion,max_score:item.max_score})))).digest('hex');
   const scoreMatches=!!answerMatches&&!!score&&binding?.answer_attempt_id===answer.id&&binding?.question_version===questionResult?.question_version&&binding?.rubric_version===questionResult?.rubric_version&&binding?.input_digest===answer.result?.input_digest&&binding?.answer_sha256===answer.result?.answer_sha256&&binding?.rubric_digest===rubricDigest&&answer.result?.answer_sha256===createHash('sha256').update(answer.result?.text??'').digest('hex');
@@ -47,7 +46,7 @@ export function buildAcceptanceInput(snapshot:{config:AcceptanceConfig;question?
  });
  return {question_current:current,config:snapshot.config,models};
 }
-/** Freeze per-model attempt references with each acceptance result for later evidence-backed revision. */
+/** Freeze per-model attempt references with each acceptance result for audit and publication binding. */
 export function buildEvaluationRecordRefs(snapshot:AcceptanceSnapshot,modelScores:Record<string,any>){
  const questionAttempt=snapshot.question,question=questionAttempt?.result;
  return snapshot.config.required_models.map(model=>{
@@ -68,22 +67,21 @@ export function buildEvaluationRecordRefs(snapshot:AcceptanceSnapshot,modelScore
  });
 }
 /**
- * 读取当前题面、模型集合、答案与评分分数，按逐模型门槛计算达标、等待或返修结果并持久化。
- * 输入摘要绑定本次决策依据；返修链调用时使用该轮冻结配置，普通派发使用当前项目配置。
+ * 读取当前题面、模型集合、答案与评分分数，按逐模型门槛计算达标、等待或未达标结果并持久化。
+ * 输入摘要绑定本次判定依据；配置始终来自当前项目模型集合及步骤设置。
  */
-export async function runAcceptance(pool:Pool,workflowId:string,revisionRoundId?:string){
+export async function runAcceptance(pool:Pool,workflowId:string){
  const db:PoolClient=await pool.connect();let restoreLogContext=()=>{};
  try{
   await db.query('BEGIN');
   const workflow=(await db.query(workflowSql,[workflowId])).rows[0];
   if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
   restoreLogContext=enterLogContext({component:'acceptance',workflow_id:workflowId,project_id:workflow.project_id,ordinal:7,operation:'acceptance'});
-  const settings=await readRevisionSettings(db,workflowId,revisionRoundId);
-  const modelSet:Awaited<ReturnType<typeof readProjectModelSet>>=settings?settings.model_set:await readProjectModelSet(db,workflow.project_id);
+  const modelSet:Awaited<ReturnType<typeof readProjectModelSet>>=await readProjectModelSet(db,workflow.project_id);
   let config:AcceptanceConfig,modelSetDigest:string|undefined;
-  const configRaw=settings?settings.configs?.['7']:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
+  const configRaw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
   if(modelSet.length){
-   config={required_models:modelSet.map(model=>model.model_id),minimum_score_by_model:Object.fromEntries(modelSet.map(model=>[model.model_id,model.minimum_score])),revision_budget:validateRevisionBudget(configRaw?.revision_budget)};
+   config={required_models:modelSet.map(model=>model.model_id),minimum_score_by_model:Object.fromEntries(modelSet.map(model=>[model.model_id,model.minimum_score]))};
   modelSetDigest=answerModelSetDigest(modelSet);
   }else{
    if(!configRaw?.required_models||!configRaw?.minimum_score_by_model)throw new HTTPException(409,{message:'请先在项目作答模型中选择模型并设置各自的百分制分数上限'});
@@ -95,7 +93,7 @@ export async function runAcceptance(pool:Pool,workflowId:string,revisionRoundId?
   const result={...decision,evaluation_records:buildEvaluationRecordRefs(snapshot,decision.model_scores??{})};
   const attemptId=crypto.randomUUID();
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,config,finished_at) SELECT $2,$1::uuid,7,COALESCE(max(attempt),0)+1,'succeeded',$3,$4,$5,now() FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=7",[workflowId,attemptId,JSON.stringify(input),JSON.stringify(result),JSON.stringify(config)]);
-  // A repair decision is a successful completion of this step; the business outcome lives in result.decision.
+  // The threshold outcome lives in result.decision; this step records that the decision completed.
   const stepStatus=result.decision==='waiting'?'waiting':'succeeded';
   await db.query("UPDATE ai_distill.steps SET implemented=true,status=$3,result=$2,error=NULL,started_at=COALESCE(started_at,now()),finished_at=now() WHERE workflow_id=$1 AND ordinal=7",[workflowId,JSON.stringify(result),stepStatus]);
   await db.query("UPDATE ai_distill.project_exports SET status='stale',error='达标判定已更新',finished_at=now() WHERE status IN ('running','succeeded') AND project_id=(SELECT project_id FROM ai_distill.workflows WHERE id=$1)",[workflowId]);

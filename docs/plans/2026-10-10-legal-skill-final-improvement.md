@@ -2,7 +2,7 @@
 
 日期：2026-10-10。状态：**已按本方案修改 skill 文本；尚未用真实题目成题检查、重新出题或调用模型测评。**
 
-本方案合并[后续优化清单](2026-10-10-legal-skill-optimization-inventory.md)与[inbox 内容提炼](../../projects/豆包高经济价值-第五期/reports/updates/2026-10-10_inbox内容提炼.md)，并对照当前 `skill/` 八个文件。前一份计划中的评分记录筛选属于系统代码，已有单独实现记录，不在本次 skill 修改范围内。旧[深度改进计划](2026-10-10-legal-skill-depth-improvement.md)的 M01—M09 已写入当前 skill。**后续用户将考点数量要求改为新题及实质返修 15–20 条；这是当前 skill 的适用口径，仍须保持考点独立、必要，不得凑数。**
+本方案合并[后续优化清单](2026-10-10-legal-skill-optimization-inventory.md)与[inbox 内容提炼](../../projects/豆包高经济价值/第五期/reports/updates/2026-10-10_inbox内容提炼.md)，并对照当前 `skill/` 八个文件。前一份计划中的评分记录筛选属于系统代码，已有单独实现记录，不在本次 skill 修改范围内。旧[深度改进计划](2026-10-10-legal-skill-depth-improvement.md)的 M01—M09 已写入当前 skill。**后续用户将考点数量要求改为新题及实质返修 15–20 条；这是当前 skill 的适用口径，仍须保持考点独立、必要，不得凑数。**
 
 ## 要解决的具体问题
 

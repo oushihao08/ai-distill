@@ -18,6 +18,10 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 | `016`、`024` | 历史自动运行控制建表及后续撤除；两者保留迁移历史 |
 | `018` | 数据库文本产物正文 |
 | `021`–`023` | Codex 凭证目录配置、系统默认与项目默认模型／推理强度 |
+| `028_remove_unused_design_tables.sql` | 删除已停用的 API 价格目录和项目步骤模板表；当前代码不读写，价格表为空，项目步骤使用稳定注册表。 |
+| `029_remove_revision_chains.sql` | 删除返修链、轮次、调用预算表及 `step_attempts.revision_round_id`；应用已不再运行返修流程，执行前确认表为空。 |
+| `030_project_phase_skill_sharing.sql` | 为期次工作流记录主项目名与期数；明确将已知旧项目“豆包高经济价值 - 第五期”（含无空格别名）映射到主项目“豆包高经济价值／第五期”，并把仓库内旧 skill 路径改为主项目级 `projects/豆包高经济价值/skill`；其他旧项目仍按原名独立回填且期数留空；移除 skill 路径唯一索引以支持共享。应用状态以 `schema_migrations` 为准。 |
+| `031_project_period_root.sql` | 将已归组的第五期 `projects.material_root` 与对应 `workflows.source_manifest` 路径切换到 `projects/豆包高经济价值/第五期/questions/`；保留附件哈希、清单字段、材料行、步骤状态和执行历史。 |
 
 执行前核对目标数据库、已登记文件和全部未执行 SQL。`024_remove_automation_control.sql` 删除旧自动批次、成员、阻断表、派发函数及项目暂停字段，不能为修复 Codex 设置顺便执行。数据库迁移、服务重启和真实接口核对是不同操作，均遵守根 [AGENTS.md](../AGENTS.md) 的授权约束。
 
