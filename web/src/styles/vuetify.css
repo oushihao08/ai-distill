@@ -19,3 +19,27 @@
   min-height: var(--theme-control-height);
   line-height: var(--theme-control-line-height);
 }
+
+/* 项目详情的三张记录表共用行密度和字号，长内容由详情与状态记录承载。 */
+.project-records-table .v-table__wrapper > table > thead > tr > th {
+  height: 38px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.project-records-table .v-table__wrapper > table > tbody > tr > td {
+  height: 44px;
+  padding: 6px 10px;
+  font-size: 14px;
+  line-height: 20px;
+  vertical-align: middle;
+}
+.project-records-table .v-btn {
+  min-width: 0;
+  padding-inline: 6px;
+}
+.project-records-table .v-chip {
+  height: 24px;
+  font-size: 12px;
+}

@@ -1,6 +1,6 @@
 <!--
 职责：平铺展示项目全部题目、所属材料包、各步骤状态和单题操作，供项目详情页面复用。
-关键方法与用法：接收 `workflows`、`packages`、`projectId`；批量读取当前页状态，`actionsFor()` 生成单题步骤按钮，`runAction()` 调用工作流接口。
+关键方法与用法：接收 `workflows`、`packages`、`projectId`；批量读取当前页状态，`actionsFor()` 生成单题步骤菜单，`runAction()` 调用工作流接口。
 -->
 
 <script setup lang="ts">
@@ -14,7 +14,7 @@ const props=defineProps<{workflows:Workflow[];packages:Workflow[];projectId:stri
 const emit=defineEmits<{refresh:[]}>();
 const search=shallowRef('');
 const page=shallowRef(1);
-const pageSize=10;
+const pageSize=20;
 const details=shallowRef<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>({});
 const detailErrors=shallowRef<Record<string,string>>({});
 const detailLoadingByWorkflow=shallowRef<Record<string,boolean>>({});
@@ -30,6 +30,7 @@ const pageCount=computed(()=>Math.max(1,Math.ceil(filteredWorkflows.value.length
 const visibleWorkflows=computed(()=>filteredWorkflows.value.slice((page.value-1)*pageSize,page.value*pageSize));
 const stageColumns=computed(()=>[...(!props.materialPackagesEnabled?[{ordinal:1,name:'入库'},{ordinal:9,name:'脱敏'}]:[]),{ordinal:4,name:'出题'},{ordinal:5,name:'作答'},{ordinal:6,name:'评分'},{ordinal:7,name:'达标判断'},{ordinal:8,name:'归档'}]);
 function stepState(flow:Workflow,ordinal:number){return workflowStepDisplay(details.value[flow.id],ordinal);}
+function stepHint(flow:Workflow,ordinal:number){const state=stepState(flow,ordinal);return [state.reason,state.finishedAt?'完成时间：'+dateLabel(state.finishedAt):''].filter(Boolean).join(' · ');}
 function openHistory(flow:Workflow,ordinal:number,name:string){history.value={workflowId:flow.id,title:flow.title,ordinal,stepName:name};}
 function displayTags(flow:Workflow){return flow.question_tags?.length?flow.question_tags:flow.target_level?[flow.target_level]:[];}
 function currentState(flow:Workflow){
@@ -131,15 +132,15 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
   </Row>
   <p v-if="!visibleWorkflows.length" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无题目。打开已完成脱敏的材料包详情即可创建题目。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
-   <v-table density="comfortable" class="min-w-1300px">
+   <v-table density="compact" class="project-records-table min-w-1080px">
     <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visibleWorkflows" :key="flow.id">
-      <td class="min-w-200px"><Column :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium break-words">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Column></td>
-      <td class="min-w-150px"><RouterLink v-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text">{{ packageNames[flow.source_workflow_id]??'查看材料包' }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
+      <td class="max-w-260px"><Column :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Column></td>
+      <td class="max-w-220px"><RouterLink v-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="packageNames[flow.source_workflow_id]??'查看材料包'">{{ packageNames[flow.source_workflow_id]??'查看材料包' }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap">{{ flow.material_count??0 }} 份</td>
-      <td v-for="stage in stageColumns" :key="stage.ordinal" class="min-w-110px"><Column :gap="4"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepState(flow,stage.ordinal).reason" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><span v-if="stepState(flow,stage.ordinal).reason&&stepState(flow,stage.ordinal).label!=='成功'" class="text-xs text-muted max-w-150px break-words">{{ stepState(flow,stage.ordinal).reason }}</span><span v-if="stepState(flow,stage.ordinal).finishedAt" class="text-xs text-muted">{{ dateLabel(stepState(flow,stage.ordinal).finishedAt!) }}</span><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">判定详情</v-btn></Column></td>
-      <td class="min-w-320px"><Column :gap="4"><Row wrap :gap="4"><v-btn v-for="action in actionsFor(flow)" :key="action.ordinal" size="small" density="compact" color="primary" variant="text" :loading="runningAction===`${flow.id}:${action.ordinal}`" :disabled="action.disabled||runningAction!==null||detailLoadingByWorkflow[flow.id]" @click="runAction(flow,action)">{{ action.label }}</v-btn></Row><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-sm text-muted">正在读取可用操作…</span><span v-else-if="detailErrors[flow.id]" class="text-sm text-danger">步骤状态读取失败：{{ detailErrors[flow.id] }}</span><span v-if="actionMessages[flow.id]" class="text-xs text-muted">{{ actionMessages[flow.id] }}</span><span v-else-if="actionMessages.refresh" class="text-xs text-danger">{{ actionMessages.refresh }}</span><span v-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]&&!detailErrors[flow.id]&&currentState(flow)!=='未达标'" class="text-sm text-muted">{{ nextAction(flow) }}</span></Column></td>
+      <td v-for="stage in stageColumns" :key="stage.ordinal" class="whitespace-nowrap"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">详情</v-btn></td>
+      <td class="whitespace-nowrap"><Row :gap="4"><v-menu><template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" size="small" variant="text" color="primary" :disabled="!actionsFor(flow).length||detailLoadingByWorkflow[flow.id]">步骤操作</v-btn></template><v-list density="compact"><v-list-item v-for="action in actionsFor(flow)" :key="action.ordinal" :title="action.label" :disabled="action.disabled||runningAction!==null" @click="runAction(flow,action)" /></v-list></v-menu><span v-if="runningAction?.startsWith(flow.id+':')" class="text-xs text-muted">提交中…</span><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-xs text-muted">读取中…</span></Row><span v-if="detailErrors[flow.id]" class="text-xs text-danger" :title="detailErrors[flow.id]">读取失败</span><span v-else-if="actionMessages[flow.id]" class="text-xs text-muted" :title="actionMessages[flow.id]">{{ actionMessages[flow.id] }}</span><span v-else-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]" class="text-xs text-muted" :title="nextAction(flow)">{{ currentState(flow) }}</span></td>
      </tr>
     </tbody>
    </v-table>

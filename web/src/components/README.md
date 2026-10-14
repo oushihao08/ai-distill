@@ -7,8 +7,8 @@
 | --- | --- |
 | `AppShell`、`UiIcon` | 应用外壳、路由出口与固定图标 |
 | `ProjectForm` | 项目新建和编辑；新项目固定使用材料包模式，维护本期可选出题标签，不切换历史项目关系模式 |
-| `ProjectMaterialRecords` | 项目材料包平铺表；逐包显示入库、脱敏状态、附件数和派生题目数，当前页批量读取状态 |
-| `ProjectQuestionRecords` | 全部题目平铺表，包含已归档题目；显示所属材料包、逐步状态与单题按钮，旧目录题目保留入库和脱敏步骤 |
+| `ProjectMaterialRecords` | 项目材料包平铺表；逐包显示入库、脱敏状态、附件数和派生题目数，当前页批量读取状态并提供单项入库／脱敏按钮 |
+| `ProjectQuestionRecords` | 全部题目平铺表，包含已归档题目；显示所属材料包、逐步状态与单题步骤菜单，旧目录题目保留入库和脱敏步骤 |
 | `MaterialPackageQuestions` | 材料包详情的关联题目表；每页读取十道题的出题至归档状态，不受状态接口单次百题上限影响 |
 | `WorkflowAttemptHistory` | 按工作流与步骤分页查看安全执行元信息；入库记录合并内部 PDF/DOCX 提取尝试 |
 | `AcceptedQuestionList`、`AcceptedQuestionDetail` | 当前达标题目的材料包归属、搜索、异常筛选、分页、模型评分概览和单题归档入口；详情弹窗按需展示当前题目包、答案、评分及脱敏附件全文 |

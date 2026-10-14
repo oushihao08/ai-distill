@@ -19,4 +19,5 @@ projects/*/outputs/**
 projects/*/snapshots/**
 !projects/*/snapshots/.gitkeep
 assets/out/附件库/
+/projects/Work法律全场景.zip
 .DS_Store
