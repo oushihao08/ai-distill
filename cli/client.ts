@@ -1,4 +1,4 @@
-/** 本机 HTTP 客户端。ApiClient 供 CLI 命令使用；只经 API 操作，不读取服务端配置、数据库或凭证。 */
+/** 本机 HTTP 客户端。ApiClient 供 CLI 命令使用；只经 API 操作，远程材料调用可注入令牌。 */
 export class CliError extends Error {
   constructor(message: string, public detail: Record<string, unknown> = {kind:'usage_error'}) {
     super(message); this.name='CliError';
@@ -8,7 +8,7 @@ export class CliError extends Error {
 export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 export class ApiClient {
   readonly base: string;
-  constructor(base = 'http://127.0.0.1:3700', private fetcher: Fetcher = fetch) {
+  constructor(base = 'http://127.0.0.1:3700', private fetcher: Fetcher = fetch, private token?:string) {
     let url: URL;
     try { url=new URL(base); } catch { throw new CliError('API 地址无效'); }
     if (!['http:','https:'].includes(url.protocol) || !['127.0.0.1','localhost','[::1]'].includes(url.hostname)
@@ -25,7 +25,7 @@ export class ApiClient {
     try {
       return await this.fetcher(url.href, {
         method, redirect:'error', signal:signal ? AbortSignal.any([signal,AbortSignal.timeout(35000)]) : AbortSignal.timeout(35000),
-        headers:body===undefined?undefined:{'Content-Type':'application/json'},
+        headers:{...(body===undefined?{}:{'Content-Type':'application/json'}),...(this.token?{Authorization:`Bearer ${this.token}`}:{})},
         body:body===undefined?undefined:JSON.stringify(body),
       });
     } catch {

@@ -43,7 +43,7 @@ const endpoints:Record<OtherApiConfig['provider'], {base:string;hosts:string[];p
  openrouter:{base:'https://openrouter.ai/api/v1',hosts:['openrouter.ai'],path:/^\/api\/v1\/?$/,keys:['OPEN_ROUTER_KEY']},
 };
 export function resolveOtherApiConfig(raw:unknown,env:NodeJS.ProcessEnv=process.env):OtherApiConfig {
- onlyFields(raw,['provider','base_url','model','max_tokens','enable_thinking']);
+ onlyFields(raw,['provider','base_url','model','max_tokens','enable_thinking','provider_options']);
  if(raw.enable_thinking!==undefined&&(raw.provider!=='openrouter'||typeof raw.enable_thinking!=='boolean'))throw new ModelApiError('configuration');
  if(raw.provider!=='kimi' && raw.provider!=='deepseek' && raw.provider!=='doubao' && raw.provider!=='openrouter') throw new ModelApiError('configuration');
  const provider=raw.provider,spec=endpoints[provider],prefix=provider.toUpperCase();
@@ -54,7 +54,14 @@ export function resolveOtherApiConfig(raw:unknown,env:NodeJS.ProcessEnv=process.
  let url:URL;try {url=new URL(base);} catch {throw new ModelApiError('configuration');}
  if(url.protocol!=='https:' || !spec.hosts.includes(url.hostname) || url.port || url.username || url.password || url.search || url.hash || !spec.path.test(url.pathname)) throw new ModelApiError('configuration');
  if(raw.max_tokens!==undefined && (!Number.isSafeInteger(raw.max_tokens) || (raw.max_tokens as number)<=0)) throw new ModelApiError('configuration');
- return {provider,base_url:url.href.replace(/\/$/,''),model,...(raw.enable_thinking!==undefined?{enable_thinking:raw.enable_thinking as boolean}:{}),...(raw.max_tokens!==undefined ? {max_tokens:raw.max_tokens as number}: {})};
+ let provider_options:ModelApiConfig['provider_options'];
+ if(raw.provider_options!==undefined){
+  if(provider!=='openrouter')throw new ModelApiError('configuration');
+  onlyFields(raw.provider_options,['only','allow_fallbacks']);const options=raw.provider_options;
+  if(!Array.isArray(options.only)||options.only.length<1||options.only.length>4||options.only.some(item=>typeof item!=='string'||!/^[a-z0-9][a-z0-9_/-]{0,79}$/.test(item))||new Set(options.only).size!==options.only.length||typeof options.allow_fallbacks!=='boolean')throw new ModelApiError('configuration');
+  provider_options={only:[...options.only] as string[],allow_fallbacks:options.allow_fallbacks};
+ }
+ return {provider,base_url:url.href.replace(/\/$/,''),model,...(raw.enable_thinking!==undefined?{enable_thinking:raw.enable_thinking as boolean}:{}),...(raw.max_tokens!==undefined ? {max_tokens:raw.max_tokens as number}: {}),...(provider_options?{provider_options}:{})};
 }
 
 
@@ -71,7 +78,7 @@ export function resolveModelApiConfig(raw:unknown,env:NodeJS.ProcessEnv=process.
 export function readModelApiDefaults(env:NodeJS.ProcessEnv=process.env):ModelApiConfig{
  const provider=env.LLM_API_PROVIDER?.trim()||'openrouter';
  const model=env.LLM_API_MODEL?.trim()||(provider==='openrouter'?(env.OPENROUTER_MODEL?.trim()||DEFAULT_MODEL_API_MODEL):undefined);
- return resolveModelApiConfig({provider,...(env.LLM_API_BASE_URL?.trim()?{base_url:env.LLM_API_BASE_URL.trim()}:{}),...(model?{model}:{})},env);
+ return resolveModelApiConfig({provider,...(env.LLM_API_BASE_URL?.trim()?{base_url:env.LLM_API_BASE_URL.trim()}:{}),...(model?{model}:{}),...(provider==='openrouter'&&model===DEFAULT_MODEL_API_MODEL?{enable_thinking:false}:{})},env);
 }
 export function readModelApiKey(config:ModelApiConfig,env:NodeJS.ProcessEnv):string{
  const router=new URL(config.base_url).hostname==='openrouter.ai';

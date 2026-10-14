@@ -1,6 +1,6 @@
 /**
  * 职责：工作台的轻量工作流投影；状态读取不传正文，内容读取只提供当前题目、作答与评分。
- * 入口：readProjectWorkflowViews() 批量读取列表状态；stepResultProjection() 构造服务端字段白名单；readWorkflowAttempts() 返回有限历史摘要与当前引用结果。
+ * 入口：readProjectWorkflowViews() 批量读取列表状态；readWorkflowStepHistory() 分页读取安全执行记录；stepResultProjection() 构造服务端字段白名单；readWorkflowAttempts() 返回有限历史摘要与当前引用结果。
  * 调用方：app.ts 的工作流详情和项目状态接口；不修改执行器、数据库原始记录或版本绑定。
  */
 import type {Pool} from 'pg';
@@ -13,7 +13,7 @@ export async function readProjectWorkflowViews(pool:Pool,projectId:string,ids:st
   const [states,attempts]=await Promise.all([
    readProjectWorkflowStepRows(pool,projectId,ids),
    pool.query(`SELECT DISTINCT ON (a.workflow_id,a.ordinal,a.status) a.workflow_id,a.id,a.ordinal,a.status,a.error,a.started_at,a.finished_at,NULL AS input,NULL AS config,
-    CASE WHEN a.ordinal=2 THEN jsonb_build_object('issues',a.result->'issues') WHEN a.ordinal=5 AND a.result->>'outcome'='qualified_timeout_unscored' THEN jsonb_build_object('outcome',a.result->'outcome','reason_code',a.result->'reason_code','generation_activity',a.result->'generation_activity') WHEN a.ordinal=5 AND a.result#>>'{error,reason_code}' IS NOT NULL THEN jsonb_build_object('error',jsonb_build_object('reason_code',a.result#>'{error,reason_code}')) WHEN a.ordinal=7 THEN jsonb_build_object('decision',a.result->'decision','model_scores',a.result->'model_scores','reasons',a.result->'reasons') ELSE NULL END AS result
+    CASE WHEN a.ordinal=9 THEN jsonb_build_object('progress',a.result->'progress') WHEN a.ordinal=2 THEN jsonb_build_object('issues',a.result->'issues') WHEN a.ordinal=5 AND a.result->>'outcome'='qualified_timeout_unscored' THEN jsonb_build_object('outcome',a.result->'outcome','reason_code',a.result->'reason_code','generation_activity',a.result->'generation_activity') WHEN a.ordinal=5 AND a.result#>>'{error,reason_code}' IS NOT NULL THEN jsonb_build_object('error',jsonb_build_object('reason_code',a.result#>'{error,reason_code}')) WHEN a.ordinal=7 THEN jsonb_build_object('decision',a.result->'decision','model_scores',a.result->'model_scores','reasons',a.result->'reasons') ELSE NULL END AS result
     FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id
     WHERE w.project_id=$1 AND w.deleted_at IS NULL AND a.workflow_id=ANY($2::uuid[]) AND a.ordinal NOT IN (3,10)
     ORDER BY a.workflow_id,a.ordinal,a.status,a.attempt DESC`,[projectId,ids]),
@@ -25,17 +25,28 @@ export async function readProjectWorkflowViews(pool:Pool,projectId:string,ids:st
    const map=new Map<number,WorkflowStepState>(rows.map(row=>[row.ordinal,row]));
    views[id]={steps:rows.map(row=>{
     const eligibility=workflowStepReadiness(row.ordinal,map),stage=STEP_REGISTRY.find(item=>item.ordinal===row.ordinal)!;
-    return{...row,status:row.ordinal===1&&row.has_pdf?row.extraction_status??row.status:row.status,name:stage.name,display_position:stage.position,ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};
+    const extraction=row.ordinal===1&&row.has_pdf&&row.extraction_status!=='skipped';
+    return{...row,status:extraction?row.extraction_status??row.status:row.status,error:extraction?row.extraction_error??row.error:row.error,started_at:extraction?row.extraction_started_at??row.started_at:row.started_at,finished_at:extraction?row.extraction_finished_at??row.finished_at:row.finished_at,name:stage.name,display_position:stage.position,ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};
    }),attempts:attempts.rows.filter(row=>row.workflow_id===id)};
   }
   return views;
  }catch(error){throw error;}
 }
 
+/** 只返回步骤执行元信息；入库包含内部 PDF 提取尝试，不返回冻结输入或私有结果正文。 */
+export async function readWorkflowStepHistory(pool:Pool,id:string,ordinal:number,offset:number){
+ const [rows,total]=await Promise.all([
+  pool.query("SELECT a.id,a.ordinal,a.attempt,a.status,a.error,a.started_at,a.finished_at,CASE WHEN a.ordinal=7 THEN a.result->>'decision' END AS decision FROM ai_distill.step_attempts a WHERE a.workflow_id=$1 AND (a.ordinal=$2 OR ($2=1 AND a.ordinal=2)) ORDER BY a.started_at DESC,a.id DESC LIMIT 20 OFFSET $3",[id,ordinal,offset]),
+  pool.query("SELECT count(*)::int AS count FROM ai_distill.step_attempts a WHERE a.workflow_id=$1 AND (a.ordinal=$2 OR ($2=1 AND a.ordinal=2))",[id,ordinal]),
+ ]);
+ return{attempts:rows.rows,total:Number(total.rows[0]?.count??0),offset,limit:20};
+}
+
 export function stepResultProjection(alias:string,content:boolean){
  const models=`(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id','minimum_score',m->'minimum_score','outcome',m->'outcome','reason_code',m->'reason_code','generation_activity',m->'generation_activity')), '[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${alias}.result->'models')='array' THEN ${alias}.result->'models' ELSE '[]'::jsonb END) m)`;
  return `CASE
-  WHEN ${alias}.ordinal=4 THEN ${content?`(SELECT jsonb_object_agg(key,value) FROM jsonb_each(COALESCE(${alias}.result,'{}'::jsonb)) WHERE key IN ('header','question_id','task_name','task_type','question','rubric','answer_approach','reference_answer','answer_requirements','question_version','rubric_version'))`:`NULL`}
+  WHEN ${alias}.ordinal=9 THEN jsonb_build_object('progress',${alias}.result->'progress','error',jsonb_build_object('reason_code',${alias}.result#>'{error,reason_code}'))
+  WHEN ${alias}.ordinal=4 THEN ${content?`(SELECT jsonb_object_agg(key,value) FROM jsonb_each(COALESCE(${alias}.result,'{}'::jsonb)) WHERE key IN ('header','question_id','task_name','task_type','question','rubric','answer_approach','reference_answer','answer_requirements','question_version','rubric_version','scoring_policy'))`:`NULL`}
   WHEN ${alias}.ordinal=5 THEN jsonb_build_object('models',${content?`${alias}.result->'models'`:models})
   WHEN ${alias}.ordinal=6 THEN jsonb_build_object('models',${alias}.result->'models')
   WHEN ${alias}.ordinal=7 THEN jsonb_build_object('decision',${alias}.result->'decision','model_scores',${alias}.result->'model_scores','reasons',${alias}.result->'reasons')
@@ -56,7 +67,7 @@ export async function readWorkflowAttempts(pool:Pool,id:string,content:boolean){
   CASE WHEN $2 AND a.ordinal=6 THEN jsonb_build_object('context',jsonb_build_object('rubric',a.input#>'{context,rubric}','binding',jsonb_build_object('answer_attempt_id',a.input#>'{context,binding,answer_attempt_id}')))
    WHEN a.ordinal=5 THEN jsonb_build_object('model_id',a.input->'model_id','model_name',a.input->'model_name') ELSE NULL END AS input,
   NULL AS config,
-  CASE WHEN a.ordinal=2 THEN jsonb_build_object('issues',a.result->'issues') WHEN a.ordinal=7 THEN jsonb_build_object('decision',a.result->'decision','model_scores',a.result->'model_scores','reasons',a.result->'reasons')
+  CASE WHEN a.ordinal=9 THEN jsonb_build_object('progress',a.result->'progress') WHEN a.ordinal=2 THEN jsonb_build_object('issues',a.result->'issues') WHEN a.ordinal=7 THEN jsonb_build_object('decision',a.result->'decision','model_scores',a.result->'model_scores','reasons',a.result->'reasons')
    WHEN $2 AND a.ordinal=6 AND EXISTS (SELECT 1 FROM ai_distill.steps s CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m WHERE s.workflow_id=$1 AND s.ordinal=6 AND m->>'score_attempt_id'=a.id::text)
     THEN jsonb_build_object('raw_text',a.result->'raw_text','report',a.result->'report','validation',a.result->'validation')
    WHEN a.ordinal=5 THEN jsonb_build_object('model_name',a.result->'model_name','model_id',a.result->'model_id','outcome',a.result->'outcome','reason_code',a.result->'reason_code','generation_activity',a.result->'generation_activity','error',CASE WHEN a.result#>>'{error,reason_code}' IS NULL THEN NULL ELSE jsonb_build_object('reason_code',a.result#>'{error,reason_code}') END) ELSE NULL END AS result

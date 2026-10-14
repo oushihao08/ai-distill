@@ -31,9 +31,9 @@ test('database cancellation polling failures are written to structured logs',asy
   await Bun.sleep(12);watcher.dispose();await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(root,'logs',day),files=await readdir(directory).catch(()=>[]);
   const records=files.length?(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line)):[];
-  expect(records).toContainEqual(expect.objectContaining({event:'task.cancellation.poll_failed',component:'task_cancellation',operation:'poll-step-attempts',level:'warn',error_kind:'unknown'}));
-  expect(records).toContainEqual(expect.objectContaining({event:'task.cancellation.poll_recovered',component:'task_cancellation',operation:'poll-step-attempts',level:'info'}));
-  expect(records.filter(record=>record.event==='task.cancellation.poll_failed')).toHaveLength(1);
+  expect(records).toContainEqual(expect.objectContaining({event:'task.cancellation.poll_failed',component:'task_cancellation',operation:'poll-step-attempts',level:'error',error_kind:'unknown'}));
+  expect(records).not.toContainEqual(expect.objectContaining({event:'task.cancellation.poll_recovered',component:'task_cancellation',operation:'poll-step-attempts',level:'info'}));
+  expect(records.filter(record=>record.event==='task.cancellation.poll_failed')).toHaveLength(1);expect(queries).toBeGreaterThan(1);expect(watcher.signal.aborted).toBe(false);
   expect(JSON.stringify(records)).not.toContain('private database detail');
  }finally{watcher.dispose();await logger.close();await rm(root,{recursive:true,force:true});}
 });

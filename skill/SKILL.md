@@ -5,14 +5,22 @@ description: Use when the user asks Codex to inspect ai-distill projects, run in
 
 # 工作流操作
 
-默认直接调用本机现有 HTTP API（`http://127.0.0.1:3700`）执行流程，不经 CLI。查询、派发和等待均以服务端 API 返回为准，不直连数据库。CLI 是可选客户端；只有用户明确要求 CLI 或当前环境无法直接发 HTTP 请求时才使用，并说明原因。本 Skill 规定流程；`projects/<项目>/skill/` 规定如何出题，交由现有执行器读取。
+本机工作流默认直接调用现有 HTTP API（`http://127.0.0.1:3700`）；不直连数据库。用户明确要求用 CLI 时，使用 [CLI 指南](../cli/README.md) 中对应命令。要让另一台服务器执行入库、脱敏或模型作答时，必须走 `remote material`／`remote answer` CLI：CLI 从本机 `.env` 读取固定凭证，经 SSH 隧道请求服务器 API；不要把令牌放进命令参数、对话或输出。远程执行的状态和结果仍以服务端 API/共享数据库为准。
+
+CLI 是工作流客户端，不是新的业务执行器：本机命令覆盖项目、设置、题目状态、步骤派发、等待、导出和下载；远程命令目前覆盖服务器入库／脱敏／作答。远程模式不提供 Agent 出题、评分、达标判定或归档；这些需要由支持相应 worker 的本机工作流执行。具体命令、参数、输出、退出码和代码位置见 [CLI 工具地图](MAP.md#cli-工具地图) 与 [CLI 命令参考](../cli/README.md)。本 Skill 规定工作流决策；`projects/<项目>/skill/` 规定项目出题内容，交由现有作者执行器读取。
+
+## 材料包与题目身份
+
+先读项目 `material_mode` 和工作流 `workflow_kind`／`source_workflow_id`。旧 `question_folders` 模式继续按题目目录操作。`material_packages` 模式下，目录同步或上传生成材料包；材料包只执行入库、内部 PDF 提取和脱敏。通过 `GET /api/material-packages/:id/versions` 选择一次成功脱敏尝试，再由 `POST /api/material-packages/:id/questions` 创建题目，选填场景、角色视角、目标等级和出题方向。题目持有自己的整包材料与脱敏快照，不再次调用入库／脱敏；题目只执行出题及后续步骤。材料包的新版本不改变旧题；删除题目不删除材料包。批量派发前按身份筛选，不能把材料包当题或把派生题送去脱敏。远程材料命令用材料包 ID；远程作答用题目 ID。目标等级是出题设计输入，不代表自动验收通过。
 
 ## 结构与阅读地图
 
 - 本文件是操作入口，执行任务按下文规则进行。
 - 理解分层、数据流、状态和扩展边界时，读 [架构设计](ARCHITECTURE.md)。
 - 定位步骤、命令、接口或修改文件时，读 [文件与流程地图](MAP.md)。
+- 需要从本机项目调用远程 CLI 时，按 [远程 CLI 操作流程](REMOTE.md) 建立隧道、确认前置并执行/恢复命令；CLI 参数见 [CLI说明](../cli/README.md)。
 - API 路径、请求和响应以当前服务端路由及响应为准；[CLI说明](../cli/README.md)仅供用户明确要求使用 CLI 时参考。地图不替代当前实现，也不要求每次执行通读后端。
+- 本机/远程入口选择及 CLI 命令到实现文件的关系见 [CLI 工具地图](MAP.md#cli-工具地图)；远程命令需按部署前置检查，不得把源码支持描述为线上已启用。
 
 ## 本次任务
 
@@ -29,10 +37,20 @@ description: Use when the user asks Codex to inspect ai-distill projects, run in
 | 重新生成 | 先核对服务端 API 是否支持重做；普通批量接口拒绝已完成步骤时报告能力缺口，不冒充已重做 |
 | 导出未达标题包 | 用户明确要求时使用 `bun cli/index.ts export failed --project <UUID> --all --json`，或用 `--ids` 限定范围；这是固定本地文件流程，文件规范见 `assets/未达标题目/README.md` |
 | 复核指定低分作答 | 用户明确指定题目时用 `bun cli/index.ts export review --project <UUID> --ids <工作流UUID,...> --json`；清单保留系统真实判定，低分不等于作答调用失败 |
+| 远程服务器入库／脱敏 | 用户要求服务器执行材料任务时，用 `remote material start|run`；响应不确定时用同一题目与 request-key 执行 `status`／`sync`。只做入库或只做脱敏可选择 `--mode intake`／`redact` |
+| 远程服务器作答 | 用户要求服务器执行模型作答时，用 `remote answer start|run`，以 `status` 按同一题目与 request-key 恢复查询；不得通过本机步骤派发冒充服务器执行 |
 
 “全部等待出题的题做到评分”：只在指定项目读取状态，筛出服务端显示出题就绪的题目 ID；固定这组 ID，后续不会把新加入题目或其他题目带入。只对用户明确授权的整个项目操作读取全部题目。示例不是默认范围。
 
 项目删除必须来自用户对该项目的明确要求；按服务端 API 的项目名称确认契约执行。不能把“清理题目”“重置流程”或批量工作流操作解释成删除项目。项目创建后可按用户配置调用项目设置 API 初始化 Codex、模型集合、步骤配置和作答策略；随后仍须检查就绪状态。缺少模型阈值或项目 `SKILL.md` 时，报告具体缺项，不把项目说成已可完整出题、作答和评分。
+
+### 远程服务器执行
+
+按 [远程 CLI 操作流程](REMOTE.md) 建立隧道并核对服务器前置。远程 CLI 只负责提交、查询和本机文件同步，真正的入库、脱敏及作答仍由服务器 API/worker 执行。执行前确认部署版本、共享数据库、服务器项目来源目录、所需迁移、`WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server`、至少32字符的 `REMOTE_MATERIAL_TOKEN`，以及本机 `.env` 中指向 SSH 本地端口的 `REMOTE_MATERIAL_API_URL` 和同一令牌。服务器部署状态未知时，先只读核对；不能因 CLI 命令存在就断言远程已就绪。
+
+材料操作生成 request-key 后必须保存并复用：网络失败或中断时，用同一 `workflow` 和 `request-key` 查状态/同步，不生成新标识重发。`run` 会等待任务并取回本机所需文件；`start` 只提交，`status` 只读服务器任务，`sync` 只处理已成功操作的文件收尾。远程作答同样复用 request-key 恢复状态；`status` 不含答案正文，答案通过常规工作流结果接口查看。作答请求可能为每个模型创建 attempt，必须确认整个作答集合的结果。失败后的显式新尝试使用新 request-key，并在用户授权范围内进行。
+
+远程 worker 仅执行服务器归属的入库、PDF 提取、API 脱敏和无步骤钩子的作答；它不运行 Agent 出题、评分、判定或归档。远程材料的附件取回是本机管理副本；`ready_for_local_authoring` 只在同步非 intake 模式的材料后报告，仍需由工作流状态确认脱敏就绪。实际能力以部署版本和 API 响应为准。
 
 ## 执行
 

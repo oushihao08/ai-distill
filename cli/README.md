@@ -2,7 +2,89 @@
 
 这是现有HTTP API的可选命令行客户端。Codex操作Skill默认直接调用API；只有用户明确要求使用命令行时才按本文件操作。
 
-Codex 或维护者通过 CLI 调用现有 Hono API，API 冻结输入并派发给现有 worker。CLI 不读数据库、不加载 `.env`，不另建模型执行器或调度器。
+Codex 或维护者通过 CLI 调用现有 Hono API，API 冻结输入并派发给现有 worker。普通本机命令不读数据库、不加载 `.env`，不另建模型执行器或调度器；远程命令按下文从本机 `.env` 读取专用 token。
+
+远程命令是唯一需要本机凭证的入口：Bun 从本机 `.env` 读取 `REMOTE_MATERIAL_API_URL` 与 `REMOTE_MATERIAL_TOKEN`，通过 SSH 隧道连接服务器回环 API。材料命令发起入库、PDF 提取、API 脱敏并取回管理副本；作答命令让服务器按现有模型配置生成答案。两者都不执行 Agent。先确认服务器已同步对应材料包或旧模式题目的来源目录、运行数据库已应用 `034_remote_material_operations.sql`，并部署 `WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server` 的 worker。服务器 API 仅在 `MATERIAL_EXECUTION_TARGET=server` 且配置至少32字符 `REMOTE_MATERIAL_TOKEN` 时注册远程路由。本机通过 SSH 建立本地转发，例如：
+
+```sh
+ssh -N -L 13700:127.0.0.1:3700 <ssh-user>@<server-host>
+# 本机 .env（不把实际令牌写入命令行或对话）
+REMOTE_MATERIAL_API_URL=http://127.0.0.1:13700
+REMOTE_MATERIAL_TOKEN=<与服务器REMOTE_MATERIAL_TOKEN相同的私有值>
+```
+
+将题目来源文件及项目 `materials/`、`skill/` 按项目部署方式放到服务器可访问的绝对路径。远程 `material` 和 `answer` 命令都按同一服务器 API 凭证认证；API 地址必须是本机回环地址，不能把 token 直接暴露到公网。`uuidgen` 为每次远程业务请求生成 request-key：
+
+```sh
+bun cli/index.ts remote material run --workflow <材料包UUID或旧模式题目UUID> --mode intake-redact --request-key <本次UUID>
+bun cli/index.ts remote material status --operation <操作UUID>
+bun cli/index.ts remote material sync --operation <操作UUID>
+# 创建响应丢失时，按原题目和请求标识找回同一操作
+bun cli/index.ts remote material status --workflow <材料包UUID或旧模式题目UUID> --request-key <本次UUID>
+bun cli/index.ts remote material sync --workflow <材料包UUID或旧模式题目UUID> --request-key <本次UUID>
+# 服务器作答；run 等待作答集合结束，start 仅提交，status 可按相同请求标识恢复查询
+bun cli/index.ts remote answer run --workflow <题目UUID> --request-key <本次UUID>
+bun cli/index.ts remote answer start --workflow <题目UUID> --request-key <本次UUID>
+bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本次UUID>
+```
+
+`run` 一次提交并等待服务器完成，再下载本机所需原件副本和脱敏产物；`start` 只提交，`status` 查询服务器状态，`sync` 可在断线后继续本机文件收尾。只入库或只脱敏分别使用 `--mode intake`、`--mode redact`。相同题目、模式和请求标识重复提交返回同一操作；请求响应不确定时用原 `workflow` 和 `request-key` 查询或同步，不能生成新标识盲目重做。本机文件完整且指纹一致时才报告 `ready_for_local_authoring`；服务器成功但本机下载失败时继续运行 `sync`。CLI 只接受 localhost URL，以 SSH 隧道转发到服务器端口；不在命令行输入令牌。
+
+远程作答复用既有 ordinal 5 队列：服务器只领取 `execution_target=server` 的作答 attempt；相同题目与请求标识重复提交返回原 attempt 集合，失败后若要显式重试须生成新请求标识。`status` 仅返回 attempt 状态和时间，不返回答案正文；共享数据库中的正常工作流页面和结果接口仍负责查看作答。服务器作答暂不支持项目步骤钩子；普通本机派发仍使用 `execution_target=local`，既有本地队列行为不变。
+
+## 材料包多题命令
+
+旧项目 `project create` 请求保持原样；新项目可加 `--material-mode material_packages`，`project sync` 仅登记来源材料包。已有项目要切换时用 `project material-mode --project <UUID> --clear-existing`，它会隐藏旧题，执行前先读项目及活动任务。`material-package list --project <UUID>` 查询材料包；`material-package versions --workflow <材料包UUID>` 列成功脱敏版本；`question create --material-package <材料包UUID> --redaction-attempt <成功脱敏尝试UUID> --title <题目名> [--scenario <场景>] [--role <角色>] [--level L2|L3|L4|L5] [--direction <方向>]` 建题。建题不再调用提取／脱敏；题目拥有自己的冻结整包快照。远程材料操作传材料包 ID，作答传题目 ID；旧项目仍传原题目 ID。`--all` 对材料步骤选择材料包、对出题及后续选择题目；明确 `--ids` 时以服务端身份校验为准。
+
+## 能力总览与选择入口
+
+CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、启动服务、执行 SQL、实现第二套评分/达标算法，也不会自动把一个步骤推进到下一个步骤。
+
+| 你要做的事 | 命令组 | 运行位置/对象 | 主要效果 |
+| --- | --- | --- | --- |
+| 查项目、题目、规则、模型、任务状态 | `project list/show`、`question list/show`、`workflow status`、`rules`、`models`、`attempt`、`monitor` | CLI → 本机 API | 只读；正文仅在明确读取完整题目/attempt 时返回 |
+| 新建或调整项目及工作流配置 | `project create/update/delete/sync`、`project settings` | CLI → 本机 API | 写数据库或同步来源；删除须精确项目名，设置逐项应用 |
+| 派发本机工作流步骤 | `step dispatch STEP_KEY` | CLI → 本机 API → 本机 worker | 单步派发；不自动继续，不替用户判断是否重新执行 |
+| 固定一个批次和恢复范围 | `batch create/show/skip` | CLI → 本机 JSON 文件，创建时只读本机 API | 固定 workflow ID、分组、目标步骤和跳过原因；清单不是业务状态 |
+| 等待已派发任务 | `attempt wait` | CLI → 本机 API | 默认只读状态元信息；到期/中断不取消后台任务 |
+| 查询/下载成果和 Excel | `result`、`export list/create/download`、`artifact download` | CLI → 本机 API | 读取或显式生成/下载；下载仅写新文件，不覆盖 |
+| 导出未达标题包或指定题目的复核包 | `export failed/review` | CLI → 本机 API并写仓库固定目录 | 依当前题目、作答、评分绑定导出文件；不改变工作流状态 |
+| 让服务器执行入库、PDF提取、脱敏 | `remote material start/run/status/sync` | CLI → SSH 隧道 → 服务器 API/worker | 固定 request-key 幂等提交；成功后按哈希同步本机管理副本 |
+| 让服务器执行模型作答 | `remote answer start/run/status` | CLI → SSH 隧道 → 服务器 API/worker | 创建/查找服务器归属的作答尝试；不返回答案正文 |
+
+远程部署已具备源码路径不等于当前服务器已具备运行能力。远程命令仅能验证它连接到的服务实际返回；迁移、部署、共享数据库、文件挂载和 worker 状态应另行核对。
+
+## 命令地图
+
+所有命令均接受 `--json`；本机 API 命令接受 `--api`。旗标必须严格按命令支持的参数使用，未知参数会报错。完整简版语法可执行 `bun run ai-distill --help`。
+
+| 命令 | 关键参数 | 读/写与行为 | 实现 |
+| --- | --- | --- | --- |
+| `project list` / `project show` | `--project UUID` | 只读项目及工作流清单 | `commands.ts` |
+| `project create` | `--name`、`--material-root`；可选层级、skill、description、settings-file | 创建项目；之后可部分应用设置，不自动删除失败创建的项目 | `commands.ts` |
+| `project update` | `--project` + 一个或多个更新字段 | 更新项目元数据、材料根或 skill 绑定；目录变更按 API 契约影响题目/结果 | `commands.ts` |
+| `project delete` | `--project`、`--confirm-name` | 显式删除项目工作流数据；确认名必须完全匹配 | `commands.ts` |
+| `project settings show/apply` | `--project`；apply另需 `--file JSON` | 读取或顺序应用 Codex、作答模型/阈值、步骤覆盖、作答时长策略 | `commands.ts` |
+| `project sync` | `--project` | 按项目模式显式扫描题目或材料包来源目录；新模式不改变已建题目快照 | `commands.ts` → API扫描器 |
+| `question list/show` | list用 `--project`；show用 `--workflow` | 题目清单或单题完整状态/结果 | `commands.ts` |
+| `workflow status` | `--project` + `--ids` 或 `--all` | 当前状态、就绪原因及活动尝试摘要 | `commands.ts` |
+| `rules list/file` | `--project`；file另需 `--path` | 读取项目规则清单/规则文件，不修改规则 | `commands.ts` |
+| `models catalog/show` | show需 `--project` | 查看系统可选模型或项目模型及阈值 | `commands.ts` |
+| `material text` | `--workflow`、`--material`、`--redacted-only` | 只读取当前脱敏正文；不能省略显式脱敏旗标 | `commands.ts` |
+| `step list` / `step dispatch STEP_KEY` | dispatch需 `--project` + `--ids` 或 `--all` | 列出稳定 key，或仅派发单一步骤 | `commands.ts` + `shared/step-registry.ts` |
+| `attempt show/wait` | show需 `--attempt`；wait需 `--ids`，可选 `--timeout`、`--full` | show读完整结果；wait默认状态投影，`--full` 才取正文 | `commands.ts` |
+| `result list/show` | show需 `--workflow` | 当前达标成果摘要或单题工作流结果 | `commands.ts` |
+| `monitor show` | 无 | 本机监控快照，不是供应商生成的页级进度 | `commands.ts` |
+| `batch create` | `--project`、`--ids`或`--all`、`--size`、`--to`、`--out` | 创建权限600、不覆盖的本机批次 JSON；不派发任务 | `batches.ts` |
+| `batch show/skip` | `--file`；skip另需 `--ids`、`--reason` | 读取清单或记录本轮跳过；不取消服务端任务 | `batches.ts` |
+| `export list/create` | `--project`；create可选 `--batch` | 查询导出或显式生成项目 Excel | `commands.ts` / server reporting |
+| `artifact download` / `export download` | 各自 ID、`--out` | 下载到不存在的新文件，父目录须已存在 | `client.ts` |
+| `export failed/review` | `--project` + `--ids` 或 `--all`（review仅ids） | 固定目录导出未达标包/指定复核包，不写数据库状态 | `failed-export.ts` |
+| `remote material start/run` | `--workflow`、`--mode`、`--request-key` | 提交服务器材料操作；run等待并自动sync | `remote-materials.ts` |
+| `remote material status/sync` | `--operation` 或 `--workflow`+`--request-key` | 状态查询；sync在成功后校验并取回文件 | `remote-materials.ts` |
+| `remote answer start/run/status` | `--workflow`、`--request-key` | 提交、等待或恢复查询服务器作答尝试集合 | `remote-answers.ts` |
+
+代码定位和每组的服务器端边界另见 [Workflow Skill 工具地图](../skill/MAP.md#cli-工具地图)。
 
 ## 入口
 
@@ -18,7 +100,7 @@ bun run ai-distill attempt wait --ids <任务UUID,...> --timeout 1h --json
 bun run ai-distill result show --workflow <题目UUID> --json
 ```
 
-完整命令及参数见 `--help`。`project create` 与 `project update` 支持显式提供 `--parent-name` 和 `--phase-name`；同一主项目的期次复用主项目 skill 路径，未提供层级字段的旧调用继续按单项目处理。项目支持创建、修改、删除和项目设置读取／应用；`project create` 可通过 `--settings-file` 在创建后设置 Codex、作答模型集合、步骤配置和作答时长策略。命令会返回就绪检查；没有作答模型与有效阈值时会明确提示，不能把新项目误报成可完整评分。派发一次只处理一个步骤；`--all` 先读取并固定指定项目当前题目 ID，按100题分组发送。不会默认重做已完成题、隐式同步来源、自动进入下一步。入库自身会按现有接口重新扫描题目目录；因此入库也必须在用户指定范围内执行。
+完整命令及参数见 `--help`。`project create` 与 `project update` 支持显式提供 `--parent-name` 和 `--phase-name`；同一主项目的期次复用主项目 skill 路径，未提供层级字段的旧调用继续按单项目处理。项目支持创建、修改、删除和项目设置读取／应用；`project create` 可通过 `--settings-file` 在创建后设置 Codex、作答模型集合、步骤配置和作答时长策略。命令会返回就绪检查；没有作答模型与有效阈值时会明确提示，不能把新项目误报成可完整评分。项目创建与 `project sync` 都通过现有服务端扫描器发现题目并切割超限 PDF：超过200页或超过单文件上限（默认50 MiB，可由服务端 `PDF_MAX_SIZE_MB` 调整）时按页拆分，单份同时不超过两项限制。CLI只调用本机API，不另行实现或执行一套切割器。派发一次只处理一个步骤；`--all` 先读取并固定指定项目当前题目 ID，按100题分组发送。不会默认重做已完成题、隐式同步来源、自动进入下一步。入库自身会按现有接口重新扫描题目目录；因此入库也必须在用户指定范围内执行。
 
 项目设置文件示例：
 
@@ -84,7 +166,10 @@ bun run ai-distill result show --workflow <题目UUID> --json
 | --- | --- |
 | index.ts | Bun入口、信号、输出与退出码 |
 | commands.ts | 参数、API映射、分组派发与有限等待；步骤来自shared注册表 |
-| client.ts | 本机HTTP、JSON及下载响应、稳定错误 |
+| client.ts | localhost HTTP、JSON及下载响应、稳定错误；远程客户端只在内存中附加 Bearer token |
+| remote-materials.ts | 远程材料请求、同键恢复、状态查询、清单/哈希核对和 `.storage/` 管理副本同步 |
+| remote-answers.ts | 远程作答提交、start/run/status 和 request-key 恢复 |
+| remote-materials.ts、remote-answers.ts | 读取本机远程凭证，分别闭环处理服务器材料操作与作答状态 |
 | batches.ts | 本地批次清单创建、读取、固定分组及原子跳过记录，不保存业务状态 |
 | failed-export.ts | 读取当前未达标判定与精确绑定的产物，按固定目录导出题目、作答及评分 |
 | client.test.ts、commands.test.ts | 注入HTTP夹具的边界与流程测试；不连接数据库、不调用模型 |

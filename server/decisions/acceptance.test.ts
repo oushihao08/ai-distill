@@ -4,6 +4,12 @@
 import {test,expect} from 'bun:test';
 import {decideAcceptance,type AcceptanceInput} from './acceptance';
 const valid:AcceptanceInput={question_current:true,config:{required_models:['qwen','kimi'],minimum_score_by_model:{qwen:50,kimi:50}},models:['qwen','kimi'].map(model=>({model,answer_status:'succeeded',score:9,max_score:20}))};
+test('新评分仅比较模型明确给出的指标，不由负原始分或否决改算',()=>{
+ const input={...valid,models:valid.models.map(m=>({...m,score_contract:'model_report_v1',score_valid:true,raw_score:-7,full_score:100,evaluation_percent:12,veto_triggered:true}))} as any;
+ expect(decideAcceptance(input)).toMatchObject({decision:'accepted',model_scores:{qwen:{percentage:12,raw_score:-7,veto_triggered:true,score_contract:'model_report_v1'}}});
+ expect(decideAcceptance({...input,models:input.models.map((m:any)=>({...m,evaluation_percent:null}))}).decision).toBe('waiting');
+ expect(decideAcceptance({...input,models:input.models.map((m:any)=>({...m,evaluation_percent:50}))}).decision).toBe('repair');
+});
 test('each required model must be strictly below its percentage cap, without averaging',()=>{
  expect(decideAcceptance(valid)).toMatchObject({decision:'accepted',model_scores:{qwen:{score:9,max_score:20,percentage:45}}});
  const mixed={...valid,models:valid.models.map(m=>({...m,score:m.model==='qwen'?0:10}))};

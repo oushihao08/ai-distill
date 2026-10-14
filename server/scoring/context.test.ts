@@ -33,11 +33,11 @@ test.each([false,true])('scoring context identifies the project and supports leg
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-function failedAggregateContext(options:{summary?:readonly {attempt_id:string;status:string;answer_sha256:string}[];question_attempt_id?:string;result_input_digest?:string}={}){
+function failedAggregateContext(options:{summary?:readonly {attempt_id:string;status:string;answer_sha256:string}[];question_attempt_id?:string;result_input_digest?:string;scoring_policy?:any;rubric?:any[]}={}){
  const answerInput={question_version:'q1',question:'题目',question_attempt_id:options.question_attempt_id??'author',materials:[{name:'附件1',text:'材料'}],attachments:[{id:'attachment',sha256:hash('材料')}],input_digest:''};
  answerInput.input_digest=inputDigest({question_version:answerInput.question_version,question:answerInput.question,materials:answerInput.materials,attachments:answerInput.attachments});
  const answerResult={text:'答案',input_digest:options.result_input_digest??answerInput.input_digest,answer_sha256:hash('答案')};
- const authorResult={question_version:'q1',question:'题目',attachment_ids:['attachment'],answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:'r1',rubric:[{id:'fact',criterion:'依据材料',max_score:1}],answer_approach:'核对材料',reference_answer:'依据材料作答'};
+ const authorResult={question_version:'q1',question:'题目',attachment_ids:['attachment'],answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:'r1',rubric:options.rubric??[{id:'fact',criterion:'依据材料',max_score:1}],answer_approach:'核对材料',reference_answer:'依据材料作答',...(options.scoring_policy?{scoring_policy:options.scoring_policy}:{})};
  const summary=options.summary??[{attempt_id:'answer',status:'succeeded',answer_sha256:answerResult.answer_sha256}];
  const db={query:async(sql:string)=>{
   if(sql.startsWith('SELECT w.rule_version_id'))return{rows:[{project_name:'本期项目',title:'题目1',source_key:'题目1',local_skill_path:'/tmp/skill',material_root:'/tmp/questions'}]};
@@ -46,7 +46,7 @@ function failedAggregateContext(options:{summary?:readonly {attempt_id:string;st
    const visible=summary.some(item=>item.attempt_id==='answer'&&item.status==='succeeded'&&item.answer_sha256===answerResult.answer_sha256);
    return{rows:visible?[{input:answerInput,result:answerResult}]:[]};
   }
-  if(sql.startsWith('SELECT a.id,a.input,a.result'))return{rows:[{id:'author',input:{},result:authorResult}]};
+  if(sql.startsWith('SELECT a.id,a.input,a.result'))return{rows:[{id:'author',input:options.scoring_policy?{scoring_policy:options.scoring_policy}:{},result:authorResult}]};
   throw new Error(`unexpected query: ${sql}`);
  }} as unknown as PoolClient;
  return{db};
@@ -67,4 +67,13 @@ test.each([
 ])('rejects a failed aggregate answer with stale or mismatched binding: %o',async options=>{
  const {db}=failedAggregateContext(options);
  await expect(readScoreContext(db,'workflow','answer')).rejects.toThrow();
+});
+
+test('评分上下文使用题目冻结的完整规则并将业务字段纳入绑定',async()=>{
+ const policy={contract:'model_report_v1' as const,rules_text:'按项目扣分，否决单列',reference_answer:'calibration' as const};
+ const rubric=[{id:'deduct',criterion:'错误',rule:'扣7分',metadata:{score:-7,dimension:'专业'}}];
+ const context=await readScoreContext(failedAggregateContext({scoring_policy:policy,rubric}).db,'workflow','answer');
+ expect(context.scoring_policy).toEqual(policy);expect(context.rubric).toEqual(rubric);
+ const changed=await readScoreContext(failedAggregateContext({scoring_policy:policy,rubric:[{...rubric[0],metadata:{...rubric[0].metadata,score:-10}}]}).db,'workflow','answer');
+ expect(changed.binding.rubric_digest).not.toBe(context.binding.rubric_digest);
 });

@@ -12,6 +12,7 @@ export interface AcceptanceConfig {
  minimum_score_by_model: Record<string, number|null>;
 }
 export interface ModelAssessment {
+ score_contract?:'model_report_v1';evaluation_percent?:number|null;raw_score?:number|null;full_score?:number|null;veto_triggered?:boolean|null;
  model: string;
  answer_status: 'waiting'|'running'|'succeeded'|'failed'|'skipped';
  score_status?: 'waiting'|'running'|'succeeded'|'failed';
@@ -53,6 +54,14 @@ export function decideAcceptance(input:AcceptanceInput):AcceptanceResult{
   }
   if(result.score_status==='succeeded'&&result.score_valid!==true){
    scores[model]={status:'pending',threshold};pending=true;reasons.push(`required_model_score_validation_missing:${model}`);continue;
+  }
+  if(result.score_contract==='model_report_v1'){
+   const percentage=result.evaluation_percent;
+   if(result.score_valid!==true||!validScore(percentage)||percentage<0||percentage>100){scores[model]={status:'pending',threshold};pending=true;reasons.push(`score_missing_or_invalid:${model}`);continue;}
+   const status=percentage<threshold?'passed':'not_passed';
+   scores[model]={status,score_contract:'model_report_v1',raw_score:result.raw_score??null,full_score:result.full_score??null,veto_triggered:result.veto_triggered??null,percentage,threshold};
+   if(status==='not_passed')reasons.push(`at_or_above_model_threshold:${model}`);
+   continue;
   }
   if(!validScore(result.score)||!validScore(result.max_score)){
    scores[model]={status:'pending',threshold};pending=true;reasons.push(`score_missing_or_invalid:${model}`);continue;

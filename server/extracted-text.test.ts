@@ -41,5 +41,5 @@ test('extracted-text API returns the current material redacted from redacted_ind
  expect(body.redaction_status).toBe('redacted');
  expect(body.redacted_text).toBe('当前材料的脱敏文本');
  expect(body.redacted_text).not.toBe('另一份脱敏文本');
- expect(queries.some(query => query.values?.includes(3))).toBe(true);
+ expect(queries.some(query=>query.sql.includes("idx.kind='redacted_index'")&&query.values?.[0]===workflowId)).toBe(true);
 });

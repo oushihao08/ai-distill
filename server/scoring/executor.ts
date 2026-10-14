@@ -8,16 +8,17 @@ import {join,resolve} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {runAgent,SCORE_ISOLATION_CONFIG} from '../agent';
 import {createModelApiClient,type ModelApiConfig} from '../llm-api';
+import {hookAdditionText,type HookAddition} from '../workflow-hooks';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '../../shared/step-prompts';
-import {extractTextScore,type ScoreContext} from './validate';
+import {extractTextScore,extractModelReport,scoreRubricSnapshot,scoreRubricBindingText,type RubricItem,type ScoreContext} from './validate';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 /** 内部上下文保留思路与标答用于题目包校验；只有 buildScoreFiles() 的文件会交给评分模型。 */
 export function buildAnonymousInput(context:ScoreContext){
  const projectFiles=context.project_prompt?.files??context.project_rules?.files??[];
- if((context.project_name!==undefined&&(typeof context.project_name!=='string'||!context.project_name.trim()))||typeof context.question!=='string'||!context.question.trim()||typeof context.answer_approach!=='string'||!context.answer_approach.trim()||typeof context.reference_answer!=='string'||!context.reference_answer.trim()||typeof context.answer!=='string'||!context.answer.trim()||hash(context.answer)!==context.binding.answer_sha256||!Array.isArray(context.materials)||!context.materials.length||context.materials.some(m=>typeof m.text!=='string'||!m.text.trim())||!Array.isArray(context.rubric)||!context.rubric.length||context.rubric.length>500||new Set(context.rubric.map(r=>r.id)).size!==context.rubric.length||context.rubric.some(r=>typeof r.id!=='string'||!r.id.trim()||typeof r.criterion!=='string'||!r.criterion.trim()||!Number.isFinite(r.max_score)||r.max_score<=0)||projectFiles.some(file=>!file.path||!/^[a-f0-9]{64}$/.test(file.sha256)||!Number.isInteger(file.size_bytes)||file.size_bytes<0))throw new Error('评分输入或指纹无效');
- const rubric=context.rubric.map(r=>({id:r.id,criterion:r.criterion,max_score:r.max_score}));
- if(hash(JSON.stringify(rubric))!==context.binding.rubric_digest)throw new Error('评分规则指纹不一致');
- return {...(context.project_name!==undefined?{project_name:context.project_name,question_id:context.question_id,step:'独立评分'}:{}),question:context.question,materials:context.materials.map((m,i)=>({name:`附件${i+1}`,text:m.text})),rubric,answer_approach:context.answer_approach,reference_answer:context.reference_answer,answer:context.answer,...(context.step_prompt?{step_prompt:context.step_prompt}:{}),...(context.project_prompt?{project_context:{source_digest:context.project_prompt.source_digest,files:context.project_prompt.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes}))}}:context.project_rules?{project_rules:{version_id:context.project_rules!.version_id,source_digest:context.project_rules!.source_digest,files:context.project_rules!.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes}))}}:{})};
+ const rubric=scoreRubricSnapshot(context.rubric,context.scoring_policy);
+ if((context.project_name!==undefined&&(typeof context.project_name!=='string'||!context.project_name.trim()))||typeof context.question!=='string'||!context.question.trim()||typeof context.answer_approach!=='string'||!context.answer_approach.trim()||typeof context.reference_answer!=='string'||!context.reference_answer.trim()||typeof context.answer!=='string'||!context.answer.trim()||hash(context.answer)!==context.binding.answer_sha256||!Array.isArray(context.materials)||!context.materials.length||context.materials.some(m=>typeof m.text!=='string'||!m.text.trim())||!Array.isArray(context.rubric)||!context.rubric.length||context.rubric.length>500||new Set(context.rubric.map(r=>r.id)).size!==context.rubric.length||projectFiles.some(file=>!file.path||!/^[a-f0-9]{64}$/.test(file.sha256)||!Number.isInteger(file.size_bytes)||file.size_bytes<0))throw new Error('评分输入或指纹无效');
+ if(hash(scoreRubricBindingText(rubric,context.scoring_policy))!==context.binding.rubric_digest)throw new Error('评分规则指纹不一致');
+ return {...(context.scoring_policy?{scoring_policy:context.scoring_policy}:{}),...(context.project_name!==undefined?{project_name:context.project_name,question_id:context.question_id,step:'独立评分'}:{}),question:context.question,materials:context.materials.map((m,i)=>({name:`附件${i+1}`,text:m.text})),rubric,answer_approach:context.answer_approach,reference_answer:context.reference_answer,answer:context.answer,...(context.step_prompt?{step_prompt:context.step_prompt}:{}),...(context.project_prompt?{project_context:{source_digest:context.project_prompt.source_digest,files:context.project_prompt.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes}))}}:context.project_rules?{project_rules:{version_id:context.project_rules!.version_id,source_digest:context.project_rules!.source_digest,files:context.project_rules!.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes}))}}:{})};
 }
 const string={type:'string'};
 const object=(properties:Record<string,unknown>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
@@ -26,16 +27,38 @@ export const SCORE_TASK_PROMPT='';
 /** 文件只在 Codex 的系统临时工作区生成，不写入持久化评分目录。 */
 export function buildScoreFiles(input:ReturnType<typeof buildAnonymousInput>){
  return [
-  {name:'题面与评分标准.txt',text:['【题面】',input.question,'【rubric】',...input.rubric.map(r=>`${r.id}（满分${r.max_score}）：${r.criterion}`)].join('\n\n')},
+  {name:'题面与评分标准.txt',text:['【题面】',input.question,'【rubric】',...input.rubric.map(r=>'rule' in r?`${r.id}：${r.criterion}\n计分规则：${r.rule}${r.metadata?`\n业务信息：${JSON.stringify(r.metadata)}`:''}`:`${r.id}（满分${r.max_score}）：${r.criterion}`)].join('\n\n')},
   ...input.materials.map((m,i)=>({name:`附件${i+1}.txt`,text:m.text})),
   {name:'待评答案.txt',text:input.answer},
+  ...(input.scoring_policy?.contract==='model_report_v1'&&input.scoring_policy.reference_answer==='calibration'?[{name:'校准参考答案.txt',text:input.reference_answer}]:[]),
  ];
 }
 /** 仅说明文件用途、完整阅读要求及用户原样评分提示词。 */
 export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>){
  const rubricIds=input.rubric.map(item=>item.id);
- const formats=input.rubric.map(item=>`${item.id}：<得分>/${item.max_score}`);
+ if(input.scoring_policy?.contract==='model_report_v1')return [
+  '题面与评分标准：题面与评分标准.txt',`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,'待评分答案：待评答案.txt',
+  '完整读取上述文件，依据本次冻结项目规则逐项独立判断并说明答案证据。',input.step_prompt??'',`本题冻结项目规则：\n${input.scoring_policy.rules_text}`,
+  input.scoring_policy.reference_answer==='calibration'?'校准参考答案：校准参考答案.txt。仅用于结构、字段和数量级校准；不得当作唯一答案键，不得因候选措辞、顺序或同等有效方案不同而扣分。Rubric是计分依据。':'不提供参考答案。',
+  `本题条目ID（每个恰好一次，不增加或删改）：${JSON.stringify(rubricIds)}`,
+  '先输出完整评审正文，最后输出唯一结果区：<model_report>有效JSON</model_report>。JSON字段：contract="model_report_v1"；items数组每项包含id、judgment、score_delta（数字或null）、reason；summary包含raw_score、full_score、evaluation_percent（以上各为数字或null）、veto_triggered（布尔或null）。按冻结规则判断加扣分、合计及否决；evaluation_percent是规则明确允许的0—100比较指标，未规定可比较口径时为null。否决独立记录，不擅自归零。不得把绑定、任务身份或程序状态写入结果区。',
+ ].join('\n\n');
+ const formats=input.rubric.map(item=>`${item.id}：<得分>/${'max_score' in item?item.max_score:''}`);
  return [`题面与评分标准：题面与评分标准.txt`,`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,`待评分答案：待评答案.txt`,'请完整读取上述文件。',input.step_prompt??'',`评分条目编号规则（优先级高于前述提示词中的任何格式示例）：必须逐字使用本题清单中的 ID，每个恰好一次；若前述示例与清单不同，以本清单和题面与评分标准文件中的实际 ID 为准，不添加、删除或改写任何前后缀。\n本题rubric ID及逐项格式：\n${formats.join('\n')}`].join('\n\n');
+}
+/** 新契约默认提示不继承旧二元分格式；自定义正文原样保留。 */
+function scoringPrompt(context:ScoreContext,prompt?:string){
+ const resolved=resolveScoreStepPrompt(prompt??context.step_prompt??DEFAULT_STEP_PROMPTS[6]);
+ return context.scoring_policy?.contract==='model_report_v1'&&resolved===DEFAULT_STEP_PROMPTS[6]?'依据题面、Rubric、脱敏附件和待评答案评分，逐项说明判断理由和答案原文证据；只评价候选实际表现。':resolved;
+}
+/** 原始分和比较指标分开保存，旧消费者不能误用新模式的原始分。 */
+function collectScore(text:string,context:ScoreContext,binding:ScoreContext['binding']){
+ if(context.scoring_policy?.contract==='model_report_v1'){
+  const extraction=extractModelReport(text,context.rubric);
+  return {score_extraction:{...extraction,total:null,max_score:null},report:{binding,total:null,max_score:null,...(extraction.report??{contract:'model_report_v1'})} as Record<string,unknown>};
+ }
+ const extraction=extractTextScore(text,context.rubric as RubricItem[]);
+ return {score_extraction:extraction,report:{binding,total:extraction.total,max_score:extraction.max_score} as Record<string,unknown>};
 }
 /** 配置界面与实际执行共用同一指令来源，不以当前指令冒充历史快照。 */
 export function scoreExecutionInstructions(provider:'codex'|'api'='codex'){return {provider,developer_instructions:'',task_prompt:SCORE_TASK_PROMPT,input_format:provider==='api'?'inline_text_blind_v2':'separate_input_files_blind_v2',output_format:'text' as const,isolation_config:provider==='codex'?SCORE_ISOLATION_CONFIG:{}};}
@@ -43,9 +66,9 @@ export function scoreExecutionInstructions(provider:'codex'|'api'='codex'){retur
 export function scoreExecutionDigest(provider:'codex'|'api'='codex',instructions=scoreExecutionInstructions(provider)){
  return hash(JSON.stringify([instructions.developer_instructions,instructions.task_prompt,instructions.input_format,instructions.output_format,Object.entries(instructions.isolation_config).sort(([a],[b])=>a.localeCompare(b))]));
 }
-export async function runIndependentScore(context:ScoreContext,options:{root:string;model:string;reasoning_effort:string;step_prompt?:string;signal?:AbortSignal;timeout_ms?:number;call_id?:string;execute?:typeof runAgent}){
+export async function runIndependentScore(context:ScoreContext,options:{root:string;model:string;reasoning_effort:string;step_prompt?:string;hook_additions?:HookAddition[];signal?:AbortSignal;timeout_ms?:number;call_id?:string;execute?:typeof runAgent}){
  // 项目身份与旧项目文件元数据只用于队列绑定，不发送给评分 Agent。
- const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:resolveScoreStepPrompt(options.step_prompt??context.step_prompt??DEFAULT_STEP_PROMPTS[6])});
+ const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:scoringPrompt(context,options.step_prompt)});
  if(options.signal?.aborted)throw new Error('评分执行已取消');
  const frozen=structuredClone(context.binding);
  let directory:string;
@@ -53,7 +76,7 @@ export async function runIndependentScore(context:ScoreContext,options:{root:str
   await mkdir(resolve(options.root),{recursive:true,mode:0o700});
   const root=await realpath(resolve(options.root));
   directory=join(root,`score-${randomUUID()}`);await mkdir(directory,{mode:0o700});
-  const prompt=buildScoreMessage(input);
+  const prompt=buildScoreMessage(input)+hookAdditionText(options.hook_additions);
   const input_files=buildScoreFiles(input);
   const execution_request={...scoreExecutionInstructions(),step_prompt:input.step_prompt,model:options.model,reasoning_effort:options.reasoning_effort,input_sha256:hash(JSON.stringify({stdin:prompt,input_files})),stdin:prompt,input_files:input_files.map(file=>({name:file.name,sha256:hash(file.text),size_bytes:Buffer.byteLength(file.text)}))};
   const invocation=await (options.execute??runAgent)({task_type:'independent_scoring',directory,prompt,model:options.model,reasoning_effort:options.reasoning_effort,output_format:'text',input_files,signal:options.signal,timeout_ms:options.timeout_ms,call_id:options.call_id,validate(value){
@@ -61,27 +84,26 @@ export async function runIndependentScore(context:ScoreContext,options:{root:str
    return value;
   }});
   const raw_text=invocation.result;
-  const score_extraction=extractTextScore(raw_text,context.rubric);
-  const report:Record<string,unknown>={binding:frozen,total:score_extraction.total,max_score:score_extraction.max_score};
+  const {score_extraction,report}=collectScore(raw_text,context,frozen);
   const cli_request=options.execute?undefined:JSON.parse(await readFile(join(directory,'output','request.json'),'utf8'));
   return {...invocation,execution_request:{...execution_request,...(cli_request?{cli_request}:{})},raw_text,report,score_extraction,validation:score_extraction,directory};
  }catch(error){throw error;}
 }
 
 /** API评分接收与Agent相同的脱敏文件正文和评分指令；不读取宿主资料或会话记忆。 */
-export async function runIndependentApiScore(context:ScoreContext,options:{config:ModelApiConfig;step_prompt?:string;signal?:AbortSignal;timeout_ms?:number;call_id?:string;complete?:ReturnType<typeof createModelApiClient>['complete']}){
- const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:resolveScoreStepPrompt(options.step_prompt??context.step_prompt??DEFAULT_STEP_PROMPTS[6])});
+export async function runIndependentApiScore(context:ScoreContext,options:{config:ModelApiConfig;step_prompt?:string;hook_additions?:HookAddition[];signal?:AbortSignal;timeout_ms?:number;call_id?:string;complete?:ReturnType<typeof createModelApiClient>['complete']}){
+ const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:scoringPrompt(context,options.step_prompt)});
  if(options.signal?.aborted)throw new Error('评分执行已取消');
- const input_files=buildScoreFiles(input),prompt=buildScoreMessage(input);
+ const input_files=buildScoreFiles(input),prompt=buildScoreMessage(input)+hookAdditionText(options.hook_additions);
  const body=[prompt,'【以下为本次评分文件的完整正文】',...input_files.map(file=>`<file name="${file.name}">\n${file.text}\n</file>`)].join('\n\n');
  const call=options.complete??createModelApiClient().complete;
  const result=await call({config:options.config,messages:[{role:'user',content:body}],timeout_ms:options.timeout_ms??1800000,signal:options.signal,call_id:options.call_id});
- const score_extraction=extractTextScore(result.text,context.rubric);
+ const {score_extraction,report}=collectScore(result.text,context,structuredClone(context.binding));
  const session_id=result.completion_id??result.request_id??randomUUID();
  const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
  return{
   raw_text:result.text,
-  report:{binding:structuredClone(context.binding),total:score_extraction.total,max_score:score_extraction.max_score,disputes:[]},
+  report:{...report,disputes:[]},
   validation:score_extraction,
   score_extraction,
   session_id,

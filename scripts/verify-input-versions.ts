@@ -61,9 +61,18 @@ try {
  const running = runNextExtraction(testPool, root, async (storage, workflow, attempt, materials) => {
   check('claimed attempt reads its exact attachment snapshot', materials.length === 1 && materials[0]!.sha256 === createHash('sha256').update('%PDF-1.7\nfirst').digest('hex'));
   started(); await gate;
-  const relative = `${workflow}/${attempt}/materials.md`;
-  await mkdir(join(storage, workflow, attempt), { recursive: true }); await writeFile(join(storage, relative), 'synthetic fixture');
-  return { artifacts: [{ kind: 'redacted_markdown', storage_path: relative, sha256: createHash('sha256').update('synthetic fixture').digest('hex'), size_bytes: 17 }], result: { materials: [], pages: [], issues: [], redaction: 'synthetic orchestration fixture' }, blocked: false };
+  const relative = `${workflow}/${attempt}/material-${materials[0]!.id}-extracted.json`;
+  const content = JSON.stringify({ source_sha256: materials[0]!.sha256, format: 'pdf', provider: 'fixture', structure_version: 1, pages: [{ page: 1, text: 'synthetic fixture', method: 'ocr', structure: [{ id: 'p1-b1', kind: 'paragraph', text: 'synthetic fixture' }] }] });
+  await mkdir(join(storage, workflow, attempt), { recursive: true }); await writeFile(join(storage, relative), content);
+  return {
+   artifacts: [{ kind: 'private_extracted_pages', material_id: materials[0]!.id, storage_path: relative, sha256: createHash('sha256').update(content).digest('hex'), size_bytes: Buffer.byteLength(content) }],
+   result: {
+    materials: [{ material_id: materials[0]!.id, sha256: materials[0]!.sha256, pages: 1, format: 'pdf', provider: 'fixture', content_type: 'scanned', extraction: { mode: 'fresh', from_attempt_id: null, from_material_id: null } }],
+    pages: [{ material_id: materials[0]!.id, page: 1, method: 'ocr', usage: null, model: null, extraction_reused: false, recognition_attempts: [] }],
+    issues: [], persistence: 'synthetic fixture',
+   },
+   blocked: false,
+  };
  }, workflowId);
  let updated;
  try { await processing; updated = await upload('second'); }

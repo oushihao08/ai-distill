@@ -2,9 +2,16 @@
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import { expect, test } from 'bun:test';
+import {createModelApiClient} from '../llm-api/client';
 import { inspect } from 'node:util';
 import { createQwenClient, QwenError, resolveQwenConfig, type QwenAnswerInput, type QwenErrorKind } from './qwen';
 import { ANSWER_SYSTEM_PROMPT } from './dispatch';
+test('OpenRouter冻结路由实际传到HTTP请求，不允许回退或忽略输出参数',async()=>{
+ let body:any;
+ const client=createModelApiClient({OPEN_ROUTER_KEY:'fixture-key'},async(_url,init)=>{body=JSON.parse(init!.body as string);return Response.json({choices:[{finish_reason:'stop',message:{role:'assistant',content:'{}'}}]});});
+ await client.complete({config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'deepseek/deepseek-v4.1-flash',provider_options:{only:['coreweave'],allow_fallbacks:false}} as any,messages:[{role:'user',content:'返回JSON'}],response_format:{type:'json_object'}});
+ expect(body.provider).toEqual({only:['coreweave'],allow_fallbacks:false,require_parameters:true});
+});
 
 const env = { QWEN_API_KEY: 'test-only-secret' };
 const config = { provider: 'qwen' as const, base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' };

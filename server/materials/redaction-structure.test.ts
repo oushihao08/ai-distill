@@ -15,6 +15,65 @@ const response=(request:any,redactionsFor:(target:{target_id:string;text:string}
  return{text:JSON.stringify({fields}),usage:null,duration_ms:1,call_id:request.call_id,completion_id:null};
 };
 
+test('精确编号匹配不扩大到删除标点后相同的其他编号或小数',async()=>{
+ const result=await redactExtractedMaterials({directory:'unused',materials:[material('编号12-34，其他1234，金额12.34元')],config,executeApi:async request=>response(request,()=>[{source_text:'12-34',mask_text:'12-34',kind:'identifier'}])});
+ expect(result.materials[0]!.pages[0]!.text).toBe('编号12*34，其他1234，金额12.34元');
+});
+test('模型未给编号遮盖子串时仍按默认首2末2规则生成遮罩',async()=>{
+ const result=await redactExtractedMaterials({directory:'unused',materials:[material('编号12345678')],config,executeApi:async request=>response(request,()=>[{source_text:'12345678',kind:'identifier'}])});
+ expect(result.materials[0]!.pages[0]!.text).toBe('编号12****78');
+});
+test('编号遮罩由程序执行首2末2规则，模型整段或局部遮罩都不能覆盖该规则',async()=>{
+ for(const mask_text of ['12345678','234','4567']){
+  const result=await redactExtractedMaterials({directory:'unused',materials:[material('编号12345678')],config,executeApi:async request=>response(request,()=>[{source_text:'12345678',mask_text,kind:'identifier'}])});
+  expect(result.materials[0]!.pages[0]!.text).toBe('编号12****78');
+ }
+});
+test('没有精确编号时禁止通过删除横线匹配另一个数字',async()=>{
+ await expect(redactExtractedMaterials({directory:'unused',materials:[material('编号1234，金额12.34元')],config,executeApi:async request=>response(request,()=>[{source_text:'12-34',kind:'identifier'}])})).rejects.toMatchObject({reason_code:'redaction_source_not_found'});
+});
+test('OCR已遮罩编号的星号转义可以定位，仍按原文位置遮盖且保留数字标点',async()=>{
+ for(const slash of ['\\','\\\\']){
+  const code='622845'+(slash+'*').repeat(8)+'8593573';
+  const result=await redactExtractedMaterials({directory:'unused',materials:[material(`编号${code}，金额12.34元`)],config,executeApi:async request=>response(request,()=>[{source_text:'622845********8593573',kind:'identifier'}])});
+  expect(result.materials[0]!.pages[0]!.text).toBe('编号62'+'*'.repeat([...code].length-4)+'73，金额12.34元');
+ }
+});
+test('汉字姓名中夹入OCR反斜线和波浪号时可定位，数字标点仍保持区别',async()=>{
+ const result=await redactExtractedMaterials({directory:'unused',materials:[material('联系人：肖\\~玲，编号12-34，金额12.34元')],config,executeApi:async request=>response(request,()=>[{source_text:'肖玲',kind:'name'}])});
+ expect(result.materials[0]!.pages[0]!.text).toBe('联系人：肖**，编号12-34，金额12.34元');
+});
+test('金额不得脱敏规则拒绝模型错误遮盖，不发布被改变的金额',async()=>{
+ await expect(redactExtractedMaterials({directory:'unused',materials:[material('金额12345元')],config:{...config,prompt:'金额不得脱敏，保持原文。'},executeApi:async request=>response(request,()=>[{source_text:'12345',kind:'amount'}])})).rejects.toMatchObject({reason_code:'preserved_amount_masked'});
+});
+test('金额由程序只遮数字，模型整段遮罩或省略遮罩都不能吞掉币种单位',async()=>{
+ for(const mask_text of [undefined,'人民币5344.4元']){
+  const result=await redactExtractedMaterials({directory:'unused',materials:[material('应付人民币5344.4元')],config,executeApi:async request=>response(request,()=>[{source_text:'人民币5344.4元',kind:'amount',...(mask_text?{mask_text}:{})}])});
+  expect(result.materials[0]!.pages[0]!.text).toBe('应付人民币****.*元');
+ }
+});
+test('主体名称整段遮罩仍保留明确的组织形式与法院通称',async()=>{
+ for(const name of ['某地甲有限公司','某地乙人民法院']){
+  const result=await redactExtractedMaterials({directory:'unused',materials:[material(name)],config,executeApi:async request=>response(request,()=>[{source_text:name,mask_text:name,kind:'organization'}])});
+  expect(result.materials[0]!.pages[0]!.text).toBe(name.endsWith('有限公司')?'***有限公司':'***人民法院');
+ }
+});
+test('重复商户统一映射保留明确行业通称，混合姓名不被整段组织遮罩覆盖',async()=>{
+ const source={material_id:'m',source_sha256:'sha',pages:[{page:1,text:'',method:'text' as const,structure:[{id:'a',kind:'paragraph' as const,text:'甲牌便利(张三)'},{id:'b',kind:'paragraph' as const,text:'甲牌便利(张三)'},{id:'c',kind:'paragraph' as const,text:'负责人张三'},{id:'d',kind:'paragraph' as const,text:'甲牌便利'}]}]};
+ const result=await redactExtractedMaterials({directory:'unused',materials:[source],config,executeApi:async(request:any)=>{
+  const targets=JSON.parse(request.messages.at(-1).content).targets;
+  return{...response(request),text:JSON.stringify({fields:targets.map((t:any,index:number)=>({target_id:t.target_id,redactions:index===0?[{source_text:'甲牌便利(张三)',kind:'organization'}]:index===1?[{source_text:'甲牌便利(张三)',kind:'name'}]:index===3?[{source_text:'甲牌便利',kind:'organization'}]:[{source_text:'张三',kind:'name'}]}))})};
+ }});
+ expect(result.materials[0]!.pages[0]!.text).toBe('**便利(张**)\n**便利(张**)\n负责人张**\n**便利');
+});
+
+test('已遮罩编号仅含星号和标点时仍可按原文字面定位，不接受不存在的遮罩',async()=>{
+ const masked='(****)************';
+ const result=await redactExtractedMaterials({directory:'unused',materials:[material(`案号：${masked}`)],config,executeApi:async request=>response(request,()=>[{source_text:masked,kind:'case_number'}])});
+ expect(result.materials[0]?.pages[0]?.text).toBe('案号：'+'*'.repeat(masked.length));
+ await expect(redactExtractedMaterials({directory:'unused',materials:[material(`案号：${masked}`)],config,executeApi:async request=>response(request,()=>[{source_text:'***！',kind:'case_number'}])})).rejects.toMatchObject({reason_code:'redaction_source_not_found'});
+});
+
 test('project prompt rules cannot override the structured mapping contract',async()=>{
  let system='';
  await redactExtractedMaterials({directory:'unused',materials:[material('原文')],config,executeApi:async(request:any)=>{
@@ -55,7 +114,7 @@ test('repeated exact sensitive values are replaced consistently without anchor g
 
 test('unlocatable sources fail but repeated and overlapping masks are merged',async()=>{
  await expect(redactExtractedMaterials({directory:'unused',materials:[material('原文')],config,executeApi:async(request:any)=>response(request,()=>[{source_text:'不存在',mask_text:'不',kind:'secret'}])})).rejects.toMatchObject({reason_code:'redaction_source_not_found'});
- const repeated=await redactExtractedMaterials({directory:'unused',materials:[material('编号 A1A')],config,executeApi:async(request:any)=>response(request,()=>[{source_text:'A1A',mask_text:'A',kind:'identifier'}])});
+ const repeated=await redactExtractedMaterials({directory:'unused',materials:[material('编号 A1A')],config,executeApi:async(request:any)=>response(request,()=>[{source_text:'A1A',mask_text:'A',kind:'sensitive'}])});
  expect(repeated.materials[0]?.pages[0]?.text).toBe('编号 *1*');
  const merged=await redactExtractedMaterials({directory:'unused',materials:[material('敏感字段')],config,executeApi:async(request:any)=>response(request,()=>[{source_text:'敏感字段',mask_text:'敏感',kind:'secret'},{source_text:'敏感字段',mask_text:'感字段',kind:'secret'}])});
  expect(merged.materials[0]?.pages[0]?.text).toBe('****');
@@ -80,7 +139,7 @@ test('fields split across API batches are merged by target id without losing lat
  const blocks=Array.from({length:33},(_,index)=>({id:`b${index}`,kind:'paragraph' as const,text:index===32?'张三':'字段'+index}));
  const source={material_id:'material-a',source_sha256:'source-sha',pages:[{page:1,text:blocks.map(block=>block.text).join('\n'),method:'ocr' as const,structure:blocks} as any]};
  const seen:number[]=[];
- const result=await redactExtractedMaterials({directory:'unused',materials:[source],config,executeApi:async(request:any)=>{
+ const result=await redactExtractedMaterials({directory:'unused',materials:[source],config,execution:{max_fields:32},executeApi:async(request:any)=>{
   const targets=JSON.parse(request.messages.at(-1).content).targets;seen.push(targets.length);
   return response(request,(target:any)=>target.text==='张三'?[{source_text:'张三',mask_text:'三',kind:'name'}]:[]);
  }});
@@ -147,14 +206,14 @@ test('a retry resumes from validated private batch checkpoints',async()=>{
   const blocks=Array.from({length:33},(_,index)=>({id:`b${index}`,kind:'paragraph' as const,text:index===32?'张三':'字段'+index}));
   const source={material_id:'material-a',source_sha256:'source-sha',pages:[{page:1,text:blocks.map(block=>block.text).join('\n'),method:'ocr' as const,structure:blocks} as any]};
   let firstRunCalls=0;
-  await expect(redactExtractedMaterials({directory:'unused',checkpointDirectory,materials:[source],config,executeApi:async(request:any)=>{
+  await expect(redactExtractedMaterials({directory:'unused',checkpointDirectory,materials:[source],config,execution:{max_fields:32,concurrency:1},executeApi:async(request:any)=>{
    firstRunCalls++;
    if(firstRunCalls===2)throw new Error('simulated network interruption');
    return response(request);
   }})).rejects.toThrow('simulated network interruption');
-  expect((await readdir(checkpointDirectory)).length).toBe(1);
+  expect((await readdir(checkpointDirectory)).filter(name=>name.endsWith('.json')).length).toBe(1);
   let resumedTargets:string[]=[];
-  const result=await redactExtractedMaterials({directory:'unused',checkpointDirectory,materials:[source],config,executeApi:async(request:any)=>{
+  const result=await redactExtractedMaterials({directory:'unused',checkpointDirectory,materials:[source],config,execution:{max_fields:32,concurrency:1},executeApi:async(request:any)=>{
    const targets=JSON.parse(request.messages.at(-1).content).targets;resumedTargets.push(...targets.map((target:any)=>target.target_id));
    return response(request,(target:any)=>target.text==='张三'?[{source_text:'张三',mask_text:'三',kind:'name'}]:[]);
   }});
@@ -168,7 +227,7 @@ test('a corrupt checkpoint is rejected before another model call',async()=>{
  const checkpointDirectory=await mkdtemp(join(tmpdir(),'redaction-checkpoint-corrupt-'));
  try{
   await redactExtractedMaterials({directory:'unused',checkpointDirectory,materials:[material('原文')],config,executeApi:async(request:any)=>response(request)});
-  const path=join(checkpointDirectory,(await readdir(checkpointDirectory))[0]!);
+  const path=join(checkpointDirectory,(await readdir(checkpointDirectory)).filter(name=>name.endsWith('.json'))[0]!);
   await writeFile(path,'{}');let calls=0;
   await expect(redactExtractedMaterials({directory:'unused',checkpointDirectory,materials:[material('原文')],config,executeApi:async()=>{calls++;return{text:'{}',usage:null,duration_ms:1,completion_id:null};}})).rejects.toMatchObject({reason_code:'redaction_checkpoint_invalid'});
   expect(calls).toBe(0);
@@ -216,6 +275,24 @@ test('Agent execution uses the same flat field contract and reconstructs source 
   expect(task.schema.required).toContain('fields');
   expect(result.materials[0]?.material_id).toBe('material-a');
   expect(result.materials[0]?.pages[0]?.page).toBe(1);
-  expect(result.materials[0]?.pages[0]?.text).toBe('证件号 ******');
+  expect(result.materials[0]?.pages[0]?.text).toBe('证件号 12**56');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('Agent脱敏输出schema满足严格结构化输出约束',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'redaction-agent-schema-'));
+ try{
+  let schema:any;
+  await redactExtractedMaterials({directory:root,materials:[material('证件号 123456')],config:{provider:'codex',prompt:'fixture',model:'fixture',reasoning_effort:'low'},execute:(async(options:any)=>{
+   schema=options.schema;
+   return{result:options.validate({fields:[{target_id:'f1',redactions:[{source_text:'123456',mask_text:null,kind:'identifier'}]}]}),session_id:'session',usage:null,diagnostic_path:'private',duration_ms:1,provider:'codex',model:'fixture'};
+  }) as any});
+  const field=schema.properties.fields.items;
+  const redaction=field.properties.redactions.items;
+  expect(schema.additionalProperties).toBe(false);
+  expect(field.additionalProperties).toBe(false);
+  expect(redaction.additionalProperties).toBe(false);
+  expect(redaction.required).toEqual(expect.arrayContaining(Object.keys(redaction.properties)));
+  expect(redaction.properties.mask_text.type).toEqual(['string','null']);
  }finally{await rm(root,{recursive:true,force:true});}
 });

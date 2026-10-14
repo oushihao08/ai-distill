@@ -91,3 +91,17 @@ test('archives database-backed authored content without requiring a local copy',
   expect((await publishWorkflow(f.pool,'workflow',f.root)).completed).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
+test('归档新格式负分与独立否决结果，完整规则绑定仍有效',async()=>{
+ const f=await fixture();
+ try{
+  const q=f.snapshot.question as any,s=f.snapshot.scores[0] as any;
+  const policy={contract:'model_report_v1',rules_text:'完整加扣分规则，否决单独记录',reference_answer:'none'};
+  q.result.rubric=[{id:'r1',criterion:'严重错误扣分',rule:'出现错误扣7分',metadata:{score:-7}},{id:'veto',criterion:'实务红线',rule:'触发即独立否决',metadata:{score:null}}];q.result.scoring_policy=policy;
+  const {scoreRubricBindingText}=await import('../scoring/validate');
+  s.result.binding.rubric_digest=hash(scoreRubricBindingText(q.result.rubric,policy as any));
+  s.result.report={contract:'model_report_v1',summary:{raw_score:-7,full_score:100,evaluation_percent:12,veto_triggered:true}};s.result.validation={valid:true,mode:'model_report_v1'};
+  f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);
+  expect((await publishWorkflow(f.pool,'workflow',f.root)).completed).toBe(true);
+  expect(q.result.rubric[0].metadata.score).toBe(-7);expect(s.result.report.summary.veto_triggered).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});

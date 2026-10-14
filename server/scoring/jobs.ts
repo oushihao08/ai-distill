@@ -12,18 +12,21 @@ import type {ScoreStepModelSummary} from '../../shared/workflow-results';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
 import {mkdir,writeFile,rm} from 'node:fs/promises';
-import {join,resolve,relative} from 'node:path';
+import {dirname,join,resolve,relative} from 'node:path';
 import {readScoreContext} from './context';
-import {buildAnonymousInput,runIndependentScore,runIndependentApiScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
-import {extractTextScore,validateScore,type ScoreContext} from './validate';
+import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,registerAsyncAfterHooks,StageHookError,stageHookAffinitySql,type StageWorkerMode} from '../workflow-hook-jobs';
+import {buildAnonymousInput,buildScoreFiles,runIndependentScore,runIndependentApiScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
+import {extractTextScore,extractModelReport,validateScore,type ScoreContext} from './validate';
 import {validateStepConfigForExecution} from '../project-folders';
 import {mergeCodexDefaults,readProjectAgentDefaults} from '../agent/config';
+import {canonicalJson} from '../../shared/workflow-config';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '@shared/step-prompts';
 export function scoreContextDigest(context:ScoreContext){
  const b=context.binding;
- return createHash('sha256').update(JSON.stringify({binding:{question_version:b.question_version,input_digest:b.input_digest,rubric_version:b.rubric_version,rubric_digest:b.rubric_digest,answer_attempt_id:b.answer_attempt_id,answer_sha256:b.answer_sha256},input:buildAnonymousInput(context)})).digest('hex');
+ const frozen={binding:{question_version:b.question_version,input_digest:b.input_digest,rubric_version:b.rubric_version,rubric_digest:b.rubric_digest,answer_attempt_id:b.answer_attempt_id,answer_sha256:b.answer_sha256},input:buildAnonymousInput(context)};
+ return createHash('sha256').update(context.scoring_policy?.contract==='model_report_v1'?canonicalJson(frozen):JSON.stringify(frozen)).digest('hex');
 }
-const workflowSql="SELECT w.project_id FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) FOR UPDATE OF w";
+const workflowSql="SELECT w.project_id,(SELECT p.local_skill_path FROM ai_distill.projects p WHERE p.id=w.project_id) AS local_skill_path FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) FOR UPDATE OF w";
 /**
  * 从当前作答结果中选取成功答案，为每份答案读取并冻结匿名评分上下文后分别入队。
  * 上下文摘要与配置用于去重和防止跨题面、rubric、附件、答案或评分提示词混用评分结果。
@@ -52,9 +55,12 @@ export async function enqueueScore(pool:Pool,id:string){
   const mergedConfig=raw?.provider==='api'?raw:mergeCodexDefaults(raw,await readProjectAgentDefaults(db,w.project_id));
   const config=validateStepConfigForExecution(6,mergedConfig),loggingConfig=config.provider==='api'?{model:config.api.model,provider:'api'}:{model:config.model,reasoning_effort:config.reasoning_effort,provider:'codex'},queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
   config.prompt=resolveScoreStepPrompt(config.prompt);
+  const needsHooks=!!(config.workflow?.hooks.before.length||config.workflow?.hooks.after.length);
+  if(needsHooks&&typeof w.local_skill_path!=='string')throw new HTTPException(409,{message:'项目钩子缺少本地项目目录'});
+  const hooks=needsHooks?await freezeStageHooks(dirname(w.local_skill_path),config.workflow):undefined;
   for(const answerId of answerIds){
    const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];buildAnonymousInput(context);
-   const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider)};
+   const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
@@ -83,14 +89,14 @@ async function refreshScoreStep(db:PoolClient,job:any){
   return job.status;
  }
  // 只汇总当前答案的最新评分；历史上下文和逐项报告仍保存在原记录。
- const rows=await db.query("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input #>> '{context,binding,answer_attempt_id}') id,jsonb_build_object('context',jsonb_build_object('binding',jsonb_build_object('answer_attempt_id',input #> '{context,binding,answer_attempt_id}'))) AS input,jsonb_build_object('report',jsonb_build_object('total',result #> '{report,total}','max_score',result #> '{report,max_score}','disputes',result #> '{report,disputes}'),'validation',jsonb_build_object('valid',result #> '{validation,valid}'),'score_extraction',result->'score_extraction','binding',result->'binding') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input #>> '{context,binding,answer_attempt_id}'=ANY($2::text[]) ORDER BY input #>> '{context,binding,answer_attempt_id}',attempt DESC) latest",[job.workflow_id,answers.filter((answer:any)=>answer.status==='succeeded'&&typeof answer.attempt_id==='string').map((answer:any)=>answer.attempt_id)]);
+ const rows=await db.query("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input #>> '{context,binding,answer_attempt_id}') id,jsonb_build_object('context',jsonb_build_object('binding',jsonb_build_object('answer_attempt_id',input #> '{context,binding,answer_attempt_id}'))) AS input,jsonb_build_object('report',jsonb_build_object('total',result #> '{report,total}','max_score',result #> '{report,max_score}','contract',result #> '{report,contract}','summary',result #> '{report,summary}','disputes',result #> '{report,disputes}'),'validation',jsonb_build_object('valid',result #> '{validation,valid}'),'score_extraction',result->'score_extraction','binding',result->'binding') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input #>> '{context,binding,answer_attempt_id}'=ANY($2::text[]) ORDER BY input #>> '{context,binding,answer_attempt_id}',attempt DESC) latest",[job.workflow_id,answers.filter((answer:any)=>answer.status==='succeeded'&&typeof answer.attempt_id==='string').map((answer:any)=>answer.attempt_id)]);
  const latest=new Map<string,any>();
  for(const row of rows.rows){const answerId=row.input?.context?.binding?.answer_attempt_id;if(typeof answerId==='string'&&!latest.has(answerId))latest.set(answerId,row);}
  const models:ScoreStepModelSummary[]=answers.map((answer:any)=>{
   if(answer.status!=='succeeded'||typeof answer.attempt_id!=='string')return {model_id:answer.model_id,name:answer.name,answer_attempt_id:answer.attempt_id??null,answer_status:answer.status,score_attempt_id:null,score_status:'skipped'};
   const score=latest.get(answer.attempt_id);
   const report=score?.result?.report;const validation=score?.result?.validation;
-  return {model_id:answer.model_id,name:answer.name,answer_attempt_id:answer.attempt_id,answer_status:answer.status,score_attempt_id:score?.id??null,score_status:score?.status??'waiting',score:typeof report?.total==='number'?report.total:null,max_score:typeof report?.max_score==='number'?report.max_score:null,extraction_status:score?.result?.score_extraction?(validation?.valid?'parsed':'unparsed'):undefined,valid:typeof validation?.valid==='boolean'?validation.valid:null,binding:score?.result?.binding??null,disputes:Array.isArray(report?.disputes)?report.disputes:[]};
+  return {model_id:answer.model_id,name:answer.name,answer_attempt_id:answer.attempt_id,answer_status:answer.status,score_attempt_id:score?.id??null,score_status:score?.status??'waiting',...(report?.contract==='model_report_v1'?{score_contract:'model_report_v1' as const,raw_score:report.summary?.raw_score??null,full_score:report.summary?.full_score??null,evaluation_percent:report.summary?.evaluation_percent??null,veto_triggered:report.summary?.veto_triggered??null}:{}),score:typeof report?.total==='number'?report.total:null,max_score:typeof report?.max_score==='number'?report.max_score:null,extraction_status:score?.result?.score_extraction?(validation?.valid?'parsed':'unparsed'):undefined,valid:typeof validation?.valid==='boolean'?validation.valid:null,binding:score?.result?.binding??null,disputes:Array.isArray(report?.disputes)?report.disputes:[]};
  });
  const expected=models.filter((model:any)=>model.answer_status==='succeeded');
  const settled=expected.length>0&&expected.every((model:any)=>['succeeded','failed','skipped'].includes(model.score_status));
@@ -109,15 +115,16 @@ async function automaticallyJudgeAfterScoring(job:any,status:string,judge:(workf
  * 领取一份答案的评分任务，在隔离 Codex 会话中评分并校验上下文摘要和报告结构。
  * 结果写入前再次确认版本绑定；无效或争议报告保留为失败结果，不计入达标分数。
  */
-export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndependentScore,signal?:AbortSignal,judgeAcceptance:(workflowId:string)=>Promise<unknown>=(workflowId)=>runAcceptance(pool,workflowId),provider:'codex'|'api'='codex'){
+export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndependentScore,signal?:AbortSignal,judgeAcceptance:(workflowId:string)=>Promise<unknown>=(workflowId)=>runAcceptance(pool,workflowId),provider:'codex'|'api'='codex',workerMode:StageWorkerMode='all'){
  if(signal?.aborted)return false;
+ const affinity=stageHookAffinitySql(workerMode);
  const db=await pool.connect();let job:any,staleRows:any[]=[];const staleScoreStatuses=new Map<string,string>();
  try{
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  const stale=await db.query("SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED",[provider]);
-  for(const row of stale.rows){const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=6 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1)",[row.workflow_id]);if(updated.rowCount)staleRows.push(row);}
+  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND ${affinity} AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[provider]);
+  for(const row of stale.rows){await recoverInterruptedStageHooks(db,row);const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=6 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1)",[row.workflow_id]);if(updated.rowCount)staleRows.push(row);}
   for(const workflowId of new Set(staleRows.map(row=>row.workflow_id))){staleScoreStatuses.set(workflowId,await refreshScoreStep(db,{workflow_id:workflowId,status:'failed',result:null}));}
-  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1",[provider])).rows[0];
+  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND ${affinity} AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[provider])).rows[0];
   if(!job){await db.query('COMMIT');}
   else{await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=6",[job.workflow_id]);await db.query('COMMIT');}
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
@@ -134,6 +141,7 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
  try{
   if(scoreContextDigest(job.input.context)!==job.input.digest)throw new Error('invalid snapshot');
   buildAnonymousInput(job.input.context);
+  if(job.input.hooks&&job.input.hook_digest!==createHash('sha256').update(canonicalJson(job.input.hooks)).digest('hex'))throw new Error('钩子快照已变化');
   const before=await pool.connect();try{await before.query('BEGIN');if(!await stillCurrent(before,job))throw new Error('obsolete');await before.query('COMMIT');}catch(error){await before.query('ROLLBACK');throw error;}finally{before.release();}
   const config=job.config;
   const executionProvider=config?.provider==='api'?'api':'codex';
@@ -141,18 +149,22 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
   if(executionProvider==='codex'&&(typeof config.model!=='string'||!config.model.trim()||typeof config.reasoning_effort!=='string'||!['low','medium','high','xhigh','max','ultra'].includes(config.reasoning_effort)))throw new Error('invalid frozen config');
   if(executionProvider==='api'&&(!config.api||typeof config.api.model!=='string'))throw new Error('invalid frozen config');
   failurePhase='agent_execution';
-  const invocation=await runExternalCall({attempt_id:job.id,operation:'score'},call_id=>grade(job.input.context,executionProvider==='api'?{config:config.api,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:1800000}:{root:join(directory,'private'),model:config.model,reasoning_effort:config.reasoning_effort,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:1800000}));
+  const hookContext={pool,attempt_id:job.id,workflow_id:job.workflow_id,stage:'scoring' as const,binding_digest:createHash('sha256').update(canonicalJson({input:job.input.digest,config:job.config})).digest('hex'),input:{files:buildScoreFiles(buildAnonymousInput({...job.input.context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined}))},hooks:job.input.hooks,signal};
+  const invocation=await executeWithStageHooks({...hookContext,runMain:additions=>runExternalCall({attempt_id:job.id,operation:'score'},call_id=>grade(job.input.context,executionProvider==='api'?{hook_additions:additions,config:config.api,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:1800000}:{hook_additions:additions,root:join(directory,'private'),model:config.model,reasoning_effort:config.reasoning_effort,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:1800000})),outputForHooks:value=>({raw_text:value.raw_text??'',report:value.report})});
   if(signal?.aborted)throw new Error('cancelled');
   failurePhase='result_validation';
-  const validation=typeof invocation.raw_text==='string'?extractTextScore(invocation.raw_text,job.input.context.rubric):validateScore(invocation.report,job.input.context);
+  const isModelReport=job.input.context.scoring_policy?.contract==='model_report_v1';
+  const validation=isModelReport?{...extractModelReport(invocation.raw_text??'',job.input.context.rubric),total:null,max_score:null}:typeof invocation.raw_text==='string'?extractTextScore(invocation.raw_text,job.input.context.rubric):validateScore(invocation.report,job.input.context);
+  const report=isModelReport?{binding:job.input.context.binding,total:null,max_score:null,...('report' in validation&&validation.report?validation.report:{contract:'model_report_v1'})}:invocation.report;
   const textReturned=typeof invocation.raw_text==='string'&&!!invocation.raw_text.trim();
   const context=job.input.context;
   const projectBinding=context.project_prompt?{project_prompt_digest:context.project_prompt.source_digest,project_prompt_files:context.project_prompt.files.map((file:{path:string;sha256:string;size_bytes:number})=>({path:file.path,sha256:file.sha256,size_bytes:file.size_bytes}))}:context.project_rules?{project_rule_version_id:context.project_rules.version_id,project_rule_source_digest:context.project_rules.source_digest,project_rule_files:context.project_rules.files.map((file:{path:string;sha256:string;size_bytes:number})=>({path:file.path,sha256:file.sha256,size_bytes:file.size_bytes}))}:{};
-  const publication={question_version:context.binding.question_version,rubric_version:context.binding.rubric_version,...projectBinding,provider:executionProvider,...(invocation.execution_request?{execution_request:invocation.execution_request}:{}),...(textReturned?{raw_text:invocation.raw_text,score_extraction:validation}:{}),report:invocation.report,validation,binding:context.binding,session_id:invocation.session_id,usage:invocation.usage,duration_ms:invocation.duration_ms,model:executionProvider==='api'?config.api.model:config.model,...(executionProvider==='codex'?{reasoning_effort:config.reasoning_effort}:{})};
+  const publication={question_version:context.binding.question_version,rubric_version:context.binding.rubric_version,...projectBinding,provider:executionProvider,...(invocation.execution_request?{execution_request:invocation.execution_request}:{}),...(textReturned?{raw_text:invocation.raw_text,score_extraction:validation}:{}),report,validation,binding:context.binding,session_id:invocation.session_id,usage:invocation.usage,duration_ms:invocation.duration_ms,model:executionProvider==='api'?config.api.model:config.model,...(executionProvider==='codex'?{reasoning_effort:config.reasoning_effort}:{})};
   failurePhase='result_persistence';
   const bytes=Buffer.from(JSON.stringify(publication,null,2)+'\n'),path=join(directory,'score.json');await mkdir(directory,{recursive:true});wrote=true;logEvent('file.write.started',{level:'info',file_kind:'score_report',output_bytes:bytes.length});await writeFile(path,bytes,{mode:0o600});logEvent('file.write.completed',{level:'info',file_kind:'score_report',output_bytes:bytes.length});
   const tx=await pool.connect();let scoreStepStatus='';try{
    await tx.query('BEGIN');if(!await stillCurrent(tx,job)||!(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE",[job.id])).rowCount)throw new Error('obsolete');
+   await registerAsyncAfterHooks({...hookContext,pool:tx},{raw_text:invocation.raw_text??'',report:invocation.report});
    await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)',[crypto.randomUUID(),job.workflow_id,job.id,'score_report',relative(resolve(root),path),createHash('sha256').update(bytes).digest('hex'),bytes.length]);
    const status=textReturned||validation.valid?'succeeded':'failed',error=textReturned||validation.valid?null:'评分存在争议或证据/结构无效，详见校验结果';
    await tx.query('UPDATE ai_distill.step_attempts SET status=$2,result=$3,session_id=$4,error=$5,finished_at=now() WHERE id=$1',[job.id,status,JSON.stringify(publication),invocation.session_id,error]);
@@ -162,7 +174,7 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
  }catch(error){
   logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error),failure_phase:failurePhase});
   if(wrote)try{if(!(await pool.query('SELECT id FROM ai_distill.artifacts WHERE attempt_id=$1 LIMIT 1',[job.id])).rowCount)await rm(join(directory,'score.json'),{force:true});}catch(cleanupError){logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'score_report',...classifyLogError(cleanupError)});console.error('评分发布状态未知，保留文件等待核对');}
-  const tx=await pool.connect();let scoreStepStatus='',shouldJudge=false;try{await tx.query('BEGIN');const current=await stillCurrent(tx,job);const failed=await tx.query("UPDATE ai_distill.step_attempts SET status='failed',error='评分执行失败或版本已失效，可检查后重试',finished_at=now() WHERE id=$1 AND status='running'",[job.id]);if(current&&failed.rowCount){job.status='failed';job.result=null;scoreStepStatus=await refreshScoreStep(tx,job);shouldJudge=true;}await tx.query('COMMIT');}catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}if(shouldJudge)await automaticallyJudgeAfterScoring(job,scoreStepStatus,judgeAcceptance);
+  const tx=await pool.connect();let scoreStepStatus='',shouldJudge=false;try{await tx.query('BEGIN');const current=await stillCurrent(tx,job);const failed=await tx.query("UPDATE ai_distill.step_attempts SET status='failed',result=$2,error='评分或钩子执行失败，或版本已失效，可检查记录后重试',finished_at=now() WHERE id=$1 AND status='running'",[job.id,error instanceof StageHookError?JSON.stringify({error_code:'project_hook_failed'}):null]);if(current&&failed.rowCount){job.status='failed';job.result=null;scoreStepStatus=await refreshScoreStep(tx,job);shouldJudge=true;}await tx.query('COMMIT');}catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}if(shouldJudge)await automaticallyJudgeAfterScoring(job,scoreStepStatus,judgeAcceptance);
  }finally{cancellation.dispose();clearInterval(heartbeat);restoreLogContext();}
  return true;
 }

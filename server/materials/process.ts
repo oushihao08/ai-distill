@@ -1,5 +1,5 @@
 /**
- * 职责：PDF 材料处理与产物落盘：校验来源和缓存指纹，生成私有逐页文本并保留识别问题。
+ * 职责：PDF/DOCX 材料处理与产物落盘：校验来源和缓存指纹，生成私有逐页文本并保留识别问题。
  * 关键方法与用途：`processMaterials()` 校验原件与缓存后生成私有逐页文本和 issues；`clearExtractionCheckpoints()` 清除指定检查点。
  * 使用场景：提取 worker 调用处理入口，返修流程按需清理缓存。
  */
@@ -25,7 +25,7 @@ export async function clearExtractionCheckpoints(root:string,workflow:string,mat
  await Promise.all(materials.map(material=>rm(checkpointDirectory(root,workflow,material,fingerprint),{recursive:true,force:true})));
 }
 
-/** Step 1 stores extracted PDF text. Redaction is a separate, project-configured step. */
+/** Step 1 stores extracted PDF/DOCX text. Redaction is a separate, project-configured step. */
 export async function processMaterials(root:string,workflow:string,attempt:string,materials:InputMaterial[],_vision?:VisionClient,_extract?:unknown,config?:ExtractionConfig){
  const directory=join(resolve(root),workflow,attempt);
  await mkdir(directory,{recursive:true,mode:0o700});
@@ -40,8 +40,8 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    if(createHash('sha256').update(Buffer.from(sourceBytes)).digest('hex')!==material.sha256)throw new Error('原件指纹变化，停止发布处理结果');
    const format=material.storage_path.split('.').at(-1)?.toLowerCase()??'';
    let pages:Page[]|undefined,provider='glm-ocr',mode:'fresh'|'cached'='fresh',from_attempt_id:string|null=null,from_material_id:string|null=null,cache_error:'missing_or_invalid'|undefined;
-   if(format!=='pdf')throw new Error('非PDF文本文档应在入库时直接解析，不能进入PDF提取队列');
-   if(material.extraction_cache){
+   if(format!=='pdf'&&format!=='docx')throw new Error('仅PDF/DOCX进入结构化提取队列');
+   if(format==='pdf'&&material.extraction_cache){
     try{
      const cache=material.extraction_cache,path=resolve(root,cache.storage_path),within=relative(resolve(root),path);
      if(within==='..'||within.startsWith('..'+sep)||isAbsolute(within))throw new Error('invalid cache path');
@@ -54,7 +54,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    }
    if(!pages){
     const result=await extractor.extract(sourcePath,currentTaskSignal());
-    if(result.sha256!==material.sha256||result.format!=='pdf')throw new Error('OCR返回与原件不匹配');
+    if(result.sha256!==material.sha256||result.format!==format)throw new Error('结构化提取结果与原件不匹配');
     pages=result.pages.map(page=>{
      const structured=page.structure?.length?page.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:page.text}];
      if(documentBlocksToText(structured)!==page.text)throw new Error('提取正文与结构化文字投影不一致');

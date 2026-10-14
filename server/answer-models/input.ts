@@ -4,7 +4,7 @@
  * 使用场景：由 `jobs.ts` 入队前调用，拒绝未完成出题或附件绑定无效的任务。
  */
 import {createHash} from 'node:crypto';
-export interface AnswerPackage {question_version:string;question:string;materials:{name:string;text:string}[];attachments:{id:string;sha256:string}[]}
+export interface AnswerPackage {question_version:string;question:string;materials:{name:string;text:string}[];attachments:{id:string;sha256:string}[];system_prompt?:string}
 export interface AnswerAttachment {id:string;kind:string;sha256:string;text:string}
 export class AnswerInputError extends Error {constructor(message='题目或附件版本无效，不能作答'){super(message);}}
 export function authoringQuestion(raw:unknown) {

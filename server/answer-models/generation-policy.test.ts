@@ -15,6 +15,9 @@ import {
  resolveAnswerGenerationPolicy,
  resolveAnswerCallSettings,
 } from './generation-policy';
+test('作答供应商解析排除阶段 workflow 字段',()=>{
+ expect(answerProviderConfigFromStepConfig({provider:'openrouter',model:'fixture',workflow:{hooks:{before:[],after:[]}}})).toEqual({provider:'openrouter',model:'fixture'});
+});
 
 test('missing policy preserves the current 60-minute request and keeps score skipping disabled',()=>{
  expect(resolveAnswerGenerationPolicy(undefined)).toEqual(DEFAULT_ANSWER_GENERATION_POLICY);

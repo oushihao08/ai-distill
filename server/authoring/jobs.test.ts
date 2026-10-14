@@ -17,16 +17,21 @@ async function projectFixture(){
  const root=await mkdtemp(join(tmpdir(),'fresh-author-jobs-')),skill=join(root,'skill');await mkdir(skill);
  await writeFile(join(skill,'SKILL.md'),'---\nname: fixture\ndescription: author\n---\n当前方法');
  await writeFile(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'low'}]},{slug:'project-model',supported_reasoning_levels:[{effort:'high'}]},{slug:'system-model',supported_reasoning_levels:[{effort:'medium'}]}]}));
- const state:any={title:'题目1',text:'脱敏材料100元',projectConfig:{provider:'codex',model:'fixture-model',reasoning_effort:'low'},projectDefault:null,job:null,reuse:null,active:false};
+ const state:any={title:'题目1',text:'脱敏材料100元',projectConfig:{provider:'codex',model:'fixture-model',reasoning_effort:'low'},projectDefault:null,job:null,reuse:null,active:false,hookRuns:new Map()};
  const calls:{sql:string;values:any[]}[]=[];let saved:any;
  const query=async(sql:string,values:any[]=[]):Promise<any>=>{
   calls.push({sql,values});
+  if(sql.startsWith('SELECT * FROM ai_distill.hook_runs')){const row=[...state.hookRuns.values()].find((r:any)=>r.attempt_id===values[0]&&r.position===values[1]&&r.action_id===values[2]);return {rows:row?[structuredClone(row)]:[],rowCount:row?1:0};}
+  if(sql.startsWith('INSERT INTO ai_distill.hook_runs')){const row={id:values[0],workflow_id:values[1],attempt_id:values[2],stage:values[3],position:values[4],action_id:values[5],mode:values[6],binding_digest:values[7],snapshot:JSON.parse(values[8]),idempotent:values[9],status:'waiting'};state.hookRuns.set(row.id,row);return {rows:[structuredClone(row)],rowCount:1};}
+  if(sql.startsWith('UPDATE ai_distill.hook_runs')){const row=state.hookRuns.get(values[0]);if(!row)return empty;row.status=values[1];row.result=values[2]?JSON.parse(values[2]):null;row.result_digest=values[4];return {rows:[structuredClone(row)],rowCount:1};}
+
   if(sql.includes("a.status='running' AND COALESCE(a.heartbeat_at"))return empty;
   if(sql.startsWith('SELECT a.*'))return{rows:state.job?[state.job]:[],rowCount:state.job?1:0};
-  if(sql.startsWith('SELECT w.project_id'))return{rows:[{project_id:'project',project_name:'项目名称',title:state.title,source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};
+  if((sql.startsWith('SELECT w.project_id')||sql.startsWith('SELECT w.*')))return{rows:[{project_id:'project',project_name:'项目名称',title:state.title,source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redaction'}],rowCount:1};
   if(sql.startsWith('SELECT ar.id'))return{rows:[{id:'attachment',sha256:hash(state.text)}],rowCount:1};
-  if(sql.startsWith('SELECT sha256,content'))return{rows:[{sha256:hash(state.text),content:state.text}],rowCount:1};
+  if(sql.startsWith('SELECT sha256,content'))return{rows:[{sha256:hash(state.text),content:state.text,sources:state.originalNames?.map((original_name:string)=>({original_name}))}],rowCount:1};
+  if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs')&&sql.includes('ordinal=6'))return {rows:state.scoreWorkflow?[{config:{workflow:state.scoreWorkflow}}]:[]};
   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:state.projectConfig?[{config:state.projectConfig}]:[]};
   if(sql.startsWith('SELECT codex_model'))return{rows:[{codex_model:state.projectDefault?.model??null,codex_reasoning_effort:state.projectDefault?.reasoning_effort??null}]};
   if(sql.startsWith('SELECT credential_home,model'))return{rows:[{credential_home:root,model:'system-model',reasoning_effort:'medium'}]};
@@ -40,6 +45,15 @@ async function projectFixture(){
  return{root,skill,pool,state,calls,get saved(){return saved;}};
 }
 const authored={question_id:'题目1',draft:{task_name:'金额核算',task_type:'计算',header:{industry_l1:'行业',industry_l2:'细分',task_form:'single_round' as const,occupation_l1:'法律',occupation_l2:'法务'},question:'金额是多少？',attachment_ids:['attachment'],answer_approach:'核对材料',reference_answer:'100元',answer_requirements:{input_mode:'text' as const,output_mode:'text' as const,tools:[]},rubric:[{id:'R1',criterion:'准确写明金额',max_score:1}]},question_version:'qv1',rubric_version:'rv1',package_text:'题面',codex:{session_id:'new-session',usage:null,duration_ms:1}};
+
+test('上传材料原文件名从数据库传入作者并用于公开题包表头',async()=>{
+ const f=await projectFixture();try{
+  f.state.originalNames=['上传判决.docx','附件二.txt'];await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  await runNextAuthoring(f.pool,f.root,async options=>{expect(options.materials[0]?.source_names).toEqual(['上传判决.docx','附件二.txt']);return authored;});
+  const artifact=f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'));
+  expect(artifact?.values[7]).toContain('输入附件：\n上传判决.docx\n附件二.txt');
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
 
 test.each([
  {label:'step',config:{provider:'codex',model:'fixture-model',reasoning_effort:'low'},defaults:null,expected:'fixture-model'},
@@ -92,6 +106,15 @@ test('project identity participates in author input digest without changing lega
  expect(inputDigest(input)).toBe(legacy);
  expect(inputDigest({...input,project_name:'项目A'})).not.toBe(inputDigest({...input,project_name:'项目B'}));
 });
+test('派生题目的场景、角色和等级参与出题输入指纹',()=>{
+ const input:any={title:'题目1',project_prompt:{workspace_path:'/fixture',skill_path:'/fixture/skill',source_digest:'digest',files:[]},redaction_attempt_id:'redact',materials:[]};
+ const l2=inputDigest({...input,design_context:{scenario:'LS02',role_perspective:'代理律师',target_level:'L2'}});
+ expect(l2).toBe(hash(JSON.stringify({title:'题目1',design_context:{scenario:'LS02',role_perspective:'代理律师',target_level:'L2'},project_prompt:{workspace_path:'/fixture',skill_path:'/fixture/skill',source_digest:'digest',files:[]},redaction_attempt_id:'redact',materials:[]})));
+ expect(inputDigest({...input,design_context:{target_level:'L2',scenario:'LS02',role_perspective:'代理律师'}})).toBe(l2);
+ expect(l2).not.toBe(inputDigest({...input,design_context:{scenario:'LS02',role_perspective:'代理律师',target_level:'L4'}}));
+ expect(l2).not.toBe(inputDigest({...input,design_context:{scenario:'LS04',role_perspective:'代理律师',target_level:'L2'}}));
+ expect(l2).not.toBe(inputDigest({...input,design_context:{scenario:'LS02',role_perspective:'客户',target_level:'L2'}}));
+});
 
 
 test('project author enqueue freezes the database project name and current file inputs',async()=>{
@@ -101,7 +124,7 @@ test('project author enqueue freezes the database project name and current file 
   await writeFile(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'low'}]}]}));
   const project_prompt=await scanProjectPrompt(root,skill);let saved:any;
   const query=async(sql:string,values:any[]=[]):Promise<any>=>{
-   if(sql.startsWith('SELECT w.project_id'))return{rows:[{project_id:'project',project_name:'数据库项目名称',title:'题目1',source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}]};
+   if((sql.startsWith('SELECT w.project_id')||sql.startsWith('SELECT w.*')))return{rows:[{project_id:'project',project_name:'数据库项目名称',title:'题目1',source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}]};
    if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redaction'}]};
    if(sql.startsWith('SELECT ar.id'))return{rows:[{id:'attachment',sha256:'a'.repeat(64)}],rowCount:1};
    if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{provider:'codex',model:'fixture-model',reasoning_effort:'low',prompt:'本次出题设置'}}]};
@@ -115,4 +138,67 @@ test('project author enqueue freezes the database project name and current file 
   expect(saved).toMatchObject({project_name:'数据库项目名称',question_id:'题目1',project_prompt,materials:[{id:'attachment',sha256:'a'.repeat(64)}]});
   const {digest,...input}=saved;expect(digest).toBe(inputDigest(input));
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+// 评分规则是出题时冻结的输入；当前项目配置改变不改写已排队题目的计分口径。
+test('作者队列冻结同一评分规则并保存到题目，后续设置变化不替换它',async()=>{
+ const f=await projectFixture();let received:any;
+ try{
+  f.state.scoreWorkflow={contract:'model_report_v1',rules_text:'金额错误扣7分，否决独立记录',reference_answer:'calibration'};
+  await enqueueAuthoring(f.pool,'workflow');
+  expect(f.saved.input.scoring_policy).toEqual(f.state.scoreWorkflow);
+  const {digest,...frozen}=f.saved.input;
+  expect(inputDigest({...frozen,scoring_policy:{...frozen.scoring_policy,rules_text:'另一规则'}})).not.toBe(digest);
+  f.state.job=f.saved;f.state.scoreWorkflow={...f.state.scoreWorkflow,rules_text:'修改后的规则'};
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{received=options;return {...authored,draft:{...authored.draft,rubric:[{id:'deduct',criterion:'金额错误',rule:'金额错误扣7分'}]}};});
+  expect(received.scoring_policy.rules_text).toBe('金额错误扣7分，否决独立记录');
+  const saved=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));
+  expect(saved).toBeDefined();expect(JSON.parse(saved!.values[1]).scoring_policy).toEqual(f.saved.input.scoring_policy);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('作者阶段冻结并实际执行前后钩子，附加结果不修改题包',async()=>{
+ const f=await projectFixture();let called=0;
+ try{
+  await mkdir(join(f.root,'hooks'));await writeFile(join(f.root,'hooks/check.ts'),"const input=JSON.parse(await Bun.stdin.text()); console.log(JSON.stringify({notes:[input.position],data:{stage:input.stage}}));");
+  const action={id:'check',script:'hooks/check.ts',files:['hooks/check.ts'],mode:'sync',params:{},timeout_ms:1000,idempotent:true};
+  f.state.projectConfig.workflow={hooks:{before:[action],after:[action]}};
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  expect(f.saved.input.hooks.before[0].files[0].sha256).toHaveLength(64);
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async()=>{called++;return authored;});
+  expect(called).toBe(1);
+  expect([...f.state.hookRuns.values()].filter((r:any)=>r.position!=='main').map((r:any)=>r.result.notes)).toEqual([['before'],['after']]);
+  const completed=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));
+  expect(JSON.parse(completed!.values[1]).question).toBe(authored.draft.question);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('后置钩子失败保留检查点并向续跑入口记录明确失败标记',async()=>{
+ const f=await projectFixture();let called=0;
+ try{
+  await mkdir(join(f.root,'hooks'));await writeFile(join(f.root,'hooks/fail.ts'),"throw new Error('private failure');");
+  f.state.projectConfig.workflow={hooks:{after:[{id:'check',script:'hooks/fail.ts',files:['hooks/fail.ts'],idempotent:true}]}};
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async()=>{called++;return authored;});
+  const failed=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"));
+  expect(JSON.parse(failed!.values[1])).toMatchObject({error_code:'project_hook_failed'});
+  expect([...f.state.hookRuns.values()].find((r:any)=>r.position==='main')).toMatchObject({status:'succeeded',result:authored});expect(called).toBe(1);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('续跑后的作者worker复用主检查点，实际后置脚本恢复后只调用一次主模型',async()=>{
+ const f=await projectFixture();let mainCalls=0;
+ try{
+  await mkdir(join(f.root,'hooks'));
+  await writeFile(join(f.root,'hooks/retry.ts'),"import {existsSync,writeFileSync} from 'node:fs';const p=JSON.parse(await Bun.stdin.text());if(!existsSync(p.params.marker)){writeFileSync(p.params.marker,'done');throw new Error('first try');}console.log(JSON.stringify({notes:['恢复完成']}));");
+  f.state.projectConfig.workflow={hooks:{after:[{id:'retry',script:'hooks/retry.ts',files:['hooks/retry.ts'],params:{marker:join(f.root,'marker')},idempotent:true}]}};
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  const author=async()=>{mainCalls++;return authored;};
+  await runNextAuthoring(f.pool,join(f.root,'storage'),author);
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(false);
+  // 模拟续跑 API 已将同一失败尝试退回 waiting；SQL替身在下次领取时返回同一冻结任务。
+  await runNextAuthoring(f.pool,join(f.root,'storage'),author);
+  expect(mainCalls).toBe(1);expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
+  expect([...f.state.hookRuns.values()].find((r:any)=>r.position==='after').result.notes).toEqual(['恢复完成']);
+ }finally{await rm(f.root,{recursive:true,force:true});}
 });

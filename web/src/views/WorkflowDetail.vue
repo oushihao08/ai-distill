@@ -1,5 +1,5 @@
 <!--
-职责：作为单题工作流路由，编排步骤操作、附件、模型评测与产物下载。
+职责：作为材料包或题目工作流路由，按身份编排步骤操作、材料包建题、附件、模型评测与产物下载。
 关键方法与用法：`intake()`、`redact()`、`author()`、`answer()` 等方法派发对应阶段，`addMaterial()`／`removeMaterial()` 管理附件，`clearGenerated()` 重置生成状态；路由参数 `id` 指定题目工作流。
 -->
 
@@ -7,17 +7,34 @@
 import { api } from '../api/client';
 import { useResource } from '../composables/useResource';
 import { dateLabel, fileSize } from '../utils/format';
-import { readAnswerStepResult, statusLabels, type Attempt, type WorkflowDetail, type Step } from '../types/api';
+import { readAnswerStepResult, statusLabels, type Attempt, type WorkflowDetail, type Step, type RedactionProgress } from '../types/api';
+import WorkflowHookRecords from '../components/WorkflowHookRecords.vue';
 import ModelEvaluationSummary from '../components/ModelEvaluationSummary.vue';
 import MaterialRecordsTable from '../components/MaterialRecordsTable.vue';
-const route = useRoute();
+import MaterialPackageQuestionForm from '../components/MaterialPackageQuestionForm.vue';
+import MaterialPackageQuestions from '../components/MaterialPackageQuestions.vue';
+const route = useRoute();const router=useRouter();
 const { data, error, loading, refresh } = useResource<WorkflowDetail>(`/workflows/${route.params.id}`);
 const submitting=shallowRef(false);
 const exportingDocx=shallowRef(false);
 const docxArchivePath=shallowRef('');
 const clearOpen=shallowRef(false);
 const questionOpen=shallowRef(false);
-const visibleSteps=computed(()=>data.value?.steps.filter(step=>step.ordinal!==10)??[]);
+const directionOpen=shallowRef(false);
+const directionDraft=shallowRef('');
+const directionSaving=shallowRef(false);
+function editDirection(){directionDraft.value=data.value?.workflow.authoring_direction??'';directionOpen.value=true;}
+async function saveDirection(){
+ try{
+  directionSaving.value=true;error.value='';
+  await api(`/workflows/${route.params.id}/authoring-direction`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({authoring_direction:directionDraft.value})});
+  directionOpen.value=false;await refresh();
+ }catch(cause){error.value=cause instanceof Error?cause.message:'保存出题方向失败';}
+ finally{directionSaving.value=false;}
+}
+const materialPackage=computed(()=>data.value?.workflow.workflow_kind==='material_package');
+const derivedQuestion=computed(()=>Boolean(data.value?.workflow.source_workflow_id));
+const visibleSteps=computed(()=>data.value?.steps.filter(step=>step.ordinal!==10&&(materialPackage.value?[1,9].includes(step.ordinal):derivedQuestion.value?![1,2,9].includes(step.ordinal):true))??[]);
 const authoredStep=computed(()=>visibleSteps.value.find(step=>step.ordinal===4));
 const activeTask=computed(()=>data.value?.attempts.some(a=>a.ordinal!==10&&['waiting','running'].includes(a.status)));
 const hasSucceededAuthoring=computed(()=>data.value?.attempts.some(attempt=>attempt.ordinal===4&&attempt.status==='succeeded')??false);
@@ -41,12 +58,19 @@ const currentStepLabel=computed(()=>{
  const labels:Record<string,string>={accepted:'达标',repair:'未达标',waiting:'等待判定条件',quarantine:'隔离'};
  return labels[String(step.result?.decision??'')]??statusLabels[step.status];
 });
+function redactionProgressLabel(step:Step){
+ const progress=step.result?.progress as Partial<RedactionProgress>|undefined;
+ if(!progress||typeof progress.completed_fields!=='number'||typeof progress.total_fields!=='number')return '';
+ const phases:Record<string,string>={planning:'计算批次',requesting:'处理中',saving:'保存进度',completed:'已完成',failed:'已停止'};
+ const last=typeof progress.last_progress_at==='string'?dateLabel(progress.last_progress_at):'未知';
+ return `${phases[progress.phase??'']??'处理中'} · 已完成 ${progress.completed_fields}/${progress.total_fields} 个字段 · 请求中 ${progress.active_requests??0} · 补做 ${progress.retry_count??0} 次 · 最近进度 ${last}`;
+}
 const stepStatus=(ordinal:number)=>visibleSteps.value.find(step=>step.ordinal===ordinal)?.status;
-const canExportDocx=computed(()=>Boolean(data.value&&!currentStep.value&&stepStatus(8)==='succeeded'&&stepStatus(9)==='succeeded'&&!activeTask.value));
+const canExportDocx=computed(()=>Boolean(data.value&&!materialPackage.value&&!currentStep.value&&stepStatus(8)==='succeeded'&&data.value.steps.some(step=>step.ordinal===9&&step.status==='succeeded')&&!activeTask.value));
 const currentRedactionAttempt=computed(()=>data.value?.attempts.filter(attempt=>attempt.ordinal===9).at(-1));
 const currentDocxArtifacts=computed(()=>{const attempt=currentRedactionAttempt.value;if(!attempt||attempt.status!=='succeeded'||!canExportDocx.value)return [];return data.value?.artifacts.filter(artifact=>artifact.kind==='redacted_docx'&&artifact.attempt_id===attempt.id)??[];});
 const answerDisabled=computed(()=>submitting.value || stepStatus(4)!=='succeeded' || data.value?.attempts.some(attempt=>attempt.ordinal===5 && ['waiting','running'].includes(attempt.status)));
-const authorDisabled=computed(()=>submitting.value || stepStatus(9)!=='succeeded' || data.value?.attempts.some(attempt=>attempt.ordinal===4 && ['waiting','running'].includes(attempt.status)));
+const authorDisabled=computed(()=>submitting.value || (!derivedQuestion.value&&data.value?.steps.find(step=>step.ordinal===9)?.status!=='succeeded') || data.value?.attempts.some(attempt=>attempt.ordinal===4 && ['waiting','running'].includes(attempt.status)));
 function addMaterial(){materialOpen.value=true;}
 async function intake(){try{submitting.value=true;await api(`/workflows/${route.params.id}/intake`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'接收失败';}finally{submitting.value=false;}}
 async function removeMaterial(){if(!deleting.value)return;try{submitting.value=true;await api(`/workflows/${route.params.id}/materials/${deleting.value.id}`,{method:'DELETE'});deleting.value=null;await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'删除失败';}finally{submitting.value=false;}}
@@ -67,7 +91,7 @@ const answerReadyForScoring=computed(()=>{
 const scoreDisabled=computed(()=>submitting.value || !answerReadyForScoring.value || data.value?.attempts.some(attempt=>attempt.ordinal===6 && ['waiting','running'].includes(attempt.status)));
 async function score(){try{submitting.value=true;await api(`/workflows/${route.params.id}/score`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'评分提交失败';}finally{submitting.value=false;}}
 const acceptanceDecision=computed(()=>visibleSteps.value.find(step=>step.ordinal===7)?.result?.decision);
-const publishDisabled=computed(()=>submitting.value || stepStatus(7)!=='succeeded' || acceptanceDecision.value!=='accepted' || stepStatus(8)==='succeeded');
+const publishDisabled=computed(()=>submitting.value || activeTask.value || stepStatus(7)!=='succeeded' || acceptanceDecision.value!=='accepted');
 const attemptNames:Record<number,string>={1:'入库',2:'PDF文本提取（入库内部）',3:'旧规则绑定（历史）',4:'出题',5:'模型作答',6:'独立评分',7:'达标判断',8:'归档达标题目',9:'脱敏与检查'};
 function attemptStatusLabel(attempt:Attempt){
  const decision=attempt.ordinal===7&&attempt.result&&typeof attempt.result==='object'&&'decision' in attempt.result?String(attempt.result.decision??''):'';
@@ -98,8 +122,9 @@ function questionSections(step:Step){
  return [{title:'表头',content:headerText},{title:'任务名称',content:text(result.task_name)},{title:'任务类型',content:text(result.task_type)},{title:'题面 prompt',content:text(result.question)},{title:'考点 rubric',content:rubric||'尚未保存'},{title:'作答思路',content:text(result.answer_approach)},{title:'标准答案',content:text(result.reference_answer)}];
 }
 function artifactLabel(kind:string){return kind==='published_result'?'下载发布成果':kind==='authored_question'?'下载题目包文本':kind==='score_report'?'下载评分报告':kind==='model_answer'?'下载模型答案':kind==='redacted_markdown'?'下载脱敏文本':'下载页码索引';}
+function deliveryLabel(step:Step){const value=step.result?.delivery;return value&&typeof value==='object'&&'mode'in value&&value.mode==='noop'?'项目交付空函数已执行':'项目交付脚本已执行';}
 async function publish(){try{submitting.value=true;error.value='';await api(`/workflows/${route.params.id}/publish`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'成果发布失败';}finally{submitting.value=false;}}
-watch(()=>route.params.id,()=>{docxArchivePath.value='';});
+watch(()=>route.params.id,()=>{docxArchivePath.value='';directionOpen.value=false;});
 async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArchivePath.value='';const result=await api<{archive_path:string}>(`/workflows/${route.params.id}/redacted-docx`,{method:'POST'});docxArchivePath.value=`assets/out/${result.archive_path}`;await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'生成脱敏 DOCX 失败';}finally{exportingDocx.value=false;}}
 </script>
 <template><Column :gap="24">
@@ -107,9 +132,19 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
  <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
  <p v-if="loading && !data" class="text-muted">正在读取工作流…</p>
  <template v-if="data">
-  <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ currentStep ? `${currentStep.display_position ?? currentStep.position ?? currentStep.ordinal} · ${currentStep.name} · ${currentStepLabel}` : '全部完成' }}</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料 · 状态以最近一次刷新为准</p></Column><Row wrap :gap="8"><v-btn color="error" variant="text" :disabled="submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
-  <v-alert type="info">原件保留在本机。PDF由第一步调用 MinerU 云端解析并入库，DOCX/TXT/MD本地解析入库；第二步读取数据库原文并脱敏。请核对脱敏产物与识别异常。</v-alert>
-  <section v-if="stepStatus(9)==='succeeded'" class="surface-card p-16"><Column :gap="12"><h2 class="section-title">可选脱敏材料 DOCX</h2><p class="text-sm text-muted">流程完成并归档后可手动生成，供后续自行上传。每个附件分别生成一份 DOCX。导出使用当前脱敏结果，不会新增或重跑工作流步骤；原件副本与 DOCX 保存在仓库的 <code>assets/out/附件库/</code> 下。<template v-if="!canExportDocx">当前还需完成：{{ currentStep?.name ?? '归档达标题目' }}。</template></p><p v-if="docxArchivePath" class="text-xs text-muted break-all">本题附件目录：{{ docxArchivePath }}</p><Row wrap :gap="8"><v-btn color="primary" variant="flat" :loading="exportingDocx" :disabled="exportingDocx||!canExportDocx" @click="exportDocx">生成脱敏 DOCX</v-btn><v-btn v-for="artifact in currentDocxArtifacts" :key="artifact.id" :href="`/api/artifacts/${artifact.id}/download`" color="secondary" variant="text">下载 {{ artifact.filename ?? '脱敏材料.docx' }}</v-btn></Row></Column></section>
+  <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ materialPackage?'材料包':derivedQuestion?'派生题目':'题目' }}</v-chip><v-chip color="secondary">{{ currentStep ? `${currentStep.name} · ${currentStepLabel}` : materialPackage?'材料已处理':'全部完成' }}</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料 · 状态以最近一次刷新为准</p></Column><Row wrap :gap="8"><v-btn v-if="!derivedQuestion" color="error" variant="text" :disabled="submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
+  <v-alert type="info">{{ materialPackage?'本材料包只执行入库和脱敏；成功后在下方选择脱敏版本创建题目。已创建题目的快照不随材料包变化。':derivedQuestion?'本题使用创建时冻结的材料包脱敏快照。请直接从出题步骤继续；更新材料请返回材料包后新建题目。':'原件保留在本机。PDF/DOCX入库时结构化提取，TXT/MD本地解析；然后按附件脱敏方式处理。请核对提取与脱敏产物。' }}</v-alert>
+  <p v-if="derivedQuestion" class="text-sm text-muted">来源材料包：<RouterLink :to="`/workflows/${data.workflow.source_workflow_id}`" class="link-text">{{ data.source_material_package?.title??'查看材料包' }}</RouterLink> · 创建时的脱敏尝试 {{ data.workflow.source_redaction_attempt_id }} · 正文指纹 {{ data.workflow.source_redaction_sha256?.slice(0,16) }} · 下方附件为本题冻结快照</p>
+  <Row v-if="derivedQuestion&&(data.workflow.question_tags?.length||data.workflow.target_level)" wrap :gap="4"><span class="text-sm text-muted">出题标签：</span><v-chip v-for="tag in data.workflow.question_tags?.length?data.workflow.question_tags:[data.workflow.target_level!]" :key="tag" size="small">{{ tag }}</v-chip></Row>
+  <p v-if="derivedQuestion&&(data.workflow.scenario||data.workflow.role_perspective||data.workflow.target_level)" class="text-sm text-muted">设计输入：{{ [data.workflow.scenario,data.workflow.role_perspective,data.workflow.target_level].filter(Boolean).join(' · ') }}</p>
+  <MaterialPackageQuestionForm v-if="materialPackage" :package-id="data.workflow.id" :project-tags="data.project.question_tags??[]" @created="router.push(`/workflows/${$event}`)" />
+  <MaterialPackageQuestions v-if="materialPackage&&data.material_package_questions" :project-id="data.project.id" :questions="data.material_package_questions" />
+  <p v-else-if="materialPackage" class="text-sm text-muted">题目列表暂不可用，请刷新工作流详情。</p>
+  <section v-if="!materialPackage" class="surface-card p-16"><Column :gap="12"><Row x="between" y="center"><h2 class="section-title">本题出题方向（选填）</h2><v-btn v-if="!directionOpen" color="secondary" variant="text" @click="editDirection">{{ data.workflow.authoring_direction ? '修改' : '填写' }}</v-btn></Row>
+   <template v-if="directionOpen"><v-textarea v-model="directionDraft" label="出题方向" variant="outlined" rows="3" auto-grow :maxlength="2000" counter="2000" hint="说明这道题要围绕什么问题出题；留空则不向出题任务添加方向。" persistent-hint /><p v-if="directionDraft.trim()!==(data.workflow.authoring_direction??'')" class="text-sm text-muted">保存修改后，本题已有题目、作答、评分和归档结果将失效；入库和脱敏结果保留。</p><Row x="end" :gap="8"><v-btn :disabled="directionSaving" @click="directionOpen=false">取消</v-btn><v-btn color="primary" :loading="directionSaving" :disabled="directionSaving||directionDraft.trim()===(data.workflow.authoring_direction??'')" @click="saveDirection">保存方向</v-btn></Row></template>
+   <p v-else class="text-sm whitespace-pre-wrap break-words">{{ data.workflow.authoring_direction || '尚未填写；出题时仅按本题材料和项目规则执行。' }}</p>
+  </Column></section>
+  <section v-if="!materialPackage&&data.steps.some(step=>step.ordinal===9&&step.status==='succeeded')" class="surface-card p-16"><Column :gap="12"><h2 class="section-title">可选脱敏材料 DOCX</h2><p class="text-sm text-muted">流程完成并归档后可手动生成，供后续自行上传。每个附件分别生成一份 DOCX。导出使用当前脱敏结果，不会新增或重跑工作流步骤；原件副本与 DOCX 保存在仓库的 <code>assets/out/附件库/</code> 下。<template v-if="!canExportDocx">当前还需完成：{{ currentStep?.name ?? '归档达标题目' }}。</template></p><p v-if="docxArchivePath" class="text-xs text-muted break-all">本题附件目录：{{ docxArchivePath }}</p><Row wrap :gap="8"><v-btn color="primary" variant="flat" :loading="exportingDocx" :disabled="exportingDocx||!canExportDocx" @click="exportDocx">生成脱敏 DOCX</v-btn><v-btn v-for="artifact in currentDocxArtifacts" :key="artifact.id" :href="`/api/artifacts/${artifact.id}/download`" color="secondary" variant="text">下载 {{ artifact.filename ?? '脱敏材料.docx' }}</v-btn></Row></Column></section>
   <Row stack-on-mobile y="start" :gap="16">
    <StepTimeline :steps="visibleSteps" class="w-full lg:w-650px lg:flex-none">
     <template #actions="{step}">
@@ -122,9 +157,10 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
      <v-btn v-if="step.ordinal===5" color="primary" variant="flat" :loading="submitting" :disabled="answerDisabled" @click="answer">模型作答</v-btn>
      <v-btn v-if="step.ordinal===6" color="primary" variant="flat" :loading="submitting" :disabled="scoreDisabled" @click="score">独立评分</v-btn>
      <span v-if="step.ordinal===7 && !step.result" class="text-xs text-muted">独立评分完成后自动判定</span>
-     <v-btn v-if="step.ordinal===8" color="primary" variant="flat" :loading="submitting" :disabled="publishDisabled" @click="publish">归档题目</v-btn>
+     <Row v-if="step.ordinal===8" wrap y="center" :gap="8"><v-btn color="primary" variant="flat" :loading="submitting" :disabled="publishDisabled" @click="publish">{{ step.status==='succeeded' ? '重新执行项目交付' : '归档题目并执行项目交付' }}</v-btn><span v-if="step.status==='succeeded' && step.result?.delivery" class="text-xs text-muted">{{ deliveryLabel(step) }}</span></Row>
     </template>
     <template #artifacts="{step}">
+     <p v-if="step.ordinal===9 && redactionProgressLabel(step)" class="text-xs text-muted break-all">{{ redactionProgressLabel(step) }}</p>
 
      <Row v-if="![4,5,6,9].includes(step.ordinal) && artifactsForStep(step).length" wrap :gap="8" class="mt-8">
       <v-btn v-for="artifact in artifactsForStep(step)" :key="artifact.id" :href="`/api/artifacts/${artifact.id}/download`" color="secondary" variant="tonal">{{artifactLabel(artifact.kind)}} · {{dateLabel(artifact.created_at)}}{{artifact.question_version ? ` · 题目版本 ${artifact.question_version}` : ''}}</v-btn>
@@ -133,8 +169,9 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
    </StepTimeline>
    <Column class="w-full lg:w-auto min-w-0 lg:flex-1" :gap="16">
     <Column v-if="!data.materials.length && data.workflow.source_manifest?.length" class="surface-panel p-16" :gap="8"><p class="text-xs text-muted">待入库目录材料：</p><span v-for="source in data.workflow.source_manifest" :key="source.name" class="text-xs text-muted break-all">{{ source.name }} · {{ fileSize(source.size) }}</span></Column>
-    <MaterialRecordsTable :workflow-id="data.workflow.id" :materials="data.materials" :steps="visibleSteps" :redaction-status="stepStatus(9)" :redaction-queued="data.attempts.some(attempt=>attempt.ordinal===9 && attempt.status==='waiting')" :disabled="submitting" prefer-redacted @add="addMaterial" @delete="deleting=$event" />
-    <ModelEvaluationSummary :steps="visibleSteps" :attempts="data.attempts" />
+    <MaterialRecordsTable :workflow-id="data.workflow.id" :materials="data.materials" :steps="data.steps" :redaction-status="data.steps.find(step=>step.ordinal===9)?.status" :redaction-queued="data.attempts.some(attempt=>attempt.ordinal===9 && attempt.status==='waiting')" :disabled="submitting||derivedQuestion" prefer-redacted @add="addMaterial" @delete="deleting=$event" @updated="refresh" />
+    <ModelEvaluationSummary v-if="!materialPackage" :steps="visibleSteps" :attempts="data.attempts" />
+    <WorkflowHookRecords v-if="!materialPackage" :key="data.workflow.id" :workflow-id="data.workflow.id" @updated="refresh" />
     <section class="surface-card  p-16 min-w-0"><Column :gap="12"><Row x="between"><h2 class="section-title">最近执行状态</h2><span class="text-sm text-muted">{{ visibleAttempts.length }} 次</span></Row>
      <Column class="w-full overflow-x-auto">
       <v-table density="compact" class="min-w-0 h-400">
@@ -171,6 +208,6 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
    </v-card>
   </v-dialog>
   <v-dialog v-model="materialOpen" max-width="520"><MaterialEditor v-if="materialOpen" :workflow-id="data.workflow.id" @saved="refresh" @close="materialOpen=false" /></v-dialog>
-  <v-dialog :model-value="deleting!==null" max-width="460" @update:model-value="deleting=null"><Column class="surface-card p-20" :gap="16"><h2 class="section-title">移除附件</h2><p class="text-sm text-muted break-all">{{ deleting?.original_name }} 将从这道题移除，历史记录和本机原件保留。移除后第一步会回到“入库”待执行；点击“入库”会重新读取题目目录，DOCX/TXT/MD 本地解析，PDF 提取文本，混合格式会分别处理。</p><Row x="end" :gap="8"><v-btn :disabled="submitting" @click="deleting=null">取消</v-btn><v-btn color="error" :loading="submitting" @click="removeMaterial">确认移除</v-btn></Row></Column></v-dialog>
+  <v-dialog :model-value="deleting!==null" max-width="460" @update:model-value="deleting=null"><Column class="surface-card p-20" :gap="16"><h2 class="section-title">移除附件</h2><p class="text-sm text-muted break-all">{{ deleting?.original_name }} 将从这道题移除，历史记录和本机原件保留。移除后第一步会回到“入库”待执行；点击“入库”会重新读取题目目录，DOCX 使用 MinerU 结构化提取，TXT/MD 本地解析，PDF 按原提取方式处理。</p><Row x="end" :gap="8"><v-btn :disabled="submitting" @click="deleting=null">取消</v-btn><v-btn color="error" :loading="submitting" @click="removeMaterial">确认移除</v-btn></Row></Column></v-dialog>
  </template>
 </Column></template>

@@ -14,7 +14,7 @@ test('valid model set has stable registry identities and safe frozen provider co
  expect(validateModelSet([{...qwen,name:'GLM',config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'z-ai/glm-5.3-flash'}}])).toMatchObject([{name:'GLM',config:{provider:'openrouter',model:'z-ai/glm-5.3-flash'}}]);
 });
 test('model-set digest is stable when JSONB reorders nested object keys',()=>{
- const restored=[{config:{model:'qwen/qwen-plus',provider:'qwen',base_url:'https://openrouter.ai/api/v1'},minimum_score:8,name:'Qwen Plus',model_id:qwen.model_id},{model_id:deepseek.model_id,name:'DeepSeek',minimum_score:7,config:{model:'deepseek-chat',base_url:'https://api.deepseek.com',provider:'deepseek'}}];
+ const restored=[{config:{model:'qwen/qwen-plus',provider:'qwen' as const,base_url:'https://openrouter.ai/api/v1'},minimum_score:8,name:'Qwen Plus',model_id:qwen.model_id},{model_id:deepseek.model_id,name:'DeepSeek',minimum_score:7,config:{model:'deepseek-chat',base_url:'https://api.deepseek.com',provider:'deepseek' as const}}];
  expect(answerModelSetDigest([qwen,deepseek])).toBe(answerModelSetDigest(restored));
 });
 test.each(([

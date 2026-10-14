@@ -44,7 +44,7 @@ function extractDocxXml(xml: string) {
  return paragraphs;
 }
 export class ProjectDocumentExtractor implements DocumentExtractor {
- constructor(private readonly pdfProvider?:PdfExtractionProvider){}
+ constructor(private readonly pdfProvider?:PdfExtractionProvider,private readonly docxProvider?:PdfExtractionProvider){}
  async extract(path:string,signal?:AbortSignal):Promise<DocumentExtraction>{
   const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex'),extension=path.split('.').at(-1)?.toLowerCase();
   if(extension==='pdf'){
@@ -52,6 +52,11 @@ export class ProjectDocumentExtractor implements DocumentExtractor {
    const result=await this.pdfProvider.extract(path,signal);
    if(result.sha256!==sha256)throw new Error('PDF提取结果与原件指纹不匹配');
    return{format:'pdf',...result};
+  }
+  if(extension==='docx'&&this.docxProvider){
+   const result=await this.docxProvider.extract(path,signal);
+   if(result.sha256!==sha256)throw new Error('DOCX提取结果与原件指纹不匹配');
+   return{format:'docx',...result};
   }
   if(extension==='docx'||extension==='txt'||extension==='md')return extractLocalDocument(bytes,extension);
   throw new HTTPException(400,{message:'只支持PDF、DOCX、TXT和MD材料'});

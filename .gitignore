@@ -11,6 +11,7 @@ web/dist/
 
 # Private per-project case materials, generated outputs and frozen execution data
 projects/*/questions/**
+projects/Work法律全场景/首批筹备/questions/**
 !projects/*/questions/.gitkeep
 projects/*/outputs/**
 !projects/*/outputs/.gitkeep

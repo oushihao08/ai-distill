@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "name": "Work法律全场景 · 首批筹备",
+  "period": "首批筹备",
+  "description": "本地材料分组；正式期数和外部认领状态未由此文件确认。",
+  "materials_dir": "../materials",
+  "questions_dir": "questions",
+  "database_project_id": "7215a0c9-6701-467c-abb8-283014594790"
+}

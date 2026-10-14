@@ -6,10 +6,10 @@
 | 脚本 | 用途／运行影响 |
 | --- | --- |
 | `start-iterm.sh` | macOS 启动或复用本项目 API、前端、worker；源码晚于 API／worker 进程时，先确认没有运行中任务再正常停止旧进程并重启；任务状态未知或仍在运行时不停止服务；同时识别 `bun file.ts` / `bun run file.ts`，核对项目目录；不迁移数据库，不停止占用端口的其他进程 |
+| `deploy.sh`、`deploy-server.sh` | 从与 GitHub `main` 一致的干净提交发布固定 Swarm API/worker；不自动推送；每次经 SSH 加密同步本机 `.env` 到服务器并限制为 640 权限；检查 API 数据库／迁移就绪和 worker 心跳；失败时恢复原 `.env` 并回滚服务或移除本次新建服务；不运行迁移 |
 | `read-logs.ts` | 只读筛选本机结构化日志；限制扫描文件数、字节数及结果条数 |
 | `verify-project-folders.ts`、`verify-input-versions.ts`、`verify-generated-cleanup.ts` | 临时 PostgreSQL schema 与合成材料；目录接收、版本、重置和清理 |
-| `verify-rule-versions.ts`、`verify-rule-loading.ts` | 旧编号规则版本流程的历史验收脚本；对应 API 与步骤已停用，不适用于当前版本，也不要执行。历史结论见 `docs/evidence/2026-10-08-rule-loading.md`；当前输入约定见 `docs/architecture.md` |
-| `verify-project-skill-queue.ts` | 临时数据库、注入生成器；候选队列、采用与冻结 |
+| `verify-rule-versions.ts`、`verify-rule-loading.ts`、`verify-project-skill-queue.ts` | 旧规则版本绑定流程的历史验收脚本；对应 API 已停用，不适用于当前版本，也不要执行。当前 skill 队列边界由 `server/skill-generation/*.test.ts` 覆盖；历史规则版本结论见 `docs/evidence/2026-10-08-rule-loading.md` |
 | `verify-project-skill.ts` | 真实首期规则与真实 Codex 生成候选，不自动采用发布 |
 | `verify-codex-isolation.ts` | 本地 CLI 沙箱子进程检查，不等于模型调用验收 |
 | `verify-codex-client.ts`、`verify-independent-score.ts` | 合成输入，真实 Codex 冒烟／独立评分 |
@@ -32,3 +32,5 @@
 运行限制见根 [AGENTS.md](../AGENTS.md)。文档和注释任务不授权执行上述脚本，命令通过也只证明其注明的范围。
 
 `start.sh` 定位仓库并执行 `start.ts`，后者同时启动 API、worker 和 Vite。退出或 Ctrl+C 会停止本次启动的进程组；不安装依赖、不迁移、不停止已有服务。`read-logs.ts` 的相对 STORAGE_DIR 与服务一致，按仓库根目录解析。
+
+云端发布前显式设置 `AI_DISTILL_DEPLOY_HOST`、`AI_DISTILL_DEPLOY_USER`、`AI_DISTILL_DEPLOY_DIR`。仓库根目录 `.env` 必须含有效 `DATABASE_URL`；每次发布会通过 SSH 加密传输并覆盖服务器 `.env`，失败时恢复上一份配置；部署账号须有 root 权限以设置容器的非 root 存储权限。首次部署会把已有 storage 内容所有者切换为 UID 10001，不改正文；UID 冲突时拒绝部署。已有 worker 心跳缺失、不新鲜或显示仍有运行任务时，部署会停止。迁移由独立人工流程完成，版本不兼容时健康检查会拒绝就绪并回滚。

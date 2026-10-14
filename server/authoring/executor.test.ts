@@ -16,6 +16,42 @@ async function finish(call:any,result:any){
  return result;
 }
 const options=(root:string,execute:(options:any)=>Promise<any>)=>({root,workspace_path:root,question:'合同金额是多少？',materials:[{id:'artifact-1',sha256:'a'.repeat(64),text:'合同金额100元'}],rules:{version_id:'rules-1',source_digest:'b'.repeat(64),files:[{path:'skill/SKILL.md',text:'根据材料和本期规则出题，不得编造规则。'}, {path:'skill/assets/template.docx',bytes:new Uint8Array([80,75,3,4])}]},model:'fixture-model',reasoning_effort:'medium',execute:async(call:any)=>finish(call,await execute(call))});
+test('上传附件没有目录清单时，索引和真实渲染器使用附件原文件名',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'author-upload-name-'));
+ try{
+  const task=options(root,async()=>{throw new Error('unexpected');});
+  const result=await runAuthoring({...task,materials:[{...task.materials[0]!,source_names:['上传判决.docx']}],execute:async call=>{
+   const input=await Bun.file(join(call.directory,'input/input.json')).json();
+   expect(input.source_files).toEqual([{name:'上传判决.docx'}]);
+   const contract=await Bun.file(join(call.directory,'input/delivery.json')).json();
+   await Bun.write(contract.result_path,JSON.stringify(draft));
+   expect(await Bun.spawn(contract.render_command,{stdout:'pipe',stderr:'pipe'}).exited).toBe(0);
+   return {result:call.validate(draft),session_id:'fixture',usage:null,duration_ms:1,diagnostic_path:'private',provider:'fixture',model:'fixture'};
+  }});
+  expect(result.package_text).toContain('输入附件：\n上传判决.docx');
+  expect(result.package_text).not.toContain('项目目录未登记');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('新契约出题执行、实际渲染脚本与返回题包保留扣分规则',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'author-model-report-'));
+ try{
+  const value={...draft,rubric:[{id:'deduct',criterion:'金额错误',rule:'金额错误扣7分；否决独立判断',metadata:{score:-7}}]};
+  const task=options(root,async()=>{throw new Error('unexpected');});
+  const result=await runAuthoring({...task,scoring_policy:{contract:'model_report_v1',rules_text:'按项目规则判断加扣分，否决独立记录',reference_answer:'calibration'},execute:async(call:any)=>{
+   expect(call.schema.properties.rubric.items.properties).toHaveProperty('rule');
+   expect(call.schema.properties.rubric.items.properties).not.toHaveProperty('max_score');
+   expect(call.prompt).toContain('按项目规则判断加扣分，否决独立记录');
+   const contract=await Bun.file(join(call.directory,'input/delivery.json')).json();
+   await writeFile(contract.result_path,JSON.stringify(value));
+   const child=Bun.spawn(contract.render_command,{stdout:'pipe',stderr:'pipe'});
+   expect(await child.exited).toBe(0);
+   return {result:call.validate(value),session_id:'fixture',usage:null,duration_ms:1,diagnostic_path:'private',provider:'fixture',model:'fixture'};
+  }});
+  expect(result.draft.rubric).toEqual(value.rubric);
+  expect(result.package_text).toContain(value.rubric[0].rule);
+  expect(result.package_text).not.toContain('undefined分');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
 
 test('ordinary authoring cannot silently accept a historical feedback package',async()=>{
  const root=await mkdtemp(join(tmpdir(),'author-feedback-'));let called=false;

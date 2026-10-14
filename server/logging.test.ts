@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import {mkdir,mkdtemp,readFile,readdir,rm,unlink,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {REDACTION_PROTOCOL_VERSION} from './materials/redaction';
 import {configureLogger,createStructuredLogger,currentLogger,installFatalErrorLogging,sanitizeLogRecord,withLogContext} from './logging';
 
 test('writes ordered, correlated JSONL events and drops unapproved private fields',async()=>{
@@ -215,7 +216,7 @@ test('redaction failure stores a safe Codex summary while keeping the user-facin
  const sourceSha='a'.repeat(64),raw=JSON.stringify({source_sha256:sourceSha,pages:[{page:1,text:'private material'}]}),artifactSha=createHash('sha256').update(raw).digest('hex');
  const item={material_id:'material-a',source_sha256:sourceSha,artifact_id:'artifact-a',artifact_sha256:artifactSha},input={materials:[item]};
  const digest=createHash('sha256').update(JSON.stringify(input)).digest('hex');
- const job={id:'attempt-a',workflow_id:'workflow-a',project_id:'project-a',input:{...input,digest},config:{provider:'codex',model:'fixture-model',reasoning_effort:'low',prompt:'redact'}};
+ const job={id:'attempt-a',workflow_id:'workflow-a',project_id:'project-a',input:{...input,digest},config:{provider:'codex',model:'fixture-model',reasoning_effort:'low',prompt:'redact',text_layout:REDACTION_PROTOCOL_VERSION}};
  const writes:{sql:string;values:unknown[]|undefined}[]=[];
  let executed=false;
  const client={release(){},async query(sql:string,values?:unknown[]){

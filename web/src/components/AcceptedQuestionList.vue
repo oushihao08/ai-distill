@@ -1,14 +1,14 @@
 <!--
-职责：在项目详情页列出当前版本已达标题目，汇总各模型分数并打开全文弹窗。
-关键方法与用法：接收项目工作流、导出状态与错误，发出 `export` 事件；负责搜索、异常筛选和分页。
+职责：在项目详情页列出当前版本已达标题目及其材料包，汇总各模型分数并打开全文弹窗。
+关键方法与用法：接收题目、材料包、导出状态与错误，发出 `export` 事件；负责搜索、异常筛选、分页和单题归档入口。
 -->
 
 <script setup lang="ts">
 import type { Workflow } from '../types/api';
 import AcceptedQuestionDetail from './AcceptedQuestionDetail.vue';
 
-interface ModelResult { status:string; score?:number; max_score?:number; percentage?:number; threshold:number }
-const props=defineProps<{workflows:Workflow[];exporting?:boolean;exportError?:string}>();
+type ModelResult=import('@shared/workflow-results').ModelAcceptance;
+const props=defineProps<{workflows:Workflow[];packages:Workflow[];exporting?:boolean;exportError?:string}>();
 const emit=defineEmits<{export:[]}>();
 const search=shallowRef('');
 const filter=shallowRef<'全部'|'异常'|'待归档'|'已归档'>('全部');
@@ -16,6 +16,7 @@ const page=shallowRef(1);
 const selected=shallowRef<Workflow|null>(null);
 const pageSize=10;
 const accepted=computed(()=>props.workflows.filter(flow=>flow.current_ordinal===7&&flow.current_decision==='accepted'));
+const packageNames=computed(()=>Object.fromEntries(props.packages.map(item=>[item.id,item.title])));
 function scores(flow:Workflow){return Object.entries(flow.acceptance_result?.model_scores??{}) as [string,ModelResult][];}
 function modelName(flow:Workflow,id:string){return flow.answer_models?.find(model=>model.model_id===id)?.name??id.slice(0,8);}
 function hasAnomaly(flow:Workflow){const values=scores(flow);return !values.length||values.some(([,score])=>score.status!=='passed')||Boolean(flow.answer_models?.length&&flow.answer_models.length!==values.length);}
@@ -23,13 +24,13 @@ const anomalousCount=computed(()=>accepted.value.filter(hasAnomaly).length);
 const publishedCount=computed(()=>accepted.value.filter(flow=>flow.publication_status==='succeeded').length);
 const exportedCount=computed(()=>accepted.value.filter(flow=>flow.exported).length);
 const filtered=computed(()=>accepted.value.filter(flow=>{
- const matchesText=flow.title.toLowerCase().includes(search.value.trim().toLowerCase())||(flow.source_key??'').toLowerCase().includes(search.value.trim().toLowerCase());
+ const matchesText=flow.title.toLowerCase().includes(search.value.trim().toLowerCase())||(flow.source_key??'').toLowerCase().includes(search.value.trim().toLowerCase())||(flow.source_workflow_id?packageNames.value[flow.source_workflow_id]?.toLowerCase().includes(search.value.trim().toLowerCase()):false);
  const matchesFilter=filter.value==='全部'||(filter.value==='异常'&&hasAnomaly(flow))||(filter.value==='待归档'&&flow.publication_status!=='succeeded')||(filter.value==='已归档'&&flow.publication_status==='succeeded');
  return matchesText&&matchesFilter;
 }));
 const pageCount=computed(()=>Math.max(1,Math.ceil(filtered.value.length/pageSize)));
 const visible=computed(()=>filtered.value.slice((page.value-1)*pageSize,page.value*pageSize));
-function formatPercent(value:number|undefined){return typeof value==='number'?`${Number(value.toFixed(1))}%`:'—';}
+function formatPercent(value:number|null|undefined){return typeof value==='number'?`${Number(value.toFixed(1))}%`:'—';}
 watch([search,filter],()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 </script>
@@ -49,15 +50,16 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
   <p v-if="!visible.length" class="text-sm text-muted">{{ accepted.length?'没有符合筛选条件的达标题目':'暂无当前版本已达标题目。' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="comfortable" class="min-w-900px">
-    <thead><tr><th scope="col">题目</th><th scope="col">各模型评分 / 门槛</th><th scope="col">判定</th><th scope="col">版本</th><th scope="col">成果状态</th><th scope="col">操作</th></tr></thead>
+    <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">各模型评分 / 门槛</th><th scope="col">判定</th><th scope="col">版本</th><th scope="col">成果状态</th><th scope="col">操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visible" :key="flow.id">
       <td class="min-w-180px"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium break-words">{{ flow.title }}</RouterLink></td>
-      <td class="min-w-280px"><Row wrap :gap="4"><v-chip v-for="[id,result] in scores(flow)" :key="id" size="small" :color="result.status==='passed'?'success':'error'">{{ modelName(flow,id) }} {{ result.score??'—' }}/{{ result.max_score??'—' }} · {{ formatPercent(result.percentage) }} / &lt;{{ result.threshold }}%</v-chip><v-chip v-if="!scores(flow).length" color="error" size="small">缺少模型评分明细</v-chip></Row></td>
+      <td class="min-w-150px"><RouterLink v-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text">{{ packageNames[flow.source_workflow_id]??'查看材料包' }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
+      <td class="min-w-280px"><Row wrap :gap="4"><v-chip v-for="[id,result] in scores(flow)" :key="id" size="small" :color="result.status==='passed'?'success':'error'">{{ modelName(flow,id) }} {{ result.score_contract==='model_report_v1'?'原始分 ':'' }}{{ (result.score_contract==='model_report_v1'?result.raw_score:result.score)??'—' }}/{{ (result.score_contract==='model_report_v1'?result.full_score:result.max_score)??'—' }} · {{ result.score_contract==='model_report_v1'?'模型指标 ':'' }}{{ formatPercent(result.percentage) }}{{ result.score_contract==='model_report_v1'&&result.veto_triggered===true?' · 否决':'' }} / &lt;{{ result.threshold }}%</v-chip><v-chip v-if="!scores(flow).length" color="error" size="small">缺少模型评分明细</v-chip></Row></td>
       <td><v-chip :color="hasAnomaly(flow)?'error':'success'">{{ hasAnomaly(flow)?'需核对评分':'达标' }}</v-chip></td>
       <td class="text-xs text-muted">题目 {{ flow.current_question_version||'—' }}<br>评分表 {{ flow.current_rubric_version||'—' }}</td>
       <td><Column :gap="4"><v-chip size="small" :color="flow.publication_status==='succeeded'?'success':'secondary'">{{ flow.publication_status==='succeeded'?'已归档':'待归档' }}</v-chip><span class="text-xs text-muted">{{ flow.exported?'已导出':'未导出' }}</span></Column></td>
-      <td><v-btn color="primary" variant="text" @click="selected=flow">查看内容</v-btn></td>
+      <td><Row wrap :gap="4"><v-btn color="primary" variant="text" @click="selected=flow">查看内容</v-btn><v-btn v-if="flow.publication_status!=='succeeded'" color="primary" variant="text" :to="`/workflows/${flow.id}`">前往归档</v-btn></Row></td>
      </tr>
     </tbody>
    </v-table>

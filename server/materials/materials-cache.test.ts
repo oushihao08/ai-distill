@@ -24,4 +24,18 @@ test('redaction input digest survives JSONB field ordering and still binds exact
  const reordered={artifact_sha256:'text',artifact_id:'artifact',source_sha256:'source',material_id:'material'};
  expect(redactionInputDigest([original])).toBe(redactionInputDigest([reordered]));expect(redactionInputDigest([original])).not.toBe(redactionInputDigest([{...reordered,artifact_sha256:'changed'}]));
 });
+test('legacy digest stays stable for default mode and changes for declared DOCX',()=>{
+ const source={material_id:'material',source_sha256:'source',artifact_id:'artifact',artifact_sha256:'text'};
+ expect(redactionInputDigest([source])).toBe(redactionInputDigest([{...source,redaction_mode:'model'}]));
+ expect(redactionInputDigest([source])).not.toBe(redactionInputDigest([{...source,redaction_mode:'declared_redacted'}]));
+});
+test('DOCX extraction writes one structured private page without treating it as PDF',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'docx-material-'));
+ try{
+  const source='synthetic docx fixture';await writeFile(join(root,'source.docx'),source);
+  const result=await processMaterials(root,'workflow','attempt',[{id:'docx',storage_path:'source.docx',sha256:hash(source)}],undefined,{extract:async()=>({format:'docx',provider:'mineru-api',sha256:hash(source),pages:[{page:1,text:'标题\n正文',method:'text',structure:[{id:'b1',kind:'heading',text:'标题',level:1},{id:'b2',kind:'paragraph',text:'正文'}]}]})});
+  expect(result.result.materials[0]).toMatchObject({material_id:'docx',format:'docx',pages:1,provider:'mineru-api'});
+  expect(result.artifacts[0]).toMatchObject({kind:'private_extracted_pages',material_id:'docx'});
+ }finally{await rm(root,{recursive:true,force:true});}
+});
 

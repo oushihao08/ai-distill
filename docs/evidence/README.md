@@ -5,6 +5,7 @@
 
 | 文件 | 格式 | 用途 |
 | --- | --- | --- |
+| [2026-10-14-material-question-workbench.md](2026-10-14-material-question-workbench.md) | Markdown | 合成 DOCX 的材料包一对多题目、标签冻结、版本快照和 101 题分页验收；明确未运行的模型与归档边界。 |
 | [2026-10-13-redaction-output-validation-audit.md](2026-10-13-redaction-output-validation-audit.md) | Markdown | 脱敏输出校验取舍、题目6最近失败的日志证据边界、v14 扁平协议及161项定向测试；未完成真实模型整卷验收。 |
 | [2026-10-11-cli-pipeline-and-lightweight-wait.md](2026-10-11-cli-pipeline-and-lightweight-wait.md) | Markdown | 同批逐题推进、轻量等待、一秒轮询；38项定向验证通过，完整路由集11项失败的临时基线对照及真实运行验收边界。 |
 | [2026-10-11-question1-workflow-live-run.md](2026-10-11-question1-workflow-live-run.md) | Markdown | 题目1隔离副本七步及Excel真实跑通；227项定向单测，记录评分解析、归档查询与跨worktree存储问题及验收边界。 |

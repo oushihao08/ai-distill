@@ -1,7 +1,7 @@
 /**
  * 职责：材料接收事务：保存原件与指纹、解析本地文档并维护当前附件和下游失效状态。
  * 关键方法与用途：`receiveMaterials()` 校验并保存原件与指纹，解析本地文档并更新附件及下游失效状态。
- * 使用场景：由入库队列调用；来源原件保持只读，结果写入管理存储和数据库。
+ * 使用场景：由上传 API 或入库队列调用；新模式登记材料包，旧模式登记题目，派生题目禁止改动材料；结果写入管理存储和数据库。
  */
 import type { Pool } from 'pg';
 import {invalidateMaterialResults} from './materials/state';
@@ -11,9 +11,9 @@ import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { STEP_REGISTRY } from '../shared/step-registry';
 import { extractLocalDocument } from './materials/document';
-import { validateFile, MAX_BATCH } from './validation';
+import { validateFile, MAX_BATCH, MAX_FOLDER_BATCH } from './validation';
 import {classifyLogError,enterLogContext,logEvent} from './logging';
-export interface IntakeInput { projectId: string; requestId: string; title: string; key: string | null; files: File[]; workflowId?: string;  allowEmpty?: boolean; job?: { workflowId: string; attemptId: string }; expectedMaterialIds?: string[] }
+export interface IntakeInput { projectId: string; requestId: string; title: string; key: string | null; files: File[]; workflowId?: string;  allowEmpty?: boolean; job?: { workflowId: string; attemptId: string; hasSplitPdf?: boolean }; expectedMaterialIds?: string[] }
 /**
  * 以数据库事务登记本次材料并把上传字节写入受管理存储；文件系统与数据库不是同一原子事务，来源原件不会被改写。
  * 附件变化时同步使旧步骤失效，提交结果不确定时保留文件供核对，避免误删已提交材料。
@@ -33,23 +33,26 @@ export async function receiveMaterials(pool: Pool, storageRoot: string, input: I
      if (!(await client.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL', [projectId])).rowCount) throw new HTTPException(404, { message: '项目不存在' });
      const { files, title, key, job } = input;
      if ((!files.length && !input.allowEmpty) || files.length > 100) throw new HTTPException(400, { message: '请选择1至100份PDF、DOCX、TXT或MD材料' });
-     if ((files as File[]).reduce((sum, f) => sum + f.size, 0) > MAX_BATCH) throw new HTTPException(413, { message: '材料包不能超过100MB' });
+     const batchLimit=job?.hasSplitPdf?MAX_FOLDER_BATCH:MAX_BATCH;
+     if ((files as File[]).reduce((sum, f) => sum + f.size, 0) > batchLimit) throw new HTTPException(413, { message: `材料包不能超过${batchLimit/1024/1024}MB` });
      const prepared = [];
      for (const file of files as File[]) {
        const bytes = new Uint8Array(await file.arrayBuffer()); validateFile(file, bytes);
        const extension=file.name.split('.').at(-1)!.toLowerCase() as 'pdf'|'docx'|'txt'|'md';
-       prepared.push({ bytes, extension, local_pages:extension==='pdf'?null:extractLocalDocument(bytes,extension).pages, original_name: file.name.replace(/[\\\x00-\x1f]/g, '_').slice(0, 240), sha256: createHash('sha256').update(bytes).digest('hex') });
+       prepared.push({ bytes, extension, local_pages:extension==='pdf'||extension==='docx'?null:extractLocalDocument(bytes,extension).pages, original_name: file.name.replace(/[\\\x00-\x1f]/g, '_').slice(0, 240), sha256: createHash('sha256').update(bytes).digest('hex') });
      }
-     let existing: { id: string;  } | undefined;
+     let existing: { id: string; deleted_at?:string|null } | undefined;
      if (input.workflowId) {
        existing = (await client.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL FOR UPDATE",[input.workflowId,projectId])).rows[0];
        if (!existing) throw new HTTPException(404,{message:'题目不存在'});
+       if((await client.query('SELECT source_workflow_id FROM ai_distill.workflows WHERE id=$1',[input.workflowId])).rows[0]?.source_workflow_id)throw new HTTPException(409,{message:'派生题目材料已冻结，请修改材料包并新建题目'});
 
      }
      if (key && !input.workflowId) {
        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${projectId}:source:${key}`]);
-       existing = (await client.query("SELECT id FROM ai_distill.workflows WHERE project_id=$1 AND source_key=$2 FOR UPDATE", [projectId,key])).rows[0];
+       existing = (await client.query("SELECT id,deleted_at FROM ai_distill.workflows WHERE project_id=$1 AND source_key=$2 FOR UPDATE", [projectId,key])).rows[0];
        if (existing) {
+         if(existing.deleted_at)throw new HTTPException(409,{message:'来源目录对应的工作流已删除，请使用新的来源标识'});
          const old = await client.query("SELECT original_name,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL", [existing.id]);
          const manifest = (rows: { original_name: string; sha256: string }[]) => JSON.stringify(rows.map(row => [row.original_name, row.sha256]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
          if (!job && manifest(old.rows) === manifest(prepared)) {
@@ -77,7 +80,8 @@ export async function receiveMaterials(pool: Pool, storageRoot: string, input: I
        await client.query("UPDATE ai_distill.workflows SET title=$2 WHERE id=$1", [id, title]);
        await client.query('UPDATE ai_distill.materials SET deleted_at=now() WHERE workflow_id=$1 AND deleted_at IS NULL',[id]);
      } else {
-       await client.query('INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_key) VALUES($1,$2,$3,$4,$5)', [id, projectId, requestId, title, key]);
+       const materialMode=(await client.query('SELECT material_mode FROM ai_distill.projects WHERE id=$1',[projectId])).rows[0]?.material_mode;
+       await client.query("INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_key,workflow_kind) VALUES($1,$2,$3,$4,$5,$6)", [id, projectId, requestId, title, key,materialMode==='material_packages'?'material_package':'question']);
      }
      if (existing && input.workflowId && !job && prepared.length === 0) {
        await client.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL,enabled=true,name='入库（含PDF文本提取）',display_position=1 WHERE workflow_id=$1 AND ordinal=1", [id]);
@@ -105,14 +109,16 @@ export async function receiveMaterials(pool: Pool, storageRoot: string, input: I
        summaries.push({ id: materialId, original_name: file.original_name, sha256: file.sha256, size_bytes: file.bytes.length });
      }
      const pdfCount=prepared.filter(file=>file.extension==='pdf').length;
-     const intakeResult = {materials: summaries,pdf_count:pdfCount,direct_text_count:prepared.length-pdfCount,validation: '原件已保存；DOCX/TXT/MD文本已直接解析并入库，PDF文本提取完成后入库' };
+     const docxCount=prepared.filter(file=>file.extension==='docx').length;
+     const extractionCount=pdfCount+docxCount;
+     const intakeResult = {materials: summaries,pdf_count:pdfCount,docx_count:docxCount,direct_text_count:prepared.length-extractionCount,validation: '原件已保存；TXT/MD文本已直接解析并入库，PDF/DOCX结构化提取完成后入库' };
      if (existing) {
-       await client.query("UPDATE ai_distill.steps SET status=$3,result=$2,error=NULL,started_at=now(),finished_at=CASE WHEN $3='succeeded' THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=1", [id, JSON.stringify(intakeResult),pdfCount?'waiting':'succeeded']);
+       await client.query("UPDATE ai_distill.steps SET status=$3,result=$2,error=NULL,started_at=now(),finished_at=CASE WHEN $3='succeeded' THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=1", [id, JSON.stringify(intakeResult),extractionCount?'waiting':'succeeded']);
      } else {
-       for (const stage of STEP_REGISTRY) await client.query('INSERT INTO ai_distill.steps(workflow_id,ordinal,name,status,implemented,result,started_at,finished_at,step_key,display_position,enabled) VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $2=1 AND $4=\'succeeded\' THEN now() END,CASE WHEN $2=1 AND $4=\'succeeded\' THEN now() END,$7,$8,$9)', [id,stage.ordinal,stage.name,stage.ordinal===1?(pdfCount?'waiting':'succeeded'):stage.ordinal===2&&pdfCount===0?'skipped':'waiting',stage.defaultEnabled,stage.ordinal===1?JSON.stringify(intakeResult):stage.ordinal===2&&pdfCount===0?JSON.stringify({reason:'没有PDF，无需单独OCR'}):null,stage.key,stage.position,stage.defaultEnabled]);
+       for (const stage of STEP_REGISTRY) await client.query('INSERT INTO ai_distill.steps(workflow_id,ordinal,name,status,implemented,result,started_at,finished_at,step_key,display_position,enabled) VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $2=1 AND $4=\'succeeded\' THEN now() END,CASE WHEN $2=1 AND $4=\'succeeded\' THEN now() END,$7,$8,$9)', [id,stage.ordinal,stage.name,stage.ordinal===1?(extractionCount?'waiting':'succeeded'):stage.ordinal===2&&extractionCount===0?'skipped':'waiting',stage.defaultEnabled,stage.ordinal===1?JSON.stringify(intakeResult):stage.ordinal===2&&extractionCount===0?JSON.stringify({reason:'没有PDF/DOCX，无需单独提取'}):null,stage.key,stage.position,stage.defaultEnabled]);
      }
      if(existing){
-       await client.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,started_at=CASE WHEN $2='skipped' THEN now() ELSE NULL END,finished_at=CASE WHEN $2='skipped' THEN now() ELSE NULL END,enabled=false WHERE workflow_id=$1 AND ordinal=2",[id,pdfCount===0?'skipped':'waiting',pdfCount===0?JSON.stringify({reason:'没有PDF，无需单独OCR'}):null]);
+       await client.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,started_at=CASE WHEN $2='skipped' THEN now() ELSE NULL END,finished_at=CASE WHEN $2='skipped' THEN now() ELSE NULL END,enabled=false WHERE workflow_id=$1 AND ordinal=2",[id,extractionCount===0?'skipped':'waiting',extractionCount===0?JSON.stringify({reason:'没有PDF/DOCX，无需单独提取'}):null]);
        await client.query("UPDATE ai_distill.steps SET name='入库（含PDF文本提取）',display_position=1,enabled=true WHERE workflow_id=$1 AND ordinal=1",[id]);
      }
      if (job) await client.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE id=$1", [attemptId, JSON.stringify(intakeResult)]);

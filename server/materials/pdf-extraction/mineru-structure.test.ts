@@ -4,7 +4,23 @@
  * 使用场景：修改 `mineru-cli.ts` 的 MinerU 输出适配时运行。
  */
 import {expect,test} from 'bun:test';
-import {parseMineruJson} from './mineru-cli';
+import {parseMineruDocxJson,parseMineruJson} from './mineru-cli';
+
+test('DOCX keeps document order and structured text without requiring PDF page numbers',()=>{
+ const [page]=parseMineruDocxJson([
+  {type:'title',text:'标题',text_level:1},
+  {type:'paragraph',text:'段落'},
+  {type:'list',list_items:['项目一','项目二']},
+  {type:'table',table_body:'<table><tr><td>列一</td><td>列二</td></tr></table>'},
+  {type:'image',img_path:'private/photo.png',image_caption:'不读取图片'},
+ ]);
+ expect(page.page).toBe(1);
+ expect(page.method).toBe('text');
+ expect(page.structure?.map(block=>block.kind)).toEqual(['heading','paragraph','list','table']);
+ expect(page.text).toContain('列一\t列二');
+ expect(page.text).not.toContain('private/photo.png');
+ expect(page.text).not.toContain('不读取图片');
+});
 
 test('parses MinerU page-grouped V2 blocks and preserves every text field in order',()=>{
  const pages=[[ 

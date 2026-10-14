@@ -7,6 +7,7 @@ import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {decideAcceptance,type AcceptanceConfig,type AcceptanceInput,type ModelAssessment} from './acceptance';
 import {validateAcceptanceConfig} from './config';
+import {scoreRubricBindingText} from '../scoring/validate';
 import {createHash} from 'node:crypto';
 import {answerModelSetDigest,readProjectModelSet} from '../answer-models/model-set';
 import {classifyLogError,enterLogContext,logEvent} from '../logging';
@@ -21,7 +22,7 @@ export function acceptanceSourceDigest(snapshot:AcceptanceSnapshot){
   return {model,answer:answer?{id:answer.id,status:answer.status,text:a?.text,answer_sha256:a?.answer_sha256,input_digest:a?.input_digest,question_attempt_id:a?.question_attempt_id,question_version:a?.question_version}:null,score:score?{id:score.id,status:score.status,binding:score.result?.binding,report:score.result?.report,validation:score.result?.validation}:null};
  });
  // 判定口径变化后旧达标摘要失效，发布时必须按百分制重新判定。
- return createHash('sha256').update(JSON.stringify(canonical({acceptance_policy:'percentage_strict_below',config:snapshot.config,question:question?{id:question.id,status:question.status,source:question.input,question:q?.question,question_version:q?.question_version,rubric:q?.rubric,rubric_version:q?.rubric_version,attachment_ids:q?.attachment_ids,answer_requirements:q?.answer_requirements}:null,models}))).digest('hex');
+ return createHash('sha256').update(JSON.stringify(canonical({acceptance_policy:'percentage_strict_below',config:snapshot.config,question:question?{id:question.id,status:question.status,source:question.input,question:q?.question,question_version:q?.question_version,rubric:q?.rubric,...(q?.scoring_policy?{scoring_policy:q.scoring_policy}:{}),rubric_version:q?.rubric_version,attachment_ids:q?.attachment_ids,answer_requirements:q?.answer_requirements}:null,models}))).digest('hex');
 }
 export async function readAcceptanceSnapshot(db:PoolClient,workflowId:string,config:AcceptanceConfig,modelSetDigest?:string):Promise<AcceptanceSnapshot>{
  const question=await db.query("SELECT a.id,a.status,a.input,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 WHERE a.workflow_id=$1 AND a.ordinal=4 ORDER BY a.attempt DESC LIMIT 1",[workflowId]);
@@ -40,9 +41,11 @@ export function buildAcceptanceInput(snapshot:{config:AcceptanceConfig;question?
   const questionResult=questionAttempt?.result;
   const answerMatches=!!answer&&answer.result?.question_attempt_id===questionAttempt?.id&&answer.result?.question_version===questionResult?.question_version;
   const binding=result?.binding??score?.input_binding;
-  const rubricDigest=createHash('sha256').update(JSON.stringify((questionResult?.rubric??[]).map((item:any)=>({id:item.id,criterion:item.criterion,max_score:item.max_score})))).digest('hex');
+  let rubricDigest='';try{rubricDigest=createHash('sha256').update(scoreRubricBindingText(questionResult?.rubric??[],questionResult?.scoring_policy)).digest('hex');}catch{rubricDigest='';}
+  const modelReport=questionResult?.scoring_policy?.contract==='model_report_v1';
+  const reportMatches=!modelReport||(report?.contract==='model_report_v1'&&result?.validation?.mode==='model_report_v1');
   const scoreMatches=!!answerMatches&&!!score&&binding?.answer_attempt_id===answer.id&&binding?.question_version===questionResult?.question_version&&binding?.rubric_version===questionResult?.rubric_version&&binding?.input_digest===answer.result?.input_digest&&binding?.answer_sha256===answer.result?.answer_sha256&&binding?.rubric_digest===rubricDigest&&answer.result?.answer_sha256===createHash('sha256').update(answer.result?.text??'').digest('hex');
-  return {model,answer_status:!answer?'waiting':!answerMatches?'failed':answer.status as ModelAssessment['answer_status'],score_status:score?.status as ModelAssessment['score_status'],score_valid:scoreMatches&&result?.validation?.valid===true,score:typeof report?.total==='number'?report.total:undefined,max_score:typeof report?.max_score==='number'?report.max_score:undefined};
+  return {model,answer_status:!answer?'waiting':!answerMatches?'failed':answer.status as ModelAssessment['answer_status'],score_status:score?.status as ModelAssessment['score_status'],score_valid:scoreMatches&&reportMatches&&result?.validation?.valid===true,...(modelReport?{score_contract:'model_report_v1' as const,evaluation_percent:report?.summary?.evaluation_percent??null,raw_score:report?.summary?.raw_score??null,full_score:report?.summary?.full_score??null,veto_triggered:report?.summary?.veto_triggered??null}:{}),score:typeof report?.total==='number'?report.total:undefined,max_score:typeof report?.max_score==='number'?report.max_score:undefined};
  });
  return {question_current:current,config:snapshot.config,models};
 }

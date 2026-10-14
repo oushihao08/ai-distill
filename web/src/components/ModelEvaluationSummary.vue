@@ -7,7 +7,7 @@
 import { computed } from 'vue';
 import {readAcceptanceResult,readAnswerStepResult,readScoreStepResult,type AnswerStepModelSummary,type Attempt,type ModelAcceptance,type ScoreStepModelSummary,type Step} from '../types/api';
 import { dateLabel } from '../utils/format';
-import { scorePercentage } from '../../../shared/score';
+import { evaluationPercentage } from '../../../shared/score';
 
 type ModelAnswer=AnswerStepModelSummary&{model_id:string;name:string};
 type ModelScore=ScoreStepModelSummary&{model_id:string;name:string};
@@ -41,11 +41,12 @@ function modelDecision(answer:ModelAnswer,score:ModelScore|undefined,saved:Model
  if(score.score_status!=='succeeded')return 'pending';
  if(score.valid!==true)return 'invalid';
  if(typeof answer.minimum_score!=='number')return 'pending';
- const percentage=scorePercentage(score.score,score.max_score);
- if(percentage===null)return 'invalid';
+ const percentage=evaluationPercentage(score);
+ if(percentage===null)return score.score_contract==='model_report_v1'?'pending':'invalid';
  return percentage<answer.minimum_score?'passed':'not_passed';
 }
 function scoreItemCounts(score:ModelScore|undefined):ScoreItemCounts|null{
+ if(score?.score_contract==='model_report_v1')return null;
  if(!score||score.score_status!=='succeeded'||score.valid!==true||!score.score_attempt_id)return null;
  const attempt=props.attempts.find(item=>item.id===score.score_attempt_id);
  const input=attempt?.input as {context?:{rubric?:unknown}}|null;
@@ -75,7 +76,7 @@ function scoreItemCounts(score:ModelScore|undefined):ScoreItemCounts|null{
 const evaluations=computed(()=>answers.value.map(answer=>{
  const score=scores.value.find(item=>item.model_id===answer.model_id);
  const decision=acceptance.value[answer.model_id];
- return {answer,score,percentage:scorePercentage(score?.score,score?.max_score),itemCounts:scoreItemCounts(score),decision:decision?.status??modelDecision(answer,score,undefined)};
+ return {answer,score,percentage:evaluationPercentage(score),itemCounts:scoreItemCounts(score),decision:decision?.status??modelDecision(answer,score,undefined)};
 }));
 const overallLabel=computed(()=>{
  if(overallDecision.value==='accepted')return '全部模型通过';
@@ -145,17 +146,21 @@ function taskStatus(status:string){
       <v-btn v-if="evaluation.score?.score_attempt_id" size="small" variant="text" @click="openExecution(evaluation.score.score_attempt_id)">查看评分</v-btn>
       <span v-else>评分任务：等待执行</span>
       <template v-if="evaluation.score">
-      <span v-if="typeof evaluation.score.score==='number' && typeof evaluation.score.max_score==='number'">{{ evaluation.score.score }} / {{ evaluation.score.max_score }} 分</span>
-      <span v-if="evaluation.percentage!==null">百分制 {{ evaluation.percentage.toFixed(2) }} 分</span>
+      <template v-if="evaluation.score.score_contract==='model_report_v1'">
+       <span>原始分 {{ evaluation.score.raw_score??'未报告' }} / {{ evaluation.score.full_score??'未报告' }}</span>
+       <span>否决意见：{{ evaluation.score.veto_triggered===true?'是':evaluation.score.veto_triggered===false?'否':'未报告' }}</span>
+      </template>
+      <span v-else-if="typeof evaluation.score.score==='number' && typeof evaluation.score.max_score==='number'">{{ evaluation.score.score }} / {{ evaluation.score.max_score }} 分</span>
+      <span v-if="evaluation.percentage!==null">{{ evaluation.score.score_contract==='model_report_v1'?'模型报告指标':'百分制' }} {{ evaluation.percentage.toFixed(2) }}{{ evaluation.score.score_contract==='model_report_v1'?'%':' 分' }}</span>
       </template>
       <span v-if="typeof evaluation.answer.minimum_score==='number'">分数上限 {{ evaluation.answer.minimum_score }}（百分制，低于通过）</span>
       <span v-if="evaluation.itemCounts">考点满分 {{ evaluation.itemCounts.fullScore }} 项，未满分 {{ evaluation.itemCounts.belowFull }} 项（共 {{ evaluation.itemCounts.total }} 项）</span>
       <span v-if="evaluation.decision==='passed'">低于上限，该模型通过</span>
       <span v-else-if="evaluation.decision==='not_passed'">达到或超过上限，该模型不通过</span>
-      <span v-else-if="evaluation.score?.extraction_status==='unparsed'">评分已返回，未能提取总分；请查看原文，暂不参与通过判定</span>
+      <span v-else-if="evaluation.score?.extraction_status==='unparsed'">评分已返回，未能提取约定结果；请查看原文，暂不参与通过判定</span>
       <span v-else-if="evaluation.decision==='invalid'">评分无效，暂不参与通过判定</span>
       <span v-else>等待作答或有效评分</span>
-      <span v-if="evaluation.score?.score_status==='succeeded'&&evaluation.score.valid" class="text-muted">总分提取成功（未核验逐项评分内容）</span>
+      <span v-if="evaluation.score?.score_status==='succeeded'&&evaluation.score.valid" class="text-muted">{{ evaluation.score.score_contract==='model_report_v1'?'结果格式提取成功（未重算评分）':'总分提取成功（未核验逐项评分内容）' }}</span>
     </Row>
    </Column>
   </Column>

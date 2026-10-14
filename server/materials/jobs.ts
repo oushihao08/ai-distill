@@ -1,13 +1,13 @@
 /**
- * 职责：PDF 提取队列：冻结解析器配置、复用健康缓存并把当前版本的原文与页索引发布入库。
+ * 职责：PDF/DOCX 提取队列：冻结解析器配置、复用健康缓存并把当前版本的原文与页索引发布入库。
  * 关键方法与用途：`enqueueExtraction()` 冻结解析设置并排队；`runNextExtraction()` 领取当前版本任务、复用缓存并发布页级文本。
  * 使用场景：`app.ts` 与目录入库队列派发，`worker.ts` 消费。
  */
 import {runExternalCall} from '../external-call';
 import {ProjectDocumentExtractor,DocumentProviderError,type DocumentExtractor} from './document';
 import {invalidateMaterialResults} from './state';
-import {MINERU_OCR_VERSION,MineruCliPdfExtractor} from './pdf-extraction/mineru-cli';
-import {MineruApiFirstPdfExtractor,MineruApiPdfExtractor} from './pdf-extraction/mineru-api';
+import {MINERU_DOCX_VERSION,MINERU_OCR_VERSION,MineruCliPdfExtractor} from './pdf-extraction/mineru-cli';
+import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor} from './pdf-extraction/mineru-api';
 import {watchTaskCancellation,withTaskSignal} from '../task-signal';
 import type { Pool } from 'pg';
 import { HTTPException } from 'hono/http-exception';
@@ -21,7 +21,7 @@ export function resolvePdfProvider(env:NodeJS.ProcessEnv=process.env):'mineru-ap
  if(!env.MINERU_KEY)throw new HTTPException(503,{message:'使用MinerU前请配置MINERU_KEY'});
  return provider;
 }
-export async function enqueueExtraction(pool: Pool, id: string) {
+export async function enqueueExtraction(pool: Pool, id: string, executionTarget:'local'|'server'='local') {
  const client = await pool.connect();
  try {
   await client.query('BEGIN');
@@ -29,36 +29,39 @@ export async function enqueueExtraction(pool: Pool, id: string) {
   if (!workflow.rowCount) throw new HTTPException(404,{message:'工作流不存在'});
   const steps = await client.query('SELECT ordinal,status FROM ai_distill.steps WHERE workflow_id=$1 ORDER BY ordinal FOR UPDATE',[id]);
   if (!steps.rowCount) throw new HTTPException(404,{message:'工作流不存在'});
-  const materialCheck=await client.query("SELECT count(*)::int AS total,count(*) FILTER (WHERE lower(original_name) LIKE '%.pdf')::int AS pdfs FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL",[id]);
+  const materialCheck=await client.query("SELECT count(*)::int AS total,count(*) FILTER (WHERE lower(original_name) LIKE '%.pdf')::int AS pdfs,count(*) FILTER (WHERE lower(original_name) LIKE '%.docx')::int AS docxs FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL",[id]);
   if(!materialCheck.rows[0]?.total) throw new HTTPException(409,{message:'材料尚未入库'});
-  if(!materialCheck.rows[0]?.pdfs){await client.query("UPDATE ai_distill.steps SET status='skipped',enabled=false,result=$2::jsonb,finished_at=now() WHERE workflow_id=$1 AND ordinal=2",[id,JSON.stringify({reason:'没有PDF，无需单独OCR'})]);await client.query("UPDATE ai_distill.steps SET status='succeeded',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[id]);await client.query('COMMIT');return{id:'',reused:true,completed:true,status:'skipped'};}
+  if(!materialCheck.rows[0]?.pdfs&&!materialCheck.rows[0]?.docxs){await client.query("UPDATE ai_distill.steps SET status='skipped',enabled=false,result=$2::jsonb,finished_at=now() WHERE workflow_id=$1 AND ordinal=2",[id,JSON.stringify({reason:'没有PDF/DOCX，无需单独提取'})]);await client.query("UPDATE ai_distill.steps SET status='succeeded',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[id]);await client.query('COMMIT');return{id:'',reused:true,completed:true,status:'skipped'};}
   if(!['succeeded','waiting','running','failed'].includes(steps.rows[0].status)) throw new HTTPException(409,{message:'材料入库尚未完成'});
-  const materials=(await client.query("SELECT id,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND lower(original_name) LIKE '%.pdf' ORDER BY id",[id])).rows;
+  const materials=(await client.query("SELECT id,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND (lower(original_name) LIKE '%.pdf' OR lower(original_name) LIKE '%.docx') ORDER BY id",[id])).rows;
   const pdfProvider=resolvePdfProvider();
-  const config={pdf_provider:pdfProvider,model:'mineru-vlm',base_url:'https://mineru.net',ocr_version:MINERU_OCR_VERSION,processor:'pdf-text-ingestion-structured-v1'};
+  const pdfConfig={pdf_provider:pdfProvider,model:'mineru-vlm',base_url:'https://mineru.net',ocr_version:MINERU_OCR_VERSION,processor:'pdf-text-ingestion-structured-v1'};
+  const config=materialCheck.rows[0]?.docxs?{...pdfConfig,docx_version:MINERU_DOCX_VERSION}:pdfConfig;
+  const active=(await client.query("SELECT execution_target FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=2 AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id])).rows[0];
+  if(active&&active.execution_target!==executionTarget)throw new HTTPException(409,{message:'当前 PDF 提取任务由另一执行位置处理'});
   // Keep active work unique; only successful work with the same frozen configuration is reusable.
-  const previous=await client.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=2 AND input->'materials'=$2::jsonb AND (status IN ('waiting','running') OR (status='succeeded' AND config=$3::jsonb)) ORDER BY attempt DESC LIMIT 1",[id,JSON.stringify(materials),JSON.stringify(config)]);
+  const previous=await client.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=2 AND execution_target=$4 AND input->'materials'=$2::jsonb AND (status IN ('waiting','running') OR (status='succeeded' AND config=$3::jsonb)) ORDER BY attempt DESC LIMIT 1",[id,JSON.stringify(materials),JSON.stringify(config),executionTarget]);
   if(previous.rowCount){await client.query('COMMIT');return{id:previous.rows[0].id,reused:true};}
   await invalidateMaterialResults(client,id);
   const attempt = crypto.randomUUID();
-  await client.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,2,COALESCE(max(attempt),0)+1,'waiting',jsonb_build_object('workflow_id',$1::text,'materials',$4::jsonb),$3 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=2",[id,attempt,JSON.stringify(config),JSON.stringify(materials)]);
+  await client.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,execution_target) SELECT $2,$1::uuid,2,COALESCE(max(attempt),0)+1,'waiting',jsonb_build_object('workflow_id',$1::text,'materials',$4::jsonb),$3,$5 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=2",[id,attempt,JSON.stringify(config),JSON.stringify(materials),executionTarget]);
   await client.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',error=NULL,result=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=2",[id]);
   await client.query('COMMIT'); return {id:attempt,reused:false};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }
-export async function runNextExtraction(pool: Pool, root: string, processor = processMaterials, workflowId?: string, signal?:AbortSignal) {
+export async function runNextExtraction(pool: Pool, root: string, processor = processMaterials, workflowId?: string, signal?:AbortSignal, executionTarget:'local'|'server'='local') {
  if(signal?.aborted)return false;
  const client=await pool.connect();let job;
  try{
   await client.query('BEGIN');await client.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
   if(signal?.aborted){await client.query('ROLLBACK');return false;}
   // Recover interrupted attempts without claiming that partial work succeeded.
-  const stale=await client.query("SELECT a.id,a.workflow_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=2 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED");
+  const stale=await client.query("SELECT a.id,a.workflow_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=2 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED",[executionTarget]);
   for(const attempt of stale.rows){
    await client.query("UPDATE ai_distill.step_attempts SET status='failed',error='执行进程中断，可重试',finished_at=now() WHERE id=$1",[attempt.id]);
    {await client.query("UPDATE ai_distill.steps SET status='failed',error='执行进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=2 AND status='running'",[attempt.workflow_id]);await client.query("UPDATE ai_distill.steps SET status='failed',error='PDF文本提取中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[attempt.workflow_id]);}
   }
-  const selected=await client.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=2 AND a.status='waiting' AND ($1::uuid IS NULL OR a.workflow_id=$1::uuid) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1",[workflowId??null]);
+  const selected=await client.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=2 AND a.execution_target=$2 AND a.status='waiting' AND ($1::uuid IS NULL OR a.workflow_id=$1::uuid) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1",[workflowId??null,executionTarget]);
   job=selected.rows[0];if(!job){await client.query('COMMIT');return false;}
   await client.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await client.query("UPDATE ai_distill.steps SET status='running',started_at=now() WHERE workflow_id=$1 AND ordinal=2",[job.workflow_id]);
@@ -73,15 +76,15 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
  const heartbeat=setInterval(()=>{if(heartbeatInFlight)return;heartbeatInFlight=true;pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running'",[job.id]).catch(error=>withLogContext(taskContext,()=>{logEvent('heartbeat.write_failed',{level:'error',...classifyLogError(error)});console.error('处理任务心跳写入失败');})).finally(()=>{heartbeatInFlight=false;});},10000);
  let publication;
  try{
-  const materials=await pool.query("SELECT id,storage_path,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND lower(original_name) LIKE '%.pdf' ORDER BY created_at,id",[job.workflow_id]);
+  const materials=await pool.query("SELECT id,storage_path,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND (lower(original_name) LIKE '%.pdf' OR lower(original_name) LIKE '%.docx') ORDER BY created_at,id",[job.workflow_id]);
   if(JSON.stringify(materials.rows.map(({id,sha256})=>({id,sha256})).sort((a,b)=>a.id.localeCompare(b.id)))!==JSON.stringify(job.input?.materials))throw new Error('任务附件已变化，结果未发布');
   const cacheRows=await pool.query("SELECT DISTINCT ON (m.sha256) m.sha256 AS source_sha256,ar.storage_path,ar.sha256,a.id AS attempt_id,m.id AS material_id FROM ai_distill.artifacts ar JOIN ai_distill.materials m ON m.id=ar.material_id JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE m.workflow_id=$1 AND lower(m.original_name) LIKE '%.pdf' AND ar.kind='private_extracted_pages' AND a.ordinal=2 AND COALESCE(a.config->>'pdf_provider','glm-ocr')=COALESCE($2::jsonb->>'pdf_provider','glm-ocr') AND (a.config->>'ocr_version')=($2::jsonb->>'ocr_version') AND (a.config->>'model')=($2::jsonb->>'model') AND (a.config->>'base_url')=($2::jsonb->>'base_url') ORDER BY m.sha256,ar.created_at DESC,ar.id DESC",[job.workflow_id,JSON.stringify(job.config)]);
   const caches = new Map<string,ExtractionCache>(cacheRows.rows.map(row=>[row.source_sha256,row]));
-  const inputs:InputMaterial[] = materials.rows.map(material=>({...material,extraction_cache:caches.get(material.sha256)}));
+  const inputs:InputMaterial[] = materials.rows.map(material=>({...material,extraction_cache:material.storage_path.toLowerCase().endsWith('.pdf')?caches.get(material.sha256):undefined}));
   if(job.config.pdf_provider!=='mineru-api'&&job.config.pdf_provider!=='mineru-cli')throw new Error('任务未冻结为MinerU解析配置，已停止调用');
   const cliProvider=new MineruCliPdfExtractor(process.env);
   const pdfProvider=job.config.pdf_provider==='mineru-cli'?cliProvider:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cliProvider);
-  const original=new ProjectDocumentExtractor(pdfProvider);
+  const original=new ProjectDocumentExtractor(pdfProvider,new MineruApiDocxExtractor(process.env));
   const extractor:DocumentExtractor={extract:async(path,signal)=>{
    const material=inputs.find(item=>join(resolve(root),item.storage_path)===path);
    return await runExternalCall({attempt_id:job.id,operation:`material:${material?.id??path}`,...(material?.id?{material_id:material.id}:{})},async()=>{

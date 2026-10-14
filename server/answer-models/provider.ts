@@ -7,7 +7,7 @@ import type {ModelApiConfig,ModelApiProvider,ModelApiResult,ModelApiErrorKind} f
 // Structural contract: existing Qwen remains compatible without changing its runtime.
 export type AnswerProvider=ModelApiProvider;
 export type AnswerModelConfig=ModelApiConfig;
-export interface AnswerRequest<T extends AnswerModelConfig=AnswerModelConfig> {config:T;question:string;materials:{name:string;text:string}[];timeout_ms?:number;signal?:AbortSignal;call_id?:string;observe_reasoning?:boolean}
+export interface AnswerRequest<T extends AnswerModelConfig=AnswerModelConfig> {config:T;question:string;materials:{name:string;text:string}[];system_prompt?:string;timeout_ms?:number;signal?:AbortSignal;call_id?:string;observe_reasoning?:boolean}
 export type AnswerResult=Omit<ModelApiResult,'provider'>;
 export interface AnswerClient<T extends AnswerModelConfig=AnswerModelConfig> {answer(input:AnswerRequest<T>):Promise<AnswerResult>}
 export interface AnswerFailure {kind:ModelApiErrorKind;retryable:boolean;http_status:number|null;provider_code:string|null;request_id:string|null}

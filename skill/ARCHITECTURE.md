@@ -4,7 +4,11 @@
 
 让 Codex 根据用户本次指定的项目、题目范围和终点，直接调用现有本机 HTTP API 操作工作台。流程经持久化队列执行；用户可以调整操作规则，不必操作页面。
 
-当前执行入口是操作 Skill 加本机 API。Skill 提供执行指令，Codex承担外部编排；没有另一个自动运行程序、后台推进引擎或MCP服务。CLI是可选的API客户端，不是默认执行入口。接口测试不等于Codex依据此Skill真实跑完整流程。
+本机执行入口是操作 Skill 加本机 API。Skill 提供执行指令，Codex承担外部编排；没有通用自动推进引擎。CLI 是可选 API 客户端：本机命令覆盖工作台管理和步骤操作；远程命令经 SSH 隧道调用服务器专用 API，提交材料操作或作答，服务器 worker 执行。远程 CLI 不接 Agent 出题、评分、判定或归档。代码、接口测试和部署验收是不同证据，不能互相替代。
+
+## 两种材料组织方式
+
+旧项目默认 `question_folders`，目录即题目；显式启用的 `material_packages` 项目，目录先登记材料包，完成入库／脱敏后从成功版本创建一题或多题。每题独立保存材料和脱敏产物快照及来源身份。补充材料只影响后来新建的题；材料包只执行前两步，派生题目执行出题及后续步骤。Skill 必须先读身份再决定对象 ID，不能只按页面步骤名推断。
 
 ## 结构与职责
 
@@ -18,7 +22,10 @@ flowchart TD
   B --> D
   A --> C
   R[shared/step-registry.ts] --> C
-  L[可选 CLI 客户端] -. 用户明确要求时 .-> A
+  L[本机 CLI] -. 本机工作流 .-> A
+  L -->|remote material / remote answer + SSH tunnel + token| RA[服务器 API]
+  RA --> RD[(共享数据库)]
+  RD --> RW[server worker：材料 + 无钩子作答]
   R --> A
 ```
 
@@ -27,7 +34,7 @@ flowchart TD
 | 用户指令 | 本次项目、范围、目标和是否重做 | 每次从当前请求确定，不沿用示例中的题号或模型 |
 | `skill/SKILL.md` | 查状态、选择授权步骤、等待、核实与停止规则 | 不计算就绪条件、分数或达标；不直接执行模型 |
 | Codex | 解释请求并依规则逐轮调用HTTP API，保留题目和attempt关联 | 到达终点即停止；遵循质量需真实行为验收 |
-| `cli/` | 可选的项目生命周期、设置、参数校验、HTTP、批量分组、有限等待和输出客户端 | 不直连数据库、不加载服务端凭证、不复制业务规则；不是Skill默认入口 |
+| `cli/` | 本机 API 客户端；另含经 SSH 隧道的远程材料／作答调用、幂等请求关联和材料文件取回 | 本机命令不直连数据库；远程命令读取本机 `.env` 中的凭证；不复制业务算法；远程 worker 不处理 Agent、评分或归档 |
 | API与业务模块 | 校验前置、冻结输入、创建任务、版本校验、保存结果、达标判定 | Web、Codex直接调用与CLI共享同一套实现 |
 | worker | 消费持久化任务、并发、心跳和取消 | API请求或等待到期不会取消已提交任务 |
 | 项目 `projects/<项目>/skill/` | 出题内容规范 | 与根目录操作Skill不同；按业务执行器读取，不注入被测模型 |
@@ -68,7 +75,7 @@ flowchart TD
 - 调整评分或就绪算法：修改对应服务端模块，由Web、Codex直接调用和CLI共同使用，不能只在Skill中改口径。
 - 根目录`skill/`保存唯一操作Skill，`.agents/skills/ai-distill-workflow`仅为发现用的符号链接；不维护两份规则。
 
-文件定位与命令到模块的对应关系见 [MAP.md](MAP.md)。当前实现边界与历史验证分别见 [系统架构](../docs/architecture.md) 和 [实施验收](../docs/evidence/2026-10-11-workflow-cli-skill.md)。
+文件定位与命令到模块的对应关系见 [MAP.md](MAP.md) 的 [CLI 工具地图](MAP.md#cli-工具地图)。用户命令和输出参见 [CLI 指南](../cli/README.md)。当前实现边界与历史验证分别见 [系统架构](../docs/architecture.md) 和 [实施验收](../docs/evidence/2026-10-11-workflow-cli-skill.md)。
 
 ## 本地批次清单
 

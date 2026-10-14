@@ -1,0 +1,19 @@
+# Credentials and runtime data are mounted at runtime, never baked into the image.
+.env
+.env.*
+!.env.example
+.storage
+# Keep project materials out of the image; include only trusted per-project delivery entrypoints.
+projects/*
+!projects/*/
+projects/*/*
+!projects/*/delivery.ts
+projects/README.md
+assets
+.git
+node_modules
+web/node_modules
+web/dist
+.DS_Store
+*.log
+.tmp-*

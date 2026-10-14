@@ -1,7 +1,7 @@
 /** HTTP 应用路由集成：覆盖 PDF 接收校验、原子清理与幂等复用、题目目录版本、Codex 设置、跨域变更拒绝及错误响应；用于核对 createApp 装配的真实 HTTP 契约。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
-import { test, expect, afterEach } from 'bun:test';
+import { test, expect, afterEach, beforeEach } from 'bun:test';
 import type { Pool } from 'pg';
 import { mkdtemp, rm, readdir,readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,17 +12,29 @@ import {closeAgentConcurrencyGate,createAgentConcurrencyGate,readConcurrencySett
 import { validateFile } from './validation';
 import { createHash } from 'node:crypto';
 import{configureLogger}from'./logging';
+import {STEP_REGISTRY} from '../shared/step-registry';
 const directories: string[] = [];
-afterEach(async () => { try { for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); } catch (error) { throw error; } });
-function fakePool(options: { failMaterial?: boolean; previous?: string; source?: { id: string;  materials: { original_name: string; sha256: string }[] } } = {}) {
+let previousMineruKey:string|undefined;
+beforeEach(()=>{previousMineruKey=process.env.MINERU_KEY;process.env.MINERU_KEY='fixture-only-no-network';});
+afterEach(async () => { if(previousMineruKey===undefined)delete process.env.MINERU_KEY;else process.env.MINERU_KEY=previousMineruKey;try { for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); } catch (error) { throw error; } });
+function fakePool(options: { failMaterial?: boolean; previous?: string; materialMode?:'question_folders'|'material_packages'; source?: { id: string; deleted_at?:string|null; materials: { original_name: string; sha256: string }[] } } = {}) {
  const calls: { sql: string; values?: unknown[] }[] = [];
+ let workflow=options.previous??options.source?.id;const storedMaterials:any[]=[];
  const client = { query: async (sql: string, values?: unknown[]) => {
   try {
    calls.push({ sql, values });
-   if (sql.startsWith('SELECT id FROM ai_distill.workflows')) return { rows: options.source ? [options.source] : [], rowCount: options.source ? 1 : 0 };
-   if (sql.startsWith('SELECT original_name,sha256 FROM ai_distill.materials')) return { rows: options.source?.materials ?? [], rowCount: options.source?.materials.length ?? 0 };
-   if (sql.startsWith('SELECT id FROM ai_distill.workflows')) return { rows: options.previous ? [{ id: options.previous }] : [], rowCount: options.previous ? 1 : 0 };
-   if (sql.startsWith('SELECT id FROM ai_distill.projects')) return { rows: [{ id: 'project' }], rowCount: 1 };
+   if(sql.startsWith('SELECT id FROM ai_distill.workflows WHERE project_id=$1 AND request_id'))return{rows:options.previous?[{id:options.previous}]:[],rowCount:options.previous?1:0};
+   if(sql.startsWith('SELECT id,deleted_at FROM ai_distill.workflows WHERE project_id=$1 AND source_key'))return{rows:options.source?[options.source]:[],rowCount:options.source?1:0};
+   if(sql.startsWith('SELECT id FROM ai_distill.workflows WHERE id='))return{rows:workflow?[{id:workflow}]:[],rowCount:workflow?1:0};
+   if(sql.startsWith('SELECT original_name,sha256 FROM ai_distill.materials'))return{rows:options.source?.materials??[],rowCount:options.source?.materials.length??0};
+   if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
+   if(sql.startsWith('SELECT material_mode FROM ai_distill.projects'))return{rows:[{material_mode:options.materialMode??'question_folders'}],rowCount:1};
+   if(sql.startsWith('INSERT INTO ai_distill.workflows'))workflow=values?.[0] as string;
+   if(sql.startsWith('SELECT ordinal,status'))return{rows:STEP_REGISTRY.map(stage=>({ordinal:stage.ordinal,status:'waiting'})),rowCount:STEP_REGISTRY.length};
+   if(sql.startsWith('SELECT count(*)::int AS total'))return{rows:[{total:storedMaterials.length||1,pdfs:storedMaterials.length||1}],rowCount:1};
+   if(sql.startsWith('SELECT id,sha256 FROM ai_distill.materials'))return{rows:storedMaterials.length?storedMaterials:[{id:'material',sha256:'fixture'}],rowCount:storedMaterials.length||1};
+   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&(options.previous||options.source?.materials[0]?.sha256===createHash('sha256').update('%PDF-1.7\nintake fixture').digest('hex')))return{rows:[{id:'prior-extraction'}],rowCount:1};
+   if(sql.startsWith('INSERT INTO ai_distill.materials'))storedMaterials.push({id:values?.[0],sha256:values?.[4]});
    if (options.failMaterial && sql.startsWith('INSERT INTO ai_distill.materials')) throw new Error('simulated failure');
    return { rows: [], rowCount: 0 };
   } catch (error) { throw error; }
@@ -39,6 +51,35 @@ function upload(files: File[], sourceKey?: string) {
  return new Request(`http://localhost/api/projects/${projectId}/workflows`, { method: 'POST', body: form, headers: { 'Idempotency-Key': '22222222-2222-4222-8222-222222222222' } });
 }
 const valid = () => new File(['%PDF-1.7\nintake fixture'], '卷宗.pdf', { type: 'application/pdf' });
+test('材料包模式上传只登记材料包，不直接建立题目',async()=>{
+ const {app,calls}=await setup({materialMode:'material_packages'});
+ const response=await app.fetch(upload([new File(['fixture text'],'材料.txt',{type:'text/plain'})]));
+ expect(response.status).toBe(201);
+ const created=calls.find(call=>call.sql.startsWith('INSERT INTO ai_distill.workflows'));
+ expect(created?.values?.at(-1)).toBe('material_package');
+});
+test('材料包有题目时拒绝删除，删除单题只更新本题',async()=>{
+ const source='55555555-5555-4555-8555-555555555555';
+ const question='66666666-6666-4666-8666-666666666666';
+ const changes:{sql:string;values?:unknown[]}[]=[];
+ const client={query:async(sql:string,values?:unknown[])=>{
+  changes.push({sql,values});
+  if(sql.startsWith('SELECT workflow_kind FROM ai_distill.workflows'))return{rows:[{workflow_kind:values?.[0]===source?'material_package':'question'}],rowCount:1};
+  if(sql.startsWith('SELECT 1 FROM ai_distill.workflows WHERE source_workflow_id'))return{rows:[{id:question}],rowCount:1};
+  return{rows:[],rowCount:1};
+ },release:()=>{}};
+ const app=createApp({connect:async()=>client} as unknown as Pool,'/tmp');
+ expect((await app.fetch(new Request(`http://localhost/api/workflows/${source}`,{method:'DELETE'}))).status).toBe(409);
+ expect(changes.some(call=>call.sql.startsWith('UPDATE ai_distill.workflows SET deleted_at'))).toBe(false);
+ expect((await app.fetch(new Request(`http://localhost/api/workflows/${question}`,{method:'DELETE'}))).status).toBe(200);
+ expect(changes.find(call=>call.sql.startsWith('UPDATE ai_distill.workflows SET deleted_at'))?.values).toEqual([question]);
+});
+test('已删除来源键不能通过再次上传把隐藏工作流当作新材料包',async()=>{
+ const {app,calls}=await setup({materialMode:'material_packages',source:{id:'77777777-7777-4777-8777-777777777777',deleted_at:'2026-10-14T00:00:00Z',materials:[]}});
+ const response=await app.fetch(upload([new File(['fixture text'],'材料.txt',{type:'text/plain'})],'材料A'));
+ expect(response.status).toBe(409);
+ expect(calls.some(call=>call.sql.startsWith('UPDATE ai_distill.workflows SET title'))).toBe(false);
+});
 test('reject disguised non-PDF instead of publishing intake success', () => {
  expect(() => validateFile(new File(['not pdf'], 'fake.pdf'), new TextEncoder().encode('not pdf'))).toThrow('PDF标识');
 });
@@ -66,36 +107,36 @@ test('redacted-only attachment text response never includes extracted source tex
  expect(JSON.stringify(body)).not.toContain('PRIVATE RAW TEXT');
  expect(body.pages).toBeUndefined();
 });
-test('save multiple PDFs with unique storage names and stage one successful and extraction/answer executors available', async () => {
+test('save multiple PDFs with unique storage names and PDF intake waiting for extraction with stable stage identities', async () => {
  try {
   const { app, dir, calls } = await setup();
   const response = await app.fetch(upload([valid(), valid()])); expect(response.status).toBe(201);
   const { id } = await response.json() as { id: string };
   expect((await readdir(join(dir, id))).length).toBe(2);
   const steps = calls.filter(c => c.sql.startsWith('INSERT INTO ai_distill.steps'));
-  expect(steps).toHaveLength(8); expect(steps[0]?.values?.[3]).toBe('succeeded');
-  expect(steps.slice(1).every((s,i) => s.values?.[3] === 'waiting' && s.values?.[4] === (i<=1 || i===3 || i===4) && s.values?.[5] === null)).toBe(true);
+  expect(steps).toHaveLength(STEP_REGISTRY.length); expect(steps[0]?.values?.[3]).toBe('waiting');
+  for(const [i,step] of steps.entries()){expect(step.values?.[1]).toBe(STEP_REGISTRY[i]!.ordinal);expect(step.values?.[4]).toBe(STEP_REGISTRY[i]!.defaultEnabled);if(i)expect(step.values?.[5]).toBeNull();}
   expect(calls.some(c => c.sql === 'COMMIT')).toBe(true);
  } catch (error) { throw error; }
 });
 test('invalid second PDF rolls back all metadata and removes first saved file', async () => {
  try {
   const { app, dir, calls } = await setup(); const response = await app.fetch(upload([valid(), new File(['bad'], 'fake.pdf')]));
-  expect(response.status).toBe(400); expect(await readdir(dir)).toHaveLength(0);
+  expect(response.status).toBe(400); expect((await readdir(dir)).filter(name=>name!=='.concurrency')).toHaveLength(0);
   expect(calls.some(c => c.sql === 'ROLLBACK')).toBe(true); expect(calls.some(c => c.sql === 'COMMIT')).toBe(false);
  } catch (error) { throw error; }
 });
 test('database failure removes unpublished file and gives a bounded error', async () => {
  try {
   const { app, dir, calls } = await setup({ failMaterial: true }); const response = await app.fetch(upload([valid()]));
-  expect(response.status).toBe(500); expect(await readdir(dir)).toHaveLength(0); expect(calls.some(c => c.sql === 'ROLLBACK')).toBe(true);
+  expect(response.status).toBe(500); expect((await readdir(dir)).filter(name=>name!=='.concurrency')).toHaveLength(0); expect(calls.some(c => c.sql === 'ROLLBACK')).toBe(true);
   expect(await response.text()).not.toContain('simulated failure');
  } catch (error) { throw error; }
 });
 test('identical request returns prior workflow without writing more files', async () => {
  try {
   const { app, dir, calls } = await setup({ previous: projectId }); const response = await app.fetch(upload([valid()]));
-  expect(response.status).toBe(200); expect(await response.json()).toEqual({ id: projectId, reused: true }); expect(await readdir(dir)).toHaveLength(0);
+  expect(response.status).toBe(200); expect(await response.json()).toEqual({ id: projectId, reused: true }); expect((await readdir(dir)).filter(name=>name!=='.concurrency')).toHaveLength(0);
   expect(calls.some(c => c.sql.startsWith('INSERT'))).toBe(false);
  } catch (error) { throw error; }
 });
@@ -105,7 +146,7 @@ test('unchanged question folder reuses its workflow across different upload requ
  const response = await app.fetch(upload([valid()], '题目 4'));
  expect(response.status).toBe(200);
  expect(await response.json()).toEqual({id: projectId,reused: true });
- expect(await readdir(dir)).toHaveLength(0);
+ expect((await readdir(dir)).filter(name=>name!=='.concurrency')).toHaveLength(0);
  expect(calls.some(c => c.sql.startsWith('INSERT'))).toBe(false);
 });
 test('changed question folder keeps the workflow identity and preserves old input history', async () => {
@@ -115,9 +156,9 @@ test('changed question folder keeps the workflow identity and preserves old inpu
  expect(await response.json()).toMatchObject({id: projectId,updated: true });
  expect(calls.some(c => c.sql.startsWith('INSERT INTO ai_distill.workflows'))).toBe(false);
  expect(calls.some(c => c.sql.startsWith('DELETE'))).toBe(false);
- expect(calls.some(c => c.sql.startsWith('UPDATE ai_distill.steps') && c.sql.includes('ordinal>1'))).toBe(true);
+ expect(calls.some(c => c.sql.startsWith("UPDATE ai_distill.steps SET status='waiting',result=NULL") && c.values?.[0]===projectId)).toBe(true);
  const material = calls.find(c => c.sql.startsWith('INSERT INTO ai_distill.materials'));
- expect(material?.values?.at(-1)).toBe(3);
+ expect(material?.values?.at(-1)).toBe('received');
  expect(await readdir(join(dir, projectId))).toHaveLength(1);
 });
 test('question folder key is validated and stored on the workflow', async () => {
@@ -163,7 +204,7 @@ test('results library lists only current accepted workflows with safe summary fi
  }finally{await logger.close();}
 });
 
-test('Codex settings API exposes local model options and rejects unsupported reasoning effort',async()=>{
+test('Codex settings API exposes local suggestions and rejects malformed reasoning settings',async()=>{
  const root=await mkdtemp(join(tmpdir(),'codex-settings-api-'));directories.push(root);
  const logger=configureLogger({root,service:'api'});
  const previousHome=process.env.CODEX_HOME;process.env.CODEX_HOME=root;
@@ -179,16 +220,11 @@ test('Codex settings API exposes local model options and rejects unsupported rea
   const app=createApp(pool,root);
   const loaded=await app.request('/api/codex/config');
   expect(loaded.status).toBe(200);expect(loaded.headers.get('X-Request-ID')).toBeTruthy();expect(await loaded.json()).toMatchObject({model:'gpt-test',reasoning_effort:'low',model_options:[{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]});
-  const invalid=await app.request('/api/codex/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:null,model:'gpt-test',reasoning_effort:'max'})});
+  const invalid=await app.request('/api/codex/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:null,model:'gpt-test',reasoning_effort:'bad effort'})});
   expect(invalid.status).toBe(400);expect(config.reasoning_effort).toBe('low');
   const saved=await app.request('/api/agent/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({credential_home:null,model:'gpt-test',reasoning_effort:'high'})});
   expect(saved.status).toBe(200);expect(await saved.json()).toMatchObject({model:'gpt-test',reasoning_effort:'high'});expect(config.reasoning_effort).toBe('high');
-  await logger.flush();const day=new Date().toISOString().slice(0,10),logDirectory=join(root,'logs',day),files=await readdir(logDirectory);
-  const records=(await readFile(join(logDirectory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line)),requestId=loaded.headers.get('X-Request-ID'),savedRequestId=saved.headers.get('X-Request-ID');
-  expect(records.filter(record=>record.request_id===requestId)).toEqual(expect.arrayContaining([expect.objectContaining({event:'request.started',component:'http'}),expect.objectContaining({event:'request.finished',route:'/api/codex/config',operation:'get__api_codex_config',status_code:200})]));
-  const change=records.find(record=>record.event==='management.changed'&&record.request_id===savedRequestId);
-  expect(change).toMatchObject({operation:'agent_settings.update',state:'succeeded',changed_fields:'credential_home,model,reasoning_effort'});
-  expect(JSON.stringify(change)).not.toContain('gpt-test');
+  await logger.flush();expect(await readdir(join(root,'logs')).catch(error=>{if(error.code==='ENOENT')return [];throw error;})).toEqual([]);
  }finally{await logger.close();if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
 });
 test('Agent model catalog follows the configured credentials directory',async()=>{
@@ -236,13 +272,7 @@ test('project Codex settings inherit system defaults and can be overridden or re
   expect(saved.status).toBe(200);expect(await saved.json()).toEqual({model:'gpt-project',reasoning_effort:'high',source:'project'});
   const reset=await app.request('/api/projects/11111111-1111-4111-8111-111111111111/agent-settings',{method:'DELETE'});
   expect(reset.status).toBe(200);expect(await reset.json()).toEqual({model:'gpt-system',reasoning_effort:'low',source:'system'});
-  await logger.flush();const day=new Date().toISOString().slice(0,10),logDirectory=join(root,'logs',day),files=await readdir(logDirectory);
-  const records=(await readFile(join(logDirectory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  const savedChange=records.find(record=>record.event==='management.changed'&&record.operation==='project_agent_settings.update');
-  expect(savedChange).toMatchObject({target_id:'11111111-1111-4111-8111-111111111111',changed_fields:'model,reasoning_effort',state:'succeeded'});
-  const resetChange=records.find(record=>record.event==='management.changed'&&record.operation==='project_agent_settings.reset');
-  expect(resetChange).toMatchObject({target_id:'11111111-1111-4111-8111-111111111111',changed_fields:'model,reasoning_effort',state:'succeeded'});
-  expect(JSON.stringify(records)).not.toContain('gpt-project');
+  await logger.flush();expect(await readdir(join(root,'logs')).catch(error=>{if(error.code==='ENOENT')return [];throw error;})).toEqual([]);
  }finally{await logger.close();if(previousHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousHome;}
 });
 
@@ -340,4 +370,38 @@ test('answer generation policy GET is read-only and PUT preserves provider setti
   const invalid=await app.request(`/api/projects/${projectId}/answer-generation-policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_timeout_minutes:45,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:true})});
   expect(invalid.status).toBe(400);expect(config).toMatchObject({answer_generation_policy:{request_timeout_ms:4_500_000,skip_scoring_on_qualified_timeout:false}});
  }finally{await logger.close();}
+});
+
+test('DOCX redaction declaration is SHA-bound and invalidates current downstream results',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'docx-redaction-mode-api-'));directories.push(root);
+ const workflowId='33333333-3333-4333-8333-333333333333',materialId='44444444-4444-4444-8444-444444444444',sourceSha='a'.repeat(64);
+ const calls:{sql:string;values?:unknown[]}[]=[];
+ let mode='model';
+ const client={query:async(sql:string,values?:unknown[])=>{
+  calls.push({sql,values});
+  if(sql==='BEGIN'||sql==='COMMIT'||sql==='ROLLBACK')return{rows:[],rowCount:1};
+  if(sql.startsWith('SELECT w.id,w.project_id,w.workflow_kind,w.source_workflow_id'))return{rows:[{id:workflowId,project_id:projectId,workflow_kind:'question',source_workflow_id:null}],rowCount:1};
+  if(sql.startsWith('SELECT id,original_name,sha256,redaction_mode'))return{rows:[{id:materialId,original_name:'材料.docx',sha256:sourceSha,redaction_mode:mode}],rowCount:1};
+  if(sql.startsWith('UPDATE ai_distill.materials SET redaction_mode'))mode=String(values?.[1]);
+  return{rows:[],rowCount:1};
+ },release(){}};
+ const pool={connect:async()=>client} as unknown as Pool;
+ const app=createApp(pool,root);
+ const response=await app.request(`/api/workflows/${workflowId}/materials/${materialId}/redaction-mode`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'declared_redacted',source_sha256:sourceSha})});
+ expect(response.status).toBe(200);expect(await response.json()).toEqual({redaction_mode:'declared_redacted',changed:true});
+ expect(mode).toBe('declared_redacted');
+ expect(calls.some(call=>call.sql.startsWith('UPDATE ai_distill.step_attempts')&&String(call.values?.[0])===workflowId)).toBe(true);
+ expect(calls.some(call=>call.sql.startsWith('UPDATE ai_distill.steps')&&String(call.values?.[0])===workflowId)).toBe(true);
+ expect(calls.some(call=>call.sql.startsWith('UPDATE ai_distill.project_exports')&&call.values?.[1]===workflowId)).toBe(true);
+});
+
+test('DOCX redaction declaration rejects stale fingerprints and non-DOCX without invalidation',async()=>{
+ for(const material of [{original_name:'材料.docx',sha256:'b'.repeat(64)},{original_name:'材料.pdf',sha256:'a'.repeat(64)}]){
+  const root=await mkdtemp(join(tmpdir(),'docx-redaction-mode-reject-'));directories.push(root);
+  const workflowId='33333333-3333-4333-8333-333333333333',materialId='44444444-4444-4444-8444-444444444444',calls:string[]=[];
+  const client={query:async(sql:string)=>{calls.push(sql);if(sql.startsWith('SELECT w.id,w.project_id,w.workflow_kind,w.source_workflow_id'))return{rows:[{id:workflowId,project_id:projectId,workflow_kind:'question',source_workflow_id:null}],rowCount:1};if(sql.startsWith('SELECT id,original_name,sha256,redaction_mode'))return{rows:[{id:materialId,...material,redaction_mode:'model'}],rowCount:1};return{rows:[],rowCount:1};},release(){}};
+  const response=await createApp({connect:async()=>client} as unknown as Pool,root).request(`/api/workflows/${workflowId}/materials/${materialId}/redaction-mode`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'declared_redacted',source_sha256:'a'.repeat(64)})});
+  expect(response.status).toBe(material.original_name.endsWith('.pdf')?400:409);
+  expect(calls.some(sql=>sql.startsWith('UPDATE ai_distill.step_attempts')||sql.startsWith('UPDATE ai_distill.steps')||sql.startsWith('UPDATE ai_distill.materials SET redaction_mode'))).toBe(false);
+ }
 });

@@ -3,6 +3,7 @@
  */
 import {test,expect} from 'bun:test';
 import {buildAcceptanceInput,buildEvaluationRecordRefs,readAcceptanceSnapshot} from './jobs';
+import {scoreRubricBindingText} from '../scoring/validate';
 import type {PoolClient} from 'pg';
 import {createHash} from 'node:crypto';
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
@@ -11,6 +12,15 @@ const config:AcceptanceConfig={required_models:['qwen'],minimum_score_by_model:{
 const question={id:'q1',status:'succeeded',result:{question_version:'qv2',rubric_version:'rv1',rubric:[{id:'r1',criterion:'明确结论',max_score:10}]}};
 const answer={id:'a1',model:'qwen',status:'succeeded',result:{question_attempt_id:'q1',question_version:'qv2',text:'答案',answer_sha256:hash('答案'),input_digest:'input'}};
 const score={answer_attempt_id:'a1',status:'succeeded',result:{binding:{answer_attempt_id:'a1',question_version:'qv2',rubric_version:'rv1',input_digest:'input',answer_sha256:hash('答案'),rubric_digest:hash(JSON.stringify(question.result.rubric))},validation:{valid:true},report:{total:9,max_score:10,disputes:[]}}};
+test('新达标装配使用完整规则绑定和模型指标，保持原始分独立',()=>{
+ const policy={contract:'model_report_v1' as const,rules_text:'按项目判断',reference_answer:'none' as const};
+ const rubric=[{id:'r1',criterion:'判断',rule:'扣7分',metadata:{score:-7}}];
+ const q={...question,result:{...question.result,rubric,scoring_policy:policy}};
+ const s={...score,result:{...score.result,binding:{...score.result.binding,rubric_digest:hash(scoreRubricBindingText(rubric,policy))},validation:{valid:true,mode:'model_report_v1'},report:{contract:'model_report_v1',summary:{raw_score:-7,full_score:100,evaluation_percent:12,veto_triggered:true}}}};
+ const input=buildAcceptanceInput({config,question:q,answers:[answer],scores:[s]});
+ expect(input.models[0]).toMatchObject({score_valid:true,score_contract:'model_report_v1',evaluation_percent:12,raw_score:-7});
+ expect(buildAcceptanceInput({config,question:{...q,result:{...q.result,rubric:[{...rubric[0],rule:'另一个口径'}]}},answers:[answer],scores:[s]}).models[0]?.score_valid).toBe(false);
+});
 test('acceptance assembly matches latest question, answer and rubric versions',()=>{const input=buildAcceptanceInput({config,question,answers:[answer],scores:[score]});expect(input.question_current).toBe(true);expect(input.models[0]).toMatchObject({answer_status:'succeeded',score_status:'succeeded',score_valid:true});});
 test('acceptance history freezes the answer and score attempt IDs for every selected model',()=>{
  const snapshot={config:{required_models:['qwen','model-b'],minimum_score_by_model:{qwen:8,'model-b':8}},question,answers:[{...answer,result:{...answer.result,answer_sha256:'a'.repeat(64)}},{id:'a2',model:'model-b',status:'succeeded',result:{question_attempt_id:'q1',question_version:'qv2',answer_sha256:'b'.repeat(64)}}],scores:[{...score,id:'s1',result:{...score.result,raw_text:'逐项评分原文'}},{...score,id:'s2',answer_attempt_id:'a2',result:{...score.result,binding:{...score.result.binding,answer_attempt_id:'a2'},raw_text:'第二个模型评分原文'}}]};

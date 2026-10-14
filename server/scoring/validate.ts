@@ -3,11 +3,62 @@
  * 关键方法与用途：`extractTextScore()` 从评分原文提取总分；`validateScore()` 兼容旧结构化报告校验，不替代评分模型的专业判断。
  * 使用场景：评分 executor 与上下文校验在发布评分结果前调用。
  */
+import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
+import type {ModelRubricItem} from '../authoring/validate';
 export interface ScoreBinding {question_version:string;input_digest:string;rubric_version:string;rubric_digest:string;answer_attempt_id:string;answer_sha256:string}
 export interface RubricItem {id:string;criterion:string;max_score:number}
-export interface ScoreContext {project_name?:string;question_id?:string;binding:ScoreBinding;question:string;materials:{name:string;text:string}[];answer:string;rubric:RubricItem[];answer_approach:string;reference_answer:string;step_prompt?:string;project_prompt?:{workspace_path:string;skill_path:string;source_digest:string;files:{path:string;sha256:string;size_bytes:number}[]};project_rules?:{version_id:string;source_digest:string;snapshot_path:string;files:{path:string;sha256:string;size_bytes:number}[]}}
+export interface ScoreContext {scoring_policy?:ScoringPolicy;project_name?:string;question_id?:string;binding:ScoreBinding;question:string;materials:{name:string;text:string}[];answer:string;rubric:(RubricItem|ModelRubricItem)[];answer_approach:string;reference_answer:string;step_prompt?:string;project_prompt?:{workspace_path:string;skill_path:string;source_digest:string;files:{path:string;sha256:string;size_bytes:number}[]};project_rules?:{version_id:string;source_digest:string;snapshot_path:string;files:{path:string;sha256:string;size_bytes:number}[]}}
 const object=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value);
 const nonblank=(value:unknown):value is string=>typeof value==='string'&&!!value.trim();
+/** 投影及绑定共用同一白名单；旧契约维持原始三字段及摘要字节顺序。 */
+export function scoreRubricSnapshot(rubric:ScoreContext['rubric'],policy?:ScoringPolicy):ScoreContext['rubric']{
+ if(policy)validateWorkflowConfig(policy);
+ if(!Array.isArray(rubric)||!rubric.length||rubric.length>500||new Set(rubric.map(r=>r?.id)).size!==rubric.length)throw new Error('评分条目无效');
+ return rubric.map(r=>{
+  if(!r||!nonblank(r.id)||!nonblank(r.criterion))throw new Error('评分条目无效');
+  if(policy?.contract==='model_report_v1'){
+   if(!('rule' in r)||!nonblank(r.rule)||r.rule.length>200000)throw new Error('评分条目规则无效');
+   if(r.metadata!==undefined&&(!object(r.metadata)||canonicalJson(r.metadata).length>64000))throw new Error('评分业务元数据无效');
+   if(r.metadata!==undefined)JSON.stringify(r.metadata,(_key,value)=>{if(typeof value==='number'&&!Number.isFinite(value)||typeof value==='function'||typeof value==='undefined'||typeof value==='bigint')throw new Error('评分业务元数据无效');return value;});
+   return {id:r.id,criterion:r.criterion,rule:r.rule,...(r.metadata!==undefined?{metadata:structuredClone(r.metadata)}:{})};
+  }
+  if(!('max_score' in r)||!Number.isFinite(r.max_score)||r.max_score<=0)throw new Error('评分条目满分无效');
+  return {id:r.id,criterion:r.criterion,max_score:r.max_score};
+ });
+}
+export function scoreRubricBindingText(rubric:ScoreContext['rubric'],policy?:ScoringPolicy):string{
+ const snapshot=scoreRubricSnapshot(rubric,policy);
+ return policy?.contract==='model_report_v1'?canonicalJson({rubric:snapshot,scoring_policy:policy}):JSON.stringify(snapshot);
+}
+export interface ModelReport {
+ contract:'model_report_v1';
+ items:{id:string;judgment:string;score_delta:number|null;reason:string}[];
+ summary:{raw_score:number|null;full_score:number|null;evaluation_percent:number|null;veto_triggered:boolean|null};
+}
+/** 新模式只收集模型结果和检查结构，不重算、裁剪或改写业务分数。 */
+export function extractModelReport(text:string,rubric:{id:string}[]):{valid:boolean;report:ModelReport|null;evaluation_percent:number|null;issues:string[];mode:'model_report_v1'}{
+ const result=(report:ModelReport|null,issues:string[])=>({valid:issues.length===0,report,evaluation_percent:issues.length===0?report?.summary.evaluation_percent??null:null,issues,mode:'model_report_v1' as const});
+ const sections=[...text.matchAll(/<model_report>\s*([\s\S]*?)\s*<\/model_report>/g)];
+ if(sections.length!==1||(text.match(/<model_report>/g)??[]).length!==1||(text.match(/<\/model_report>/g)??[]).length!==1)return result(null,['评分结果区缺失、重复或不完整']);
+ let raw:unknown;try{raw=JSON.parse(sections[0]![1]!);}catch{return result(null,['评分结果区不是有效JSON']);}
+ if(!object(raw)||raw.contract!=='model_report_v1'||!Array.isArray(raw.items)||!object(raw.summary))return result(null,['评分结果区结构无效']);
+ const issues:string[]=[],ids=new Set(rubric.map(item=>item.id)),found=new Set<string>();
+ if(!rubric.length||rubric.length>500||ids.size!==rubric.length||rubric.some(item=>!nonblank(item.id))||raw.items.length!==rubric.length)issues.push('评分条目数量或rubric编号无效');
+ const nullableNumber=(value:unknown)=>value===null||typeof value==='number'&&Number.isFinite(value);
+ for(const item of raw.items.slice(0,501)){
+  if(!object(item)||!nonblank(item.id)||!nonblank(item.judgment)||!nonblank(item.reason)||!nullableNumber(item.score_delta)){issues.push('评分条目结构无效');continue;}
+  if(!ids.has(item.id)||found.has(item.id))issues.push('评分条目编号未知或重复');
+  found.add(item.id);
+ }
+ if(found.size!==ids.size||[...ids].some(id=>!found.has(id)))issues.push('评分条目缺失');
+ const summary=raw.summary;
+ if(!nullableNumber(summary.raw_score)||!nullableNumber(summary.full_score)||!nullableNumber(summary.evaluation_percent)||(summary.veto_triggered!==null&&typeof summary.veto_triggered!=='boolean'))issues.push('评分汇总字段缺失或类型无效');
+ if(typeof summary.evaluation_percent==='number'&&(summary.evaluation_percent<0||summary.evaluation_percent>100))issues.push('模型报告比较指标超出0—100范围');
+ // 不接受模型提供的绑定、身份或程序状态字段；只提取约定业务字段，原始文本另行完整保存。
+ if(issues.length)return result(null,issues);
+ const report:ModelReport={contract:'model_report_v1',items:raw.items.map(item=>({id:item.id,judgment:item.judgment,score_delta:item.score_delta,reason:item.reason})),summary:{raw_score:summary.raw_score as number|null,full_score:summary.full_score as number|null,evaluation_percent:summary.evaluation_percent as number|null,veto_triggered:summary.veto_triggered as boolean|null}};
+ return result(report,[]);
+}
 /** 回复返回后提取明确总分；有歧义时保留原文，不改分或重新评分。 */
 export function extractTextScore(text:string,rubric:RubricItem[]){
  const max_score=Number(rubric.reduce((sum,item)=>sum+item.max_score,0).toFixed(8));
@@ -61,10 +112,11 @@ export function extractTextScore(text:string,rubric:RubricItem[]){
 }
 // Checks traceability and arithmetic. Whether an answer satisfies a criterion remains the independent grader's responsibility.
 export function validateScore(raw:unknown,context:ScoreContext){
+ const rubric=context.rubric as RubricItem[];
  const issues:string[]=[];let total=0;let max_score=0;
  const problem=(message:string)=>{if(issues.length<100)issues.push(message);};
- if(!context.rubric.length||context.rubric.length>500||new Set(context.rubric.map(r=>r.id)).size!==context.rubric.length||context.rubric.some(r=>!nonblank(r.id)||!nonblank(r.criterion)||!Number.isFinite(r.max_score)||r.max_score<=0))problem('rubric条目无效');
- else max_score=context.rubric.reduce((sum,r)=>sum+r.max_score,0);
+ if(!rubric.length||rubric.length>500||new Set(rubric.map(r=>r.id)).size!==rubric.length||rubric.some(r=>!nonblank(r.id)||!nonblank(r.criterion)||!Number.isFinite(r.max_score)||r.max_score<=0))problem('rubric条目无效');
+ else max_score=rubric.reduce((sum,r)=>sum+r.max_score,0);
  if(!object(raw))return {valid:false,total,max_score,issues:['评分结果须为JSON对象']};
  if(!object(raw.binding)||Object.entries(context.binding).some(([key,value])=>(raw.binding as Record<string,unknown>)[key]!==value))problem('题目、附件、rubric或作答版本不一致');
  if(raw.assessment_valid!==true)problem('独立评分有效性未确认');
@@ -73,10 +125,10 @@ export function validateScore(raw:unknown,context:ScoreContext){
  const found=new Set<string>();
  if(Array.isArray(raw.items))for(const item of raw.items.slice(0,500)){
   if(!object(item)||!nonblank(item.id)){problem('评分条目格式无效');continue;}
-  const rubric=context.rubric.find(r=>r.id===item.id);
-  if(!rubric||found.has(item.id)){problem('评分条目未知或重复');continue;}found.add(item.id);
+  const rubricItem=rubric.find(r=>r.id===item.id);
+  if(!rubricItem||found.has(item.id)){problem('评分条目未知或重复');continue;}found.add(item.id);
   const score=item.score;
-  if(typeof score!=='number'||!Number.isFinite(score)||score<0||score>rubric.max_score){problem(`${item.id}：得分超出范围`);continue;}total+=score;
+  if(typeof score!=='number'||!Number.isFinite(score)||score<0||score>rubricItem.max_score){problem(`${item.id}：得分超出范围`);continue;}total+=score;
   if(!nonblank(item.reason))problem(`${item.id}：缺少评分理由`);
   let answerEvidence=false;
   if(!Array.isArray(item.evidence)||item.evidence.length>100){problem(`${item.id}：证据格式无效`);continue;}
@@ -86,7 +138,7 @@ export function validateScore(raw:unknown,context:ScoreContext){
    let text:string|undefined;
    if(source==='answer')text=context.answer;
    else if(source==='question')text=context.question;
-   else if(source==='rubric')text=rubric.criterion;
+   else if(source==='rubric')text=rubricItem.criterion;
    else if(source==='material'&&Number.isInteger(evidence.material_index))text=context.materials[evidence.material_index as number]?.text;
    if(text===undefined||!text.includes(evidence.quote)){problem(`${item.id}：引文不在指定原文中`);continue;}
    if(source==='answer')answerEvidence=true;

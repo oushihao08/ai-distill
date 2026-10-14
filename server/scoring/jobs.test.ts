@@ -3,6 +3,9 @@
  */
 import {test,expect,beforeAll,afterAll} from 'bun:test';
 import {enqueueScore,runNextScore,scoreContextDigest} from './jobs';
+import {freezeStageHooks} from '../workflow-hook-jobs';
+import {canonicalJson,validateWorkflowConfig} from '../../shared/workflow-config';
+import {scoreRubricBindingText} from './validate';
 import {scoreExecutionInstructions} from './executor';
 import type {Pool} from 'pg';
 import {createHash} from 'node:crypto';
@@ -18,17 +21,22 @@ afterAll(async()=>{if(previousCodexHome===undefined)delete process.env.CODEX_HOM
 const rubric=[{id:'amount',criterion:'指出100元',max_score:1}];
 const input={question_version:'v1',question:'多少',materials:[{name:'附件1',text:'欠款100元'}],attachments:[{id:'attachment',sha256:hash('欠款100元')}]};
 const context={question:input.question,materials:input.materials,answer:'100元',rubric,answer_approach:'核对金额',reference_answer:'100元',project_rules:projectRules,binding:{question_version:'v1',input_digest:inputDigest(input),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'answer',answer_sha256:hash('100元')}};
-function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:boolean;inactive?:boolean;stale?:boolean;answerStepStatus?:string;answers?:{id:string;text:string}[];bundle?:any[];scoreRows?:any[];provider?:'codex'|'api'}={}){
- const calls:{sql:string;values:any[]}[]=[];let claim=false,activeConnections=0;
+function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:boolean;inactive?:boolean;stale?:boolean;answerStepStatus?:string;answers?:{id:string;text:string}[];bundle?:any[];scoreRows?:any[];provider?:'codex'|'api';policy?:any}={}){
+ const calls:{sql:string;values:any[]}[]=[],hookRuns=new Map<string,any>();let claim=false,activeConnections=0;
  const provider=options.provider??'codex';
  const job:any={id:'grade',workflow_id:'workflow',input:{context:structuredClone(context),digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(provider)},config:provider==='api'?{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b'},prompt:'逐项评分'}:{provider:'codex',model:'gpt-6-luna',reasoning_effort:'medium'}};
+ if(options.policy){job.input.context.scoring_policy=options.policy;job.input.context.rubric=[{id:'amount',criterion:'金额错误',rule:'出现错误扣7分'}];job.input.context.binding.rubric_digest=hash(scoreRubricBindingText(job.input.context.rubric,options.policy));job.input.digest=scoreContextDigest(job.input.context);}
  const query=async(sql:string,values:any[]=[])=>{
   calls.push({sql,values});
+  if(sql.startsWith('SELECT * FROM ai_distill.hook_runs')){const row=[...hookRuns.values()].find(r=>r.attempt_id===values[0]&&r.position===values[1]&&r.action_id===values[2]);return {rows:row?[structuredClone(row)]:[],rowCount:row?1:0};}
+  if(sql.startsWith('INSERT INTO ai_distill.hook_runs')){const row={id:values[0],workflow_id:values[1],attempt_id:values[2],stage:values[3],position:values[4],action_id:values[5],mode:values[6],binding_digest:values[7],snapshot:JSON.parse(values[8]),idempotent:values[9],status:'waiting'};hookRuns.set(row.id,row);return {rows:[structuredClone(row)],rowCount:1};}
+  if(sql.startsWith('UPDATE ai_distill.hook_runs')){const row=hookRuns.get(values[0]);if(!row)return {rows:[],rowCount:0};row.status=values[1];row.result=values[2]?JSON.parse(values[2]):null;row.result_digest=values[4];return {rows:[structuredClone(row)],rowCount:1};}
+
   if(sql.startsWith('SELECT w.project_id'))return {rowCount:1,rows:[{project_id:'project',rule_version_id:'rules-v1'}]};
   if(sql.startsWith('SELECT w.rule_version_id'))return {rowCount:1,rows:[{rule_version_id:'rules-v1',project_name:'本期项目',title:'本期项目-题目1',source_key:'题目1',local_skill_path:join(snapshot,'skill'),material_root:join(snapshot,'questions')}]};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rowCount:1,rows:[{codex_model:null,codex_reasoning_effort:null}]};
   if(sql.startsWith('SELECT a.input,a.result')){if(options.bundle?.some(item=>item.status==='failed')){expect(sql).toContain("s.status='failed'");expect(sql).toContain("model->>'status'='succeeded'");}const answerId=values[0]??'answer',text=options.answers?.find(answer=>answer.id===answerId)?.text??'100元';return {rowCount:1,rows:[{input:{...input,question_attempt_id:'author',input_digest:inputDigest(input)},result:{text,input_digest:inputDigest(input),answer_sha256:hash(text)}}]};}
-  if(sql.startsWith('SELECT a.id,a.input,a.result'))return {rowCount:1,rows:[{id:'author',input:{rule_version_id:projectRules.version_id,rule_source_digest:projectRules.source_digest,rule_snapshot_path:snapshot,rule_files:projectRules.files},result:{...input,attachment_ids:['attachment'],answer_approach:'核对金额',reference_answer:'100元',quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:options.late&&claim?'r2':'r1',rubric}}]};
+  if(sql.startsWith('SELECT a.id,a.input,a.result'))return {rowCount:1,rows:[{id:'author',input:{...(options.policy?{scoring_policy:options.policy}:{}),rule_version_id:projectRules.version_id,rule_source_digest:projectRules.source_digest,rule_snapshot_path:snapshot,rule_files:projectRules.files},result:{...input,attachment_ids:['attachment'],answer_approach:'核对金额',reference_answer:'100元',quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:options.late&&claim?'r2':'r1',rubric:job.input.context.rubric,...(options.policy?{scoring_policy:options.policy}:{})}}]};
   if(sql.includes('a.id=ANY($2::uuid[])'))return {rowCount:options.unready?0:(options.answers?.length??0),rows:options.unready?[]:(options.answers??[]).map(answer=>({id:answer.id}))};
   if(sql.startsWith('SELECT a.id FROM'))return {rowCount:options.unready?0:1,rows:options.unready?[]:[{id:'answer'}]};
   if(sql.startsWith('SELECT status,result FROM ai_distill.steps'))return {rowCount:1,rows:[{status:options.answerStepStatus??'succeeded',result:options.bundle?{models:options.bundle}:null}]};
@@ -44,10 +52,14 @@ function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:bool
   if(sql.startsWith('SELECT id FROM ai_distill.artifacts'))return {rowCount:0,rows:[]};
   return {rowCount:1,rows:[]};
  };
- return {pool:{query,connect:async()=>{activeConnections++;return{query,release(){activeConnections--;}};}} as unknown as Pool,calls,job,activeConnections:()=>activeConnections};
+ return {pool:{query,connect:async()=>{activeConnections++;return{query,release(){activeConnections--;}};}} as unknown as Pool,calls,job,hookRuns,activeConnections:()=>activeConnections};
 }
 async function fixture(run:(root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'score-jobs-'));try{await run(root);}finally{await rm(root,{recursive:true,force:true});}}
 const grade=async(c:any)=>({report:{binding:c.binding,assessment_valid:true,items:[{id:'amount',score:1,reason:'完整',evidence:[{source:'answer',quote:'100元'}]}],total:1,max_score:1,disputes:[]},session_id:'grade-session',usage:{input_tokens:5},duration_ms:10});
+test('API评分的领取与恢复同时排除本地脚本任务',async()=>{
+ const f=fake({empty:true,provider:'api'});await runNextScore(f.pool,'unused',grade,undefined,async()=>{},'api','api');
+ for(const call of f.calls.filter(c=>c.sql.startsWith('SELECT a.*')||c.sql.startsWith('SELECT a.id,a.workflow_id'))){expect(call.sql).toContain("NOT (a.input->'hooks'");expect(call.values[0]).toBe('api');}
+});
 test('enqueue pins persisted context and rejects a duplicate active score task',async()=>{const a=fake();await enqueueScore(a.pool,'workflow');expect(a.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))?.values.join(' ')).toContain('answer_sha256');const b=fake({reuse:true});await expect(enqueueScore(b.pool,'workflow')).rejects.toThrow('此答案已有评分任务');expect(b.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);});
 test('scoring digest binds the authoring approach and reference answer',()=>{
  expect(scoreContextDigest({...context,answer_approach:'另一作答思路'})).not.toBe(scoreContextDigest(context));
@@ -150,4 +162,41 @@ test('releases the recovery connection before automatic acceptance',async()=>{
  const a=fake({empty:true,stale:true,bundle,scoreRows});let judged=0,connectionsDuringJudge=-1;
  await runNextScore(a.pool,'unused',grade,undefined,async()=>{connectionsDuringJudge=a.activeConnections();judged++;});
  expect(judged).toBe(1);expect(connectionsDuringJudge).toBe(0);
+});
+
+test('新评分队列按题目契约保存原文与模型指标，不再套旧正分校验',async()=>{
+ await fixture(async root=>{
+  const policy={contract:'model_report_v1',rules_text:'按项目评分',reference_answer:'none'};
+  const f=fake({policy});
+  const raw='<model_report>'+JSON.stringify({contract:'model_report_v1',items:[{id:'amount',judgment:'错误',score_delta:-7,reason:'证据'}],summary:{raw_score:-7,full_score:100,evaluation_percent:12,veto_triggered:true}})+'</model_report>';
+  await runNextScore(f.pool,root,async()=>({raw_text:raw,report:{total:99},session_id:'model',usage:null,duration_ms:1}),undefined,async()=>{});
+  const update=f.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.step_attempts SET status=$2,result=$3'));
+  expect(update).toBeDefined();expect(update!.values[1]).toBe('succeeded');
+  const saved=JSON.parse(update!.values[2]);
+  expect(saved.raw_text).toBe(raw);expect(saved.validation).toMatchObject({valid:true,evaluation_percent:12});
+  expect(saved.report).toMatchObject({contract:'model_report_v1',summary:{raw_score:-7,evaluation_percent:12,veto_triggered:true}});
+  expect(saved.report.total).toBeNull();
+ });
+});
+test('新评分摘要兼容JSONB键顺序但绑定完整业务规则',()=>{
+ const policy={contract:'model_report_v1' as const,rules_text:'扣分',reference_answer:'none' as const};
+ const rubric=[{id:'x',criterion:'错误',rule:'扣7分',metadata:{z:1,a:2}}];
+ const c={...context,scoring_policy:policy,rubric,binding:{...context.binding,rubric_digest:hash(scoreRubricBindingText(rubric,policy))}};
+ const changed={...c,rubric:[{...rubric[0],metadata:{a:2,z:1}}],scoring_policy:{reference_answer:policy.reference_answer,rules_text:policy.rules_text,contract:policy.contract}};
+ expect(scoreContextDigest(c)).toBe(scoreContextDigest(changed));
+ expect(()=>scoreContextDigest({...c,rubric:[{...rubric[0],rule:'扣10分'}]})).toThrow('指纹');
+});
+
+test('评分阶段执行前后钩子且不泄漏思路或默认标答文件',async()=>{
+ await fixture(async root=>{
+  await mkdir(join(root,'hooks'));await writeFile(join(root,'hooks/check.ts'),"const input=JSON.parse(await Bun.stdin.text());console.log(JSON.stringify({data:{phase:input.position,approach:JSON.stringify(input.input).includes('核对金额'),reference:JSON.stringify(input.input).includes('校准参考答案.txt')}}));");
+  const action={id:'check',script:'hooks/check.ts',files:['hooks/check.ts'],mode:'sync',params:{},timeout_ms:1000,idempotent:true};
+  const f=fake();f.job.input.hooks=await freezeStageHooks(root,validateWorkflowConfig({hooks:{before:[action],after:[action]}}));
+  f.job.input.hook_digest=hash(canonicalJson(f.job.input.hooks));
+  let called=0;
+  await runNextScore(f.pool,root,async c=>{called++;return grade(c);},undefined,async()=>{});
+  expect(called).toBe(1);
+  const records=[...f.hookRuns.values()].filter(r=>r.position!=='main');
+  expect(records.map(r=>r.result?.data)).toEqual([{phase:'before',approach:false,reference:false},{phase:'after',approach:false,reference:false}]);
+ });
 });

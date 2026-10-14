@@ -2,6 +2,12 @@
 import {expect,test} from 'bun:test';
 
 const modulePromise=import('./workflow-results').catch(()=>undefined);
+test('新评分摘要保留模型指标并拒绝非法新字段',async()=>{
+ const module=await modulePromise;
+ const row={model_id:'m1',answer_status:'succeeded',score_status:'succeeded',score_contract:'model_report_v1',raw_score:-7,full_score:100,evaluation_percent:12,veto_triggered:true};
+ expect(module!.readScoreStepResult({models:[row]})?.models[0]).toMatchObject(row);
+ for(const changes of [{evaluation_percent:101},{evaluation_percent:'12'},{raw_score:Infinity},{veto_triggered:'yes'},{score_contract:'other'}])expect(module!.readScoreStepResult({models:[{...row,...changes}]})).toBeUndefined();
+});
 
 test('reads current answer summaries and rejects incomplete model rows',async()=>{
  const module=await modulePromise;

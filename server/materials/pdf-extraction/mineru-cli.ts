@@ -1,5 +1,5 @@
 /**
- * 职责：MinerU CLI PDF 适配器：限制子进程环境、解析带页码 JSON 并支持超时和取消。
+ * 职责：MinerU CLI PDF 适配器及 API PDF/DOCX 结果转换：限制子进程环境、解析带页码 JSON 并支持超时和取消。
  * 关键方法与用途：`parseMineruJson()` 解析带页码输出；`MineruCliPdfExtractor` 管理子进程、超时和取消。
  * 使用场景：由统一 PDF 提取接口创建并被文档提取器调用。
  */
@@ -14,6 +14,7 @@ import type { PdfExtractionProvider, PdfExtractionResult } from './types';
 
 // Increment when conversion semantics change: old text-only caches are incomplete.
 export const MINERU_OCR_VERSION = 'mineru-open-api-first-structured-v2';
+export const MINERU_DOCX_VERSION = 'mineru-docx-structured-v1';
 interface MineruBlock { page_idx?: number; type?: string; [key: string]: unknown }
 interface ParsedPage { blocks: DocumentBlock[]; issues: Set<string> }
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -149,6 +150,23 @@ export function parseMineruJson(value: unknown, pageCount: number): Page[] {
   if (!text.trim()) issues.add('empty_page');
   return { page: index + 1, text, structure: blocks, method: 'ocr', model: 'mineru-vlm', ...(issues.size ? { issues: [...issues] } : {}) };
  });
+}
+
+/** DOCX has document order but no stable PDF page boundary. Keep one logical text page. */
+export function parseMineruDocxJson(value: unknown): Page[] {
+ if (!Array.isArray(value)) throw new Error('MinerU DOCX JSON结构无效');
+ const page: ParsedPage = { blocks: [], issues: new Set<string>() };
+ const groups = value.length && value.every(Array.isArray) ? value as unknown[][] : [value];
+ let ordinal = 0;
+ for (const group of groups) for (const candidate of group) {
+  if (!isRecord(candidate)) throw new Error('MinerU DOCX JSON块无效');
+  const block = candidate as MineruBlock;
+  if (typeof block.type === 'string' && block.type.toLowerCase() === 'image') continue;
+  page.blocks.push(...toBlocks(block, ordinal++, page));
+ }
+ const text = documentBlocksToText(page.blocks);
+ if (!text.trim()) throw new Error('MinerU DOCX没有可提取文字');
+ return [{ page: 1, text, structure: page.blocks, method: 'text', ...(page.issues.size ? { issues: [...page.issues] } : {}) }];
 }
 
 export class MineruCliPdfExtractor implements PdfExtractionProvider {

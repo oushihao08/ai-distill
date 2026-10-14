@@ -59,7 +59,7 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
    task_name:text(question.task_name),question:text(question.question),input_attachments:[],
    model_scores:Object.entries(object(decision.model_scores)??{}).map(([modelId,value])=>{
     const score=object(value)??{};
-    return {model_id:modelId,name:modelId,score:typeof score.score==='number'?score.score:null,max_score:typeof score.max_score==='number'?score.max_score:null,percentage:typeof score.percentage==='number'?score.percentage:null};
+    return {model_id:modelId,name:modelId,...(score.score_contract==='model_report_v1'?{score_contract:'model_report_v1' as const,raw_score:typeof score.raw_score==='number'?score.raw_score:null,full_score:typeof score.full_score==='number'?score.full_score:null,veto_triggered:typeof score.veto_triggered==='boolean'?score.veto_triggered:null}:{}),score:typeof score.score==='number'?score.score:null,max_score:typeof score.max_score==='number'?score.max_score:null,percentage:typeof score.percentage==='number'?score.percentage:null};
    }),
    rubric:Array.isArray(question.rubric)?question.rubric:[],answer_approach:text(question.answer_approach),reference_answer:text(question.reference_answer),reference_answer_attachment:'',
   };

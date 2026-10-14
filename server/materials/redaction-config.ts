@@ -1,7 +1,7 @@
 /**
  * 职责：脱敏步骤选择独立 API 或本地 Agent，合并默认值并验证冻结配置。
  * 关键入口：mergeRedactionDefaults() 用于展示/入队/返修快照；validateRedactionConfig() 校验两种执行方式。
- * API 默认值复用统一模块的 OpenRouter GLM-5.3-Flash，可由 LLM_API_* 覆盖；显式 Codex 配置保持可用。
+ * API 默认值复用统一模块的 OpenRouter DeepSeek V4.1 Flash（关闭思考），可由 LLM_API_* 覆盖；显式 Codex 配置保持可用。
  */
 import {HTTPException} from 'hono/http-exception';
 import {ModelApiError,readModelApiDefaults,resolveModelApiConfig,type ModelApiConfig} from '../llm-api';
@@ -24,7 +24,15 @@ export function mergeRedactionDefaults(raw:unknown,codexDefaults:{model:string;r
  if(value.provider==='codex'||value.provider===undefined&&typeof value.model==='string')return{provider:'codex',...codexDefaults,prompt:DEFAULT_REDACTION_PROMPT,...value};
  let defaults:ModelApiConfig|undefined;
  if(value.api===undefined){try{defaults=readModelApiDefaults();}catch(error){if(!(error instanceof ModelApiError))throw error;}}
- return{provider:'api',prompt:DEFAULT_REDACTION_PROMPT,...(defaults?{api:defaults}:{}),...value};
+ const merged={provider:'api',prompt:DEFAULT_REDACTION_PROMPT,...(defaults?{api:defaults}:{}),...value};
+ const api=merged.api;
+ // 仅脱敏Flash默认固定已做完整Schema调用的上游，冻结到任务配置。通用作答和显式路由不变。
+ // 自动路由的真实验收出现同模型换上游、HTTP200但finish_reason=error；不靠延长超时掩盖。
+ if(api&&typeof api==='object'&&!Array.isArray(api)){
+  const options=api;
+  if(options.provider==='openrouter'&&options.model==='deepseek/deepseek-v4.1-flash'&&options.provider_options===undefined)return{...merged,api:{...options,provider_options:{only:['coreweave'],allow_fallbacks:false}}};
+ }
+ return merged;
 }
 export function validateRedactionConfig(raw:unknown,catalog?:Parameters<typeof validateAgentModel>[2]):RedactionConfig{
  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new HTTPException(400,{message:'脱敏设置须为JSON对象'});

@@ -56,6 +56,16 @@ test('collects current question package and acceptance-linked model scores witho
  expect(statements.some(sql=>sql.includes("COALESCE(result->>'model_name',input->>'model_name')"))).toBe(true);
  expect(result.records[0]?.input_attachments[0]).toContain('project-export-');
 });
+test('新项目导出收集保留模型原始分、独立否决和比较指标',async()=>{
+ const f=await exportFixture();const query=f.pool.query;
+ f.pool.query=async(sql:string,values?:unknown[])=>{
+  const result=await query(sql,values);
+  if(sql.includes('ordinal IN (4,7)'))return {...result,rows:result.rows.map((row:any)=>row.ordinal===7?{...row,result:{...row.result,model_scores:{'model-id':{status:'passed',score_contract:'model_report_v1',raw_score:-7,full_score:100,percentage:12,veto_triggered:true}}}}:row)};
+  return result;
+ };
+ const result=await collectProjectResults(f.pool,'project',undefined,f.attachmentRoot);
+ expect(result.records[0]?.model_scores[0]).toMatchObject({score_contract:'model_report_v1',raw_score:-7,full_score:100,percentage:12,veto_triggered:true,score:null,max_score:null});
+});
 
 test('exports only accepted questions without requiring the separate archive step',async()=>{
  const f=await exportFixture();

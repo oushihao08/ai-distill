@@ -15,7 +15,7 @@ import {documentBlocksToText} from './pdf';
 
 const digest=(bytes:string|Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const beneath=(root:string,path:string)=>{const rel=relative(root,path);return rel!==''&&!rel.startsWith(`..${sep}`)&&rel!=='..'&&!isAbsolute(rel);};
-type Source={material_id:string;source_sha256:string;artifact_id:string;artifact_sha256:string};
+type Source={material_id:string;source_sha256:string;artifact_id:string;artifact_sha256:string;redaction_mode?:'model'|'declared_redacted'};
 type Original={id:string;original_name:string;storage_path:string;sha256:string;size_bytes:number|string};
 type FileChange={path:string;previous:Buffer|null};
 type IndexedDocument={document:RedactedDocumentStructure;structure_sha256:string};
@@ -81,7 +81,7 @@ async function restoreFiles(changes:FileChange[]){
 }
 
 async function readCurrentSources(db:Pool|PoolClient,workflowId:string):Promise<Source[]>{
- const result=await db.query("SELECT DISTINCT ON(m.id) m.id AS material_id,m.sha256 AS source_sha256,ar.id AS artifact_id,ar.sha256 AS artifact_sha256 FROM ai_distill.materials m JOIN ai_distill.artifacts ar ON ar.workflow_id=m.workflow_id AND ar.material_id=m.id AND ar.kind='private_extracted_pages' JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id AND a.status='succeeded' WHERE m.workflow_id=$1 AND m.deleted_at IS NULL ORDER BY m.id,a.finished_at DESC NULLS LAST,ar.created_at DESC,ar.id DESC",[workflowId]);
+ const result=await db.query("SELECT DISTINCT ON(m.id) m.id AS material_id,m.sha256 AS source_sha256,m.redaction_mode,ar.id AS artifact_id,ar.sha256 AS artifact_sha256 FROM ai_distill.materials m JOIN ai_distill.artifacts ar ON ar.workflow_id=m.workflow_id AND ar.material_id=m.id AND ar.kind='private_extracted_pages' JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id AND a.status='succeeded' WHERE m.workflow_id=$1 AND m.deleted_at IS NULL ORDER BY m.id,a.finished_at DESC NULLS LAST,ar.created_at DESC,ar.id DESC",[workflowId]);
  const total=Number((await db.query('SELECT count(*)::int AS count FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL',[workflowId])).rows[0]?.count??0);
  if(!total||result.rows.length!==total)throw new HTTPException(409,{message:'当前附件尚无完整入库文本'});
  return result.rows as Source[];

@@ -16,7 +16,7 @@ async function fixture(mode='success'){
  const root=await mkdtemp(join(tmpdir(),'codex-client-'));const directory=join(root,'role');await mkdir(join(directory,'input'),{recursive:true});await writeFile(join(directory,'input','material.md'),'public input');await writeFile(join(root,'AGENTS.md'),'host workspace instructions');const binary=join(root,'cli');
  const code=`#!${process.execPath}\nconst args=process.argv.slice(2);const mode=${JSON.stringify(mode)};const fs=require('node:fs');const path=require('node:path');let parent=process.cwd(),ancestorAgentFile=false;while(true){if(fs.existsSync(path.join(parent,'AGENTS.md')))ancestorAgentFile=true;const next=path.dirname(parent);if(next===parent)break;parent=next;}
 if(args[0]==='login'){if(mode==='slow_login')await new Promise(resolve=>setTimeout(resolve,500));console.error(mode==='api_key'?'Logged in using an API key':'Logged in using ChatGPT');process.exit(0);}
-const out=args[args.indexOf('--output-last-message')+1];await Bun.write(out+'.request.json',JSON.stringify({args,prompt:await Bun.stdin.text(),secrets:['DATABASE_URL','ZHIPU_API_KEY','OPENAI_API_KEY'].filter(key=>process.env[key]),proxy:process.env.HTTPS_PROXY==='http://127.0.0.1:12345',cwd:process.cwd(),ancestorAgentFile}));
+const out=args[args.indexOf('--output-last-message')+1];await Bun.write(out+'.request.json',JSON.stringify({pid:process.pid,args,prompt:await Bun.stdin.text(),secrets:['DATABASE_URL','ZHIPU_API_KEY','OPENAI_API_KEY'].filter(key=>process.env[key]),proxy:process.env.HTTPS_PROXY==='http://127.0.0.1:12345',cwd:process.cwd(),ancestorAgentFile}));
 if(mode==='large_output'){process.stdout.write('x'.repeat(65*1024*1024));await new Promise(resolve=>setTimeout(resolve,1000));process.exit(0);}
 const emit=value=>process.stdout.write(JSON.stringify(value)+'\\n');
 emit({type:'thread.started',thread_id:mode==='file_result'?'fixture-session-'+process.pid:'fixture-session'});emit({type:'turn.started'});if(mode==='reconnect')emit({type:'error',message:'Reconnecting... 1/5 (request timed out)'});
@@ -78,14 +78,12 @@ for(const [mode,reason_code] of[['missing','result_missing'],['malformed','inval
 test('Codex timeout stops its own process and records failure rather than completion',async()=>{
  const f=await fixture('wait'),logger=configureLogger({root:join(f.root,'log-root'),service:'worker'});
  try{
-  await expect(runCodex({...f.options,timeout_ms:900})).rejects.toThrow('超时');expect(await readFile(join(f.options.directory,'output','events.jsonl'),'utf8')).toContain('turn.started');await logger.flush();
+  await expect(runCodex({...f.options,timeout_ms:3000})).rejects.toThrow('超时');expect(await readFile(join(f.options.directory,'output','events.jsonl'),'utf8')).toContain('turn.started');await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(f.root,'log-root','logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  expect(records).toContainEqual(expect.objectContaining({event:'timeout.fired',provider:'codex',timeout_ms:900}));
-  expect(records).toContainEqual(expect.objectContaining({event:'process.kill_requested',process_state:'timeout'}));
-  expect(records).toContainEqual(expect.objectContaining({event:'process.closed',process_state:'exited'}));
+  expect(records).toContainEqual(expect.objectContaining({event:'timeout.fired',provider:'codex',timeout_ms:3000}));
+  const request=JSON.parse(await readFile(join(f.options.directory,'output','result.json.request.json'),'utf8'));expect(()=>process.kill(request.pid,0)).toThrow();
   expect(records).toContainEqual(expect.objectContaining({event:'call.failed',error_kind:'timeout'}));
-  const started=records.find(record=>record.event==='call.started'),closed=records.find(record=>record.event==='process.closed'&&record.process_state==='exited');
-  expect(closed?.call_id).toBe(started?.call_id);
+  const timeout=records.find(record=>record.event==='timeout.fired'),failed=records.find(record=>record.event==='call.failed');expect(failed?.call_id).toBe(timeout?.call_id);
  }finally{await logger.close();await rm(f.root,{recursive:true,force:true});}
 });
 test('already cancelled Codex work never starts a model invocation',async()=>{
@@ -96,9 +94,8 @@ test('Codex result validation failure records a safe terminal call failure',asyn
  try{
   await expect(runCodex({...f.options,validate:()=>{throw Object.assign(new Error('reject this role result'),{kind:'invalid_response',reason_code:'page_count_mismatch'});}})).rejects.toThrow('结果');await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(f.root,'log-root','logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  const started=records.find(record=>record.event==='call.started');
-  expect(records).toContainEqual(expect.objectContaining({event:'result.parsed',call_id:started?.call_id}));
-  expect(records).toContainEqual(expect.objectContaining({event:'result.invalid',call_id:started?.call_id,error_kind:'invalid_response',reason_code:'page_count_mismatch'}));
+  const started=records.find(record=>record.event==='call.failed');
+  expect(started?.call_id).toMatch(/^[0-9a-f-]{36}$/);expect(records.every(record=>record.level==='error')).toBe(true);
   expect(records).toContainEqual(expect.objectContaining({event:'call.failed',call_id:started?.call_id,operation:'codex_exec',error_kind:'invalid_response',reason_code:'page_count_mismatch'}));
  }finally{await logger.close();await rm(f.root,{recursive:true,force:true});}
 });
@@ -111,7 +108,7 @@ test('Codex errors preserve a safe call id and failure reason for the owning wor
   expect((failure as {call_id?:unknown}).call_id).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
   expect((failure as {occurred_at?:unknown}).occurred_at).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
   await logger.flush();const day=new Date().toISOString().slice(0,10),directory=join(f.root,'log-root','logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  expect((failure as {call_id:string}).call_id).toBe(records.find(record=>record.event==='call.started')?.call_id);
+  expect((failure as {call_id:string}).call_id).toBe(records.find(record=>record.event==='call.failed')?.call_id);
   expect(JSON.stringify(records)).not.toContain('Codex结果缺失、无效或执行未完整结束');
  }finally{await logger.close();await rm(f.root,{recursive:true,force:true});}
 });
@@ -120,7 +117,7 @@ test('Codex workspace preparation failure records a safe terminal call failure',
  try{
   await expect(runCodex({...f.options,directory:join(f.root,'missing-workspace')})).rejects.toThrow('准备失败');await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(f.root,'log-root','logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  const started=records.find(record=>record.event==='call.started');
+  const started=records.find(record=>record.event==='call.failed');
   expect(records).toContainEqual(expect.objectContaining({event:'call.failed',call_id:started?.call_id,operation:'codex_exec',reason_code:'workspace_setup_failed'}));
  }finally{await logger.close();await rm(f.root,{recursive:true,force:true});}
 });
@@ -163,10 +160,9 @@ test('nonzero Codex exit records a safe call failure after the process closes',a
  try{
   await expect(runCodex(f.options)).rejects.toThrow('Codex执行失败');await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(f.root,'log-root','logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  expect(records).toContainEqual(expect.objectContaining({event:'process.closed',provider:'codex',exit_code:1}));
-  const started=records.find(record=>record.event==='call.started'),closed=records.find(record=>record.event==='process.closed'&&record.exit_code===1),failed=records.find(record=>record.event==='call.failed');
-  expect(closed?.call_id).toBe(started?.call_id);
-  expect(failed).toMatchObject({call_id:started?.call_id,provider:'codex',operation:'codex_exec',reason_code:'process_exit_nonzero',exit_code:1});
+  const failed=records.find(record=>record.event==='call.failed');
+  expect(failed).toMatchObject({call_id:expect.stringMatching(/^[0-9a-f-]{36}$/),provider:'codex',operation:'codex_exec',reason_code:'process_exit_nonzero',exit_code:1});
+  const request=JSON.parse(await readFile(join(f.options.directory,'output','result.json.request.json'),'utf8'));expect(()=>process.kill(request.pid,0)).toThrow();
   const privateEvents=await readFile(join(f.options.directory,'output','events.jsonl'),'utf8');
   expect(privateEvents).toContain('"type":"distill.process_failed"');expect(privateEvents).toContain('fixture failure details');
  }finally{await logger.close();await rm(f.root,{recursive:true,force:true});}
@@ -189,6 +185,6 @@ test('parallel authoring attempts share project cwd but never output files or se
 });
 test('fresh authoring timeout preserves the project directory and its inputs',async()=>{
  const f=await fixture('wait');
- try{await expect(runCodex({...f.options,execution_profile:'fresh_authoring',working_directory:f.root,timeout_ms:900})).rejects.toThrow('超时');expect(await Bun.file(join(f.root,'AGENTS.md')).text()).toBe('host workspace instructions');expect(await Bun.file(join(f.options.directory,'input/material.md')).text()).toBe('public input');}
+ try{await expect(runCodex({...f.options,execution_profile:'fresh_authoring',working_directory:f.root,timeout_ms:3000})).rejects.toThrow('超时');expect(await Bun.file(join(f.root,'AGENTS.md')).text()).toBe('host workspace instructions');expect(await Bun.file(join(f.options.directory,'input/material.md')).text()).toBe('public input');}
  finally{await rm(f.root,{recursive:true,force:true});}
 });

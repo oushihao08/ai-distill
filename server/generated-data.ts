@@ -24,19 +24,23 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string,
  async function discard(){for(const path of trashDirs.values())await rm(path,{recursive:true,force:true});}
  try{
   await db.query('BEGIN');
-  const workflow=(await db.query("SELECT w.id,w.project_id,w.source_manifest,w.source_key,p.material_root FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 FOR UPDATE OF w",[id])).rows[0];
+  const workflow=(await db.query("SELECT w.id,w.project_id,w.source_manifest,w.source_key,w.workflow_kind,w.source_workflow_id,p.material_root FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 FOR UPDATE OF w",[id])).rows[0];
   if(!workflow)throw new HTTPException(404,{message:'题目不存在'});
+  if(workflow.source_workflow_id)throw new HTTPException(409,{message:'派生题目的材料快照不可重置；请删除题目后从材料包重新创建'});
+  if(workflow.workflow_kind==='material_package'&&(await db.query('SELECT 1 FROM ai_distill.workflows WHERE source_workflow_id=$1 LIMIT 1',[id])).rowCount)throw new HTTPException(409,{message:'材料包仍被题目历史引用，不能清理管理副本'});
   restoreLogContext=enterLogContext({component:'workflow_reset',operation:'clear_generated_data',workflow_id:id});logEvent('file.reset.started',{level:'info'});
   // 与导出使用同一项目锁；拿不到锁说明确有导出执行者，不能凭耗时回收。
   const exportLock=(await db.query("SELECT pg_try_advisory_xact_lock(hashtext('ai-distill-project-export'),hashtext($1)) AS acquired",[workflow.project_id])).rows[0]?.acquired;
   if(!exportLock)throw new HTTPException(409,{message:'项目导出正在执行，结束后才能重置整条工作流'});
   await db.query("UPDATE ai_distill.project_exports SET status='failed',error='导出执行已中断，请重新导出',finished_at=now() WHERE project_id=$1 AND status='running'",[workflow.project_id]);
   const attempts=(await db.query('SELECT id,status,ordinal FROM ai_distill.step_attempts WHERE workflow_id=$1 FOR UPDATE',[id])).rows;
+  const remoteOperation=(await db.query("SELECT id FROM ai_distill.remote_material_operations WHERE workflow_id=$1 AND status IN ('waiting','running') FOR UPDATE",[id])).rows[0];
+  if(remoteOperation)throw new HTTPException(409,{message:'远程材料操作正在进行，结束后才能重置工作流'});
   if(attempts.some(a=>['waiting','running'].includes(a.status)))throw new HTTPException(409,{message:'题目任务正在排队或运行，结束后才能重置整条工作流'});
   attemptIds=attempts.map(a=>a.id);
   if(attemptIds.some(value=>!uuid.test(value)))throw new Error('invalid persisted attempt ID');
   const manifest=Array.isArray(workflow.source_manifest)?workflow.source_manifest:[];
-  const hasPdf=manifest.some((file:{name?:unknown})=>typeof file.name==='string'&&/\.pdf$/i.test(file.name))||Boolean((await db.query("SELECT EXISTS(SELECT 1 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND lower(original_name) LIKE '%.pdf') AS has_pdf",[id])).rows[0]?.has_pdf);
+  const hasPdf=manifest.some((file:{name?:unknown})=>typeof file.name==='string'&&/\.(pdf|docx)$/i.test(file.name))||Boolean((await db.query("SELECT EXISTS(SELECT 1 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND (lower(original_name) LIKE '%.pdf' OR lower(original_name) LIKE '%.docx')) AS has_pdf",[id])).rows[0]?.has_pdf);
   const artifactPaths=(await db.query('SELECT storage_path,kind FROM ai_distill.artifacts WHERE workflow_id=$1',[id])).rows as StoredPath[];
   const exports=(await db.query('SELECT id,storage_path,workflow_ids FROM ai_distill.project_exports WHERE $1=ANY(workflow_ids) FOR UPDATE',[id])).rows as ExportPath[];
 

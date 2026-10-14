@@ -26,5 +26,9 @@
     "server/**/*.ts",
     "shared/**/*.ts",
     "scripts/**/*.ts"
+  ],
+  "exclude": [
+    "scripts/verify-project-skill-queue.ts",
+    "scripts/verify-rule-versions.ts"
   ]
 }

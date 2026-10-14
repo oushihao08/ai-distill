@@ -3,7 +3,7 @@
  */
 import { test,expect,beforeEach,afterEach } from 'bun:test';
 import type {Pool} from 'pg';
-import{mkdir,mkdtemp,readFile,realpath,rm,writeFile}from'node:fs/promises';
+import{mkdir,mkdtemp,readFile,readdir,realpath,rm,writeFile}from'node:fs/promises';
 import{join}from'node:path';
 import{tmpdir}from'node:os';
 import{createApp}from'./app';
@@ -42,8 +42,9 @@ test('authored question public package can be downloaded through the artifact wh
  expect(response.status).toBe(200);expect(await response.text()).toBe(body);expect(response.headers.get('Content-Disposition')).toContain('authoring.txt');
 });
 test('health reports database availability and disables caching',async()=>{
- const good=await setup(()=>empty).request('/api/health');expect(good.status).toBe(200);expect(await good.json()).toEqual({database:'connected',phase:2});expect(good.headers.get('Cache-Control')).toBe('no-store');
- const bad=await setup(()=>{throw new Error('secret database URL');}).request('/api/health');expect(bad.status).toBe(503);expect(await bad.json()).toEqual({database:'unavailable',phase:2});
+ const names=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql'));
+ const good=await setup(sql=>sql.startsWith('SELECT name FROM ai_distill.schema_migrations')?{rows:names.map(name=>({name})),rowCount:names.length}:empty).request('/api/health');expect(good.status).toBe(200);expect(await good.json()).toMatchObject({database:'connected',schema:'ready',phase:2});expect(good.headers.get('Cache-Control')).toBe('no-store');
+ const bad=await setup(()=>{throw new Error('secret database URL');}).request('/api/health');expect(bad.status).toBe(503);expect(await bad.json()).toMatchObject({database:'unavailable',schema:'unavailable',phase:2});
 });
 test('project creation validates JSON and trims input before persisting',async()=>{
  let saved:unknown[]|undefined;
@@ -165,7 +166,7 @@ test('extraction API rejects missing workflow and incomplete intake',async()=>{
  const app=setup(sql=>sql.startsWith('SELECT id')?{rows:[{}],rowCount:1}:sql.startsWith('SELECT ordinal')?{rows:[{status:'failed'}],rowCount:1}:empty);expect((await app.request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(409);
 });
 test('authoring route refuses to enqueue when the current redacted artifact is missing',async()=>{
- const calls:string[]=[];const app=setup(sql=>{calls.push(sql);if(sql.startsWith('SELECT w.project_id,w.title,w.source_key'))return{rows:[{project_id:id,title:'题目1',source_key:'题目1',source_manifest:[],project_name:'项目',local_skill_path:'/unused/skill',material_root:'/unused',ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};if(sql.includes("ordinal=9 AND status='succeeded'"))return{rows:[{id:'22222222-2222-4222-8222-222222222222'}],rowCount:1};return empty;});
+ const calls:string[]=[];const app=setup(sql=>{calls.push(sql);if(sql.startsWith('SELECT w.*,p.name AS project_name'))return{rows:[{project_id:id,title:'题目1',source_key:'题目1',source_manifest:[],project_name:'项目',local_skill_path:'/unused/skill',material_root:'/unused',ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};if(sql.includes("ordinal=9 AND status='succeeded'"))return{rows:[{id:'22222222-2222-4222-8222-222222222222'}],rowCount:1};return empty;});
  const response=await app.request(`/api/workflows/${id}/author`,{method:'POST'});
  expect(response.status).toBe(409);expect(await response.json()).toMatchObject({error:'当前版本没有可用于出题的脱敏文本'});expect(calls.some(sql=>sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
 });
@@ -318,4 +319,11 @@ test('project skill generation rejects malformed requests before dispatch and li
  expect(calls).toEqual([]);
  expect((await app.request('/api/projects/not-a-uuid/skill/attempts')).status).toBe(400);
  expect((await app.request(`/api/projects/${id}/skill/attempts`)).status).toBe(404);
+});
+
+test('空钩子无需033迁移即可健康，其他必需迁移缺失仍报未就绪',async()=>{
+ const names=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql')&&name!=='033_workflow_hooks.sql');
+ const health=async(applied:string[])=>setup(sql=>sql.startsWith('SELECT name FROM ai_distill.schema_migrations')?{rows:applied.map(name=>({name})),rowCount:applied.length}:empty).request('/api/health');
+ const optionalMissing=await health(names);expect(optionalMissing.status).toBe(200);expect(await optionalMissing.json()).toMatchObject({schema:'ready'});
+ const requiredMissing=await health(names.filter(name=>name!=='032_workflow_authoring_direction.sql'));expect(requiredMissing.status).toBe(503);expect(await requiredMissing.json()).toMatchObject({schema:'migrations_pending',pending_count:1});
 });

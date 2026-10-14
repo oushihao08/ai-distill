@@ -1,5 +1,5 @@
-/** 文件职责：在临时 PostgreSQL schema 核对项目 skill 生成队列、候选采用及冻结状态。
- * 执行入口与用途：`bun scripts/verify-project-skill-queue.ts`；在临时 schema 注入生成器，调用 enqueue／worker／adopt 路径核对候选和冻结状态。
+/** 历史脚本：依赖已停用的项目规则版本注册／冻结接口，不适用于当前本地 skill 工作流；不要执行。
+ * 当前候选队列、采用与输入冻结由 `server/skill-generation/*.test.ts` 覆盖。
  */
 import {createPool} from '../server/db';
 import {createApp} from '../server/app';

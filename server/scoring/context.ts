@@ -7,8 +7,9 @@ import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
 import {authoringQuestion,inputDigest,AnswerInputError} from '../answer-models/input';
-import {validateScore,type ScoreContext,type RubricItem} from './validate';
+import {validateScore,extractModelReport,scoreRubricSnapshot,scoreRubricBindingText,type ScoreContext} from './validate';
 import {readProjectPrompt,scanProjectPrompt,verifyRuleSnapshot} from '../rule-files';
+import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
 import {dirname} from 'node:path';
 // Inputs come from persisted successful attempts, never from the submitted score report.
 export async function readScoreContext(db:PoolClient,workflowId:string,attemptId:string,legacyRules=false,legacyProjectPrompt=false):Promise<ScoreContext>{
@@ -19,8 +20,14 @@ export async function readScoreContext(db:PoolClient,workflowId:string,attemptId
   const author=(await db.query("SELECT a.id,a.input,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[workflowId])).rows[0];
   if(!answer||!author)throw new HTTPException(409,{message:'当前题目或作答尚未完成'});
   const question=authoringQuestion(author.result);const input=answer.input;const result=answer.result;
-  const rubric=author.result.rubric;const rubric_version=author.result.rubric_version;
-  if(typeof rubric_version!=='string'||!rubric_version.trim()||!Array.isArray(rubric)||!rubric.length||rubric.some((r:any)=>!r||typeof r.id!=='string'||typeof r.criterion!=='string'||typeof r.max_score!=='number'))throw new HTTPException(409,{message:'题目缺少有效rubric版本或条目'});
+  const rubric_version=author.result.rubric_version;
+  const scoring_policy=author.result.scoring_policy as ScoringPolicy|undefined;
+  let rubric:ScoreContext['rubric'];
+  try{
+   if(scoring_policy){validateWorkflowConfig(scoring_policy);if(scoring_policy.contract!=='model_report_v1'||canonicalJson(scoring_policy)!==canonicalJson(author.input?.scoring_policy))throw new Error('评分规则冻结不一致');}
+   rubric=scoreRubricSnapshot(author.result.rubric,scoring_policy);
+  }catch{throw new HTTPException(409,{message:'题目评分规则缺失、无效或冻结不一致'});}
+  if(typeof rubric_version!=='string'||!rubric_version.trim())throw new HTTPException(409,{message:'题目缺少有效rubric版本'});
   if(typeof author.result.answer_approach!=='string'||!author.result.answer_approach.trim()||typeof author.result.reference_answer!=='string'||!author.result.reference_answer.trim())throw new HTTPException(409,{message:'题目缺少作答思路或标准答案，请重新出题'});
   const ruleInput=author.input;
   let projectContext:ScoreContext['project_prompt'];
@@ -40,12 +47,12 @@ export async function readScoreContext(db:PoolClient,workflowId:string,attemptId
   const snapshot={question_version:input.question_version,question:input.question,materials:input.materials,attachments:input.attachments};
   const answer_sha256=createHash('sha256').update(result.text).digest('hex');
   if(author.id!==input.question_attempt_id||question.question_version!==input.question_version||question.question!==input.question||JSON.stringify(question.attachment_ids)!==JSON.stringify(input.attachments.map((a:any)=>a.id))||inputDigest(snapshot)!==input.input_digest||result.input_digest!==input.input_digest||result.answer_sha256!==answer_sha256)throw new HTTPException(409,{message:'题目、附件或作答版本不一致'});
-  const context:ScoreContext={project_name:w.project_name,question_id:w.source_key||w.title,binding:{question_version:question.question_version,input_digest:input.input_digest,rubric_version,rubric_digest:createHash('sha256').update(JSON.stringify(rubric.map((r:RubricItem)=>({id:r.id,criterion:r.criterion,max_score:r.max_score})))).digest('hex'),answer_attempt_id:attemptId,answer_sha256},question:input.question,materials:input.materials,answer:result.text,rubric:rubric.map((r:RubricItem)=>({id:r.id,criterion:r.criterion,max_score:r.max_score})),answer_approach:author.result.answer_approach,reference_answer:author.result.reference_answer,...(projectContext?{project_prompt:projectContext}:{}),...(projectRules?{project_rules:projectRules}:{})};
+  const context:ScoreContext={project_name:w.project_name,question_id:w.source_key||w.title,binding:{question_version:question.question_version,input_digest:input.input_digest,rubric_version,rubric_digest:createHash('sha256').update(scoreRubricBindingText(rubric,scoring_policy)).digest('hex'),answer_attempt_id:attemptId,answer_sha256},question:input.question,materials:input.materials,answer:result.text,rubric,...(scoring_policy?{scoring_policy}:{}),answer_approach:author.result.answer_approach,reference_answer:author.result.reference_answer,...(projectContext?{project_prompt:projectContext}:{}),...(projectRules?{project_rules:projectRules}:{})};
   return context;
  }catch(error){if(error instanceof AnswerInputError)throw new HTTPException(409,{message:error.message});throw error;}
 }
 export async function validateAnswerScore(pool:Pool,workflowId:string,attemptId:string,report:unknown){
  const db=await pool.connect();
- try{await db.query('BEGIN');const context=await readScoreContext(db,workflowId,attemptId);const validation=validateScore(report,context);await db.query('COMMIT');return {...validation,binding:context.binding};}
+ try{await db.query('BEGIN');const context=await readScoreContext(db,workflowId,attemptId);const validation=context.scoring_policy?.contract==='model_report_v1'?extractModelReport(typeof report==='string'?report:`<model_report>${JSON.stringify(report)}</model_report>`,context.rubric):validateScore(report,context);await db.query('COMMIT');return {...validation,binding:context.binding};}
  catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

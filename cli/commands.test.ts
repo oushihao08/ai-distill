@@ -20,6 +20,21 @@ function fixture(reply: (url: URL, init?: RequestInit) => unknown) {
 }
 
 describe('命令范围和结果', () => {
+  test('材料包版本和建题走独立 API，并且普通题目清单排除材料包',async()=>{
+    const {client,calls}=fixture((url,init)=>{
+      if(url.pathname===`/api/projects/${project}`)return{workflows:[{id:question,workflow_kind:'material_package'},{id:second,workflow_kind:'question',source_workflow_id:question}]};
+      if(url.pathname.endsWith('/versions'))return[{id:attempt}];
+      if(init?.method==='POST')return{id:second};
+      return{};
+    });
+    expect((await runCommand(['material-package','list','--project',project],client)).data).toHaveLength(1);
+    expect((await runCommand(['question','list','--project',project],client)).data).toEqual([{id:second,workflow_kind:'question',source_workflow_id:question}]);
+    expect((await runCommand(['material-package','versions','--workflow',question],client)).data).toEqual([{id:attempt}]);
+    await runCommand(['question','create','--material-package',question,'--title','题目二','--redaction-attempt',attempt,'--level','L4','--scenario','LS04'],client);
+    const created=calls.at(-1)!;
+    expect(created.url.pathname).toBe(`/api/material-packages/${question}/questions`);
+    expect(JSON.parse(String(created.init?.body))).toMatchObject({title:'题目二',redaction_attempt_id:attempt,target_level:'L4',scenario:'LS04'});
+  });
   test('等待默认请求轻量视图，即使旧服务返回正文也只保留状态元信息',async()=>{
     const {client,calls}=fixture(()=>({id:attempt,workflow_id:question,ordinal:5,status:'failed',completed:true,error:'可检查后重试',result:{text:'大段答案'},input:{secret:'不应输出'}}));
     const result=await runCommand(['attempt','wait','--ids',attempt],client);

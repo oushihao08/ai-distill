@@ -1,5 +1,5 @@
 <!--
-职责：为单题工作流新增 PDF 或替换指定附件。
+职责：为单题工作流新增 PDF、DOCX、TXT、MD 或替换指定附件。
 关键方法与用法：`save()` 以 FormData 提交当前文件；接收 `workflowId` 和可选替换信息，成功时发出 `saved`／`close` 事件供工作流详情页刷新。
 -->
 
@@ -15,4 +15,4 @@ async function save(){
  }catch(cause){error.value=cause instanceof Error?cause.message:'保存失败';}finally{busy.value=false;}
 }
 </script>
-<template><v-form class="surface-card p-20" @submit.prevent="save"><Column :gap="16"><Row x="between"><h2 class="section-title">{{ replaceId?'替换材料':'增加材料' }}</h2><v-btn icon="$close" aria-label="关闭材料编辑" variant="text" :disabled="busy" @click="emit('close')" /></Row><p v-if="replaceName" class="text-sm text-muted break-all">替换：{{ replaceName }}</p><p class="text-xs text-muted">单个 PDF 最大 50MB，单题材料总量最多 100MB。材料变化会使后续结果失效，需要重新提取；本地来源文件夹中的原件不修改。</p><v-file-input v-model="files" accept=".pdf,application/pdf" :label="replaceId?'选择一份替换 PDF':'选择 PDF'" multiple chips :disabled="busy" /><v-alert v-if="error" type="error">{{ error }}</v-alert><Row x="end" :gap="8"><v-btn :disabled="busy" @click="emit('close')">取消</v-btn><v-btn type="submit" color="primary" variant="flat" :loading="busy" :disabled="busy||!files.length||(!!replaceId&&files.length!==1)">保存材料</v-btn></Row></Column></v-form></template>
+<template><v-form class="surface-card p-20" @submit.prevent="save"><Column :gap="16"><Row x="between"><h2 class="section-title">{{ replaceId?'替换材料':'增加材料' }}</h2><v-btn icon="$close" aria-label="关闭材料编辑" variant="text" :disabled="busy" @click="emit('close')" /></Row><p v-if="replaceName" class="text-sm text-muted break-all">替换：{{ replaceName }}</p><p class="text-xs text-muted">支持 PDF、DOCX、TXT、MD；单文件最大 50MB，单题材料总量最多 100MB。材料变化会使后续结果失效，本地来源文件夹中的原件不修改。</p><v-file-input v-model="files" accept=".pdf,.docx,.txt,.md" :label="replaceId?'选择一份替换材料':'选择材料'" multiple chips :disabled="busy" /><v-alert v-if="error" type="error">{{ error }}</v-alert><Row x="end" :gap="8"><v-btn :disabled="busy" @click="emit('close')">取消</v-btn><v-btn type="submit" color="primary" variant="flat" :loading="busy" :disabled="busy||!files.length||(!!replaceId&&files.length!==1)">保存材料</v-btn></Row></Column></v-form></template>

@@ -1,5 +1,5 @@
-/** 文件职责：以两个临时项目验证规则文件编辑、并发冻结、历史快照及指纹检查。
- * 执行入口与用途：`bun scripts/verify-rule-versions.ts`；创建两个临时项目，经 API 验证规则编辑、并发冻结、独立快照、历史保留和指纹校验。
+/** 历史脚本：依赖已停用的规则版本注册／冻结接口，不适用于当前本地 skill 工作流；不要执行。
+ * 历史结果见 `docs/evidence/2026-10-08-rule-loading.md`。
  */
 import {createPool} from '../server/db';
 import {createApp} from '../server/app';

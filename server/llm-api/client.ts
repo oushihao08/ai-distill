@@ -3,10 +3,18 @@
  * 关键入口：createModelApiClient().complete() / completeJson()；供作答、脱敏等业务调用，不访问工作目录或 Agent。
  * 只调用冻结配置指定的供应商；不自动换模型或供应商，不在模块内重试收费请求。
  */
+import {withModelApiSlot} from './concurrency';
 import {resolveModelApiConfig,readModelApiKey} from './config';
 import {ModelApiError,type ModelApiErrorKind,type ModelApiConfig,type ModelApiRequest,type ModelApiResult,type ReasoningActivityEvidence} from './types';
 import {classifyLogError,logEvent,withLogContext} from '../logging';
 function record(value:unknown):value is Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value);}
+function callerAbortError(signal?:AbortSignal):ModelApiError{
+ const reason=signal?.reason;
+ const known=new Set(['redaction_task_timeout','redaction_request_timeout','redaction_progress_stalled']);
+ // Preserve only known control reasons, never arbitrary caller messages or private causes.
+ if(record(reason)&&typeof reason.reason_code==='string'&&known.has(reason.reason_code))return new ModelApiError('timeout',false,null,null,null,reason.reason_code);
+ return new ModelApiError('cancelled',false,null,null,null,'caller_cancelled');
+}
 function onlyFields(value:unknown,fields:string[]):asserts value is Record<string,unknown>{if(!record(value)||Object.keys(value).some(key=>!fields.includes(key)))throw new ModelApiError('configuration');}
 function networkFailureReason(error:unknown):string{
  let current:unknown=error;
@@ -54,7 +62,7 @@ function parseCompletion(data: unknown, response: Response, config: ModelApiConf
  if(data.choices.length!==1)throw invalid(data.choices.length===0?'missing_choice':'unexpected_choice_count');
  const choice = data.choices[0];
  if (!record(choice)) throw invalid('invalid_choice_shape');
- if(choice.finish_reason!=='stop')throw invalid('incomplete_finish_reason');
+ if(choice.finish_reason!=='stop')throw Object.assign(invalid('incomplete_finish_reason'),{finish_reason:['length','content_filter','tool_calls'].includes(String(choice.finish_reason))?choice.finish_reason:'unknown'});
  if(!record(choice.message))throw invalid('invalid_message_shape');
  const message = choice.message;
  if(message.role!=='assistant')throw invalid('invalid_message_role');
@@ -141,7 +149,7 @@ async function parseStreamingCompletion(response:Response,config:ModelApiConfig,
 
 export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, request: (input: string, init?: RequestInit) => Promise<Response> = fetch) {
  const client={ async complete(input: ModelApiRequest): Promise<ModelApiResult> {
-  onlyFields(input,['config','messages','timeout_ms','signal','response_format','call_id','observe_reasoning']);
+  onlyFields(input,['config','messages','timeout_ms','queue_timeout_ms','signal','response_format','call_id','observe_reasoning']);
   if(input.observe_reasoning!==undefined&&typeof input.observe_reasoning!=='boolean')throw new ModelApiError('configuration');
   if(!Array.isArray(input.messages)||!input.messages.length)throw new ModelApiError('configuration');
   const messages=input.messages.map(message=>{
@@ -159,7 +167,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   }
   const timeout = input.timeout_ms === undefined ? 3600000 : input.timeout_ms;
   if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 2147483647 || (input.signal !== undefined && !(input.signal instanceof AbortSignal))) throw new ModelApiError('configuration');
-  if (input.signal?.aborted) throw new ModelApiError('cancelled');
+  if (input.signal?.aborted) throw callerAbortError(input.signal);
   const config = resolveModelApiConfig(input.config, env);
   // Resolve credentials at invocation time, outside the persisted configuration.
   const router = new URL(config.base_url).hostname === 'openrouter.ai';
@@ -170,10 +178,10 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   let generationActivity:ReasoningActivityEvidence|undefined;
   let receivedResponse:Response|null=null;
   const abort = (kind: 'timeout' | 'cancelled') => {
-   if (!controller.signal.aborted) { abortKind = kind; controller.abort(); }
+   if (!controller.signal.aborted) { abortKind = kind; controller.abort(kind==='cancelled'?input.signal?.reason:undefined); }
   };
   const cancel = () => abort('cancelled');
-  const abortError=()=>abortKind==='timeout'?new ModelApiError('timeout',true,null,null,receivedResponse?requestId(receivedResponse,null):null,'local_deadline',generationActivity,generationId(receivedResponse)):new ModelApiError('cancelled',false,null,null,null,'caller_cancelled');
+  const abortError=()=>abortKind==='timeout'?new ModelApiError('timeout',true,null,null,receivedResponse?requestId(receivedResponse,null):null,'local_deadline',generationActivity,generationId(receivedResponse)):callerAbortError(input.signal);
   input.signal?.addEventListener('abort', cancel, { once: true });
   const timer = setTimeout(() => abort('timeout'), timeout);
   const callContext={component:'llm_api',provider:config.provider,model:config.model,call_id:input.call_id??crypto.randomUUID()};
@@ -186,7 +194,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
      model: config.model, stream: input.observe_reasoning===true,
      ...(config.enable_thinking !== undefined ? (router ? {reasoning:{enabled:config.enable_thinking}} : {enable_thinking:config.enable_thinking}) : {}),
      ...(input.response_format?{response_format:input.response_format}:{}),
-     ...(router&&(input.response_format||config.enable_thinking!==undefined)?{provider:{require_parameters:true}}:{}),
+     ...(router&&(config.provider_options||input.response_format||config.enable_thinking!==undefined)?{provider:{...config.provider_options,require_parameters:true}}:{}),
      ...(config.max_tokens !== undefined ? { max_tokens: config.max_tokens } : {}),
      messages,
     }),
@@ -224,8 +232,20 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
    input.signal?.removeEventListener('abort', cancel);
   }
  } };
- return{...client,async completeJson<T>(input:ModelApiRequest,validate:(value:unknown)=>T):Promise<ModelApiResult&{result:T}>{
-  const completion=await client.complete({...input,response_format:input.response_format??{type:'json_object'}});
+ // 注入的HTTP替身不访问本机槽位；生产默认传输的所有入口（含completeJson）共用同一请求上限。
+ const complete=async(input:ModelApiRequest):Promise<ModelApiResult>=>{
+  if(request!==fetch)return await client.complete(input);
+  if(input.signal!==undefined&&!(input.signal instanceof AbortSignal)||input.timeout_ms!==undefined&&(!Number.isInteger(input.timeout_ms)||input.timeout_ms<=0||input.timeout_ms>2147483647))throw new ModelApiError('configuration');
+  const controller=new AbortController(),cancel=()=>controller.abort(input.signal?.reason);let queue_wait_ms=0;
+  let timedOut=false;
+  const timer=setTimeout(()=>{timedOut=true;controller.abort();},input.timeout_ms??3600000);
+  input.signal?.addEventListener('abort',cancel,{once:true});if(input.signal?.aborted)cancel();
+  try{const result=await withModelApiSlot(()=>client.complete({...input,signal:controller.signal}),{env,signal:controller.signal,queue_timeout_ms:input.queue_timeout_ms,onAcquired:wait_ms=>{queue_wait_ms=wait_ms;}});return{...result,queue_wait_ms};}
+  catch(error){if(timedOut){const wait=record(error)&&typeof error.queue_wait_ms==='number'?error.queue_wait_ms:queue_wait_ms;const timeoutError=error instanceof ModelApiError?new ModelApiError('timeout',true,error.http_status,error.provider_code,error.request_id,'local_deadline',error.generation_activity,error.generation_id):new ModelApiError('timeout',true,null,null,null,'local_deadline');throw Object.assign(timeoutError,{queue_wait_ms:wait});}throw error;}
+  finally{clearTimeout(timer);input.signal?.removeEventListener('abort',cancel);}
+ };
+ return{complete,async completeJson<T>(input:ModelApiRequest,validate:(value:unknown)=>T):Promise<ModelApiResult&{result:T}>{
+  const completion=await complete({...input,response_format:input.response_format??{type:'json_object'}});
   let parsed:unknown;
   try{parsed=JSON.parse(completion.text);}
   catch{

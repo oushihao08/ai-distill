@@ -10,7 +10,7 @@ import {buildXlsx,type WorkbookSheet} from './xlsx';
 export interface ResultExportRecord {
  workflow_id:string;title:string;accepted:boolean;
  task_name:string;question:string;input_attachments:string[];
- model_scores:{model_id:string;name:string;score:number|null;max_score:number|null;percentage:number|null}[];
+ model_scores:{model_id:string;name:string;score:number|null;max_score:number|null;percentage:number|null;score_contract?:'model_report_v1';raw_score?:number|null;full_score?:number|null;veto_triggered?:boolean|null}[];
  rubric:unknown[];answer_approach:string;reference_answer:string;reference_answer_attachment:string;
 }
 
@@ -23,12 +23,15 @@ function rubricText(items:unknown[]):string{
   if(!criterion)return '';
   const id=typeof item.id==='string'&&item.id.trim()?`${item.id.trim()}｜`:'';
   const points=typeof item.max_score==='number'&&Number.isFinite(item.max_score)?`（${item.max_score}分）`:'';
-  return `${id}${criterion}${points}`;
+  const rule=typeof item.rule==='string'?`\n计分规则：${item.rule}`:'';
+  const metadata=item.metadata&&typeof item.metadata==='object'?`\n业务信息：${JSON.stringify(item.metadata)}`:'';
+  return `${id}${criterion}${points}${rule}${metadata}`;
  }).filter(Boolean).join('\n');
 }
 
 function modelScoresText(scores:ResultExportRecord['model_scores']):string{
  return scores.map(item=>{
+  if(item.score_contract==='model_report_v1')return `${item.name}：原始分：${item.raw_score??'未给出'}/${item.full_score??'未给出'}；模型报告指标：${item.percentage===null?'未给出':`${Number(item.percentage.toFixed(2))}%`}；否决：${item.veto_triggered===true?'是':item.veto_triggered===false?'否':'未给出'}`;
   const value=item.score===null?'未评分':`${item.score}/${item.max_score??'?'}`;
   const percentage=item.percentage===null?'':`（${Number(item.percentage.toFixed(2))}%）`;
   return `${item.name}：${value}${item.score===null?'':' 分'}${percentage}`;

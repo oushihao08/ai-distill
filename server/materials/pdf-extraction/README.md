@@ -30,3 +30,7 @@ types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtrac
 每次 CLI 返回后，在 `STORAGE_DIR/.mineru-diagnostics/<diagnostic_id>/` 保存 `response.json`、`stderr.txt`、`metadata.json`（目录 0700，文件 0600）。元数据包含源 SHA-256、页数、转换版本、退出码和超时／取消状态；已知 MinerU 令牌会从输出中遮盖。失败发布不删除此目录。运行日志 `extraction.diagnostics_saved` 记录诊断编号，可按 workflow/attempt/call 定位；结构解析失败的步骤错误也包含编号。启动 CLI 前失败或诊断写盘失败可能没有完整证据。
 
 这些文件可能包含未脱敏原文，仅供本机排障，不作为公开产物或模型输入；按本地私有数据管理，按需人工清理。无需重跑模型即可对照原始块与转换正文，但历史执行未保存的原始输出无法补回。
+
+## DOCX API 入口
+
+`MineruApiDocxExtractor` 复用 v4 上传、轮询和 ZIP 下载，使用 `parseMineruDocxJson` 将无 PDF 页码的内容列表转换成一个逻辑文本页，保留标题、段落、列表、表格顺序并忽略图片块。PDF 的 `parseMineruJson`、CLI 回退、页码和 OCR 缓存仍独立。

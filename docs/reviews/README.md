@@ -6,3 +6,4 @@
 | 文件 | 用途 |
 | --- | --- |
 | [2026-10-08-execution-review.md](2026-10-08-execution-review.md) | execution review相关阶段复盘；结论仅限文件注明的日期与范围。 |
+| [2026-10-14-redaction-function-audit.md](2026-10-14-redaction-function-audit.md) | 脱敏业务逐函数审查与复判：直接模块、共享请求/并发/取消/发布边界，源码指纹、函数完整清单、已证实缺口及待核实风险；不是修复或真实验收完成报告。 |

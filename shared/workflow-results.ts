@@ -23,6 +23,8 @@ export interface AnswerStepResult {
 }
 
 export interface ScoreStepModelSummary {
+ score_contract?:'model_report_v1';
+ raw_score?:number|null;full_score?:number|null;evaluation_percent?:number|null;veto_triggered?:boolean|null;
  model_id?:string|null;
  name?:string;
  answer_attempt_id?:string|null;
@@ -39,6 +41,7 @@ export interface ScoreStepModelSummary {
 export interface ScoreStepResult {models:ScoreStepModelSummary[]}
 
 export interface ModelAcceptance {
+ score_contract?:'model_report_v1';raw_score?:number|null;full_score?:number|null;veto_triggered?:boolean|null;
  status:'passed'|'not_passed'|'pending'|'invalid';
  score?:number;
  max_score?:number;
@@ -76,6 +79,10 @@ export function readScoreStepResult(value:unknown):ScoreStepResult|undefined{
   if(row.name!==undefined&&typeof row.name!=='string')return;
   if(row.score!==undefined&&row.score!==null&&!finite(row.score))return;
   if(row.max_score!==undefined&&row.max_score!==null&&!finite(row.max_score))return;
+  if(row.score_contract!==undefined&&row.score_contract!=='model_report_v1')return;
+  if(['raw_score','full_score','evaluation_percent'].some(key=>row[key]!==undefined&&row[key]!==null&&!finite(row[key])))return;
+  if(typeof row.evaluation_percent==='number'&&(row.evaluation_percent<0||row.evaluation_percent>100))return;
+  if(row.veto_triggered!==undefined&&row.veto_triggered!==null&&typeof row.veto_triggered!=='boolean')return;
   models.push({...row,answer_status:row.answer_status as StepStatus,score_status:row.score_status as StepStatus} as ScoreStepModelSummary);
  }
  return {...value,models};
@@ -83,6 +90,9 @@ export function readScoreStepResult(value:unknown):ScoreStepResult|undefined{
 
 function readModelAcceptance(value:unknown):value is ModelAcceptance{
  if(!isRecord(value)||!['passed','not_passed','pending','invalid'].includes(String(value.status))||!finite(value.threshold))return false;
+ if(value.score_contract!==undefined&&value.score_contract!=='model_report_v1')return false;
+ if(['raw_score','full_score'].some(key=>value[key]!==undefined&&value[key]!==null&&!finite(value[key])))return false;
+ if(value.veto_triggered!==undefined&&value.veto_triggered!==null&&typeof value.veto_triggered!=='boolean')return false;
  return ['score','max_score','percentage'].every(key=>value[key]===undefined||finite(value[key]));
 }
 

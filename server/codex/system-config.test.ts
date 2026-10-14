@@ -29,27 +29,29 @@ test('Codex model dropdown options come from the selected local model catalog',a
    {slug:'gpt-6-astra',supported_reasoning_levels:[{effort:'low'}]},
    {slug:'bad-entry',supported_reasoning_levels:'invalid'},
   ]}));
-  expect(readCodexModelCatalog(home)).toEqual([{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}]);
+  expect(readCodexModelCatalog(home)).toEqual([{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]},{slug:'gpt-6-astra',supported_reasoning_levels:[{effort:'low'}]}]);
  }finally{await rm(home,{recursive:true,force:true});}
 });
 
-test('Codex default settings are validated against the selected model capabilities',()=>{
+test('Codex settings validate structure without enforcing the local suggestion catalog',()=>{
  const catalog=[{slug:'gpt-test',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]}];
  expect(validateCodexModelSettings({model:'gpt-test',reasoning_effort:'high'},catalog)).toEqual({model:'gpt-test',reasoning_effort:'high'});
- expect(()=>validateCodexModelSettings({model:'gpt-test',reasoning_effort:'ultra'},catalog)).toThrow('推理强度');
- expect(()=>validateCodexModelSettings({model:'not-listed',reasoning_effort:'low'},catalog)).toThrow('模型');
+ expect(validateCodexModelSettings({model:'gpt-test',reasoning_effort:'ultra'},catalog)).toEqual({model:'gpt-test',reasoning_effort:'ultra'});
+ expect(()=>validateCodexModelSettings({model:'gpt-test',reasoning_effort:'bad effort'},catalog)).toThrow('推理强度');
+ expect(validateCodexModelSettings({model:'not-listed',reasoning_effort:'low'},catalog)).toEqual({model:'not-listed',reasoning_effort:'low'});
+ expect(()=>validateCodexModelSettings({model:'bad model',reasoning_effort:'low'},catalog)).toThrow('模型');
 });
 
 test('project Codex config overrides the system defaults without dropping step-specific fields',()=>{
  const defaults={model:'gpt-default',reasoning_effort:'medium'};
  expect(mergeCodexDefaults(undefined,defaults)).toEqual(defaults);
  expect(mergeCodexDefaults({model:'gpt-project',reasoning_effort:'high',prompt:'保留此提示词'},defaults)).toEqual({model:'gpt-project',reasoning_effort:'high',prompt:'保留此提示词'});
- expect(mergeCodexDefaults({model:'gpt-6-astra',reasoning_effort:'ultra'},defaults)).toEqual({model:'gpt-6-luna',reasoning_effort:'max'});
+ expect(mergeCodexDefaults({model:'gpt-6-astra',reasoning_effort:'ultra'},defaults)).toEqual({model:'gpt-6-astra',reasoning_effort:'ultra'});
 });
 
-test('legacy global Astra settings are exposed as Luna',async()=>{
+test('saved global model and reasoning settings are returned unchanged',async()=>{
  const fixture=settingsPool({credential_home:null,model:'gpt-6-astra',reasoning_effort:'ultra'});
- expect(await readCodexSettings(fixture.pool)).toMatchObject({model:'gpt-6-luna',reasoning_effort:'max'});
+ expect(await readCodexSettings(fixture.pool)).toMatchObject({model:'gpt-6-astra',reasoning_effort:'ultra'});
 });
 
 test('saving system Codex defaults persists model and effort while path-only updates preserve them',async()=>{

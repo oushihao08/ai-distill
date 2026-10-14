@@ -30,13 +30,13 @@ test('database query and transaction logs keep SQL values and raw errors private
    await client.query('SELECT * FROM ai_distill.slow_probe');
   });
   await logger.flush();const day=new Date().toISOString().slice(0,10),directory=join(root,'logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
-  expect(records).toContainEqual(expect.objectContaining({event:'transaction.started',transaction_name:'begin',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
-  expect(records).toContainEqual(expect.objectContaining({event:'transaction.committed',transaction_name:'commit',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
+  expect(records).not.toContainEqual(expect.objectContaining({event:'transaction.started',transaction_name:'begin',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
+  expect(records).not.toContainEqual(expect.objectContaining({event:'transaction.committed',transaction_name:'commit',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'transaction.outcome_unknown',state:'unknown',transaction_name:'commit',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.query.failed',query_name:'select:ai_distill.private_rows',error_code:'23505',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
-  expect(records).toContainEqual(expect.objectContaining({event:'db.query.slow',query_name:'select:ai_distill.slow_probe',duration_ms:expect.any(Number),workflow_id:'workflow-a',attempt_id:'attempt-a'}));
+  expect(records).not.toContainEqual(expect.objectContaining({event:'db.query.slow',query_name:'select:ai_distill.slow_probe',duration_ms:expect.any(Number),workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.pool.error',error_code:'08006'}));
-  expect(records).toContainEqual(expect.objectContaining({event:'db.connection.recovered'}));
-  expect(JSON.stringify(records)).not.toContain('private database message');expect(JSON.stringify(records)).not.toContain('private commit result uncertain');expect(JSON.stringify(records)).not.toContain('private sql value');
+  expect(records).not.toContainEqual(expect.objectContaining({event:'db.connection.recovered'}));
+  expect(records.every(record=>record.level==='error')).toBe(true);expect(JSON.stringify(records)).not.toContain('private database message');expect(JSON.stringify(records)).not.toContain('private commit result uncertain');expect(JSON.stringify(records)).not.toContain('private sql value');
  }finally{await logger.close();await pool.end();await rm(root,{recursive:true,force:true});}
 });

@@ -6,14 +6,19 @@
 | 组件 | 职责 |
 | --- | --- |
 | `AppShell`、`UiIcon` | 应用外壳、路由出口与固定图标 |
-| `ProjectForm` | 项目新建和编辑 |
-| `ProjectQuestionRecords` | 项目题目记录、搜索及分页清单；读取单题步骤与尝试状态，在“步骤操作”列复用详情页的入库、脱敏、出题、作答、评分、发布按钮及禁用条件；达标或未达标状态可查看最近判定执行详情 |
-| `AcceptedQuestionList`、`AcceptedQuestionDetail` | 当前达标题目的搜索、异常筛选、分页、模型评分概览；详情弹窗按需展示当前题目包、答案、评分及脱敏附件全文 |
+| `ProjectForm` | 项目新建和编辑；新项目固定使用材料包模式，维护本期可选出题标签，不切换历史项目关系模式 |
+| `ProjectMaterialRecords` | 项目材料包平铺表；逐包显示入库、脱敏状态、附件数和派生题目数，当前页批量读取状态 |
+| `ProjectQuestionRecords` | 全部题目平铺表，包含已归档题目；显示所属材料包、逐步状态与单题按钮，旧目录题目保留入库和脱敏步骤 |
+| `MaterialPackageQuestions` | 材料包详情的关联题目表；每页读取十道题的出题至归档状态，不受状态接口单次百题上限影响 |
+| `WorkflowAttemptHistory` | 按工作流与步骤分页查看安全执行元信息；入库记录合并内部 PDF/DOCX 提取尝试 |
+| `AcceptedQuestionList`、`AcceptedQuestionDetail` | 当前达标题目的材料包归属、搜索、异常筛选、分页、模型评分概览和单题归档入口；详情弹窗按需展示当前题目包、答案、评分及脱敏附件全文 |
 | `CodexConfig`、`ProjectCodexSettings`、`StepSettings` | 全局、项目、步骤 Agent 配置；步骤覆盖优先于项目，项目优先于全局；仅出题、评分及脱敏步骤开放单独设置 |
+| `SystemStepPromptSettings` | 项目列表首页维护四类系统提示词；保存只影响之后新建的项目，已有项目提示词独立保存 |
 | `WorkerConcurrencyConfig` | 系统级 Agent／API 并发设置；显示安全上限及当前生效值，保存后重启 API 与 worker 生效 |
 | `AnswerModelSet` | 系统模型目录、项目作答模型集合及各模型百分制分数上限；这是达标判断的唯一配置来源 |
+| `MaterialPackageQuestionForm` | 在材料包详情读取成功脱敏版本并提交新题；选填场景、角色、本期项目标签和方向；不派发脱敏。 |
 | `DirectoryImportForm`、`UploadForm`、`MaterialEditor` | 浏览器 PDF 导入、材料包上传和附件新增替换 |
-| `ProjectStepRecords` | 全部题目在指定步骤的状态、未进入原因、结果及产物表格弹窗 |
+| `ProjectStepRecords` | 指定步骤的材料包或题目状态、未进入原因、结果及产物表格弹窗；对象清单由项目页按模式过滤 |
 | `MaterialRecordsTable` | 当前附件、全文与原 PDF 标签预览，允许在逐题步骤弹窗只读复用 |
 | `StepResultTable` | 递归展示结构化步骤结果 |
 | `StepTimeline` | 单题步骤状态及操作、下载插槽 |
@@ -24,11 +29,11 @@
 
 `ProjectStepRecords` 分组读取既有工作流详情，不派发任务；逐题详情返回的 `ready` 与 `ready_reason` 来自服务端统一就绪判断，组件不复制前置条件；活动时每五秒刷新。`MaterialRecordsTable` 的附件进度由题目步骤推导；全文通过附件接口按需读取，PDF 原件在同一弹窗的 PDF 标签中通过 Blob URL 使用浏览器内置查看器预览，并提示原件可能未脱敏，关闭弹窗后释放预览 URL。附件已标记脱敏仍可能缺少附件级脱敏正文。
 
-`AcceptedQuestionList` 只展示当前 ordinal 7 成功且判定为 accepted 的题目；模型得分、百分制、门槛和归档／导出状态来自项目详情响应。归档成功的题目从 `ProjectQuestionRecords` 移出，但仍在此列表查看。`AcceptedQuestionDetail` 延迟读取工作流详情，附件标签仅请求 `redacted_only=true` 的脱敏正文，不读取或返回原始提取文本；题面、作答和评分文本保留换行并在弹窗滚动区域显示。列表的 Excel 操作汇总全部当前有效达标题目。
+`AcceptedQuestionList` 只展示当前 ordinal 7 成功且判定为 accepted 的题目；模型得分、百分制、门槛和归档／导出状态来自项目详情响应。待归档行可进入题目详情，由详情页按活动尝试判断归档操作是否可用；归档成功的题目仍在全部题目表，并同时出现在达标题目表。`AcceptedQuestionDetail` 延迟读取工作流详情，附件标签仅请求 `redacted_only=true` 的脱敏正文，不读取或返回原始提取文本；题面、作答和评分文本保留换行并在弹窗滚动区域显示。列表的 Excel 操作汇总全部当前有效达标题目。
 
 上传类组件当前选择器面向 PDF；后端目录同步与入库支持的其他格式不能据此前端选择器判断。组件是否有入口不等于真实模型任务已成功验收。
 
-`StepSettings.vue` 的脱敏设置可选择独立大模型 API 或本地 Agent；API 模型选项复用已部署的 `/api/answer-models` 系统目录接口，默认推荐 GLM-5.3-Flash；步骤只选择模型和可选输出参数，不重复填写供应商或 API URL。保存时冻结所选模型的非敏感配置，不经过 Agent 配置模块。`AnswerModelSet.vue` 仍管理作答模型集合，实际调用统一由后端 llm-api 执行。
+`StepSettings.vue` 的脱敏设置可选择独立大模型 API 或本地 Agent；API 模型选项复用已部署的 `/api/answer-models` 系统目录接口，默认推荐 DeepSeek V4.1 Flash；步骤只选择模型和可选输出参数，不重复填写供应商或 API URL。保存时冻结所选模型的非敏感配置，不经过 Agent 配置模块。`AnswerModelSet.vue` 仍管理作答模型集合，实际调用统一由后端 llm-api 执行。
 
 评分步骤设置显示并编辑实际执行的评分提示词；旧内置默认正文映射为要求逐项解释得分并引用答案原文证据的新默认，自定义提示词原样保留。从 `/api/agent/scoring-instructions` 读取的程序调用说明和隔离参数折叠显示，不再显示通用开发者指令。`ModelEvaluationSummary` 提供“查看评分”，逐模型展示已保存的实际回复和程序校验问题；历史记录未保存校验细节时不补造原因。
 
@@ -47,3 +52,13 @@
 ## 数据库模型设置
 
 系统、项目、步骤和 skill 生成配置均保留数据库模型与推理强度，不按本机缓存修正或拒绝；界面允许输入缓存之外的值。缓存只提供建议，实际支持范围由 CLI 执行反馈。步骤覆盖项目默认，项目覆盖系统默认，已入队任务继续使用冻结配置。不改变登录凭证、工具配置、权限或隔离。
+
+## 项目流程扩展
+
+`WorkflowPolicyEditor` 在出题、作答、评分步骤编辑可选 workflow JSON；评分步骤是计分规则及标答校准政策的单一来源。作答步骤通过局部保存接口只合并 workflow，不改模型集合或生成时长。其他步骤保存模型设置时保留 workflow。缺省继续原契约。
+
+`WorkflowHookRecords` 由题目详情按需读取记录，显示同步与异步状态、附加结果、错误和重试历史；支持原尝试钩子续跑与独立异步重试。未知副作用需使用者明确确认，输入失效仍由服务端拒绝；无自动轮询。
+
+评测摘要、达标题目列表与详情分别展示新格式原始分、模型报告指标及否决意见。原始分不参与页面换算；指标为空时等待有效评分。旧格式仍展示原百分制及逐项满分数量。
+
+`MaterialRecordsTable` 对 DOCX 显示脱敏方式并提供确认弹窗；保存时提交当前附件 SHA-256，成功后刷新工作流。上传与材料编辑控件接受后端已有的 PDF、DOCX、TXT、MD 类型。

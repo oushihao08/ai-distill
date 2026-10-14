@@ -1,7 +1,7 @@
 /**
  * 职责：直接调用 MinerU v4 上传、解析和结果轮询 API，并复用 MinerU 块结构转换器。
- * 关键入口：`MineruApiPdfExtractor.extract()` 负责限时上传本地 PDF、轮询任务并读取 content_list。
- * 使用场景：由 API 优先适配器调用；失败时由调用方回退到现有 MinerU CLI。
+ * 关键入口：`MineruApiPdfExtractor.extract()` 处理 PDF；`MineruApiDocxExtractor.extract()` 处理无 PDF 页码的 DOCX。
+ * 使用场景：PDF 由 API 优先适配器调用并按原策略回退 CLI；DOCX 直接复用 API 上传与轮询。
  */
 import {storageDirectory} from '../../paths';
 import { createHash } from 'node:crypto';
@@ -9,7 +9,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { logEvent } from '../../logging';
 import { command } from '../pdf';
-import { parseMineruJson } from './mineru-cli';
+import { parseMineruDocxJson, parseMineruJson } from './mineru-cli';
 import type { PdfExtractionProvider, PdfExtractionResult } from './types';
 
 const API_ROOT = 'https://mineru.net/api/v4';
@@ -95,7 +95,7 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
  private readonly now: () => number;
  private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
 
- constructor(private readonly env: NodeJS.ProcessEnv = process.env, options: MineruApiOptions = {}) {
+ constructor(private readonly env: NodeJS.ProcessEnv = process.env, options: MineruApiOptions = {}, private readonly inputFormat: 'pdf' | 'docx' = 'pdf') {
   this.fetcher = options.fetcher ?? fetch;
   this.now = options.now ?? Date.now;
   this.sleep = options.sleep ?? defaultSleep;
@@ -103,10 +103,13 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
 
  async extract(path: string, signal?: AbortSignal): Promise<PdfExtractionResult> {
   const bytes = await readFile(path), sha256 = createHash('sha256').update(bytes).digest('hex');
-  const info = await command(['pdfinfo', path]);
-  const pageCount = Number(info.match(/^Pages:\s+(\d+)/m)?.[1]);
-  if (!Number.isInteger(pageCount) || pageCount < 1) throw new Error('PDF页数无效');
-  if (pageCount > 200 || bytes.byteLength > 200 * 1024 * 1024) throw new Error('PDF超过MinerU API单文件限制');
+  let pageCount = 1;
+  if (this.inputFormat === 'pdf') {
+   const info = await command(['pdfinfo', path]);
+   pageCount = Number(info.match(/^Pages:\s+(\d+)/m)?.[1]);
+   if (!Number.isInteger(pageCount) || pageCount < 1) throw new Error('PDF页数无效');
+  }
+  if (pageCount > 200 || bytes.byteLength > 200 * 1024 * 1024) throw new Error('文件超过MinerU API单文件限制');
   const token = this.env.MINERU_KEY;
   if (!token) throw new Error('未配置 MINERU_KEY');
   if (signal?.aborted) throw new Error('PDF提取已取消');
@@ -165,7 +168,7 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    let raw: unknown;
    try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content)); }
    catch { throw new Error('MinerU API content_list.json无效'); }
-   const pages = parseMineruJson(raw, pageCount);
+   const pages = this.inputFormat === 'docx' ? parseMineruDocxJson(raw) : parseMineruJson(raw, pageCount);
    logEvent('extraction.api.completed', { level: 'info', provider: this.id, page_count: pages.length, duration_ms: Math.max(0, this.now() - startedAt) });
    completed=true;
    return { pages, sha256, provider: this.id };
@@ -178,6 +181,11 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    if (diagnosticDirectory && completed) await rm(diagnosticDirectory, { recursive: true, force: true });
   }
  }
+}
+
+/** DOCX reuses the verified v4 transport and maps native document blocks to one logical page. */
+export class MineruApiDocxExtractor extends MineruApiPdfExtractor {
+ constructor(env: NodeJS.ProcessEnv = process.env, options: MineruApiOptions = {}) { super(env, options, 'docx'); }
 }
 
 export class MineruApiFirstPdfExtractor implements PdfExtractionProvider {

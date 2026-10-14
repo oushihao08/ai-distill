@@ -1,0 +1,110 @@
+# 文件职责：定义 ai-distill 固定的 API 与云端 API 队列服务；重复部署原位更新同名服务。
+version: "3.8"
+
+services:
+  api:
+    image: ${AI_DISTILL_IMAGE}
+    user: "10001:10001"
+    command: ["bun", "server/index.ts"]
+    networks:
+      - host
+    environment:
+      HOST: "127.0.0.1"
+      PORT: "37900"
+      STORAGE_DIR: "/app/.storage"
+      MATERIAL_EXECUTION_TARGET: "server"
+      SERVE_WEB: "1"
+      HOME: "/home/ai-distill"
+      DEPLOYMENT_REVISION: ${AI_DISTILL_ENV_REV}
+    volumes:
+      - type: bind
+        source: ${AI_DISTILL_STORAGE_DIR}
+        target: /app/.storage
+      - type: bind
+        source: ${AI_DISTILL_ENV_FILE}
+        target: /app/.env
+        read_only: true
+      - type: bind
+        source: ${AI_DISTILL_PROJECTS_DIR}
+        target: /Users/jack/Documents/codes/lvgou/ai-distill/projects
+        read_only: true
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - fetch('http://127.0.0.1:37900/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: pause
+        monitor: 60s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+  worker:
+    image: ${AI_DISTILL_IMAGE}
+    user: "10001:10001"
+    command: ["bun", "server/worker.ts"]
+    networks:
+      - host
+    environment:
+      WORKER_MODE: "server"
+      MATERIAL_EXECUTION_TARGET: "server"
+      STORAGE_DIR: "/app/.storage"
+      HOME: "/home/ai-distill"
+      DEPLOYMENT_REVISION: ${AI_DISTILL_ENV_REV}
+    volumes:
+      - type: bind
+        source: ${AI_DISTILL_STORAGE_DIR}
+        target: /app/.storage
+      - type: bind
+        source: ${AI_DISTILL_ENV_FILE}
+        target: /app/.env
+        read_only: true
+      - type: bind
+        source: ${AI_DISTILL_PROJECTS_DIR}
+        target: /Users/jack/Documents/codes/lvgou/ai-distill/projects
+        read_only: true
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "try{const s=await Bun.file('/app/.storage/.worker-monitor.json').json();const age=Date.now()-Date.parse(s.heartbeat_at);process.exit(['running','paused'].includes(s.status)&&Number.isFinite(age)&&age>=-5000&&age<30000?0:1)}catch{process.exit(1)}"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: pause
+        monitor: 60s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+networks:
+  host:
+    external: true
+    name: host

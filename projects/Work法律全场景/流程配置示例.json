@@ -1,0 +1,9 @@
+{
+  "contract": "model_report_v1",
+  "rules_text": "本配置用于系统内纯文字评测与题包准备，不等同正式Harbor验收。模型依据本题冻结Rubric作专业判断，程序只保存和提取结果，不改写成绩。\n每项rule完整描述触发条件、允许答案、计分方式及次数/封顶；metadata保留原始Work字段，包括statement、criterion_type、criterion_necessity、dimension、evaluated_files、knowledge_points、atomic_capabilities、priority、score、type、points、trigger_count。具体权重由本题Rubric决定，不从字段缺失猜测。\nWork正向权重仅+10/+7/+3，负向仅-3/-7/-10；默认binary，确有量化质量差异才用五档likert并写出完整锚点。禁止同一错误正向漏项后重复反向扣分。R0-V01为独立否决，score_delta=null，单独报告是否触发，不混入主分或自动归零。\n主类型的领域锚点、维度覆盖、至少两项+10、正向锚点占比及反偷懒要求依项目skill完整规范。Rubric必须自包含且接受实质等价方案；专业判断由模型完成，不能靠模板判词。\nraw_score报告按本题规则计算的正负净分，可为负；full_score报告全部正向权重之和。evaluation_percent仅用于现有低于门槛的比较，按Work Harbor主分口径由模型计算：binary的value为0/1，likert按(raw-1)/4归一化，负向按negate=true的翻转定义处理，主分clip((正向weight×value-负向weight×(1-value))/全部正向weight,0,1)乘100。逐项明确value和触发依据；不得把负项命中值与负向质量值混淆。若本题规则不完整或无法确定该口径，evaluation_percent=null，说明原因，不擅自补值。程序不再重算或裁剪模型报告。\n参考答案仅用于结构、字段和数量级校准，不是唯一答案键；只根据候选实际内容及Rubric评分。不得因措辞、顺序或同等有效方案与标答不同而扣分。\n给出完整评审正文及唯一<model_report>JSON</model_report>结果区。items按Rubric原ID恰好各一项，包含id、judgment、score_delta、reason；summary含raw_score、full_score、evaluation_percent、veto_triggered。无明确数字或否决意见用null。独立否决只作可用性意见；现有达标门槛不因否决自动更改。",
+  "reference_answer": "calibration",
+  "hooks": {
+    "before": [],
+    "after": []
+  }
+}

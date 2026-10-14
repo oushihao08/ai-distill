@@ -6,11 +6,11 @@ import type {ModelApiConfig,ModelApiProvider} from '@shared/types';
 export type {ModelApiConfig,ModelApiProvider} from '@shared/types';
 export interface ModelApiMessage {role:'system'|'user'|'assistant';content:string}
 export type ModelApiResponseFormat={type:'json_object'}|{type:'json_schema';json_schema:{name:string;strict:true;schema:Record<string,unknown>}};
-export interface ModelApiRequest {config:ModelApiConfig;messages:ModelApiMessage[];response_format?:ModelApiResponseFormat;timeout_ms?:number;signal?:AbortSignal;call_id?:string;observe_reasoning?:boolean}
+export interface ModelApiRequest {config:ModelApiConfig;messages:ModelApiMessage[];response_format?:ModelApiResponseFormat;timeout_ms?:number;queue_timeout_ms?:number;signal?:AbortSignal;call_id?:string;observe_reasoning?:boolean}
 export interface ModelApiResult {
  text:string;requested_model:string;model:string|null;provider:ModelApiProvider;
  request_id:string|null;completion_id:string|null;usage:Record<string,unknown>|null;
- started_at:string;finished_at:string;duration_ms:number;
+ started_at:string;finished_at:string;duration_ms:number;queue_wait_ms?:number;
  generation_activity?:ReasoningActivityEvidence;
 }
 export interface ReasoningActivityEvidence {source:'openrouter_reasoning_details'|'openrouter_reasoning'|'dashscope_reasoning_content';first_event_at:string;last_event_at:string;span_ms:number;max_gap_ms:number;event_count:number}

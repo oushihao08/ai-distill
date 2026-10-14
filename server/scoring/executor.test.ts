@@ -13,6 +13,29 @@ const baseProjectRules={version_id:'rules-v1',source_digest:hash('rules'),snapsh
 const context:ScoreContext={binding:{question_version:'v1',input_digest:'a'.repeat(64),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'private-id',answer_sha256:hash('100元')},question:'金额多少',materials:[{name:'原模型名称',text:'金额100元'}],answer:'100元',rubric,answer_approach:'私有作答思路',reference_answer:'私有标准答案',project_rules:baseProjectRules};
 const report='amount：1 / 1分。金额正确。答案原文证据：“100元”。\n最终总分：1 / 1 分';
 const reply=(call:any,text=report)=>({result:call.validate(text),session_id:'independent-session',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:'fixture'});
+test('新评分输入完整传递规则并按政策只提供校准标答',()=>{
+ const rubric=[{id:'deduct',criterion:'错误',rule:'扣7分',metadata:{score:-7}}];
+ const policy={contract:'model_report_v1',rules_text:'扣分和否决由模型判断；指标按规则给出',reference_answer:'calibration'};
+ const canonical=(v:any):any=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(key=>[key,canonical(v[key])])):v;
+ const input=buildAnonymousInput({...context,rubric,scoring_policy:policy,binding:{...context.binding,rubric_digest:hash(JSON.stringify(canonical({rubric,scoring_policy:policy})))}} as any);
+ const files=buildScoreFiles(input),message=buildScoreMessage(input);
+ expect(files[0].text).toContain('扣7分');expect(files[0].text).not.toContain('满分undefined');
+ expect(files.find(file=>file.name==='校准参考答案.txt')?.text).toBe(context.reference_answer);
+ expect(files.map(file=>file.text).join('\n')).not.toContain(context.answer_approach);
+ expect(message).toContain('<model_report>');expect(message).toContain(policy.rules_text);
+ expect(message).not.toContain('得分>/');
+});
+test('新 API 评分保存模型原始成绩，不将负分或否决改成零分',async()=>{
+ const rubric=[{id:'x',criterion:'错误',rule:'按规则扣分'}],policy={contract:'model_report_v1',rules_text:'从100分扣分，百分指标由模型报告',reference_answer:'none'};
+ const canonical=(v:any):any=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(key=>[key,canonical(v[key])])):v;
+ const raw='<model_report>'+JSON.stringify({contract:'model_report_v1',items:[{id:'x',judgment:'命中',score_delta:-7,reason:'原文依据'}],summary:{raw_score:-7,full_score:100,evaluation_percent:12,veto_triggered:true}})+'</model_report>';
+ const result=await runIndependentApiScore({...context,rubric,scoring_policy:policy,binding:{...context.binding,rubric_digest:hash(JSON.stringify(canonical({rubric,scoring_policy:policy})))}} as any,{config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture'},complete:async(call:any)=>{
+  expect(JSON.stringify(call.messages)).not.toContain(context.reference_answer);
+  return {text:raw,provider:'openrouter',requested_model:'fixture',duration_ms:1,usage:null} as any;
+ }});
+ expect(result.raw_text).toBe(raw);expect(result.report).toMatchObject({contract:'model_report_v1',summary:{raw_score:-7,evaluation_percent:12,veto_triggered:true}});
+ expect(result.validation).toMatchObject({valid:true,evaluation_percent:12});
+});
 
 test('default scoring prompt asks for per-item reasoning and exact answer evidence',()=>{
  const prompt=resolveScoreStepPrompt();

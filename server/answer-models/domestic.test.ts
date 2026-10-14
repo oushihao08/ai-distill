@@ -82,7 +82,7 @@ test('preserves missing metadata as null',async()=>{
  const answer=await createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>Response.json(minimal)).answer(req);
  expect(answer.model).toBeNull();expect(answer.completion_id).toBeNull();expect(answer.request_id).toBeNull();expect(answer.usage).toBeNull();
 });
-for(const delta of [{usage:[]},{model:''},{id:42},{choices:[]},{error:{message:'private'}},{choices:[{finish_reason:'stop',message:{role:'user',content:'q'}}]},{choices:[{finish_reason:'stop',message:{role:'assistant',content:'q',tool_calls:[{}]}}]}]) test('malformed metadata or result '+JSON.stringify(delta),async()=>expect(createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>Response.json({...body,...delta})).answer(req)).rejects.toMatchObject({kind:'invalid_response'}));
+for(const delta of [{choices:[]},{error:{message:'private'}},{choices:[{finish_reason:'stop',message:{role:'user',content:'q'}}]},{choices:[{finish_reason:'stop',message:{role:'assistant',content:'q',tool_calls:[{}]}}]}]) test('malformed metadata or result '+JSON.stringify(delta),async()=>expect(createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>Response.json({...body,...delta})).answer(req)).rejects.toMatchObject({kind:'invalid_response'}));
 test('invalid-response failures expose a safe reason code without retaining response text',async()=>{
  const failure=await createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>Response.json({choices:[],private:'response body'})).answer(req).then(()=>null,error=>error);
  expect(failure).toMatchObject({kind:'invalid_response',reason_code:'missing_choice'});
@@ -114,3 +114,9 @@ test('explicit max_tokens is sent unchanged and key alias is supported',async()=
  await createDomesticClient({ARK_API_KEY:'alias'},async(_url,init)=>{sent=JSON.parse(init!.body as string);expect((init!.headers as Record<string,string>).Authorization).toBe('Bearer alias');return Response.json(body);}).answer({config:{provider:'doubao',base_url:'https://ark.cn-beijing.volces.com/api/v3',model:'ep-test',max_tokens:100},question:'q',materials:[]});expect(sent?.max_tokens).toBe(100);
 });
 test('explicit null timeout is invalid rather than silently defaulted',async()=>expect(createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>Response.json(body)).answer({...req,timeout_ms:null} as never)).rejects.toMatchObject({kind:'configuration'}));
+
+for(const delta of [{usage:[]},{model:''},{id:42}])test('可选元数据异常不拒绝完整正文 '+JSON.stringify(delta),async()=>{
+ const result=await createDomesticClient({DEEPSEEK_API_KEY:'own'},async()=>Response.json({...body,...delta})).answer(req);
+ expect(result.text).toBe(body.choices[0]!.message.content);expect(result.requested_model).toBe(req.config.model);
+ if('usage' in delta)expect(result.usage).toBeNull();if('id' in delta)expect(result.completion_id).toBeNull();
+});

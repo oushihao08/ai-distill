@@ -9,7 +9,21 @@ import { fileSize } from '../utils/format';
 import type { Material, MaterialTextDetail, Step } from '../types/api';
 
 const props = defineProps<{ workflowId: string; materials: Material[]; steps?: Step[]; redactionStatus?: string; disabled?: boolean; readOnly?: boolean; preferRedacted?: boolean; redactionQueued?: boolean }>();
-const emit = defineEmits<{ add: []; delete: [material: Material] }>();
+const emit = defineEmits<{ add: []; delete: [material: Material]; updated: [] }>();
+const modeTarget=shallowRef<Material>();
+const modeBusy=shallowRef(false);
+const modeError=shallowRef('');
+async function saveMode(){
+ const material=modeTarget.value;
+ if(!material)return;
+ try{
+  modeBusy.value=true;modeError.value='';
+  await api(`/workflows/${props.workflowId}/materials/${material.id}/redaction-mode`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:material.redaction_mode==='declared_redacted'?'model':'declared_redacted',source_sha256:material.sha256})});
+  modeTarget.value=undefined;emit('updated');
+ }catch(cause){modeError.value=cause instanceof Error?cause.message:'更新脱敏方式失败';}
+ finally{modeBusy.value=false;}
+}
+function updateModeDialog(open:boolean){if(!open)modeTarget.value=undefined;}
 const detailOpen = shallowRef(false);
 const detailBusy = shallowRef(false);
 const detailError = shallowRef('');
@@ -81,7 +95,7 @@ function progressLabel(material: Material) {
   if (props.redactionStatus === 'succeeded') return '脱敏 · 待核';
   return '入库 · 成功';
  }
- if (intakeStep.value?.status === 'running') return material.original_name.toLowerCase().endsWith('.pdf') ? '入库 · 识别中' : '入库 · 处理中';
+ if (intakeStep.value?.status === 'running') return /\.(pdf|docx)$/i.test(material.original_name) ? '入库 · 提取中' : '入库 · 处理中';
  if (intakeStep.value?.status === 'failed') return '入库 · 失败';
  if (intakeStep.value?.status === 'succeeded') return '入库 · 待核';
  return '入库 · 待处理';
@@ -130,7 +144,7 @@ async function viewFullText(material: Material) {
    <Column v-else class="w-full overflow-x-auto">
     <v-table density="compact" class="min-w-0">
      <thead>
-      <tr><th scope="col">附件</th><th scope="col">当前进度</th><th scope="col">操作</th></tr>
+      <tr><th scope="col">附件</th><th scope="col">脱敏方式</th><th scope="col">当前进度</th><th scope="col">操作</th></tr>
      </thead>
      <tbody>
       <tr v-for="material in materials" :key="material.id">
@@ -140,10 +154,12 @@ async function viewFullText(material: Material) {
          <span class="text-xs text-muted">{{ fileSize(material.size_bytes) }}</span>
         </Row>
        </td>
+       <td class="whitespace-nowrap">{{ /\.docx$/i.test(material.original_name) ? material.redaction_mode==='declared_redacted'?'已声明人工脱敏':'模型脱敏' : '模型脱敏' }}</td>
        <td class="whitespace-nowrap"><v-chip size="small" :color="progressColor(material)">{{ progressLabel(material) }}</v-chip></td>
        <td>
         <Row wrap :gap="4">
          <v-btn color="primary" variant="text" :disabled="disabled || detailBusy || material.processing_status === 'received'" :loading="detailBusy && selectedMaterial?.id === material.id" @click="viewFullText(material)">{{ textActionLabel(material) }}</v-btn>
+         <v-btn v-if="!readOnly && /\.docx$/i.test(material.original_name)" color="secondary" variant="text" :disabled="disabled" @click="modeError='';modeTarget=material">{{ material.redaction_mode==='declared_redacted'?'改为模型脱敏':'声明已人工脱敏' }}</v-btn>
          <v-btn v-if="!readOnly" color="error" variant="text" :disabled="disabled" @click="emit('delete', material)">删除</v-btn>
         </Row>
        </td>
@@ -153,6 +169,9 @@ async function viewFullText(material: Material) {
    </Column>
   </Column>
 
+  <v-dialog :model-value="Boolean(modeTarget)" max-width="560" @update:model-value="updateModeDialog">
+   <Column class="surface-card p-20" :gap="16"><h2 class="section-title">确认 DOCX 脱敏方式</h2><p class="text-sm text-muted">{{ modeTarget?.redaction_mode==='declared_redacted'?'改为模型脱敏后，下次脱敏将调用模型处理这份 DOCX。':'只有你已检查整份 DOCX 且确认可直接用于出题时，才声明已人工脱敏。系统会复制提取正文和结构，不调用模型处理这份附件。' }} 修改后本材料包当前脱敏及后续结果失效；已创建题目的快照保持原样。</p><v-alert v-if="modeError" type="error">{{ modeError }}</v-alert><Row x="end" :gap="8"><v-btn :disabled="modeBusy" @click="modeTarget=undefined">取消</v-btn><v-btn color="primary" :loading="modeBusy" @click="saveMode">确认修改</v-btn></Row></Column>
+  </v-dialog>
   <v-dialog v-model="detailOpen" max-width="1080" scrollable>
    <Column class="surface-card p-20" :gap="16">
     <Row x="between" wrap :gap="12">

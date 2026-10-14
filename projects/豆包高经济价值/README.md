@@ -3,6 +3,8 @@
 
 此目录是“豆包高经济价值”主项目根。`materials/` 保存跨期共用的规则资料；`skill/` 保存跨期共用的出题 skill，入口为 `skill/SKILL.md`，完整引用与模板位于 `skill/references/` 和 `skill/assets/`。
 
+`delivery.ts` 是各期共用的归档交付入口。当前为空函数；归档前由服务端按当前题目快照执行，不参与出题、评分或题目附件扫描。
+
 ## 目录约定
 
 ```text

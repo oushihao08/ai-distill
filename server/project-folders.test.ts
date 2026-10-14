@@ -8,7 +8,28 @@ import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scanProjectFolder, validateFolder, validateStepConfig, validateStepConfigForExecution, registerQuestionFolders,projectStepSummary,isWorkflowStepReady,splitIntoBatches,readBatchChunkSize } from './project-folders';
+import {STEP_REGISTRY} from '../shared/step-registry';
 const roots: string[] = [];
+test('项目评分 workflow 配置往返保留且默认钩子同步',()=>{
+ const workflow={contract:'model_report_v1',rules_text:'按条目加扣分；否决单列。',reference_answer:'calibration',hooks:{before:[{id:'check',script:'hooks/check.ts',files:['hooks/check.ts'],params:{strict:true}}],after:[]}};
+ const result=validateStepConfigForExecution(6,{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'test/model'},prompt:'按项目规则评分',workflow});
+ expect(result).toMatchObject({workflow:{...workflow,hooks:{before:[{...workflow.hooks.before[0],mode:'sync',timeout_ms:60000,idempotent:false}],after:[]}}});
+ expect(result).not.toHaveProperty('api.workflow');
+});
+test('项目 workflow 不接受未知契约或越界钩子路径',()=>{
+ for(const workflow of [{contract:'unknown'},{contract:'model_report_v1',hooks:{before:[{id:'bad',script:'../bad.ts',files:['../bad.ts']}],after:[]}}]){
+  expect(()=>validateStepConfigForExecution(4,{model:'test',reasoning_effort:'low',workflow})).toThrow();
+ }
+});
+test('作答 workflow 与供应商配置分开校验并保留',()=>{
+ const result=validateStepConfig(5,{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'test/fixture',workflow:{hooks:{before:[],after:[]}}});
+ expect(result).toMatchObject({provider:'openrouter',workflow:{contract:'legacy',hooks:{before:[],after:[]}}});
+});
+test('作答 workflow 配置错误返回客户端错误而非服务器错误',()=>{
+ let error:unknown;
+ try{validateStepConfig(5,{provider:'openrouter',model:'test/fixture',workflow:{contract:'unknown'}});}catch(caught){error=caught;}
+ expect(error).toHaveProperty('status',400);
+});
 afterEach(async () => { try { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); } catch (error) { throw error; } });
 test('folder is required, absolute and readable', async () => {
  for (const value of ['', 'relative', '/missing-ai-distill-fixture']) await expect(validateFolder(value)).rejects.toThrow();
@@ -18,20 +39,23 @@ test('folder is required, absolute and readable', async () => {
 test('each direct question directory gets a stable manifest; nested PDFs stay in their question', async () => {
  const root = await mkdtemp(join(tmpdir(), 'project-folder-')); roots.push(root);
  await mkdir(join(root, '题目 1', '补充'), { recursive: true }); await mkdir(join(root, '题目 2'));
- await writeFile(join(root, '题目 1', 'a.pdf'), '%PDF-a'); await writeFile(join(root, '题目 1', '补充', 'a.pdf'), '%PDF-b');
- await writeFile(join(root, '题目 2', 'bad.pdf'), 'broken'); await writeFile(join(root, '说明.md'), 'ignored');
+ // 目录扫描现在会读取PDF页数，fixture必须是真实PDF，不能用仅有文件头的坏文件冒充。
+ const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>','<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>'];
+ let pdf='%PDF-1.4\n';const offsets=[0];for(const [i,body] of objects.entries()){offsets.push(Buffer.byteLength(pdf));pdf+=`${i+1} 0 obj\n${body}\nendobj\n`;}
+ const xref=Buffer.byteLength(pdf);pdf+=`xref\n0 4\n0000000000 65535 f \n${offsets.slice(1).map(n=>String(n).padStart(10,'0')+' 00000 n ').join('\n')}\ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+ await writeFile(join(root,'题目 1','a.pdf'),pdf);await writeFile(join(root,'题目 1','补充','a.pdf'),pdf);await writeFile(join(root,'题目 2','b.pdf'),pdf);
  const result = await scanProjectFolder(root);
  expect(result.map(q => q.key)).toEqual(['题目 1', '题目 2']);
  expect(result[0]?.files.map(f => f.name)).toEqual(['a.pdf', '补充/a.pdf']);
  expect(result[0]?.files.every(f => f.sha256.length === 64)).toBe(true);
- expect(result[1]?.files).toHaveLength(1); // invalid PDF belongs to its own failing intake, not a failed project
+ expect(result[1]?.files).toHaveLength(1);
  await symlink('/tmp', join(root, '题目 1', 'outside'));
  expect((await scanProjectFolder(root))[0]?.files).toHaveLength(2);
 });
 test('step configuration accepts the correct provider and rejects unsupported parameters', () => {
- expect(validateStepConfig(2, { model: 'glm-5.3-flash', reasoning_effort: 'low' })).toEqual({ provider: 'zhipu', model: 'glm-5.3-flash', reasoning_effort: 'low' });
+ expect(()=>validateStepConfig(2,{model:'glm-5.3-flash',reasoning_effort:'low'})).toThrow('没有模型设置');
  expect(() => validateStepConfig(2, { provider: 'codex', model: 'x' })).toThrow();
- expect(() => validateStepConfig(4, { model: 'gpt-6.1-sol', reasoning_effort: 'invalid' })).toThrow();
+ expect(() => validateStepConfig(4, { model: 'gpt-6.1-sol', reasoning_effort: 'bad effort' })).toThrow();
  expect(() => validateStepConfig(1, { model: 'x' })).toThrow();
 });
 
@@ -46,12 +70,24 @@ test('saved Codex step settings are not blocked by a stale advertised model cata
  expect(validateStepConfigForExecution(4,{provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'low'})).toMatchObject({provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'low'});
 });
 
-test('registering 100 new question folders uses bulk writes and keeps unique identities',async()=>{
+test('registering 100 folders keeps unique workflow and stable step identities',async()=>{
  const calls:{sql:string;values?:unknown[]}[]=[];
  const db={query:async(sql:string,values?:unknown[])=>{try{calls.push({sql,values});return {rows:[],rowCount:0};}catch(error){throw error;}}} as unknown as PoolClient;
  const result=await registerQuestionFolders(db,'11111111-1111-4111-8111-111111111111','project',Array.from({length:100},(_,i)=>({key:`题目 ${i+1}`,files:[]})));
- expect(result).toEqual({discovered:100,added:100,changed:0});expect(calls).toHaveLength(3);
+ expect(result).toEqual({discovered:100,added:100,changed:0});const stepWrites=calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.steps'));expect(stepWrites).toHaveLength(100*STEP_REGISTRY.length);for(const group of new Set(stepWrites.map(call=>call.values?.[0])))expect(stepWrites.filter(call=>call.values?.[0]===group).map(call=>call.values?.[1])).toEqual(STEP_REGISTRY.map(step=>step.ordinal));
  const inserted=JSON.parse(String(calls[1]?.values?.[1]));expect(new Set(inserted.map((row:any)=>row.id)).size).toBe(100);
+});
+test('材料包模式登记目录为材料包，派生题目不能派发入库，材料包不能派发出题',async()=>{
+ const calls:{sql:string;values?:unknown[]}[]=[];
+ const db={query:async(sql:string,values?:unknown[])=>{calls.push({sql,values});return{rows:[],rowCount:0};}} as unknown as PoolClient;
+ await registerQuestionFolders(db,'11111111-1111-4111-8111-111111111111','项目',[{key:'材料A',files:[]}],'material_packages');
+ expect(calls.find(call=>call.sql.startsWith('INSERT INTO ai_distill.workflows'))?.values?.[2]).toBe('material_package');
+ const packageSteps=new Map<number,any>([[1,{ordinal:1,status:'succeeded',enabled:true,active:false,workflow_kind:'material_package'}],[9,{ordinal:9,status:'succeeded',enabled:true,active:false,workflow_kind:'material_package'}],[4,{ordinal:4,status:'waiting',enabled:true,active:false,workflow_kind:'material_package'}]]);
+ expect(isWorkflowStepReady(4,packageSteps)).toBe(false);
+ const questionSteps=new Map<number,any>([[1,{ordinal:1,status:'succeeded',enabled:true,active:false,source_workflow_id:'package'}],[9,{ordinal:9,status:'succeeded',enabled:true,active:false,source_workflow_id:'package'}],[4,{ordinal:4,status:'waiting',enabled:true,active:false,source_workflow_id:'package'}]]);
+ expect(isWorkflowStepReady(1,questionSteps)).toBe(false);
+ expect(isWorkflowStepReady(9,questionSteps)).toBe(false);
+ expect(isWorkflowStepReady(4,questionSteps)).toBe(true);
 });
 test('Qwen step config validates endpoint-specific model and rejects secrets',()=>{
  expect(validateStepConfig(5,{provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',max_tokens:100})).toEqual({provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',max_tokens:100});
@@ -59,12 +95,14 @@ test('Qwen step config validates endpoint-specific model and rejects secrets',()
  expect(()=>validateStepConfig(5,{base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',api_key:'secret'})).toThrow();
 });
 
-test('Codex settings use actual advertised model efforts rather than a global effort list',()=>{
+test('Codex settings preserve database choices independently of the local catalog',()=>{
  const catalog=[{slug:'gpt-6-luna',supported_reasoning_levels:[{effort:'low'},{effort:'max'}]}];
  expect(()=>validateCodexModel('gpt-6-luna','max',catalog)).not.toThrow();
- expect(()=>validateCodexModel('gpt-6-luna','ultra',catalog)).toThrow('推理强度');
- expect(()=>validateCodexModel('unknown-model','low',catalog)).toThrow('模型');
- expect(()=>validateCodexModel('gpt-6-luna','low',[])).toThrow('模型清单');
+ expect(()=>validateCodexModel('gpt-6-luna','ultra',catalog)).not.toThrow();
+ expect(()=>validateCodexModel('gpt-6-luna','bad effort',catalog)).toThrow('推理强度');
+ expect(()=>validateCodexModel('unknown-model','low',catalog)).not.toThrow();
+ expect(()=>validateCodexModel('bad model','low',catalog)).toThrow('模型');
+ expect(()=>validateCodexModel('gpt-6-luna','low',[])).not.toThrow();
 });
 test('unsaved Codex project steps inherit the system model and reasoning defaults',async()=>{
  const pool={query:async(sql:string)=>{
@@ -77,7 +115,7 @@ test('unsaved Codex project steps inherit the system model and reasoning default
  const steps=await projectStepSummary(pool,'project');
  expect(steps.find(step=>step.ordinal===4)).toMatchObject({config:{provider:'codex',model:'gpt-system',reasoning_effort:'high'},config_source:'system'});
  expect(steps.find(step=>step.ordinal===6)).toMatchObject({config:{provider:'codex',model:'gpt-system',reasoning_effort:'high'},config_source:'system'});
- expect(steps.find(step=>step.ordinal===9)?.config).toMatchObject({provider:'codex',model:'gpt-system',reasoning_effort:'high',prompt:expect.any(String)});
+ expect(steps.find(step=>step.ordinal===9)?.config).toMatchObject({provider:'api',api:{model:expect.any(String)},prompt:expect.any(String)});
 });
 test('project Codex defaults feed steps while an explicit step config remains highest priority',async()=>{
  const pool={query:async(sql:string)=>{
@@ -88,9 +126,9 @@ test('project Codex defaults feed steps while an explicit step config remains hi
   throw new Error(`Unexpected query: ${sql}`);
  }} as unknown as Pool;
  const steps=await projectStepSummary(pool,'project');
- expect(steps.find(step=>step.ordinal===4)).toMatchObject({config:{model:'gpt-6-luna',reasoning_effort:'max'},config_source:'step'});
- expect(steps.find(step=>step.ordinal===6)).toMatchObject({config:{model:'gpt-6-luna',reasoning_effort:'max'},config_source:'project'});
- expect(steps.find(step=>step.ordinal===9)).toMatchObject({config:{model:'gpt-6-luna',reasoning_effort:'max'},config_source:'project'});
+ expect(steps.find(step=>step.ordinal===4)).toMatchObject({config:{model:'gpt-6-astra',reasoning_effort:'ultra'},config_source:'step'});
+ expect(steps.find(step=>step.ordinal===6)).toMatchObject({config:{model:'gpt-6-astra',reasoning_effort:'ultra'},config_source:'project'});
+ expect(steps.find(step=>step.ordinal===9)).toMatchObject({config:{provider:'api',api:{model:expect.any(String)}},config_source:'system'});
 });
 test('PDF model settings reject unverified model protocols',()=>{
  expect(()=>validateStepConfig(2,{model:'unknown-vision-model',reasoning_effort:'low'})).toThrow('模型');
@@ -140,4 +178,10 @@ test('project batch work is split into the configured chunk size without droppin
  expect(readBatchChunkSize('')).toBe(100);
  expect(readBatchChunkSize('37')).toBe(37);
  for(const value of ['0','1001','1.5','invalid'])expect(()=>readBatchChunkSize(value)).toThrow('BATCH_DISPATCH_CHUNK_SIZE');
+});
+
+test('项目根目录的材料不被忽略，损坏PDF不能作为可解析材料同步',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'project-folder-'));roots.push(root);await mkdir(join(root,'题目 1'));
+ await writeFile(join(root,'说明.md'),'原件');await expect(scanProjectFolder(root)).rejects.toThrow('根目录');await rm(join(root,'说明.md'));
+ await writeFile(join(root,'题目 1','bad.pdf'),'broken');await expect(scanProjectFolder(root)).rejects.toThrow();
 });

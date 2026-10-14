@@ -10,7 +10,7 @@ const safeName=(value:string)=>value.replace(/[^\p{L}\p{N}._-]/gu,'_').slice(0,8
 const sha256=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 
 export async function exportFailedQuestions(api:ApiClient,projectId:string,selectedIds?:string[],signal?:AbortSignal,mode:'failed'|'review'='failed') {
-  const project=await api.json(`/api/projects/${projectId}`,'GET',undefined,signal);
+  const project=await api.json(`/api/projects/${projectId}`,'GET',undefined,signal) as {workflows?:{id:string}[]}|null;
   if(!Array.isArray(project?.workflows))throw new CliError('项目题目列表无效',{kind:'invalid_response'});
   const known=new Set<string>(project.workflows.map((item:any)=>item.id));
   const ids=selectedIds??project.workflows.map((item:any)=>item.id);
