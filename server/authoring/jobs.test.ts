@@ -76,6 +76,27 @@ test('active attempts are reused while terminal reauthoring creates a new attemp
   f.state.reuse=null;const next=await enqueueAuthoring(f.pool,'workflow');expect(next.id).not.toBe(first.id);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
+test.each([
+ ['result_missing','出题会话已结束，但未生成 result.json'],
+ ['result_validation_failed','出题结果未通过程序校验'],
+ ['codex_timeout','出题执行超过本次时限，未取得通过校验的完整题目'],
+])('出题失败 %s 保存安全原因码和明确说明',async(reasonCode,message)=>{
+ const f=await projectFixture();try{
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async()=>{throw Object.assign(new Error('private detail'),{reason_code:reasonCode});});
+  const failed=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"));
+  expect(JSON.parse(failed!.values[1])).toMatchObject({error_code:reasonCode});
+  expect(failed!.values[2]).toContain(message);expect(failed!.values[2]).not.toContain('private detail');
+  if(reasonCode==='codex_timeout')expect(failed!.values[2]).not.toContain('已有草稿');
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('出题任务冻结项目级超时并传入作者执行器',async()=>{
+ const f=await projectFixture();try{
+  f.state.projectConfig.timeout_ms=3600000;await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  expect(f.saved.config.timeout_ms).toBe(3600000);
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{expect(options.timeout_ms).toBe(3600000);return authored;});
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
 test.each(['none','attachments','title','skill'])('fresh author worker preserves current bindings and rejects late %s changes',async(change)=>{
  const f=await projectFixture();let received:any;try{
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
@@ -200,5 +221,25 @@ test('续跑后的作者worker复用主检查点，实际后置脚本恢复后�
   await runNextAuthoring(f.pool,join(f.root,'storage'),author);
   expect(mainCalls).toBe(1);expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
   expect([...f.state.hookRuns.values()].find((r:any)=>r.position==='after').result.notes).toEqual(['恢复完成']);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('Work内容契约由项目配置冻结并传入作者',async()=>{
+ const f=await projectFixture();try{
+  f.state.projectConfig={provider:'codex',model:'fixture-model',reasoning_effort:'low',workflow:{content_contract:'work_legal_v1',contract:'legacy',rules_text:'',reference_answer:'none',hooks:{before:[],after:[]}}};
+  f.state.scoreWorkflow={contract:'model_report_v1',rules_text:'Work规则',reference_answer:'none',hooks:{before:[],after:[]}};
+  await enqueueAuthoring(f.pool,'workflow');expect(f.saved.input.content_contract).toBe('work_legal_v1');f.state.job=f.saved;
+  let called=false;await runNextAuthoring(f.pool,f.root,async options=>{called=true;expect(options.content_contract).toBe('work_legal_v1');return authored;});expect(called).toBe(true);
+  const saved=f.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.step_attempts SET status=\'succeeded\''));expect(saved).toBeDefined();
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+
+test('内容契约配置变化后拒绝旧尝试发布且不调用作者',async()=>{
+ const f=await projectFixture();try{
+  f.state.projectConfig={provider:'codex',model:'fixture-model',reasoning_effort:'low',workflow:{content_contract:'work_legal_v1'}};
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;f.state.projectConfig={provider:'codex',model:'fixture-model',reasoning_effort:'low'};
+  let called=false;await runNextAuthoring(f.pool,f.root,async()=>{called=true;return authored;});expect(called).toBe(false);
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(false);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });

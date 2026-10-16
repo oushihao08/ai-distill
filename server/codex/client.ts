@@ -11,7 +11,7 @@ import {tmpdir,homedir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {classifyLogError,logEvent,withLogContext} from '../logging';
-export interface CodexOptions<T> {binary?:string;directory:string;execution_profile?:'fresh_authoring';working_directory?:string;prompt:string;model:string;reasoning_effort:string;schema?:Record<string,unknown>;output_format?:'text';input_files?:{name:string;text:string}[];validate:(value:unknown)=>T;timeout_ms?:number;signal?:AbortSignal;credentialsHome?:string;developer_instructions?:string;call_id?:string;onProcess?:(pid:number|null)=>void;isolate_context?:boolean}
+export interface CodexOptions<T> {binary?:string;directory:string;execution_profile?:'fresh_authoring'|'project_delivery';working_directory?:string;prompt:string;model:string;reasoning_effort:string;schema?:Record<string,unknown>;output_format?:'text';input_files?:{name:string;text:string}[];validate:(value:unknown)=>T;timeout_ms?:number;signal?:AbortSignal;credentialsHome?:string;developer_instructions?:string;call_id?:string;onProcess?:(pid:number|null)=>void;isolate_context?:boolean}
 /** 评分只使用本次输入；记忆在所有调用中统一关闭，评分还关闭其他宿主上下文入口。 */
 export const SCORE_ISOLATION_CONFIG={
  'features.skip_host_skill_discovery':true,
@@ -72,6 +72,7 @@ export async function runCodex<T>(options:CodexOptions<T>):Promise<{result:T;ses
 async function runCodexInternal<T>(options:CodexOptions<T>):Promise<{result:T;session_id:string;usage:unknown;events_path:string;duration_ms:number}>{
  if(options.signal?.aborted)throw new Error('Codex执行已取消');
  const fresh=options.execution_profile==='fresh_authoring';
+ const projectDelivery=options.execution_profile==='project_delivery';
  if(fresh&&(!options.working_directory||options.isolate_context||options.developer_instructions||options.output_format==='text'||options.input_files?.length))throw new Error('普通出题执行配置冲突');
  const binary=options.binary??defaultBinary;
  const call_id=options.call_id??randomUUID(),model=options.model,reasoning_effort=options.reasoning_effort,timeout_ms=options.timeout_ms??30*60*1000,startedAt=Date.now();
@@ -114,7 +115,7 @@ async function runCodexInternal<T>(options:CodexOptions<T>):Promise<{result:T;se
  const filesystem={':root':'deny',':minimal':'read',[directory]:'read',[output]:'write'};
  const table=`{${Object.entries(filesystem).map(([key,value])=>`${JSON.stringify(key)}=${JSON.stringify(value)}`).join(',')}}`;
  const isolationArgs=options.isolate_context?Object.entries(SCORE_ISOLATION_CONFIG).flatMap(([key,value])=>['-c',`${key}=${JSON.stringify(value)}`]):[];
- const args=['exec',...(fresh?['--dangerously-bypass-approvals-and-sandbox']:['--ignore-user-config','--ignore-rules']),'--ephemeral','--skip-git-repo-check','--cd',directory,'--model',options.model,'--json','--color','never',...(fresh||options.output_format==='text'?[]:['--output-schema',schemaPath]),'--output-last-message',cliResultPath,...(fresh?[]:['-c','default_permissions="distill_role"','-c',`permissions.distill_role.filesystem=${table}`,'-c','permissions.distill_role.network.enabled=false','-c','approval_policy="never"']),'-c','features.memories=false','-c',`model_reasoning_effort=${JSON.stringify(options.reasoning_effort)}`,...isolationArgs,...(options.developer_instructions?['-c',`developer_instructions=${JSON.stringify(options.developer_instructions)}`]:[]),'-'];
+ const args=['exec',...(fresh?['--dangerously-bypass-approvals-and-sandbox']:['--ignore-user-config','--ignore-rules']),'--ephemeral','--skip-git-repo-check','--cd',directory,'--model',options.model,'--json','--color','never',...(fresh||options.output_format==='text'?[]:['--output-schema',schemaPath]),'--output-last-message',cliResultPath,...(fresh?[]:['-c','default_permissions="distill_role"','-c',`permissions.distill_role.filesystem=${table}`,'-c','permissions.distill_role.network.enabled=false','-c','approval_policy="never"']),...(projectDelivery?['-c','web_search="live"']:[]),'-c','features.memories=false','-c',`model_reasoning_effort=${JSON.stringify(options.reasoning_effort)}`,...isolationArgs,...(options.developer_instructions?['-c',`developer_instructions=${JSON.stringify(options.developer_instructions)}`]:[]),'-'];
  let eventBuffer='',session_id:string|undefined,completed:Record<string,any>|undefined,malformedEvent=false,failedEvent=false;
  const parseEvent=(line:string)=>{
   if(!line.trim())return;

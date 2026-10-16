@@ -20,7 +20,8 @@ import { SYSTEM_STEP_PROMPTS } from '../shared/step-prompts';
 import {resolveQwenConfig,QwenError} from './answer-models/qwen';
 import {resolveAnswerConfig} from './answer-models/dispatch';
 import {DomesticError} from './answer-models/domestic';
-import {validateAcceptanceConfig} from './decisions/config';
+import {workAnswerCapabilityIssue} from './answer-models/input';
+import {validateAcceptanceConfig,validateAcceptancePolicy} from './decisions/config';
 import { text } from './validation';
 import {validateWorkflowConfig,type WorkflowConfig} from '../shared/workflow-config';
 export interface FolderFile { name: string; path: string; sha256: string; size: number; split_from?: string }
@@ -40,6 +41,7 @@ export function workflowStepReadiness(ordinal:number,steps:Map<number,WorkflowSt
  const retryingRepair=[4,5,6].includes(ordinal)&&steps.get(7)?.status==='succeeded'&&steps.get(7)?.result?.decision==='repair';
  if(!['waiting','failed'].includes(status)&&!(status==='succeeded'&&retryingRepair))return{ready:false,reason:current.active?'此步骤已有排队或运行任务':status==='succeeded'?'此步骤已完成':'当前步骤状态不可执行'};
  if(current.active)return{ready:false,reason:'此步骤已有排队或运行任务'};
+ if(ordinal===5){const issue=workAnswerCapabilityIssue(steps.get(4)?.result);if(issue)return{ready:false,reason:issue};}
  if(ordinal===8){
   const decision=steps.get(7);
   if(!decision||!decision.enabled||decision.status!=='succeeded'||decision.result?.decision!=='accepted')return{ready:false,reason:'题目未达标，不能归档'};
@@ -64,7 +66,7 @@ export function splitIntoBatches<T>(values:T[],size:number):T[][]{
  const batches:T[][]=[];for(let start=0;start<values.length;start+=size)batches.push(values.slice(start,start+size));return batches;
 }
 export async function readProjectWorkflowStepRows(pool:Pool,projectId:string,workflowIds?:string[]){
- return pool.query("SELECT w.id AS workflow_id,w.workflow_kind,w.source_workflow_id,s.ordinal,s.status,s.error,s.started_at,s.finished_at,CASE WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','reasons',s.result->'reasons') WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx')) AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   (SELECT x.error FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_error,\n   (SELECT x.started_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_started_at,\n   (SELECT x.finished_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_finished_at,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx'))))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position",[projectId,workflowIds??null]);
+ return pool.query("SELECT w.id AS workflow_id,w.workflow_kind,w.source_workflow_id,s.ordinal,s.status,s.error,s.started_at,s.finished_at,CASE WHEN s.ordinal=4 THEN jsonb_build_object('content_contract',s.result->'content_contract','content_status',s.result->'content_status','task_requirements',s.result->'task_requirements') WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','aggregate',s.result->'aggregate','reasons',s.result->'reasons') WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx')) AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   (SELECT x.error FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_error,\n   (SELECT x.started_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_started_at,\n   (SELECT x.finished_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_finished_at,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx'))))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position",[projectId,workflowIds??null]);
 }
 export async function validateFolder(value: unknown, label = '材料文件夹') {
  const path = text(value, label, 4096);
@@ -149,13 +151,13 @@ export async function registerQuestionFolders(db: PoolClient, projectId: string,
  return {discovered:questions.length,added:added.length,changed:changed.length};
 }
 export type AnswerStepConfig=ModelApiConfig&{prompt:string;workflow?:WorkflowConfig};
-export type AuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;workflow?:WorkflowConfig};
+export type AuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;workflow?:WorkflowConfig};
 export type ScoringStepConfig=AuthoringStepConfig|{provider:'api';api:ModelApiConfig;prompt:string;workflow?:WorkflowConfig};
 export function validateStepConfig(ordinal:9,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):RedactionConfig;
 export function validateStepConfig(ordinal:4,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):AuthoringStepConfig;
 export function validateStepConfig(ordinal:6,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ScoringStepConfig;
 export function validateStepConfig(ordinal:5,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):AnswerStepConfig;
-export function validateStepConfig(ordinal:7,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ReturnType<typeof validateAcceptanceConfig>;
+export function validateStepConfig(ordinal:7,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ReturnType<typeof validateAcceptancePolicy>;
 export function validateStepConfig(ordinal:number,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):object;
 export function validateStepConfig(ordinal: number, raw: unknown, modelCatalog?:Parameters<typeof validateAgentModel>[2]):object {
  return validateStepConfigInternal(ordinal,raw,modelCatalog,true);
@@ -170,7 +172,7 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
  if (![4,5,6,7,9].includes(ordinal)) throw new HTTPException(400, { message: '此步骤没有模型设置' });
  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HTTPException(400, { message: '步骤设置须为JSON对象' });
  if(ordinal===5){try{const {workflow:rawWorkflow,prompt:rawPrompt,...provider}=raw as Record<string,unknown>;const workflow=validateWorkflowConfig(rawWorkflow);const prompt=rawPrompt??SYSTEM_STEP_PROMPTS[5];if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)throw new Error('请填写有效的步骤提示词');return {...resolveAnswerConfig(provider),prompt,...(workflow?{workflow}:{})};}catch(error){if(error instanceof QwenError||error instanceof DomesticError||error instanceof Error&&['项目流程配置格式无效','请填写有效的步骤提示词'].includes(error.message))throw new HTTPException(400,{message:error.message});throw error;}}
- if(ordinal===7)throw new HTTPException(400,{message:'达标判断由评分结果自动完成，不需要单独配置'});
+ if(ordinal===7)return validateAcceptancePolicy(raw);
  if(ordinal===9)return validateRedactionConfig(raw,modelCatalog);
  const value = raw as Record<string,unknown>;
  let workflow:WorkflowConfig|undefined;try{workflow=validateWorkflowConfig(value.workflow);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'项目流程配置格式无效'});}
@@ -189,7 +191,9 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
  if(provider==='codex'&&validateAdvertisedModel)validateAgentModel(model,effort,modelCatalog);
  const prompt=value.prompt??SYSTEM_STEP_PROMPTS[ordinal as 4|6];
  if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)throw new HTTPException(400,{message:'请填写有效的步骤提示词'});
- return { provider, model, reasoning_effort: effort, prompt, ...extension };
+ const timeout=value.timeout_ms;
+ if(ordinal===4&&timeout!==undefined&&(!Number.isInteger(timeout)||Number(timeout)<60000||Number(timeout)>7200000))throw new HTTPException(400,{message:'出题超时须为 1 至 120 分钟的毫秒数'});
+ return { provider, model, reasoning_effort: effort, prompt, ...(ordinal===4&&timeout!==undefined?{timeout_ms:timeout as number}:{}), ...extension };
 }
 function defaultAnswerConfig(){try{return resolveQwenConfig({});}catch{return {provider:'qwen'};}}
 export async function projectStepSummary(pool: Pool, projectId: string) {

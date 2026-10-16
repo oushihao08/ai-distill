@@ -8,6 +8,18 @@ import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scanProjectFolder, validateFolder, validateStepConfig, validateStepConfigForExecution, registerQuestionFolders,projectStepSummary,isWorkflowStepReady,splitIntoBatches,readBatchChunkSize } from './project-folders';
+
+test('ordinal 7 accepts a project-configured aggregation policy',()=>{
+ expect(validateStepConfig(7,{aggregation:{mode:'mean_at_most',model_count:2,threshold:55}})).toEqual({aggregation:{mode:'mean_at_most',model_count:2,threshold:55}});
+ expect(()=>validateStepConfig(7,{aggregation:{mode:'mean_at_most',model_count:2,threshold:55},required_models:['qwen']})).toThrow();
+});
+
+test('出题超时按步骤配置并限制范围，旧配置仍保持默认',()=>{
+ const base={provider:'codex',model:'gpt-6.1-sol',reasoning_effort:'low',prompt:'出题'};
+ expect(validateStepConfigForExecution(4,base)).not.toHaveProperty('timeout_ms');
+ expect(validateStepConfigForExecution(4,{...base,timeout_ms:3600000})).toMatchObject({timeout_ms:3600000});
+ for(const timeout_ms of [0,59999,7200001,1.5,'3600000'])expect(()=>validateStepConfigForExecution(4,{...base,timeout_ms})).toThrow();
+});
 import {STEP_REGISTRY} from '../shared/step-registry';
 const roots: string[] = [];
 test('项目评分 workflow 配置往返保留且默认钩子同步',()=>{
@@ -90,7 +102,7 @@ test('材料包模式登记目录为材料包，派生题目不能派发入库�
  expect(isWorkflowStepReady(4,questionSteps)).toBe(true);
 });
 test('Qwen step config validates endpoint-specific model and rejects secrets',()=>{
- expect(validateStepConfig(5,{provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',max_tokens:100})).toEqual({provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',max_tokens:100});
+ expect(validateStepConfig(5,{provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',max_tokens:100})).toMatchObject({provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',max_tokens:100});
  expect(()=>validateStepConfig(5,{base_url:'https://openrouter.ai/api/v1',model:'other/model'})).toThrow();
  expect(()=>validateStepConfig(5,{base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',api_key:'secret'})).toThrow();
 });

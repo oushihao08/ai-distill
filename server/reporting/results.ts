@@ -9,6 +9,7 @@ import {buildXlsx,type WorkbookSheet} from './xlsx';
 
 export interface ResultExportRecord {
  workflow_id:string;title:string;accepted:boolean;
+ acceptance_aggregate?:{mode:'mean_at_most';model_count:number;mean_percentage:number;threshold:number};
  task_name:string;question:string;input_attachments:string[];
  model_scores:{model_id:string;name:string;score:number|null;max_score:number|null;percentage:number|null;score_contract?:'model_report_v1';raw_score?:number|null;full_score?:number|null;veto_triggered?:boolean|null}[];
  rubric:unknown[];answer_approach:string;reference_answer:string;reference_answer_attachment:string;
@@ -54,7 +55,7 @@ export function buildResultWorkbook(records:ResultExportRecord[]):Uint8Array{
    'prompt':record.question,
    '输入附件':attachments[index]!.map(attachment=>attachment.name).join('\n'),
    '考点':rubricText(record.rubric),
-   '评分':modelScoresText(record.model_scores),
+   '评分':[modelScoresText(record.model_scores),record.acceptance_aggregate?`${record.acceptance_aggregate.model_count}模型均分：${record.acceptance_aggregate.mean_percentage.toFixed(2)}%（≤${record.acceptance_aggregate.threshold}%）`:null].filter(Boolean).join('\n'),
    '作答思路':record.answer_approach,
    '标准答案-文本':record.reference_answer,
    '标准答案-附件':record.reference_answer_attachment,

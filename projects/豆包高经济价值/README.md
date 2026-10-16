@@ -3,7 +3,9 @@
 
 此目录是“豆包高经济价值”主项目根。`materials/` 保存跨期共用的规则资料；`skill/` 保存跨期共用的出题 skill，入口为 `skill/SKILL.md`，完整引用与模板位于 `skill/references/` 和 `skill/assets/`。
 
-`delivery.ts` 是各期共用的归档交付入口。当前为空函数；归档前由服务端按当前题目快照执行，不参与出题、评分或题目附件扫描。
+[难度提取表](%20难度.md)（文件名带一个前导空格，按用户指定路径保留）整理当前 `skill/` 的真正难度机制、原文提示词、设计案例与 Work 迁移边界；它是分析参考，不是运行 Skill，也不作为题目附件。
+
+`scripts/delivery.ts` 是各期共用的归档入口。项目专用的 OCR 调查脚本按用途放在 `scripts/ocr/`，skill 候选冒烟脚本放在 `scripts/skill/`；索引及运行影响见 [`scripts/README.md`](scripts/README.md)。
 
 ## 目录约定
 
@@ -11,6 +13,10 @@
 豆包高经济价值/
 ├── materials/          # 主项目各期共用的规则资料
 ├── skill/              # 主项目各期共用的出题 skill
+├── scripts/            # 项目脚本；由 scripts/README.md 索引
+│   ├── delivery.ts     # 各期共用的归档入口
+│   ├── ocr/            # 本项目 OCR 调查脚本
+│   └── skill/          # 本项目 skill 验证脚本
 ├── 第五期/             # 第五期独立工作内容
 │   ├── questions/      # 本期题目来源，工作流 material_root 指向此处
 │   ├── reports/        # 本期规则更新分析

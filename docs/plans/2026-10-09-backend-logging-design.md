@@ -153,7 +153,7 @@ timeout.fired 的时间与 elapsed_ms 在计时器回调内采集，不能等 cl
 | `server/materials/redaction-jobs.ts`、`redaction.ts` | 首条完整诊断链：输入规模、校验原因、心跳、状态提交和过期回收 |
 | 出题/评分/skill、作答/返修/发布/导出模块 | 复用相同事件契约，各自记录已有业务阶段，不改供应商接口或业务结果格式 |
 | `server/monitoring/worker-monitor.ts`、monitor API | 返回有限 logging 健康字段，保持既有内存派发策略 |
-| `scripts/read-logs.ts`（新增） | 按 service/component/operation、request/workflow/attempt/call ID、等级和时间读取安全时间线；限制扫描量和返回条数 |
+| `scripts/diagnostics/read-logs.ts`（新增） | 按 service/component/operation、request/workflow/attempt/call ID、等级和时间读取安全时间线；限制扫描量和返回条数 |
 
 首版不增加日志后台页面或任意文件读取 API。查询脚本只读取普通日志目录，不能访问私有事件及材料，不执行模型调用。数据库任务历史继续是业务状态来源，日志是诊断证据。
 

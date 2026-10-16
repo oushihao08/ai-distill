@@ -5,14 +5,23 @@
  */
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
-import {decideAcceptance,type AcceptanceConfig,type AcceptanceInput,type ModelAssessment} from './acceptance';
-import {validateAcceptanceConfig} from './config';
+import {buildAcceptanceConfig,decideAcceptance,type AcceptanceConfig,type AcceptanceInput,type ModelAssessment} from './acceptance';
+import {validateAcceptanceConfig,validateAcceptancePolicy} from './config';
 import {scoreRubricBindingText} from '../scoring/validate';
 import {createHash} from 'node:crypto';
 import {answerModelSetDigest,readProjectModelSet} from '../answer-models/model-set';
 import {classifyLogError,enterLogContext,logEvent} from '../logging';
 const workflowSql="SELECT w.project_id FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL FOR UPDATE OF w";
 export type AcceptanceSnapshot=Parameters<typeof buildAcceptanceInput>[0];
+export function buildConfiguredAcceptanceConfig(models:{model_id:string;minimum_score:number|null}[],policyRaw?:unknown):AcceptanceConfig{
+ const emptyPolicy=policyRaw===undefined||!!policyRaw&&typeof policyRaw==='object'&&!Array.isArray(policyRaw)&&Object.keys(policyRaw).length===0;
+ if(emptyPolicy)return buildAcceptanceConfig(models);
+ const policy=validateAcceptancePolicy(policyRaw);
+ if('aggregation'in policy)return buildAcceptanceConfig(models,policy.aggregation);
+ if(!('required_models'in policy))return buildAcceptanceConfig(models);
+ if(policy.required_models.length!==models.length||policy.required_models.some((id,index)=>id!==models[index]?.model_id))throw new HTTPException(409,{message:'历史达标模型列表与当前项目模型集合不一致'});
+ return policy;
+}
 export function acceptanceSourceDigest(snapshot:AcceptanceSnapshot){
  const canonical=(value:any):any=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
  const question=snapshot.question,q=question?.result;
@@ -22,7 +31,7 @@ export function acceptanceSourceDigest(snapshot:AcceptanceSnapshot){
   return {model,answer:answer?{id:answer.id,status:answer.status,text:a?.text,answer_sha256:a?.answer_sha256,input_digest:a?.input_digest,question_attempt_id:a?.question_attempt_id,question_version:a?.question_version}:null,score:score?{id:score.id,status:score.status,binding:score.result?.binding,report:score.result?.report,validation:score.result?.validation}:null};
  });
  // 判定口径变化后旧达标摘要失效，发布时必须按百分制重新判定。
- return createHash('sha256').update(JSON.stringify(canonical({acceptance_policy:'percentage_strict_below',config:snapshot.config,question:question?{id:question.id,status:question.status,source:question.input,question:q?.question,question_version:q?.question_version,rubric:q?.rubric,...(q?.scoring_policy?{scoring_policy:q.scoring_policy}:{}),rubric_version:q?.rubric_version,attachment_ids:q?.attachment_ids,answer_requirements:q?.answer_requirements}:null,models}))).digest('hex');
+ return createHash('sha256').update(JSON.stringify(canonical({acceptance_policy:snapshot.config.aggregation??'percentage_strict_below',config:snapshot.config,question:question?{id:question.id,status:question.status,source:question.input,question:q?.question,question_version:q?.question_version,rubric:q?.rubric,...(q?.scoring_policy?{scoring_policy:q.scoring_policy}:{}),rubric_version:q?.rubric_version,attachment_ids:q?.attachment_ids,answer_requirements:q?.answer_requirements}:null,models}))).digest('hex');
 }
 export async function readAcceptanceSnapshot(db:PoolClient,workflowId:string,config:AcceptanceConfig,modelSetDigest?:string):Promise<AcceptanceSnapshot>{
  const question=await db.query("SELECT a.id,a.status,a.input,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 WHERE a.workflow_id=$1 AND a.ordinal=4 ORDER BY a.attempt DESC LIMIT 1",[workflowId]);
@@ -84,8 +93,8 @@ export async function runAcceptance(pool:Pool,workflowId:string){
   let config:AcceptanceConfig,modelSetDigest:string|undefined;
   const configRaw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
   if(modelSet.length){
-   config={required_models:modelSet.map(model=>model.model_id),minimum_score_by_model:Object.fromEntries(modelSet.map(model=>[model.model_id,model.minimum_score]))};
-  modelSetDigest=answerModelSetDigest(modelSet);
+   config=buildConfiguredAcceptanceConfig(modelSet,configRaw);
+   modelSetDigest=answerModelSetDigest(modelSet);
   }else{
    if(!configRaw?.required_models||!configRaw?.minimum_score_by_model)throw new HTTPException(409,{message:'请先在项目作答模型中选择模型并设置各自的百分制分数上限'});
    config=validateAcceptanceConfig(configRaw);

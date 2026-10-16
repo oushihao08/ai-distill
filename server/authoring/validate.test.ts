@@ -10,6 +10,21 @@ test('新出题契约保留完整扣分否决规则和业务元数据',()=>{
  expect(validateDraft({...draft,rubric},materials,'model_report_v1').rubric).toEqual(rubric);
  expect(()=>validateDraft({...draft,rubric},materials)).toThrow();
 });
+test('Work 出题保留专业映射且外部登记身份可缺省',()=>{
+ expect(()=>validateDraft({...draft,rubric:[{id:'amount',criterion:'完整判据',rule:'准确核算',metadata:{score:7}}]},materials,'model_report_v1',{requireHarborMetadata:true})).toThrow('project_context.harbor');
+ const harborMetadata={domain_l2:'合同审查',capabilities:'合同风险识别',vl_dependency:'否',source_note:'本题脱敏卷宗',tools:'Word',task_complexity:'L2',tool_set:[],skill_set:[],expected_tool_dependencies:[],expected_skill_dependencies:[],deliverables:[{path:'成果.docx',description:'法律审查意见'}]};
+ const rubric=[{id:'amount',criterion:'完整判据',rule:'准确核算',metadata:{score:7,project_context:{harbor:{task_id:'LAW-001',org:'work',metadata:harborMetadata,input_files:[{path:'材料-001.md',description:'脱敏卷宗正文'}]}}}}];
+ expect(validateDraft({...draft,rubric},materials,'model_report_v1',{requireHarborMetadata:true}).rubric).toEqual(rubric);
+ for(const identity of [{task_id:null,org:null},{}]){
+  const pending=structuredClone(rubric);const mapping=pending[0].metadata.project_context.harbor as Record<string,unknown>;delete mapping.task_id;delete mapping.org;Object.assign(mapping,identity);
+  expect(validateDraft({...draft,rubric:pending},materials,'model_report_v1',{requireHarborMetadata:true}).rubric).toEqual(pending);
+ }
+ for(const mutate of [(h:any)=>{h.metadata=null;},(h:any)=>{delete h.metadata.capabilities;},(h:any)=>{h.input_files=[];}]){
+  const invalid=structuredClone(rubric);mutate(invalid[0].metadata.project_context.harbor);
+  expect(()=>validateDraft({...draft,rubric:invalid},materials,'model_report_v1',{requireHarborMetadata:true})).toThrow();
+ }
+ expect(()=>validateDraft({...draft,rubric},materials,'legacy',{requireHarborMetadata:true} as any)).toThrow('model_report_v1');
+});
 test('新出题契约仍拒绝缺规则、重复编号及非法业务元数据',()=>{
  for(const rubric of [[{id:'x',criterion:'判断',rule:''}],[{id:'x',criterion:'判断',rule:'按规则',metadata:{bad:Infinity}}],[{id:'x',criterion:'判断',rule:'规则'},{id:'x',criterion:'判断',rule:'规则'}]])expect(()=>validateDraft({...draft,rubric},materials,'model_report_v1')).toThrow();
 });

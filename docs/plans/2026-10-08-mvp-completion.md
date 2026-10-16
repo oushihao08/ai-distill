@@ -56,7 +56,7 @@
 
 server/skill-generation/generate.ts固定完整模板、项目materials与project.json输入，以独立Codex会话生成候选文本差异；基础references/assets全部保留，原模板与项目当前skill不改。只接收安全相对路径，入口必须实际生成；对候选入口、引用、未决问题、固定输入指纹及原资料变化逐项检查。候选与输入清单、会话、usage及检查报告保存在独立私有目录，尚未接项目队列、页面或发布流程，不能标记任务包全部完成。
 
-12项生成测试及12项现有规则/快照回归通过（共24），后端类型检查通过。用首期真实资料及指定完整基础模板的真实生成调用正在执行，脚本scripts/verify-project-skill.ts只写候选，不替换已导入skill或冻结版本；以project-skill-smoke-results.json最终状态为准。后续完成目标前重新读取docs/当前情况.MD，本轮读取仍为空，不自行写入用户的情况文档。
+12项生成测试及12项现有规则/快照回归通过（共24），后端类型检查通过。用首期真实资料及指定完整基础模板的真实生成调用正在执行，脚本projects/豆包高经济价值/scripts/skill/verify-project-skill.ts只写候选，不替换已导入skill或冻结版本；以project-skill-smoke-results.json最终状态为准。后续完成目标前重新读取docs/当前情况.MD，本轮读取仍为空，不自行写入用户的情况文档。
 
 真实生成调用当前仍在运行：exec session_id=12900；输出目录为 .storage/skill-generation-smoke/skill-1858514a-a38b-4567-b51b-c2f4636eb017。最近一次工具轮询确认进程仍live，events记录17条且无turn.completed。后续必须先轮询同一handle，不能根据这条记录单独认定仍运行，也不能因观察超时启动重复调用。
 

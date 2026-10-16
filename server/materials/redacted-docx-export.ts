@@ -50,6 +50,10 @@ async function archiveLocation(exportRootInput:string,projectName:string,phaseNa
  if(!beneath(exportRoot,docxPath)||!beneath(questionDir,docxPath))throw new HTTPException(409,{message:'附件库导出路径无效'});
  return{questionDir,originalDir,docxPath,storagePath:relative(exportRoot,docxPath).split(sep).join('/'),archivePath:relative(exportRoot,questionDir).split(sep).join('/')};
 }
+/** 达标题目的项目交付与脱敏 DOCX 共用同一成果目录。有期数时题目名与 DOCX 归档一致。 */
+export async function questionResultDirectory(exportRoot:string,projectName:string,phaseName:string,questionName:string){
+ return dirname((await archiveLocation(exportRoot,projectName,phaseName,questionName)).docxPath);
+}
 
 async function safeOriginalBytes(storageRootInput:string,material:Original){
  if(!material.storage_path||isAbsolute(material.storage_path)||material.storage_path.split(/[\\/]/).some(segment=>!segment||segment==='.'||segment==='..'))throw new HTTPException(409,{message:'当前附件原件路径无效'});

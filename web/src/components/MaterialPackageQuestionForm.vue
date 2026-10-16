@@ -28,7 +28,7 @@ onMounted(load);
   <v-select v-model="versionId" :items="versions.map(item=>({title:`第 ${item.attempt} 次脱敏 · ${new Date(item.finished_at).toLocaleString()} · ${item.redacted_sha256.slice(0,12)}`,value:item.id}))" label="材料版本" :disabled="busy" />
   <v-text-field v-model="title" label="题目名称" :maxlength="180" :disabled="busy" />
   <Row stack-on-mobile :gap="8"><v-text-field v-model="scenario" label="场景（选填）" :maxlength="180" :disabled="busy" /><v-text-field v-model="role" label="角色视角（选填）" :maxlength="180" :disabled="busy" /></Row>
-  <v-select v-model="tags" :items="projectTags" label="本期出题标签（选填）" multiple chips closable-chips clearable :disabled="busy||!projectTags.length" :hint="projectTags.length?'每道题可选择多个标签；标签在项目编辑中维护。':'本期尚无标签；可先在项目编辑中创建。'" persistent-hint />
+  <v-select v-model="tags" :items="projectTags" label="本项目出题标签（选填）" multiple chips closable-chips clearable :disabled="busy||!projectTags.length" :hint="projectTags.length?'每道题可选择多个标签；标签在项目详情的出题标签中维护。':'本项目尚无标签；请先在项目详情创建。'" persistent-hint />
   <v-textarea v-model="direction" label="出题方向（选填）" :maxlength="4000" rows="3" auto-grow :disabled="busy" />
   <p class="text-xs text-muted">场景、角色和标签是本题创建时的出题设计输入。</p>
   <Row x="end"><v-btn color="primary" variant="flat" :loading="busy" :disabled="busy||!title.trim()||!versionId" @click="create">创建题目</v-btn></Row>

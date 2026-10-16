@@ -7,7 +7,9 @@
 projects/*
 !projects/*/
 projects/*/*
-!projects/*/delivery.ts
+!projects/*/scripts/
+projects/*/scripts/*
+!projects/*/scripts/delivery.ts
 projects/README.md
 assets
 .git

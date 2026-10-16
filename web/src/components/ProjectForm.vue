@@ -1,12 +1,12 @@
 <!--
 职责：创建或编辑主项目、期数、本期题目来源目录、项目出题标签和共享本地 skill 路径。
-关键方法与用法：`submit()` 按是否收到 `project` 选择 POST 或 PATCH；成功时通过 `created` 事件返回项目，通过 `close` 事件关闭，由项目列表页托管。
+关键方法与用法：`submit()` 按是否收到 `project` 选择 POST 或 PATCH；`tagsOnly` 供项目详情只显示标签管理；成功时通过 `created` 事件返回项目，通过 `close` 事件关闭。
 -->
 
 <script setup lang="ts">
 import { api } from '../api/client';
 import type { Project } from '../types/api';
-const props = defineProps<{ project?: Project }>();
+const props = defineProps<{ project?: Project; tagsOnly?: boolean }>();
 const emit = defineEmits<{ created: [project: Project]; close: [] }>();
 const parentName = shallowRef(props.project?.parent_name ?? props.project?.name ?? '');
 const phaseName = shallowRef(props.project?.phase_name ?? '');
@@ -31,17 +31,20 @@ async function submit() {
 }
 </script>
 <template><v-form class="surface-card p-20" @submit.prevent="submit"><Column :gap="16">
- <Row x="between"><h2 class="section-title">{{ project ? '编辑出题项目' : '新建出题项目' }}</h2><v-btn icon="$close" variant="text" aria-label="关闭" :disabled="busy" @click="emit('close')" /></Row>
- <v-text-field v-model="parentName" label="主项目名称" required maxlength="120" :disabled="busy" />
- <v-text-field v-model="phaseName" label="期数（新建时必填）" :required="!project" maxlength="120" :disabled="busy" />
- <v-text-field v-model="materialRoot" label="本期材料来源目录" required placeholder="/…/项目/第五期/questions" :disabled="busy" />
- <v-alert v-if="!project" type="info" density="compact">统一按“一份材料包 → 多道题目”管理。每个子文件夹是一个材料包，先完成入库和脱敏，再从同一脱敏版本创建多道独立题目。</v-alert>
- <p v-else-if="project.material_mode==='material_packages'" class="text-xs text-muted">材料来源目录：每个子文件夹对应一个材料包；完成入库和脱敏后，可基于同一材料创建多道题目。</p>
- <v-alert v-else type="info" density="compact">这是历史项目，继续保留现有题目和目录关系。新建项目统一使用“一份材料包 → 多道题目”的流程。</v-alert>
- <v-text-field v-model="skillPath" label="主项目 skill 目录（可选）" placeholder="留空复用同名主项目的 skill" :disabled="busy" />
- <p class="text-xs text-muted">同一主项目下的期次共用此目录；首次创建时按项目/期数/questions 路径推导项目级 skill 目录。</p>
- <v-combobox v-model="questionTags" label="本期出题标签（选填）" multiple chips closable-chips clearable :disabled="busy" hint="输入标签后按回车确认；只供本期材料包建题选择，修改不会改写已有题目。" persistent-hint />
- <v-textarea v-model="description" label="项目说明（可选）" maxlength="2000" rows="2" :disabled="busy" />
+ <Row x="between"><h2 class="section-title">{{ tagsOnly ? '管理出题标签' : project ? '编辑出题项目' : '新建出题项目' }}</h2><v-btn icon="$close" variant="text" aria-label="关闭" :disabled="busy" @click="emit('close')" /></Row>
+ <template v-if="!tagsOnly">
+  <v-text-field v-model="parentName" label="主项目名称" required maxlength="120" :disabled="busy" />
+  <v-text-field v-model="phaseName" label="期数（新建时必填）" :required="!project" maxlength="120" :disabled="busy" />
+  <v-text-field v-model="materialRoot" label="本期材料来源目录" required placeholder="/…/项目/第五期/questions" :disabled="busy" />
+  <v-alert v-if="!project" type="info" density="compact">统一按“一份材料包 → 多道题目”管理。每个子文件夹是一个材料包，先完成入库和脱敏，再从同一脱敏版本创建多道独立题目。</v-alert>
+  <p v-else-if="project.material_mode==='material_packages'" class="text-xs text-muted">材料来源目录：每个子文件夹对应一个材料包；完成入库和脱敏后，可基于同一材料创建多道题目。</p>
+  <v-alert v-else type="info" density="compact">这是历史项目，继续保留现有题目和目录关系。新建项目统一使用“一份材料包 → 多道题目”的流程。</v-alert>
+  <v-text-field v-model="skillPath" label="主项目 skill 目录（可选）" placeholder="留空复用同名主项目的 skill" :disabled="busy" />
+  <p class="text-xs text-muted">同一主项目下的期次共用此目录；首次创建时按项目/期数/questions 路径推导项目级 skill 目录。</p>
+ </template>
+ <p v-else class="text-sm text-muted">标签属于当前项目，可在材料包创建题目时选择；修改标签不会改写已创建的题目。</p>
+ <v-combobox v-model="questionTags" label="本项目出题标签（选填）" multiple chips closable-chips clearable :disabled="busy" hint="输入标签后按回车确认；供本项目材料包建题选择，修改不会改写已有题目。" persistent-hint />
+ <v-textarea v-if="!tagsOnly" v-model="description" label="项目说明（可选）" maxlength="2000" rows="2" :disabled="busy" />
  <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
- <Row x="end" :gap="8"><v-btn color="secondary" :disabled="busy" @click="emit('close')">取消</v-btn><v-btn type="submit" color="primary" variant="flat" :loading="busy" :disabled="busy || !parentName.trim() || (!project && !phaseName.trim()) || !materialRoot.trim()">{{ project ? '保存修改' : '创建期次' }}</v-btn></Row>
+ <Row x="end" :gap="8"><v-btn color="secondary" :disabled="busy" @click="emit('close')">取消</v-btn><v-btn type="submit" color="primary" variant="flat" :loading="busy" :disabled="busy || !parentName.trim() || (!project && !phaseName.trim()) || !materialRoot.trim()">{{ tagsOnly ? '保存标签' : project ? '保存修改' : '创建期次' }}</v-btn></Row>
 </Column></v-form></template>

@@ -11,6 +11,7 @@ import {createModelApiClient,type ModelApiConfig} from '../llm-api';
 import {hookAdditionText,type HookAddition} from '../workflow-hooks';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '../../shared/step-prompts';
 import {extractTextScore,extractModelReport,scoreRubricSnapshot,scoreRubricBindingText,type RubricItem,type ScoreContext} from './validate';
+import {buildScoreArithmeticFiles} from './arithmetic-tool';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 /** 内部上下文保留思路与标答用于题目包校验；只有 buildScoreFiles() 的文件会交给评分模型。 */
 export function buildAnonymousInput(context:ScoreContext){
@@ -18,7 +19,7 @@ export function buildAnonymousInput(context:ScoreContext){
  const rubric=scoreRubricSnapshot(context.rubric,context.scoring_policy);
  if((context.project_name!==undefined&&(typeof context.project_name!=='string'||!context.project_name.trim()))||typeof context.question!=='string'||!context.question.trim()||typeof context.answer_approach!=='string'||!context.answer_approach.trim()||typeof context.reference_answer!=='string'||!context.reference_answer.trim()||typeof context.answer!=='string'||!context.answer.trim()||hash(context.answer)!==context.binding.answer_sha256||!Array.isArray(context.materials)||!context.materials.length||context.materials.some(m=>typeof m.text!=='string'||!m.text.trim())||!Array.isArray(context.rubric)||!context.rubric.length||context.rubric.length>500||new Set(context.rubric.map(r=>r.id)).size!==context.rubric.length||projectFiles.some(file=>!file.path||!/^[a-f0-9]{64}$/.test(file.sha256)||!Number.isInteger(file.size_bytes)||file.size_bytes<0))throw new Error('评分输入或指纹无效');
  if(hash(scoreRubricBindingText(rubric,context.scoring_policy))!==context.binding.rubric_digest)throw new Error('评分规则指纹不一致');
- return {...(context.scoring_policy?{scoring_policy:context.scoring_policy}:{}),...(context.project_name!==undefined?{project_name:context.project_name,question_id:context.question_id,step:'独立评分'}:{}),question:context.question,materials:context.materials.map((m,i)=>({name:`附件${i+1}`,text:m.text})),rubric,answer_approach:context.answer_approach,reference_answer:context.reference_answer,answer:context.answer,...(context.step_prompt?{step_prompt:context.step_prompt}:{}),...(context.project_prompt?{project_context:{source_digest:context.project_prompt.source_digest,files:context.project_prompt.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes}))}}:context.project_rules?{project_rules:{version_id:context.project_rules!.version_id,source_digest:context.project_rules!.source_digest,files:context.project_rules!.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes}))}}:{})};
+ return {...(context.scoring_policy?{scoring_policy:context.scoring_policy}:{}),...(context.project_name!==undefined?{project_name:context.project_name,question_id:context.question_id,step:'独立评分'}:{}),...(context.answer_presentation?{answer_presentation:context.answer_presentation}:{}),question:context.question,materials:context.materials.map((m,i)=>({name:`附件${i+1}`,text:m.text})),rubric,answer_approach:context.answer_approach,reference_answer:context.reference_answer,answer:context.answer,...(context.step_prompt?{step_prompt:context.step_prompt}:{}),...(context.project_prompt?{project_context:{source_digest:context.project_prompt.source_digest,files:context.project_prompt.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes}))}}:context.project_rules?{project_rules:{version_id:context.project_rules!.version_id,source_digest:context.project_rules!.source_digest,files:context.project_rules!.files.map(({path,sha256,size_bytes})=>({path,sha256,size_bytes}))}}:{})};
 }
 const string={type:'string'};
 const object=(properties:Record<string,unknown>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
@@ -27,24 +28,28 @@ export const SCORE_TASK_PROMPT='';
 /** 文件只在 Codex 的系统临时工作区生成，不写入持久化评分目录。 */
 export function buildScoreFiles(input:ReturnType<typeof buildAnonymousInput>){
  return [
-  {name:'题面与评分标准.txt',text:['【题面】',input.question,'【rubric】',...input.rubric.map(r=>'rule' in r?`${r.id}：${r.criterion}\n计分规则：${r.rule}${r.metadata?`\n业务信息：${JSON.stringify(r.metadata)}`:''}`:`${r.id}（满分${r.max_score}）：${r.criterion}`)].join('\n\n')},
+  {name:'题面与评分标准.txt',text:['【题面】',input.question,'【rubric】',...input.rubric.map(r=>'rule' in r?`${r.id}：${r.criterion}\n计分规则：${r.rule}${r.metadata?`\n业务信息：${JSON.stringify(Object.fromEntries(Object.entries(r.metadata).filter(([key])=>key!=='project_context')))}`:''}`:`${r.id}（满分${r.max_score}）：${r.criterion}`)].join('\n\n')},
   ...input.materials.map((m,i)=>({name:`附件${i+1}.txt`,text:m.text})),
   {name:'待评答案.txt',text:input.answer},
+  ...(input.scoring_policy?.contract==='model_report_v1'?buildScoreArithmeticFiles(input.rubric):[]),
+  ...(input.answer_presentation?[{name:'本次文字呈现约定.txt',text:JSON.stringify(input.answer_presentation)+'\n本轮以回复中的完整文字成果对应成果清单，不因未创建实体文件而认定内容缺失。文件名用于定位对应成果：正文分节可明确对应同名成果且内容齐备时，不因未复述/app/output/等运行目录前缀、未创建目录或文件而扣分；清单中其他有业务意义的结构、字段及格式要求仍按原Rubric核对。不得改变Rubric分值或豁免专业内容要求。实际外部检索、工具执行和文件生成未被本轮验证，相关条目须据实际表现说明限制；不能将文字描述认定为已完成操作，也不能把未验证能力当已通过。'}]:[]),
   ...(input.scoring_policy?.contract==='model_report_v1'&&input.scoring_policy.reference_answer==='calibration'?[{name:'校准参考答案.txt',text:input.reference_answer}]:[]),
  ];
 }
 /** 仅说明文件用途、完整阅读要求及用户原样评分提示词。 */
 export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>){
  const rubricIds=input.rubric.map(item=>item.id);
+ const presentationNote=input.answer_presentation?'完整读取本次文字呈现约定.txt，结合本次实际执行边界评价；不改变原Rubric。':'';
  if(input.scoring_policy?.contract==='model_report_v1')return [
-  '题面与评分标准：题面与评分标准.txt',`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,'待评分答案：待评答案.txt',
-  '完整读取上述文件，依据本次冻结项目规则逐项独立判断并说明答案证据。',input.step_prompt??'',`本题冻结项目规则：\n${input.scoring_policy.rules_text}`,
+  ...(presentationNote?[presentationNote]:[]),'题面与评分标准：题面与评分标准.txt',`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,'待评分答案：待评答案.txt',
+  '完整读取上述文件，依据本次冻结项目规则逐项独立判断并说明答案证据。每项失分指出本条实际要求及答案中的缺失或错误，不增设目录前缀、措辞或标答唯一表达等条件。必要材料已实际提供时，模型漏读、误读或未答按有效Rubric评价，不反推为出题缺陷；技术调用失败不能当作有效零分。',input.step_prompt??'',`本题冻结项目规则：\n${input.scoring_policy.rules_text}`,
   input.scoring_policy.reference_answer==='calibration'?'校准参考答案：校准参考答案.txt。仅用于结构、字段和数量级校准；不得当作唯一答案键，不得因候选措辞、顺序或同等有效方案不同而扣分。Rubric是计分依据。':'不提供参考答案。',
   `本题条目ID（每个恰好一次，不增加或删改）：${JSON.stringify(rubricIds)}`,
+  '算术工具：计分条目.json直接来自本次Rubric，不手抄权重。先完成逐项业务判断，把最终items保存为JSON，再执行python3 复算评分.py <该JSON路径>。工具只求实际加扣分之和、正项满分和净分比例，不判断业务或否决；仅在冻结规则采用净分/正项满分口径时，将net_percentage作为evaluation_percent。其他计分口径不能套用该比例。无工具的API模式如实按冻结规则核算，不声称执行脚本。正文与最终JSON必须对应同一组items；不要在工具计算后改动条目却沿用旧汇总。',
   '先输出完整评审正文，最后输出唯一结果区：<model_report>有效JSON</model_report>。JSON字段：contract="model_report_v1"；items数组每项包含id、judgment、score_delta（数字或null）、reason；summary包含raw_score、full_score、evaluation_percent（以上各为数字或null）、veto_triggered（布尔或null）。按冻结规则判断加扣分、合计及否决；evaluation_percent是规则明确允许的0—100比较指标，未规定可比较口径时为null。否决独立记录，不擅自归零。不得把绑定、任务身份或程序状态写入结果区。',
  ].join('\n\n');
  const formats=input.rubric.map(item=>`${item.id}：<得分>/${'max_score' in item?item.max_score:''}`);
- return [`题面与评分标准：题面与评分标准.txt`,`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,`待评分答案：待评答案.txt`,'请完整读取上述文件。',input.step_prompt??'',`评分条目编号规则（优先级高于前述提示词中的任何格式示例）：必须逐字使用本题清单中的 ID，每个恰好一次；若前述示例与清单不同，以本清单和题面与评分标准文件中的实际 ID 为准，不添加、删除或改写任何前后缀。\n本题rubric ID及逐项格式：\n${formats.join('\n')}`].join('\n\n');
+ return [...(presentationNote?[presentationNote]:[]),`题面与评分标准：题面与评分标准.txt`,`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,`待评分答案：待评答案.txt`,'请完整读取上述文件。',input.step_prompt??'',`评分条目编号规则（优先级高于前述提示词中的任何格式示例）：必须逐字使用本题清单中的 ID，每个恰好一次；若前述示例与清单不同，以本清单和题面与评分标准文件中的实际 ID 为准，不添加、删除或改写任何前后缀。\n本题rubric ID及逐项格式：\n${formats.join('\n')}`].join('\n\n');
 }
 /** 新契约默认提示不继承旧二元分格式；自定义正文原样保留。 */
 function scoringPrompt(context:ScoreContext,prompt?:string){
@@ -61,7 +66,7 @@ function collectScore(text:string,context:ScoreContext,binding:ScoreContext['bin
  return {score_extraction:extraction,report:{binding,total:extraction.total,max_score:extraction.max_score} as Record<string,unknown>};
 }
 /** 配置界面与实际执行共用同一指令来源，不以当前指令冒充历史快照。 */
-export function scoreExecutionInstructions(provider:'codex'|'api'='codex'){return {provider,developer_instructions:'',task_prompt:SCORE_TASK_PROMPT,input_format:provider==='api'?'inline_text_blind_v2':'separate_input_files_blind_v2',output_format:'text' as const,isolation_config:provider==='codex'?SCORE_ISOLATION_CONFIG:{}};}
+export function scoreExecutionInstructions(provider:'codex'|'api'='codex'){return {provider,developer_instructions:'',task_prompt:SCORE_TASK_PROMPT,input_format:provider==='api'?'inline_text_blind_v3':'separate_input_files_blind_v3',output_format:'text' as const,isolation_config:provider==='codex'?SCORE_ISOLATION_CONFIG:{}};}
 /** JSONB 不保留键顺序，绑定比较按固定字段与排序后的配置项计算。 */
 export function scoreExecutionDigest(provider:'codex'|'api'='codex',instructions=scoreExecutionInstructions(provider)){
  return hash(JSON.stringify([instructions.developer_instructions,instructions.task_prompt,instructions.input_format,instructions.output_format,Object.entries(instructions.isolation_config).sort(([a],[b])=>a.localeCompare(b))]));

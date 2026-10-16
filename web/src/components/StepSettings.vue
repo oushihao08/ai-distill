@@ -24,6 +24,7 @@ const apiModelItems=computed(()=>apiOptions.value.map(item=>({title:`${item.name
 const selectedApiModel=computed({get:()=>apiConfig.value?apiIdentity(apiConfig.value):'',set:(value:string)=>{const option=apiOptions.value.find(item=>apiIdentity(item.config)===value);if(option){apiConfig.value={...option.config};apiMaxTokens.value=option.config.max_tokens??'';apiThinking.value=option.config.enable_thinking===undefined?'default':option.config.enable_thinking?'enabled':'disabled';}}});
 const model=shallowRef(props.step.config.model ?? 'gpt-6.1-sol');
 const effort=shallowRef(props.step.config.reasoning_effort ?? 'medium');
+const authorTimeoutMinutes=shallowRef<number|string>(props.step.config.timeout_ms?props.step.config.timeout_ms/60000:'');
 const prompt=shallowRef(props.step.ordinal===6?resolveScoreStepPrompt(props.step.config.prompt):props.step.config.prompt??'');
 const scoreInstructions=shallowRef<{developer_instructions:string;task_prompt:string;isolation_config:Record<string,unknown>}|null>(null);
 interface ModelOption {slug:string;supported_reasoning_levels:{effort:string}[]}
@@ -31,7 +32,7 @@ const modelOptions=shallowRef<ModelOption[]>([]),loadingModels=shallowRef(false)
 const isApiRedaction=computed(()=>props.step.ordinal===9&&backend.value==='api');
 const isApiScoring=computed(()=>props.step.ordinal===6&&backend.value==='api');
 const isCodexStep=computed(()=>props.step.ordinal===4||props.step.ordinal===6&&backend.value==='codex'||props.step.ordinal===9&&backend.value==='codex');
-const invalidConfig=computed(()=>props.step.ordinal===5?!prompt.value.trim():(isApiRedaction.value||isApiScoring.value)?!apiConfig.value||!prompt.value.trim():isCodexStep.value?!model.value||!(effort.value??'').trim()||!prompt.value.trim():false);
+const invalidConfig=computed(()=>props.step.ordinal===5?!prompt.value.trim():(isApiRedaction.value||isApiScoring.value)?!apiConfig.value||!prompt.value.trim():isCodexStep.value?!model.value||!(effort.value??'').trim()||!prompt.value.trim()||props.step.ordinal===4&&authorTimeoutMinutes.value!==''&&(!Number.isInteger(Number(authorTimeoutMinutes.value))||Number(authorTimeoutMinutes.value)<1||Number(authorTimeoutMinutes.value)>120):false);
 const modelItems=computed(()=>modelOptions.value.map(item=>({title:item.slug,value:item.slug})));
 const effortItems=computed(()=>modelOptions.value.find(item=>item.slug===model.value)?.supported_reasoning_levels.map(level=>level.effort)??[]);
 const modelSourceLabel=computed(()=>props.step.config_source==='step'?'步骤单独设置':props.step.config_source==='project'?'项目默认':'Codex 全局默认');
@@ -77,7 +78,7 @@ async function save(){
   const apiSettings=isApiRedaction.value||isApiScoring.value?{provider:apiConfig.value!.provider,model:apiConfig.value!.model,base_url:apiConfig.value!.base_url,...(apiMaxTokens.value===''?{}:{max_tokens:Number(apiMaxTokens.value)}),...(['qwen','openrouter'].includes(apiConfig.value!.provider)&&apiThinking.value!=='default'?{enable_thinking:apiThinking.value==='enabled'}:{})}:undefined;
   const config=isApiRedaction.value?{provider:'api',prompt:prompt.value,api:apiSettings}:isApiScoring.value?{provider:'api',prompt:prompt.value,api:apiSettings}:{model:model.value,reasoning_effort:effort.value,...(props.step.ordinal===9?{provider:'codex',prompt:prompt.value}:{prompt:prompt.value})};
   const endpoint=`/${isCodexStep.value?'agent/':''}projects/${props.projectId}/steps/${props.step.ordinal}/config`;
-  await api(endpoint,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...config,...([4,6].includes(props.step.ordinal)&&workflowDraft.value?{workflow:workflowDraft.value}:{})})});
+  await api(endpoint,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...config,...(props.step.ordinal===4&&authorTimeoutMinutes.value!==''?{timeout_ms:Number(authorTimeoutMinutes.value)*60000}:{}),...([4,6].includes(props.step.ordinal)&&workflowDraft.value?{workflow:workflowDraft.value}:{})})});
   emit('saved');emit('close');
  }catch(cause){
   error.value=cause instanceof Error?cause.message:'保存失败';
@@ -112,6 +113,7 @@ async function inheritDefaults(){
    <v-text-field v-else-if="!isApiRedaction&&step.ordinal!==6" v-model="model" label="模型 ID" required :disabled="busy" />
    <v-textarea v-if="step.ordinal===9" v-model="prompt" label="脱敏步骤提示词" rows="8" required :disabled="busy" />
    <v-textarea v-if="[4,6].includes(step.ordinal)" v-model="prompt" :label="step.ordinal===4?'出题步骤提示词':'评分步骤提示词'" rows="8" required :disabled="busy" />
+   <v-text-field v-if="step.ordinal===4" v-model="authorTimeoutMinutes" label="出题时限（分钟，留空为默认 30）" type="number" min="1" max="120" step="1" :disabled="busy" />
    <Column v-if="step.ordinal===6&&scoreInstructions" :gap="8">
     <p class="text-xs text-muted">每次评分使用新会话，完整题目、各份附件及待评答案分别放入临时文件，由 Agent 完整读取；消息包含文件用途和上方原样提示词。结束后删除临时文件，保留评分原文及发送记录。记忆和外部资料访问关闭。</p>
     <details><summary class="text-sm cursor-pointer">查看程序调用说明与隔离参数</summary><pre class="text-xs whitespace-pre-wrap break-words">{{ scoreInstructions.task_prompt }}\n{{ JSON.stringify(scoreInstructions.isolation_config,null,2) }}</pre></details>

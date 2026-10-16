@@ -27,15 +27,15 @@ Work 兼容改造正在实施：默认旧契约保持不变；显式 `model_repo
 
 远程入库／脱敏／作答使用同一仓库代码和业务数据库；发布前将所需 `projects/` 来源资料同步到服务器部署目录，容器按数据库记录的绝对项目路径只读挂载。云端 worker 设置 `WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server`，处理服务器归属的入库、PDF提取、API脱敏和无步骤钩子的模型作答，不领取 Agent 出题或评分队列。本机 CLI 通过 SSH 隧道和 `REMOTE_MATERIAL_TOKEN` 请求服务器，远程材料与远程作答共用这一凭证配置；不得把令牌作为命令参数。本地 `.env` 中的 `REMOTE_MATERIAL_API_URL` 应指向本机隧道端口。`034_remote_material_operations.sql` 需按迁移边界核对并应用；发布脚本不自动迁移。代码支持不等于服务器已部署或验证，完整前置和断线恢复见 [CLI 说明](cli/README.md) 与 [Skill / CLI 工具地图](skill/MAP.md#cli-工具地图)。
 
-`./scripts/deploy.sh` 只发布与 GitHub `main` 完全一致的干净提交，不会自动推送代码。执行前必须显式设置 `AI_DISTILL_DEPLOY_HOST`、`AI_DISTILL_DEPLOY_USER` 和 `AI_DISTILL_DEPLOY_DIR`。每次发布都会将仓库根目录普通文件 `.env` 通过 SSH 加密传输并覆盖服务器 `$AI_DISTILL_DEPLOY_DIR/.env`；本地临时包权限为 600，镜像构建通过 `.dockerignore` 排除 `.env`。本机 `.env` 必须包含有效 `DATABASE_URL`。发布包包含项目级 `delivery.ts`，不包含其他 `projects/` 资料；交付产物写入服务器持久目录 `storage/deliveries/`。API 与 worker 以 UID 10001 运行，首次部署会将现有管理存储的所有者一次性切换到该 UID，不改文件内容。已有 worker 心跳不可信或仍有运行任务时会拒绝部署。发布不运行数据库迁移，API 健康检查会在迁移缺失时保持失败并触发回滚。
+`./scripts/runtime/deploy.sh` 只发布与 GitHub `main` 完全一致的干净提交，不会自动推送代码。执行前必须显式设置 `AI_DISTILL_DEPLOY_HOST`、`AI_DISTILL_DEPLOY_USER` 和 `AI_DISTILL_DEPLOY_DIR`。每次发布都会将仓库根目录普通文件 `.env` 通过 SSH 加密传输并覆盖服务器 `$AI_DISTILL_DEPLOY_DIR/.env`；本地临时包权限为 600，镜像构建通过 `.dockerignore` 排除 `.env`。本机 `.env` 必须包含有效 `DATABASE_URL`。发布包包含项目级 `delivery.ts`，不包含其他 `projects/` 资料；交付产物写入服务器持久目录 `storage/deliveries/`。API 与 worker 以 UID 10001 运行，首次部署会将现有管理存储的所有者一次性切换到该 UID，不改文件内容。已有 worker 心跳不可信或仍有运行任务时会拒绝部署。发布不运行数据库迁移，API 健康检查会在迁移缺失时保持失败并触发回滚。
 
-示例：`AI_DISTILL_DEPLOY_HOST=server.example AI_DISTILL_DEPLOY_USER=root AI_DISTILL_DEPLOY_DIR=/data/ai-distill ./scripts/deploy.sh`。这会更新指定服务器上的 Swarm 服务；确认目标和维护窗口后再运行。
+示例：`AI_DISTILL_DEPLOY_HOST=server.example AI_DISTILL_DEPLOY_USER=root AI_DISTILL_DEPLOY_DIR=/data/ai-distill ./scripts/runtime/deploy.sh`。这会更新指定服务器上的 Swarm 服务；确认目标和维护窗口后再运行。
 
 服务只监听服务器回环地址。发布成功后运行脚本输出的 SSH 隧道命令，再在本机打开 `http://localhost:3800`。失败时脚本恢复已有服务或清理本次创建的服务；旧镜像只在健康检查通过后清理。每次发布会同步本机 `.env`；使用前确认目标路径、SSH 登录和数据库迁移状态。
 
 ## 技术与入口
 
-Vue 3 + TypeScript + Vite + UnoCSS + Vuetify；Bun + Hono；Neon PostgreSQL + pg。接口与后台执行使用独立入口，首阶段接收材料在接口事务内完成，worker polls queued tasks every 3 seconds when started。
+Vue 3 + TypeScript + Vite + UnoCSS + Vuetify；Bun + Hono；Neon PostgreSQL + pg。Docker 构建阶段提供 Node 22 运行 `vue-tsc` 和 Vite，避免 Bun 的 Node 替代入口解析依赖失败；依赖按锁文件使用 hoisted 布局安装，服务端运行仍使用 Bun。容器配置由 Docker `env_file` 注入，服务及健康检查使用 `--no-env-file` 避免重复解析挂载的配置。接口与后台执行使用独立入口，首阶段接收材料在接口事务内完成，worker polls queued tasks every 3 seconds when started。
 
 ```sh
 bun install --frozen-lockfile
@@ -95,7 +95,7 @@ bun run build
 bun run check
 ```
 
-`bun scripts/verify-integration.ts` 使用独立临时Neon schema验证接口、持久化队列、同步等待，以及指定PDF第一页的真实智谱识别和独立脱敏。`VERIFY_FULL_PDF=1 bun scripts/verify-integration.ts` 验证整份文件；可用`VERIFY_PDF_PATH`指定其他PDF。OCR调用智谱，脱敏调用Codex；退出时删除临时schema与材料，验收记录不保存原文。主业务数据不受影响；第一页通过不代表整份卷宗通过。
+`bun scripts/verification/verify-integration.ts` 使用独立临时Neon schema验证接口、持久化队列、同步等待，以及指定PDF第一页的真实智谱识别和独立脱敏。`VERIFY_FULL_PDF=1 bun scripts/verification/verify-integration.ts` 验证整份文件；可用`VERIFY_PDF_PATH`指定其他PDF。OCR调用智谱，脱敏调用Codex；退出时删除临时schema与材料，验收记录不保存原文。主业务数据不受影响；第一页通过不代表整份卷宗通过。
 
 自动导入类型声明随源码保留，首次构建也可直接检查类型。后端测试关注上传验证、文件与事务失败清理、幂等重试及尚未接入阶段不会成功。前端不创建测试；实际页面、数据库及原件下载另做集成核对。
 
@@ -119,15 +119,15 @@ PDF提取配置位于 `config/extraction.json`：第一步创建任务时保存�
 
 单次智谱 OCR 请求及 PDF 工具等待上限为 30 分钟，与 API 的同步等待窗口独立。页级截断、空页和识别异常会随已提取文字入库并保留在问题列表中，不阻断入库；这不代表每页文字已人工核验。脱敏检查在第二步独立完成。
 
-`bun scripts/verify-input-versions.ts` 使用真实PostgreSQL临时schema及合成PDF测试并发导入、附件更新与晚到结果隔离，不调用识别服务。结果保存在 `docs/evidence/input-version-results.json`；这项验证不能代替真实PDF识别或浏览器目录选择验收。
+`bun scripts/verification/verify-input-versions.ts` 使用真实PostgreSQL临时schema及合成PDF测试并发导入、附件更新与晚到结果隔离，不调用识别服务。结果保存在 `docs/evidence/input-version-results.json`；这项验证不能代替真实PDF识别或浏览器目录选择验收。
 
-`bun scripts/verify-project-folders.ts` 使用真实数据库临时schema与合成PDF验证项目文件夹入口、步骤就绪筛选、材料修改及逻辑删除，不调用模型。详情见[项目工作台验收](docs/evidence/project-folder-workbench.md)。
+`bun scripts/verification/verify-project-folders.ts` 使用真实数据库临时schema与合成PDF验证项目文件夹入口、步骤就绪筛选、材料修改及逻辑删除，不调用模型。详情见[项目工作台验收](docs/evidence/project-folder-workbench.md)。
 
 ## 本地出题项目
 
 每个主项目位于`projects/`下，主项目共享规则资料与skill，各期的题目、更新记录和成果放在期次子目录。目录结构、文件说明和数据库职责见[项目目录说明](projects/README.md)；第五期资料说明见[第五期目录](projects/豆包高经济价值/第五期/README.md)。skill原文保留本地，任务记录本次文件指纹。
 
-历史证据 `docs/evidence/rule-workspace-verification.md` 记录了旧规则版本功能的验收范围；该流程现已退出新任务路径。`bun scripts/verify-codex-isolation.ts`只验证本机CLI沙箱的文件读写边界，不调用模型，不代表Codex执行器已经接通。
+历史证据 `docs/evidence/rule-workspace-verification.md` 记录了旧规则版本功能的验收范围；该流程现已退出新任务路径。`bun scripts/verification/verify-codex-isolation.ts`只验证本机CLI沙箱的文件读写边界，不调用模型，不代表Codex执行器已经接通。
 
 ## Qwen 独立作答客户端
 
@@ -135,7 +135,7 @@ PDF提取配置位于 `config/extraction.json`：第一步创建任务时保存�
 
 也支持通过 `OPEN_ROUTER_KEY` 调用 Qwen：仅配置普通 OpenRouter 调用密钥时，使用 `https://openrouter.ai/api/v1` 和 `qwen/qwen-plus`；可用 QWEN_BASE_URL/QWEN_MODEL 覆盖。管理密钥不能作答。不同端点只使用各自的密钥，不在失败后自动切换。
 
-针对性测试：`bun test server/answer-models/qwen.test.ts`。真实冒烟：`bun scripts/verify-qwen.ts`，只发送合成文字材料，配置齐备时调用一次收费 API；缺配置退出码2。实现、证据及主流程接线边界见[Qwen 接入验收](docs/evidence/qwen-independent-integration.md)。
+针对性测试：`bun test server/answer-models/qwen.test.ts`。真实冒烟：`bun scripts/verification/verify-qwen.ts`，只发送合成文字材料，配置齐备时调用一次收费 API；缺配置退出码2。实现、证据及主流程接线边界见[Qwen 接入验收](docs/evidence/qwen-independent-integration.md)。
 
 模型作答步骤与评分校验的产物格式、版本隔离及验收边界见 [输入与评分契约](docs/plans/2026-10-08-answer-input-and-score-contract.md)。作答入口不再要求 ordinal 10 独立审查；旧审查尝试仅保留为历史。`migrations/005_answer_queue.sql`补充模型作答步骤标记和队列索引；已通过项目迁移流程应用至当前配置数据库；其他部署按正常迁移流程应用。
 
@@ -157,7 +157,7 @@ worker每5秒采样，系统可用内存估算低于 WORKER_MIN_AVAILABLE_PERCEN
 
 先保存独立评分步骤Codex模型与推理强度，再通过项目批量按钮或题目详情“独立评分”入队。`POST /api/workflows/:id/score`支持同一任务的wait_ms等待；worker单通道读取持久化任务，使用独立匿名输入目录与会话，发送同版题面、rubric、实际脱敏附件和匿名答案，不发送作答思路、标准答案、目标分数或作答模型身份，不读取项目 skill。报告逐条评分与程序校验结果保留，争议或无效评分显示失败，评分报告可下载；usage不换算为套餐单题价格。更新部署需运行迁移及重启API/worker。
 
-`bun scripts/verify-answer-flow.ts`以临时PostgreSQL schema和注入模型验证；加`--real-score`只把首个评分任务改为一次真实Codex套餐调用，题目和作答仍为合成夹具。它不能证明真实材料七步可见流程闭环已完成。
+`bun scripts/verification/verify-answer-flow.ts`以临时PostgreSQL schema和注入模型验证；加`--real-score`只把首个评分任务改为一次真实Codex套餐调用，题目和作答仍为合成夹具。它不能证明真实材料七步可见流程闭环已完成。
 
 ## 单题生成数据清理
 
@@ -182,7 +182,7 @@ MinerU 通过异步云端服务完成 `vlm + OCR`；直连 API 与 CLI 回退复
 
 ## 新机器路径与启动
 
-已安装并登录 Codex 的机器，安装 Bun、项目依赖及 PDF 工具，配置根 `.env` 和 PostgreSQL，并显式执行迁移后，可执行 `bash scripts/start.sh` 同时启动 API、worker 和前端。脚本从自身位置定位仓库，由 Bun 加载根 `.env`；按 Ctrl+C 停止本次启动的进程，不重启已有服务，不自动安装或迁移。原 iTerm2 入口仍可使用。
+已安装并登录 Codex 的机器，安装 Bun、项目依赖及 PDF 工具，配置根 `.env` 和 PostgreSQL，并显式执行迁移后，可执行 `bash scripts/runtime/start.sh` 同时启动 API、worker 和前端，或运行 `npm run start:iterm` 在 iTerm2 启动。脚本从自身位置定位仓库，由 Bun 加载根 `.env`；按 Ctrl+C 停止本次启动的进程，不重启已有服务，不自动安装或迁移。
 
 默认存储目录 `.storage`、MinerU CLI 默认位置及相对路径配置以仓库根目录解析。材料、资料工作区和 skill 的 API 输入允许相对仓库路径，验证后仍保存绝对路径；已有绝对路径保持兼容。默认基础模板位于 `templates/company-legal-task`，可通过 `SKILL_BASE_TEMPLATE_DIR` 覆盖。前端开发代理读取根 `.env` 的 `PORT`，默认仍为3700。
 

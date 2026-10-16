@@ -4,10 +4,11 @@
  * 使用场景：评分 executor 与上下文校验在发布评分结果前调用。
  */
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
+import type {AnswerPresentation} from '../answer-models/input';
 import type {ModelRubricItem} from '../authoring/validate';
 export interface ScoreBinding {question_version:string;input_digest:string;rubric_version:string;rubric_digest:string;answer_attempt_id:string;answer_sha256:string}
 export interface RubricItem {id:string;criterion:string;max_score:number}
-export interface ScoreContext {scoring_policy?:ScoringPolicy;project_name?:string;question_id?:string;binding:ScoreBinding;question:string;materials:{name:string;text:string}[];answer:string;rubric:(RubricItem|ModelRubricItem)[];answer_approach:string;reference_answer:string;step_prompt?:string;project_prompt?:{workspace_path:string;skill_path:string;source_digest:string;files:{path:string;sha256:string;size_bytes:number}[]};project_rules?:{version_id:string;source_digest:string;snapshot_path:string;files:{path:string;sha256:string;size_bytes:number}[]}}
+export interface ScoreContext {answer_presentation?:AnswerPresentation;scoring_policy?:ScoringPolicy;project_name?:string;question_id?:string;binding:ScoreBinding;question:string;materials:{name:string;text:string}[];answer:string;rubric:(RubricItem|ModelRubricItem)[];answer_approach:string;reference_answer:string;step_prompt?:string;project_prompt?:{workspace_path:string;skill_path:string;source_digest:string;files:{path:string;sha256:string;size_bytes:number}[]};project_rules?:{version_id:string;source_digest:string;snapshot_path:string;files:{path:string;sha256:string;size_bytes:number}[]}}
 const object=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value);
 const nonblank=(value:unknown):value is string=>typeof value==='string'&&!!value.trim();
 /** 投影及绑定共用同一白名单；旧契约维持原始三字段及摘要字节顺序。 */

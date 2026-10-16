@@ -28,6 +28,13 @@ test('different rubric lengths use the same percentage threshold and equality fa
 test('comparison is not rounded to the displayed two decimals',()=>{
  expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,score:49.999,max_score:100}))}).decision).toBe('accepted');
 });
+test('configured mean uses every required model and accepts equality without rounding',()=>{
+ const config={required_models:['qwen','kimi'],minimum_score_by_model:{qwen:55,kimi:55},aggregation:{mode:'mean_at_most' as const,model_count:2,threshold:55}};
+ const models=[{model:'qwen',answer_status:'succeeded' as const,score_status:'succeeded' as const,score_valid:true,score:50,max_score:100},{model:'kimi',answer_status:'succeeded' as const,score_status:'succeeded' as const,score_valid:true,score:60,max_score:100}];
+ expect(decideAcceptance({question_current:true,config,models})).toMatchObject({decision:'accepted',aggregate:{model_count:2,mean_percentage:55,threshold:55},model_scores:{qwen:{status:'included'},kimi:{status:'included'}}});
+ expect(decideAcceptance({question_current:true,config,models:models.map(item=>({...item,score:item.model==='qwen'?50:60.02}))}).decision).toBe('repair');
+ expect(decideAcceptance({question_current:true,config,models:models.slice(0,1)}).decision).toBe('waiting');
+});
 test('missing or invalid maxima and out-of-range scores cannot pass as low scores',()=>{
  for(const max_score of [undefined,0,-1,NaN,Infinity])expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,max_score}))}).decision).toBe('waiting');
  for(const score of [undefined,-1,21,NaN,Infinity])expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,score}))}).decision).toBe('waiting');

@@ -11,7 +11,7 @@
     "build": "bun run --cwd web build",
     "check": "bun run --cwd web check && tsc --noEmit",
     "test:backend": "bun test server",
-    "start:iterm": "bash scripts/start-iterm.sh"
+    "start:iterm": "bash scripts/runtime/start-iterm.sh"
   },
   "dependencies": {
     "docx": "9.9.0",

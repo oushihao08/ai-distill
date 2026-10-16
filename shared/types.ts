@@ -25,7 +25,7 @@ export interface RedactionProgress {
 export type ModelApiProvider='qwen'|'kimi'|'deepseek'|'doubao'|'openrouter';
 export const DEFAULT_MODEL_API_MODEL='deepseek/deepseek-v4.1-flash';
 export interface ModelApiConfig {provider:ModelApiProvider;base_url:string;model:string;enable_thinking?:boolean;max_tokens?:number;provider_options?:{only:string[];allow_fallbacks:boolean}}
-export interface ProjectStage { ordinal:number;position:number;key:string;name:string;implemented:boolean;total:number;ready:number;queued:number;running:number;succeeded:number;failed:number;needs_repair:number;quarantined:number;config_source?:'step'|'project'|'system';config:{workflow?:WorkflowConfig;provider?:string;api?:ModelApiConfig;model?:string;reasoning_effort?:string;prompt?:string;base_url?:string;enable_thinking?:boolean;max_tokens?:number;required_models?:string[];minimum_score_by_model?:Record<string,number>} }
+export interface ProjectStage { ordinal:number;position:number;key:string;name:string;implemented:boolean;total:number;ready:number;queued:number;running:number;succeeded:number;failed:number;needs_repair:number;quarantined:number;config_source?:'step'|'project'|'system';config:{workflow?:WorkflowConfig;provider?:string;api?:ModelApiConfig;model?:string;reasoning_effort?:string;prompt?:string;timeout_ms?:number;base_url?:string;enable_thinking?:boolean;max_tokens?:number;required_models?:string[];minimum_score_by_model?:Record<string,number>} }
 export interface ProjectDetail { project:Project;workflows:Workflow[];steps:ProjectStage[] }
 
 export interface RuleFile { path:string;sha256:string;size_bytes:number }

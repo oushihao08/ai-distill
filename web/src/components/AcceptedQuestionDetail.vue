@@ -10,7 +10,7 @@ import StepResultTable from './StepResultTable.vue';
 
 interface ModelResult { model_id:string; name:string; attempt_id?:string|null; status:string; answer?:string|null }
 interface ScoreResult { model_id:string; name:string; answer_attempt_id?:string|null; answer_status:string; score_attempt_id?:string|null; score_status:string; score?:number|null; max_score?:number|null; valid?:boolean|null; disputes?:unknown[];score_contract?:'model_report_v1';raw_score?:number|null;full_score?:number|null;evaluation_percent?:number|null;veto_triggered?:boolean|null }
-interface AcceptanceResult { model_scores?:Record<string,{status:string;score?:number;max_score?:number;percentage?:number;threshold:number}> }
+interface AcceptanceResult { model_scores?:Record<string,{status:string;score?:number;max_score?:number;percentage?:number;threshold:number}>;aggregate?:{mode:'mean_at_most';mean_percentage:number;threshold:number;model_count:number} }
 interface RedactedText { material:Material; redaction_status:'redacted'; redacted_text:string; redacted_pages?:{page:number;text:string}[] }
 const props=defineProps<{workflowId:string;title:string;acceptanceResult?:AcceptanceResult|null}>();
 const emit=defineEmits<{close:[]}>();
@@ -94,7 +94,8 @@ watch(open,value=>{if(!value)emit('close');});
      </Column>
      <Column v-else :gap="12">
       <v-select v-model="selectedModelId" :items="scoreModels" item-title="name" item-value="model_id" label="作答模型评分" hide-details />
-      <Row v-if="scoreByModel" wrap :gap="8"><v-chip :color="decisionLabel(scoreByModel.model_id)==='passed'?'success':decisionLabel(scoreByModel.model_id)==='not_passed'?'error':'warning'">达标判定：{{ decisionLabel(scoreByModel.model_id) }}</v-chip><v-chip v-if="scoreByModel.score_contract==='model_report_v1'">原始分 {{ scoreByModel.raw_score??'—' }} / {{ scoreByModel.full_score??'—' }} · 模型指标 {{ scoreByModel.evaluation_percent??'—' }}% · 否决 {{ scoreByModel.veto_triggered===true?'是':scoreByModel.veto_triggered===false?'否':'未报告' }}</v-chip><v-chip v-else>{{ scoreByModel.score??'—' }} / {{ scoreByModel.max_score??'—' }}</v-chip><v-chip>评分 {{ scoreByModel.score_status }} · {{ scoreByModel.valid===true?'有效':scoreByModel.valid===false?'无效':'待核' }}</v-chip></Row>
+      <v-alert v-if="props.acceptanceResult?.aggregate" type="info" density="compact">两模型均分 {{ props.acceptanceResult.aggregate.mean_percentage.toFixed(2) }}%，门槛 ≤{{ props.acceptanceResult.aggregate.threshold }}%</v-alert>
+      <Row v-if="scoreByModel" wrap :gap="8"><v-chip :color="decisionLabel(scoreByModel.model_id)==='passed'?'success':decisionLabel(scoreByModel.model_id)==='not_passed'?'error':'warning'">{{ decisionLabel(scoreByModel.model_id)==='included'?'已计入均分':'达标判定：'+decisionLabel(scoreByModel.model_id) }}</v-chip><v-chip v-if="scoreByModel.score_contract==='model_report_v1'">原始分 {{ scoreByModel.raw_score??'—' }} / {{ scoreByModel.full_score??'—' }} · 模型指标 {{ scoreByModel.evaluation_percent??'—' }}% · 否决 {{ scoreByModel.veto_triggered===true?'是':scoreByModel.veto_triggered===false?'否':'未报告' }}</v-chip><v-chip v-else>{{ scoreByModel.score??'—' }} / {{ scoreByModel.max_score??'—' }}</v-chip><v-chip>评分 {{ scoreByModel.score_status }} · {{ scoreByModel.valid===true?'有效':scoreByModel.valid===false?'无效':'待核' }}</v-chip></Row>
       <Column v-if="scoreByModel" class="surface-panel max-h-[58vh] overflow-y-auto p-16" :gap="12"><span class="text-xs text-muted">模型返回的评分文本</span><pre class="whitespace-pre-wrap break-words font-sans text-sm leading-24">{{ scoreText }}</pre><StepResultTable v-if="scoreResult?.validation" :value="scoreResult.validation as Record<string,unknown>" /></Column>
       <p v-else class="text-sm text-muted">当前没有评分结果。</p>
      </Column>

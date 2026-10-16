@@ -6,7 +6,7 @@
 import {HTTPException} from 'hono/http-exception';
 
 export type WorkflowStepOrdinal=1|2|4|5|6|7|8|9;
-export interface StepDispatchTask {id:string;ids?:string[];completed?:boolean;reused?:boolean}
+export interface StepDispatchTask {id:string;ids?:string[];completed?:boolean;reused?:boolean;docx_archive_path?:string;docx_artifact_count?:number;archive_workbook_path?:string}
 export interface WorkflowStepHandlers<T>{
  1:()=>Promise<T>;
  2:()=>Promise<T>;

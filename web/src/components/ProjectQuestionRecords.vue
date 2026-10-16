@@ -1,6 +1,6 @@
 <!--
-职责：平铺展示项目全部题目、所属材料包、各步骤状态和单题操作，供项目详情页面复用。
-关键方法与用法：接收 `workflows`、`packages`、`projectId`；批量读取当前页状态，`actionsFor()` 生成单题步骤菜单，`runAction()` 调用工作流接口。
+职责：按关键词和出题标签筛选并平铺展示项目全部题目、所属材料包、各步骤状态和单题操作，供项目详情页面复用。
+关键方法与用法：接收 `workflows`、`packages`、`projectId`；批量读取当前页状态，`actionsFor()` 生成单题步骤菜单，`runAction()` 与 `runBatch()` 调用工作流接口。
 -->
 
 <script setup lang="ts">
@@ -12,20 +12,27 @@ import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
 
 const props=defineProps<{workflows:Workflow[];packages:Workflow[];projectId:string;materialPackagesEnabled?:boolean}>();
 const emit=defineEmits<{refresh:[]}>();
-const search=shallowRef('');
+const search=shallowRef<string|null>('');
+const selectedTag=shallowRef<string|null>(null);
 const page=shallowRef(1);
 const pageSize=20;
 const details=shallowRef<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>({});
 const detailErrors=shallowRef<Record<string,string>>({});
 const detailLoadingByWorkflow=shallowRef<Record<string,boolean>>({});
 const runningAction=shallowRef<string|null>(null);
+const batchOrdinal=shallowRef<number|null>(null),batchMessage=shallowRef(''),batchIssues=shallowRef<{id:string;title:string;reason:string}[]>([]);
 const actionMessages=shallowRef<Record<string,string>>({});
 const decisionDetailOpen=shallowRef(false);
 const selectedDecisionFlow=shallowRef<Workflow|null>(null);
 const history=shallowRef<{workflowId:string;title:string;ordinal:number;stepName:string}|null>(null);
 const selectedDecisionAttempt=computed(()=>selectedDecisionFlow.value?latestDecisionAttempt(selectedDecisionFlow.value):null);
+const selectedAggregate=computed(()=>{const result=selectedDecisionAttempt.value?.result as {aggregate?:{mean_percentage:number;threshold:number;model_count:number}}|null;return result?.aggregate;});
 const packageNames=computed(()=>Object.fromEntries(props.packages.map(item=>[item.id,item.title])));
-const filteredWorkflows=computed(()=>props.workflows.filter(flow=>flow.title.toLowerCase().includes(search.value.trim().toLowerCase())||Boolean(flow.source_workflow_id&&packageNames.value[flow.source_workflow_id]?.toLowerCase().includes(search.value.trim().toLowerCase()))));
+const tagOptions=computed(()=>[...new Set(props.workflows.flatMap(displayTags))].sort((a,b)=>a.localeCompare(b,'zh-CN')));
+const filteredWorkflows=computed(()=>{
+ const keyword=(search.value??'').trim().toLowerCase();
+ return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&(flow.title.toLowerCase().includes(keyword)||Boolean(flow.source_workflow_id&&packageNames.value[flow.source_workflow_id]?.toLowerCase().includes(keyword))));
+});
 const pageCount=computed(()=>Math.max(1,Math.ceil(filteredWorkflows.value.length/pageSize)));
 const visibleWorkflows=computed(()=>filteredWorkflows.value.slice((page.value-1)*pageSize,page.value*pageSize));
 const stageColumns=computed(()=>[...(!props.materialPackagesEnabled?[{ordinal:1,name:'入库'},{ordinal:9,name:'脱敏'}]:[]),{ordinal:4,name:'出题'},{ordinal:5,name:'作答'},{ordinal:6,name:'评分'},{ordinal:7,name:'达标判断'},{ordinal:8,name:'归档'}]);
@@ -118,25 +125,43 @@ async function runAction(flow:Workflow,action:RowAction){
  }catch(cause){actionMessages.value={...actionMessages.value,[flow.id]:cause instanceof Error?cause.message:`${action.label}提交失败`};}
  finally{runningAction.value=null;}
 }
+async function runBatch(ordinal:number){
+ if(!filteredWorkflows.value.length||runningAction.value||batchOrdinal.value!==null)return;
+ const selected=[...filteredWorkflows.value],name=stageColumns.value.find(stage=>stage.ordinal===ordinal)?.name??'步骤';
+ try{
+  batchOrdinal.value=ordinal;batchMessage.value='';batchIssues.value=[];
+  const result=await api<{results:{workflow_id:string;status:string;reason?:string}[]}>(`/projects/${props.projectId}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:selected.map(flow=>flow.id)})});
+  const counts:Record<string,number>={};for(const item of result.results)counts[item.status]=(counts[item.status]??0)+1;
+  batchIssues.value=result.results.filter(item=>['failed','not_found','not_ready'].includes(item.status)).map(item=>({id:item.workflow_id,title:selected.find(flow=>flow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看任务记录'}));
+  batchMessage.value=`${name}：匹配 ${selected.length} 道，排队 ${counts.queued??0}，已完成 ${counts.succeeded??0}，未就绪 ${counts.not_ready??0}，失败 ${(counts.failed??0)+(counts.not_found??0)}。`;
+  emit('refresh');await refreshDetails();
+ }catch(cause){batchMessage.value=cause instanceof Error?cause.message:`批量${name}失败`;await refreshDetails();}
+ finally{batchOrdinal.value=null;}
+}
 onMounted(refreshDetails);
-watch([()=>props.workflows,page,search],()=>{void refreshDetails();});
-watch(search,()=>{page.value=1;});
+watch([()=>props.workflows,page,search,selectedTag],()=>{void refreshDetails();});
+watch([search,selectedTag],()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 </script>
 
 <template>
  <Column class="surface-card p-16" :gap="12">
   <Row x="between" wrap :gap="12">
-   <Column :gap="4"><h2 class="section-title">题目记录</h2><span class="text-xs text-muted">共 {{ filteredWorkflows.length }} 道题 · 每页 {{ pageSize }} 道</span></Column>
-   <v-text-field v-model="search" placeholder="搜索题目" aria-label="搜索题目" hide-details clearable class="filter-field-compact" />
+   <Column :gap="4"><h2 class="section-title">题目记录</h2><span class="text-xs text-muted">匹配 {{ filteredWorkflows.length }} 道题 · 每页 {{ pageSize }} 道</span></Column>
+   <Row wrap y="center" :gap="8">
+    <v-select v-model="selectedTag" :items="tagOptions" placeholder="全部出题标签" aria-label="按出题标签筛选" hide-details clearable class="filter-field-compact" />
+    <v-text-field v-model="search" placeholder="搜索题目" aria-label="搜索题目" hide-details clearable class="filter-field-compact" />
+   </Row>
   </Row>
-  <p v-if="!visibleWorkflows.length" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无题目。打开已完成脱敏的材料包详情即可创建题目。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
+  <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">搜索结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部搜索结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn></Row>
+  <v-alert v-if="batchMessage" type="info" density="compact" role="status"><Column :gap="4"><span>{{ batchMessage }}</span><details v-if="batchIssues.length"><summary class="cursor-pointer">查看未执行题目</summary><ul class="my-0 pl-20"><li v-for="item in batchIssues" :key="item.id">{{ item.title }}：{{ item.reason }}</li></ul></details></Column></v-alert>
+  <p v-if="!visibleWorkflows.length" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。已脱敏材料包可通过上方“从材料包建题并出题”批量创建，或在材料包详情设置场景、角色、标签后单独创建。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-1080px">
     <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visibleWorkflows" :key="flow.id">
-      <td class="max-w-260px"><Column :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Column></td>
+      <td class="max-w-260px"><Column :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row><span class="text-xs text-muted break-words">出题角色／视角：{{ flow.role_perspective || '无' }}</span><span class="text-xs text-muted break-words">出题场景：{{ flow.scenario || '无' }}</span></Column></td>
       <td class="max-w-220px"><RouterLink v-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="packageNames[flow.source_workflow_id]??'查看材料包'">{{ packageNames[flow.source_workflow_id]??'查看材料包' }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap">{{ flow.material_count??0 }} 份</td>
       <td v-for="stage in stageColumns" :key="stage.ordinal" class="whitespace-nowrap"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">详情</v-btn></td>
@@ -155,7 +180,7 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
     <p v-else-if="!selectedDecisionAttempt&&selectedDecisionFlow&&detailErrors[selectedDecisionFlow.id]" class="text-sm text-danger">读取失败：{{ detailErrors[selectedDecisionFlow.id] }}</p>
     <p v-else-if="!selectedDecisionAttempt" class="text-sm text-muted">暂无达标判断执行记录。</p>
     <Column v-else class="max-h-480px overflow-y-auto" :gap="4">
-     <section v-if="selectedDecisionFlow&&decisionScores(selectedDecisionAttempt).length" class="surface-panel p-8"><h3 class="px-8 py-4 text-sm font-semibold">模型评分</h3><v-table density="compact"><thead><tr><th scope="col">模型</th><th scope="col">得分</th><th scope="col">百分制／模型指标</th><th scope="col">门槛</th><th scope="col">评分结果</th></tr></thead><tbody><tr v-for="[modelId,score] in decisionScores(selectedDecisionAttempt)" :key="modelId"><td>{{ decisionModelName(selectedDecisionFlow,modelId) }}</td><td>{{ score.score_contract==='model_report_v1'?'原始分 ':'' }}{{ (score.score_contract==='model_report_v1'?score.raw_score:score.score)??'—' }} / {{ (score.score_contract==='model_report_v1'?score.full_score:score.max_score)??'—' }}{{ score.veto_triggered===true?' · 否决':'' }}</td><td>{{ decisionPercent(score.percentage) }}</td><td>{{ typeof score.threshold==='number'?`低于 ${score.threshold}%`:'—' }}</td><td><v-chip size="small" :color="score.status==='passed'?'success':score.status==='not_passed'?'warning':score.status==='invalid'?'error':'secondary'">{{ ({passed:'达标',not_passed:'未达标',pending:'待定',invalid:'无效'} as Record<string,string>)[score.status??'']??'未知' }}</v-chip></td></tr></tbody></v-table></section>
+     <section v-if="selectedDecisionFlow&&decisionScores(selectedDecisionAttempt).length" class="surface-panel p-8"><h3 class="px-8 py-4 text-sm font-semibold">模型评分</h3><p v-if="selectedAggregate" class="px-8 pb-4 text-sm">两模型均分 {{ decisionPercent(selectedAggregate.mean_percentage) }}，门槛 ≤{{ selectedAggregate.threshold }}%（{{ selectedAggregate.model_count }} 个模型）</p><v-table density="compact"><thead><tr><th scope="col">模型</th><th scope="col">得分</th><th scope="col">百分制／模型指标</th><th scope="col">门槛</th><th scope="col">评分结果</th></tr></thead><tbody><tr v-for="[modelId,score] in decisionScores(selectedDecisionAttempt)" :key="modelId"><td>{{ decisionModelName(selectedDecisionFlow,modelId) }}</td><td>{{ score.score_contract==='model_report_v1'?'原始分 ':'' }}{{ (score.score_contract==='model_report_v1'?score.raw_score:score.score)??'—' }} / {{ (score.score_contract==='model_report_v1'?score.full_score:score.max_score)??'—' }}{{ score.veto_triggered===true?' · 否决':'' }}</td><td>{{ decisionPercent(score.percentage) }}</td><td>{{ selectedAggregate?`用于均分；≤ ${selectedAggregate.threshold}%`:(typeof score.threshold==='number'?`低于 ${score.threshold}%`:'—') }}</td><td><v-chip size="small" :color="score.status==='passed'?'success':score.status==='not_passed'?'warning':score.status==='invalid'?'error':'secondary'">{{ ({passed:'达标',not_passed:'未达标',pending:'待定',invalid:'无效',included:'计入均分'} as Record<string,string>)[score.status??'']??'未知' }}</v-chip></td></tr></tbody></v-table></section>
      <p class="text-sm text-muted">{{ (selectedDecisionAttempt.result as {reasons?:string[]}|null)?.reasons?.join('；') || '请核对各模型评分与分数上限。' }}</p>
     </Column>
    </Column>

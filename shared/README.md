@@ -25,3 +25,5 @@ WorkflowDetail 的 artifacts 可带 filename，供逐附件脱敏 DOCX 下载链
 `score.ts` 的 `evaluationPercentage()` 对 model_report_v1 直接使用明确的 evaluation_percent，空指标不回退至 raw_score；旧结果仍用 scorePercentage。workflow 配置的 `input_purpose` 只声明同步前置补充说明用途，不授权更改作答输入或核心成果。
 
 `Material.redaction_mode` 由服务端附件详情返回，`model` 为默认；DOCX 的 `declared_redacted` 是操作者声明，前端需按当前附件 SHA-256 提交变更。
+
+workflow-config.ts 的可选 content_contract=work_legal_v1 供出题阶段显式绑定内容结构，与评分 contract 分开；未提供时不增加默认键。

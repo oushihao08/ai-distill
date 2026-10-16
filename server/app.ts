@@ -34,6 +34,7 @@ import {mergeAnswerGenerationPolicyIntoStepConfig,parseAnswerGenerationPolicyMin
 import {runAcceptance} from './decisions/jobs';
 import {publishWorkflow} from './publishing/jobs';
 import {buildProjectExport,verifyProjectAuthoringRules,workbookSha256,withProjectExportLock} from './reporting/export';
+import {readArchivedWorkflowWorkbook,writeArchivedWorkflowWorkbook} from './reporting/archive-workbook';
 import {exportRedactedDocx,readCurrentRedactedDocx} from './materials/redacted-docx-export';
 import { enqueueExtraction } from './materials/jobs';
 import {createQuestionFromMaterialPackage,listMaterialPackageVersions} from './material-package-questions';
@@ -276,7 +277,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.get('/api/results',async c=>{
   const result=await pool.query(`SELECT w.id AS workflow_id,w.project_id,p.name AS project_name,w.title,w.source_key,w.source_workflow_id,source_package.title AS source_material_package_title,w.created_at,
    question.result->>'question_version' AS current_question_version,question.result->>'rubric_version' AS current_rubric_version,
-   jsonb_build_object('decision',acceptance.result->'decision','model_scores',acceptance.result->'model_scores') AS acceptance_result,
+   jsonb_build_object('decision',acceptance.result->'decision','model_scores',acceptance.result->'model_scores','aggregate',acceptance.result->'aggregate') AS acceptance_result,
    COALESCE((SELECT jsonb_agg(jsonb_build_object('model_id',answer->>'model_id','name',answer->>'name')) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(answers.result->'models')='array' THEN answers.result->'models' ELSE '[]'::jsonb END) answer),'[]'::jsonb) AS answer_models,
    publication.status AS publication_status,
    EXISTS(SELECT 1 FROM ai_distill.project_exports e WHERE e.project_id=w.project_id AND e.status='succeeded' AND w.id=ANY(e.workflow_ids)) AS exported
@@ -642,22 +643,34 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.patch('/api/workflows/:id/authoring-direction',async c=>{
   const id=uuid(c.req.param('id'));
   let body:unknown;try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'请求内容须为 JSON'});}
-  if(!body||typeof body!=='object'||!('authoring_direction' in body))throw new HTTPException(400,{message:'缺少出题方向'});
-  const value=(body as {authoring_direction:unknown}).authoring_direction;
-  if(value!==null&&typeof value!=='string')throw new HTTPException(400,{message:'出题方向须为文本或空值'});
-  const direction=value===null?null:text(value,'出题方向',2000,false)||null;
+  if(!body||typeof body!=='object'||Array.isArray(body))throw new HTTPException(400,{message:'请求内容须为对象'});
+  const values=body as Record<string,unknown>;
+  const fields=[['authoring_direction','出题方向',4000],['scenario','出题场景',180],['role_perspective','角色视角',180]] as const;
+  const updates:Record<string,string|null>={};
+  for(const [key,label,limit] of fields){
+   if(!(key in values))continue;
+   const value=values[key];
+   if(value!==null&&typeof value!=='string')throw new HTTPException(400,{message:`${label}须为文本或空值`});
+   updates[key]=value===null?null:text(value,label,limit,false)||null;
+  }
+  if(!Object.keys(updates).length)throw new HTTPException(400,{message:'缺少出题方向、场景或角色视角'});
   const db=await pool.connect();
   try{
    await db.query('BEGIN');
-   const current=(await db.query("SELECT project_id,authoring_direction FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[id])).rows[0];
+   const current=(await db.query("SELECT project_id,workflow_kind,authoring_direction,scenario,role_perspective FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[id])).rows[0];
    if(!current)throw new HTTPException(404,{message:'工作流不存在'});
-   if(current.authoring_direction!==direction){
-    await db.query('UPDATE ai_distill.workflows SET authoring_direction=$2,status=$3 WHERE id=$1',[id,direction,'waiting']);
-    await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='出题方向已更新，任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 8 AND status IN ('waiting','running')",[id]);
+   if(current.workflow_kind==='material_package')throw new HTTPException(409,{message:'请在题目上修改出题设置'});
+   const direction='authoring_direction'in updates?updates.authoring_direction:current.authoring_direction;
+   const scenario='scenario'in updates?updates.scenario:current.scenario;
+   const role='role_perspective'in updates?updates.role_perspective:current.role_perspective;
+   const changed=current.authoring_direction!==direction||current.scenario!==scenario||current.role_perspective!==role;
+   if(changed){
+    await db.query("UPDATE ai_distill.workflows SET authoring_direction=$2,scenario=$3,role_perspective=$4,status='waiting' WHERE id=$1",[id,direction,scenario,role]);
+    await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='出题设置已更新，任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 8 AND status IN ('waiting','running')",[id]);
     await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 8",[id]);
-    await db.query("UPDATE ai_distill.project_exports SET status='stale',error='出题方向已更新',finished_at=now() WHERE project_id=$1 AND (status='running' OR (status='succeeded' AND $2::uuid=ANY(workflow_ids)))",[current.project_id,id]);
+    await db.query("UPDATE ai_distill.project_exports SET status='stale',error='出题设置已更新',finished_at=now() WHERE project_id=$1 AND (status='running' OR (status='succeeded' AND $2::uuid=ANY(workflow_ids)))",[current.project_id,id]);
    }
-   await db.query('COMMIT');return c.json({authoring_direction:direction,changed:current.authoring_direction!==direction});
+   await db.query('COMMIT');return c.json({authoring_direction:direction,scenario,role_perspective:role,changed});
   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  });
  app.post('/api/workflows/:id/redacted-docx',async c=>{
@@ -791,25 +804,35 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      return new Response(file, { headers: { 'Content-Type': materialMime(result.rows[0].original_name), 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.rows[0].original_name)}`, 'Cache-Control': 'no-store' } });
    } catch (error) { throw error; }
  });
- const workflowStepHandlers=(workflowId:string):WorkflowStepHandlers<StepDispatchTask>=>({
+ const workflowStepHandlers=(workflowId:string,deliveryIdentity?:{task_id:string;org:string}):WorkflowStepHandlers<StepDispatchTask>=>({
   1:()=>enqueueIngestion(pool,workflowId),
   2:()=>enqueueExtraction(pool,workflowId),
   4:()=>enqueueAuthoring(pool,workflowId),
   5:()=>enqueueAnswer(pool,workflowId,storageRoot),
   6:()=>enqueueScore(pool,workflowId),
   7:()=>runAcceptance(pool,workflowId),
-  8:()=>publishWorkflow(pool,workflowId,storageRoot),
+  8:async()=>{
+   const archived=await publishWorkflow(pool,workflowId,storageRoot,deliveryIdentity);
+   const docx=await exportRedactedDocx(pool,workflowId,storageRoot,assetExportRoot);
+   const workbook=await writeArchivedWorkflowWorkbook(pool,workflowId,assetExportRoot);
+   await pool.query("UPDATE ai_distill.steps SET result=COALESCE(result,'{}'::jsonb)||jsonb_build_object('archive_workbook',$2::jsonb) WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded'",[workflowId,JSON.stringify({archive_path:workbook.archive_path,sha256:workbook.sha256,filename:workbook.filename})]);
+   return{...archived,docx_archive_path:docx.archive_path,docx_artifact_count:docx.artifacts.length,archive_workbook_path:workbook.archive_path};
+  },
   9:()=>enqueueRedaction(pool,workflowId),
+ });
+ app.get('/api/workflows/:id/archive-xlsx',async c=>{
+  const {bytes,filename}=await readArchivedWorkflowWorkbook(pool,uuid(c.req.param('id')),assetExportRoot);
+  return new Response(Uint8Array.from(bytes).buffer,{headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,'Cache-Control':'no-store'}});
  });
  registerWorkflowHookRoutes(app,pool);
  registerWorkflowExecutionRoutes(app,{
   pool,
-  dispatch:async(workflowId,ordinal)=>{
+  dispatch:async(workflowId,ordinal,context)=>{
    const identity=(await pool.query("SELECT workflow_kind,source_workflow_id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL",[workflowId])).rows[0];
    if(!identity)throw new HTTPException(404,{message:'工作流不存在'});
    if(identity.workflow_kind==='material_package'&&![1,2,9].includes(ordinal))throw new HTTPException(409,{message:'材料包只执行入库和脱敏'});
    if(identity.source_workflow_id&&[1,2,9].includes(ordinal))throw new HTTPException(409,{message:'派生题目使用已冻结的材料快照'});
-   return dispatchWorkflowStep(ordinal,workflowStepHandlers(workflowId));
+   return dispatchWorkflowStep(ordinal,workflowStepHandlers(workflowId,context?.delivery_identity));
   },
  });
  registerRemoteMaterialRoutes(app,pool,storageRoot);

@@ -16,7 +16,7 @@ import {validateAnswerScore} from './scoring/context';
 
 interface RouteDependencies {
  pool:Pool;
- dispatch:(workflowId:string,ordinal:WorkflowStepOrdinal)=>Promise<StepDispatchTask>;
+ dispatch:(workflowId:string,ordinal:WorkflowStepOrdinal,context?:{delivery_identity:{task_id:string;org:string}})=>Promise<StepDispatchTask>;
  batchChunkSize?:number;
  repository?:WorkflowExecutionRepository;
  waitForAttempt?:typeof waitForAttempt;
@@ -46,7 +46,18 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChu
  async function executeStep(c:Context,ordinal:WorkflowStepOrdinal){
   const waitMs=waitDuration(c.req.query('wait_ms'));
   const id=uuid(c.req.param('id')??'');
-  const task=await dispatch(id,ordinal);
+  let context:{delivery_identity:{task_id:string;org:string}}|undefined;
+  if(ordinal===8){
+   const raw=await c.req.text();
+   if(raw.trim()){
+    let body:unknown;try{body=JSON.parse(raw);}catch{throw new HTTPException(400,{message:'归档参数须为有效JSON'});}
+    if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||!('delivery_identity'in body))throw new HTTPException(400,{message:'归档参数只允许 delivery_identity'});
+    const identity=(body as {delivery_identity?:unknown}).delivery_identity;
+    if(!identity||typeof identity!=='object'||Array.isArray(identity)||Object.keys(identity).some(key=>!['task_id','org'].includes(key))||typeof (identity as any).task_id!=='string'||!/^LAW-\d{3,}$/.test((identity as any).task_id)||typeof (identity as any).org!=='string'||!/^[a-z0-9][a-z0-9-]{1,31}$/.test((identity as any).org))throw new HTTPException(400,{message:'Work归档需要已确认的 task_id（LAW-序号）和小写 org 代号'});
+    context={delivery_identity:{task_id:(identity as any).task_id,org:(identity as any).org}};
+   }
+  }
+  const task=await dispatch(id,ordinal,context);
   if(task.completed)return c.json(task,200);
   if(!waitMs)return c.json(task,202);
   const attemptIds=task.ids;

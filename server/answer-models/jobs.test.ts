@@ -4,7 +4,7 @@
 import {test,expect} from 'bun:test';
 import type {Pool} from 'pg';
 import {enqueueAnswer,runNextAnswer} from './jobs';
-import {inputDigest} from './input';
+import {inputDigest,buildAnswerInput} from './input';
 import {answerModelSetDigest} from './model-set';
 import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,mkdir,rm} from 'node:fs/promises';
@@ -203,4 +203,18 @@ test('作答阶段冻结并运行前后钩子，模型只接收原题面和脱�
  expect(called).toBe(1);
  expect([...f.hookRuns.values()].filter(r=>r.position!=='main').map(r=>r.result?.data)).toEqual([{phase:'before',question:'题面',private_fields:false},{phase:'after',question:'题面',private_fields:false}]);
  const saved=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));expect(JSON.parse(saved!.values[1]).text).toBe('答案');
+}));
+
+test('成果清单从当前题目进入实际队列快照，不泄露标答',async()=>fixture(async root=>{
+ const question={...q,content_contract:'work_legal_v1',content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'file',tools:['计算']},deliverables:[{id:'D1',path:'意见.md',description:'法律意见',required:true}],reference_answer:'禁止泄露标答'};
+ const {pool,calls}=fake({question});await enqueueAnswer(pool,'workflow',root);
+ const inserted=calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;
+ const serialized=inserted.values.find(v=>typeof v==='string'&&v.includes('question_attempt_id'));
+ const input=JSON.parse(serialized);expect(input.presentation?.deliverables[0].name).toBe('意见.md');expect(serialized).not.toContain('禁止泄露标答');
+}));
+test('实际供应商调用收到文字成果指令，且原题面保持绑定',async()=>fixture(async root=>{
+ const question={...q,deliverables:[{id:'D1',path:'意见.md',description:'完整意见',required:true}]};
+ const {pool,job}=fake({question});const input=buildAnswerInput(question,[{id:'attachment',kind:'redacted_markdown',sha256:hash('脱敏'),text:'脱敏'}]);
+ job.input={...input,question_attempt_id:'author',input_digest:inputDigest(input)};
+ let called=false;await runNextAnswer(pool,root,async req=>{called=true;expect(req.question).toContain('意见.md');expect(req.question).toContain('不代表实际创建文件');return answer();});expect(called).toBe(true);
 }));

@@ -34,6 +34,7 @@ const acceptance=computed(()=>{
  return acceptanceResult.value?.model_scores??{};
 });
 const overallDecision=computed(()=>acceptanceResult.value?.decision);
+const aggregateLabel=computed(()=>{const value=acceptanceResult.value?.aggregate;return value?`${value.model_count} 个模型均分 ${value.mean_percentage.toFixed(2)}% / 门槛 ≤${value.threshold}%`:'';});
 function modelDecision(answer:ModelAnswer,score:ModelScore|undefined,saved:ModelAcceptance|undefined):ModelAcceptance['status']{
  if(saved)return saved.status;
  if(answer.status!=='succeeded'||!score)return 'pending';
@@ -79,8 +80,8 @@ const evaluations=computed(()=>answers.value.map(answer=>{
  return {answer,score,percentage:evaluationPercentage(score),itemCounts:scoreItemCounts(score),decision:decision?.status??modelDecision(answer,score,undefined)};
 }));
 const overallLabel=computed(()=>{
- if(overallDecision.value==='accepted')return '全部模型通过';
- if(overallDecision.value==='repair')return '未全部通过，题目未达标';
+ if(overallDecision.value==='accepted')return acceptanceResult.value?.aggregate?`${acceptanceResult.value.aggregate.model_count} 个模型均分达标`:'全部模型通过';
+ if(overallDecision.value==='repair')return acceptanceResult.value?.aggregate?`${acceptanceResult.value.aggregate.model_count} 个模型均分未达标`:'未全部通过，题目未达标';
  if(overallDecision.value==='waiting')return '等待全部模型完成';
  if(overallDecision.value==='quarantine')return '题目或材料版本变化，判定已隔离';
  if(!evaluations.value.length)return '';
@@ -114,6 +115,7 @@ function failedText(attempt:Attempt){
 }
 // 作答／评分执行成功只表示任务已完成；模型是否通过由百分制分数和上限单独判定。
 function evaluationLabel(status:ModelAcceptance['status']){
+ if(status==='included')return '已计入均分';
  if(status==='passed')return '模型通过';
  if(status==='not_passed')return '模型未通过';
  if(status==='invalid')return '评分无效';
@@ -134,7 +136,7 @@ function taskStatus(status:string){
 <template>
  <section v-if="answers.length" class="surface-card p-16">
   <Column :gap="16">
-   <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">本轮模型评测</h2><span class="text-xs text-muted">被测模型得分低于上限才通过；达到或超过上限即不通过。全部所选模型通过，题目才达标</span></Column><Row wrap :gap="8"><v-chip color="secondary">{{ answers.length }} 个模型</v-chip><v-chip v-if="overallLabel" :color="overallColor">{{ overallLabel }}</v-chip><v-btn variant="outlined" color="primary" @click="openAnswers">查看模型作答</v-btn><v-btn variant="outlined" color="error" @click="openFailedScores">评分失败记录 · {{ failedScores.length }}</v-btn></Row></Row>
+   <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">本轮模型评测</h2><span class="text-xs text-muted">{{ acceptanceResult?.aggregate?`${acceptanceResult.aggregate.model_count} 个模型百分制均分不超过 ${acceptanceResult.aggregate.threshold}% 即达标；逐模型分数只作为均分构成。`:'被测模型得分低于上限才通过；达到或超过上限即不通过。全部所选模型通过，题目才达标' }}</span><span v-if="aggregateLabel" class="text-xs font-medium text-primary">{{ aggregateLabel }}</span></Column><Row wrap :gap="8"><v-chip color="secondary">{{ answers.length }} 个模型</v-chip><v-chip v-if="overallLabel" :color="overallColor">{{ overallLabel }}</v-chip><v-btn variant="outlined" color="primary" @click="openAnswers">查看模型作答</v-btn><v-btn variant="outlined" color="error" @click="openFailedScores">评分失败记录 · {{ failedScores.length }}</v-btn></Row></Row>
    <Column v-for="evaluation in evaluations" :key="evaluation.answer.model_id || evaluation.answer.attempt_id || evaluation.answer.name" class="border-t border-line-subtle pt-12" :gap="8">
     <Row x="between" wrap :gap="8">
      <Column :gap="4"><span class="text-sm font-semibold">{{ evaluation.answer.name || evaluation.answer.model_id }}</span><span class="text-xs text-muted break-all">模型 ID：{{ evaluation.answer.model_id }}</span></Column>
@@ -153,9 +155,9 @@ function taskStatus(status:string){
       <span v-else-if="typeof evaluation.score.score==='number' && typeof evaluation.score.max_score==='number'">{{ evaluation.score.score }} / {{ evaluation.score.max_score }} 分</span>
       <span v-if="evaluation.percentage!==null">{{ evaluation.score.score_contract==='model_report_v1'?'模型报告指标':'百分制' }} {{ evaluation.percentage.toFixed(2) }}{{ evaluation.score.score_contract==='model_report_v1'?'%':' 分' }}</span>
       </template>
-      <span v-if="typeof evaluation.answer.minimum_score==='number'">分数上限 {{ evaluation.answer.minimum_score }}（百分制，低于通过）</span>
+      <span v-if="acceptanceResult?.aggregate">本模型分数计入整体均分，不单独判定通过</span><span v-else-if="typeof evaluation.answer.minimum_score==='number'">分数上限 {{ evaluation.answer.minimum_score }}（百分制，低于通过）</span>
       <span v-if="evaluation.itemCounts">考点满分 {{ evaluation.itemCounts.fullScore }} 项，未满分 {{ evaluation.itemCounts.belowFull }} 项（共 {{ evaluation.itemCounts.total }} 项）</span>
-      <span v-if="evaluation.decision==='passed'">低于上限，该模型通过</span>
+      <span v-if="evaluation.decision==='included'">该模型分数已纳入均分，最终以整体均分判定</span><span v-else-if="evaluation.decision==='passed'">低于上限，该模型通过</span>
       <span v-else-if="evaluation.decision==='not_passed'">达到或超过上限，该模型不通过</span>
       <span v-else-if="evaluation.score?.extraction_status==='unparsed'">评分已返回，未能提取约定结果；请查看原文，暂不参与通过判定</span>
       <span v-else-if="evaluation.decision==='invalid'">评分无效，暂不参与通过判定</span>

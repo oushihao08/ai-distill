@@ -24,12 +24,19 @@ function setup(query:(sql:string,values?:unknown[])=>unknown|Promise<unknown>){
  const client={query:async(sql:string,values?:unknown[])=>{try{return await query(sql,values);}catch(error){throw error;}},release(){}};
  return createApp({query:client.query,connect:async()=>client}as unknown as Pool,dirs.at(-1)!);
 }
-function setupExecutionRoutes(repository:{projectExists:(projectId:string)=>Promise<boolean>;selectWorkflows:(projectId:string,workflowIds?:string[])=>Promise<{id:string;project_id:string}[]>;readStepStates:(projectId:string,workflowIds:string[])=>Promise<(WorkflowStepState&{workflow_id:string})[]>},dispatch:(workflowId:string,ordinal:WorkflowStepOrdinal)=>Promise<StepDispatchTask>,batchChunkSize=100,wait?:typeof waitForAttempt){
+function setupExecutionRoutes(repository:{projectExists:(projectId:string)=>Promise<boolean>;selectWorkflows:(projectId:string,workflowIds?:string[])=>Promise<{id:string;project_id:string}[]>;readStepStates:(projectId:string,workflowIds:string[])=>Promise<(WorkflowStepState&{workflow_id:string})[]>},dispatch:(workflowId:string,ordinal:WorkflowStepOrdinal,context?:{delivery_identity:{task_id:string;org:string}})=>Promise<StepDispatchTask>,batchChunkSize=100,wait?:typeof waitForAttempt){
  const app=new Hono();
  registerWorkflowExecutionRoutes(app,{pool:{} as Pool,repository,dispatch,batchChunkSize,...(wait?{waitForAttempt:wait}:{})});
  return app;
 }
 const empty={rows:[],rowCount:0};
+test('Work archive passes only validated external identity to the archive handler',async()=>{
+ let received:unknown;
+ const app=setupExecutionRoutes({projectExists:async()=>true,selectWorkflows:async()=>[],readStepStates:async()=>[]},async(_workflowId,_ordinal,context)=>{received=context;return{id,completed:true};});
+ const valid=await app.request(`/api/workflows/${id}/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:{task_id:'LAW-012',org:'org-legal'}})});
+ expect(valid.status).toBe(200);expect(received).toEqual({delivery_identity:{task_id:'LAW-012',org:'org-legal'}});
+ for(const identity of [{task_id:'12',org:'org-legal'},{task_id:'LAW-012',org:'Uppercase'},{task_id:'LAW-012',org:'org-legal',extra:'x'}])expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:identity})})).status).toBe(400);
+});
 test('step-eight publication has an execution route and rejects incomplete prerequisites',async()=>{
  const app=setup(sql=>sql.startsWith('SELECT w.project_id')?{rows:[{project_id:id}],rowCount:1}:empty);
  expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST'})).status).toBe(409);

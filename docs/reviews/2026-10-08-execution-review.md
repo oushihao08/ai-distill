@@ -46,7 +46,7 @@
 
 | ID | 功能 | 状态 | 作用 | 关联模块 | 难度 | 核心程度 |
 |---|---|---|---|---|---|---|
-| F01 | 前后端及 worker 启动脚本 | 已验收；当前 API 与 worker 已启动 | 启动及复用本地服务 | `scripts/start-iterm.sh`、`server/index.ts`、`server/worker.ts` | 低 | 支撑 |
+| F01 | 前后端及 worker 启动脚本 | 已验收；当前 API 与 worker 已启动 | 启动及复用本地服务 | `scripts/runtime/start-iterm.sh`、`server/index.ts`、`server/worker.ts` | 低 | 支撑 |
 | F02 | PostgreSQL 连接及迁移 | 已验收 | 业务数据持久化 | `server/db.ts`、`server/migrate.ts`、`migrations/` | 中 | 核心 |
 | F03 | 项目创建、编辑、删除 | 已验收 | 管理不同出题项目 | `server/app.ts`、`server/project-folders.ts`、`web/src/views/ProjectList.vue` | 中 | 核心 |
 | F04 | 每期独立项目资料目录 | 已验收 | 分隔资料、skill、题目、输出和快照 | `projects/`、`projects/README.md` | 低 | 核心 |
@@ -96,7 +96,7 @@
 | F38 | 全局并发设置 | 部分：材料两路、Qwen 四路；通用并发配置待建 | 控制 agent、材料和 API 调用并发 | `server/worker.ts`、`server/worker-pool.ts` | 中 | 核心 |
 | F39 | Codex 套餐认证和执行 | 已验收底层客户端及真实 ChatGPT 套餐调用；业务步骤待接 | 承载 skill 生成、出题、质检及评分 | `server/codex/client.ts` | 高 | 核心 |
 | F40 | Codex 事件、超时、取消及产物校验 | 已实现；12 项单测及真实结构化返回通过 | 区分真实完成、失败和无效产物 | `server/codex/client.ts`、`server/codex/client.test.ts` | 高 | 核心 |
-| F41 | 执行角色间的文件隔离 | 部分：7 项本地沙箱检查及真实自身输入读取通过 | 限制不同角色读取和写入的范围 | `scripts/verify-codex-isolation.ts`、Codex 执行器待接 | 高 | 核心 |
+| F41 | 执行角色间的文件隔离 | 部分：7 项本地沙箱检查及真实自身输入读取通过 | 限制不同角色读取和写入的范围 | `scripts/verification/verify-codex-isolation.ts`、Codex 执行器待接 | 高 | 核心 |
 | F42 | 国内模型配置和项目选择 | 部分：Qwen/Kimi/DeepSeek/豆包分发及单一 provider 配置已接线；通用模型表及多模型选择待建 | 按项目配置 Qwen、Kimi、DeepSeek、豆包等 | `server/project-folders.ts`、`StepSettings.vue`；通用模型表待建 | 中 | 核心 |
 | F43 | 国内模型实际作答及结果留存 | 部分：Qwen 队列及答案留存已接入；真实调用被 OpenRouter 管理 key 的 401 阻断 | 保存原始答案、产物、用量与请求结果 | `server/answer-models/qwen.ts`、`jobs.ts`、`worker.ts` | 高 | 核心 |
 | F44 | 认证失效及额度不足后暂停恢复 | 未实现 | 保存断点并等待条件恢复 | Codex/provider 队列待建 | 高 | 核心 |

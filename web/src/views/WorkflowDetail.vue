@@ -22,14 +22,19 @@ const clearOpen=shallowRef(false);
 const questionOpen=shallowRef(false);
 const directionOpen=shallowRef(false);
 const directionDraft=shallowRef('');
+const scenarioDraft=shallowRef('');
+const roleDraft=shallowRef('');
+const archiveTaskId=shallowRef('');
+const archiveOrg=shallowRef('');
 const directionSaving=shallowRef(false);
-function editDirection(){directionDraft.value=data.value?.workflow.authoring_direction??'';directionOpen.value=true;}
+const designChanged=computed(()=>directionDraft.value.trim()!==(data.value?.workflow.authoring_direction??'')||scenarioDraft.value.trim()!==(data.value?.workflow.scenario??'')||roleDraft.value.trim()!==(data.value?.workflow.role_perspective??''));
+function editDirection(){directionDraft.value=data.value?.workflow.authoring_direction??'';scenarioDraft.value=data.value?.workflow.scenario??'';roleDraft.value=data.value?.workflow.role_perspective??'';directionOpen.value=true;}
 async function saveDirection(){
  try{
   directionSaving.value=true;error.value='';
-  await api(`/workflows/${route.params.id}/authoring-direction`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({authoring_direction:directionDraft.value})});
+  await api(`/workflows/${route.params.id}/authoring-direction`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({authoring_direction:directionDraft.value,scenario:scenarioDraft.value,role_perspective:roleDraft.value})});
   directionOpen.value=false;await refresh();
- }catch(cause){error.value=cause instanceof Error?cause.message:'保存出题方向失败';}
+ }catch(cause){error.value=cause instanceof Error?cause.message:'保存出题设置失败';}
  finally{directionSaving.value=false;}
 }
 const materialPackage=computed(()=>data.value?.workflow.workflow_kind==='material_package');
@@ -92,6 +97,8 @@ const scoreDisabled=computed(()=>submitting.value || !answerReadyForScoring.valu
 async function score(){try{submitting.value=true;await api(`/workflows/${route.params.id}/score`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'评分提交失败';}finally{submitting.value=false;}}
 const acceptanceDecision=computed(()=>visibleSteps.value.find(step=>step.ordinal===7)?.result?.decision);
 const publishDisabled=computed(()=>submitting.value || activeTask.value || stepStatus(7)!=='succeeded' || acceptanceDecision.value!=='accepted');
+const isWorkProject=computed(()=>data.value?.project.parent_name==='Work法律全场景');
+const archiveIdentityValid=computed(()=>/^LAW-\d{3,}$/.test(archiveTaskId.value.trim())&&/^[a-z0-9][a-z0-9-]{1,31}$/.test(archiveOrg.value.trim()));
 const attemptNames:Record<number,string>={1:'入库',2:'PDF文本提取（入库内部）',3:'旧规则绑定（历史）',4:'出题',5:'模型作答',6:'独立评分',7:'达标判断',8:'归档达标题目',9:'脱敏与检查'};
 function attemptStatusLabel(attempt:Attempt){
  const decision=attempt.ordinal===7&&attempt.result&&typeof attempt.result==='object'&&'decision' in attempt.result?String(attempt.result.decision??''):'';
@@ -118,12 +125,13 @@ function questionSections(step:Step){
  const header=result.header&&typeof result.header==='object'?result.header as Record<string,unknown>:{};
  const labels:Record<string,string>={industry_l1:'一级行业',industry_l2:'二级行业',task_form:'任务形式',occupation_l1:'L1 职业簇',occupation_l2:'L2 职业'};
  const headerText=[`题目 ID：${text(result.question_id)}`,...Object.entries(labels).map(([key,label])=>`${label}：${header[key]==='single_round'?'单轮':text(header[key])}`)].join('\n');
- const rubric=Array.isArray(result.rubric)?result.rubric.map((item:Record<string,unknown>)=>`${text(item.id)}（${typeof item.max_score==='number'?item.max_score:'—'}分）\n${text(item.criterion)}`).join('\n\n'):'';
- return [{title:'表头',content:headerText},{title:'任务名称',content:text(result.task_name)},{title:'任务类型',content:text(result.task_type)},{title:'题面 prompt',content:text(result.question)},{title:'考点 rubric',content:rubric||'尚未保存'},{title:'作答思路',content:text(result.answer_approach)},{title:'标准答案',content:text(result.reference_answer)}];
+ const rubric=Array.isArray(result.rubric)?result.rubric.map((item:Record<string,unknown>)=>{const m=item.metadata as Record<string,unknown>|undefined;return `${text(item.id)}（${m?.priority==='Veto'?'独立否决':`${typeof m?.score==='number'?m.score:typeof item.max_score==='number'?item.max_score:'—'}分`}）\n${text(m?.statement??item.criterion)}${item.rule?`\n${text(item.rule)}`:''}${m?`\n${JSON.stringify(m,null,2)}`:''}`;}).join('\n\n'):'';
+ const workSections=result.content_contract==='work_legal_v1'?['task_metadata','input_files','deliverables','reference_outputs','research_records','task_requirements','content_status'].map((key,index)=>({title:['整题信息与等级依据','输入材料清单','成果清单','逐份完整标准成果','作者检索记录','任务能力要求','内容完成状态'][index]!,content:JSON.stringify(result[key],null,2)??'尚未保存'})):[];
+ return [{title:'表头',content:headerText},{title:'任务名称',content:text(result.task_name)},{title:'任务类型',content:text(result.task_type)},{title:'题面 prompt',content:text(result.question)},{title:'考点 rubric',content:rubric||'尚未保存'},{title:'作答思路',content:text(result.answer_approach)},{title:'标准答案',content:text(result.reference_answer)},...workSections];
 }
 function artifactLabel(kind:string){return kind==='published_result'?'下载发布成果':kind==='authored_question'?'下载题目包文本':kind==='score_report'?'下载评分报告':kind==='model_answer'?'下载模型答案':kind==='redacted_markdown'?'下载脱敏文本':'下载页码索引';}
 function deliveryLabel(step:Step){const value=step.result?.delivery;return value&&typeof value==='object'&&'mode'in value&&value.mode==='noop'?'项目交付空函数已执行':'项目交付脚本已执行';}
-async function publish(){try{submitting.value=true;error.value='';await api(`/workflows/${route.params.id}/publish`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'成果发布失败';}finally{submitting.value=false;}}
+async function publish(){try{submitting.value=true;error.value='';const result=await api<{docx_archive_path?:string}>(`/workflows/${route.params.id}/publish`,{method:'POST',...(isWorkProject.value?{headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:{task_id:archiveTaskId.value.trim(),org:archiveOrg.value.trim()}})}:{})});if(result.docx_archive_path)docxArchivePath.value=`assets/out/${result.docx_archive_path}`;await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'归档或 DOCX 生成失败';}finally{submitting.value=false;}}
 watch(()=>route.params.id,()=>{docxArchivePath.value='';directionOpen.value=false;});
 async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArchivePath.value='';const result=await api<{archive_path:string}>(`/workflows/${route.params.id}/redacted-docx`,{method:'POST'});docxArchivePath.value=`assets/out/${result.archive_path}`;await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'生成脱敏 DOCX 失败';}finally{exportingDocx.value=false;}}
 </script>
@@ -136,15 +144,14 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
   <v-alert type="info">{{ materialPackage?'本材料包只执行入库和脱敏；成功后在下方选择脱敏版本创建题目。已创建题目的快照不随材料包变化。':derivedQuestion?'本题使用创建时冻结的材料包脱敏快照。请直接从出题步骤继续；更新材料请返回材料包后新建题目。':'原件保留在本机。PDF/DOCX入库时结构化提取，TXT/MD本地解析；然后按附件脱敏方式处理。请核对提取与脱敏产物。' }}</v-alert>
   <p v-if="derivedQuestion" class="text-sm text-muted">来源材料包：<RouterLink :to="`/workflows/${data.workflow.source_workflow_id}`" class="link-text">{{ data.source_material_package?.title??'查看材料包' }}</RouterLink> · 创建时的脱敏尝试 {{ data.workflow.source_redaction_attempt_id }} · 正文指纹 {{ data.workflow.source_redaction_sha256?.slice(0,16) }} · 下方附件为本题冻结快照</p>
   <Row v-if="derivedQuestion&&(data.workflow.question_tags?.length||data.workflow.target_level)" wrap :gap="4"><span class="text-sm text-muted">出题标签：</span><v-chip v-for="tag in data.workflow.question_tags?.length?data.workflow.question_tags:[data.workflow.target_level!]" :key="tag" size="small">{{ tag }}</v-chip></Row>
-  <p v-if="derivedQuestion&&(data.workflow.scenario||data.workflow.role_perspective||data.workflow.target_level)" class="text-sm text-muted">设计输入：{{ [data.workflow.scenario,data.workflow.role_perspective,data.workflow.target_level].filter(Boolean).join(' · ') }}</p>
   <MaterialPackageQuestionForm v-if="materialPackage" :package-id="data.workflow.id" :project-tags="data.project.question_tags??[]" @created="router.push(`/workflows/${$event}`)" />
   <MaterialPackageQuestions v-if="materialPackage&&data.material_package_questions" :project-id="data.project.id" :questions="data.material_package_questions" />
   <p v-else-if="materialPackage" class="text-sm text-muted">题目列表暂不可用，请刷新工作流详情。</p>
-  <section v-if="!materialPackage" class="surface-card p-16"><Column :gap="12"><Row x="between" y="center"><h2 class="section-title">本题出题方向（选填）</h2><v-btn v-if="!directionOpen" color="secondary" variant="text" @click="editDirection">{{ data.workflow.authoring_direction ? '修改' : '填写' }}</v-btn></Row>
-   <template v-if="directionOpen"><v-textarea v-model="directionDraft" label="出题方向" variant="outlined" rows="3" auto-grow :maxlength="2000" counter="2000" hint="说明这道题要围绕什么问题出题；留空则不向出题任务添加方向。" persistent-hint /><p v-if="directionDraft.trim()!==(data.workflow.authoring_direction??'')" class="text-sm text-muted">保存修改后，本题已有题目、作答、评分和归档结果将失效；入库和脱敏结果保留。</p><Row x="end" :gap="8"><v-btn :disabled="directionSaving" @click="directionOpen=false">取消</v-btn><v-btn color="primary" :loading="directionSaving" :disabled="directionSaving||directionDraft.trim()===(data.workflow.authoring_direction??'')" @click="saveDirection">保存方向</v-btn></Row></template>
-   <p v-else class="text-sm whitespace-pre-wrap break-words">{{ data.workflow.authoring_direction || '尚未填写；出题时仅按本题材料和项目规则执行。' }}</p>
+  <section v-if="!materialPackage" class="surface-card p-16"><Column :gap="12"><Row x="between" y="center"><h2 class="section-title">本题出题设置（选填）</h2><v-btn v-if="!directionOpen" color="secondary" variant="text" @click="editDirection">修改</v-btn></Row>
+   <template v-if="directionOpen"><Row stack-on-mobile :gap="8"><v-text-field v-model="roleDraft" label="出题角色／视角" :maxlength="180" :disabled="directionSaving" /><v-text-field v-model="scenarioDraft" label="出题场景" :maxlength="180" :disabled="directionSaving" /></Row><v-textarea v-model="directionDraft" label="出题方向" variant="outlined" rows="3" auto-grow :maxlength="4000" counter="4000" :disabled="directionSaving" hint="三个字段均可留空；保存后的设置会用于下一次出题和重新出题。" persistent-hint /><p v-if="designChanged" class="text-sm text-muted">保存修改后，本题已有题目、作答、评分和归档结果将失效；入库和脱敏结果保留。</p><Row x="end" :gap="8"><v-btn :disabled="directionSaving" @click="directionOpen=false">取消</v-btn><v-btn color="primary" :loading="directionSaving" :disabled="directionSaving||!designChanged" @click="saveDirection">保存设置</v-btn></Row></template>
+   <template v-else><p class="text-sm whitespace-pre-wrap break-words">出题角色／视角：{{ data.workflow.role_perspective || '无' }}</p><p class="text-sm whitespace-pre-wrap break-words">出题场景：{{ data.workflow.scenario || '无' }}</p><p class="text-sm whitespace-pre-wrap break-words">出题方向：{{ data.workflow.authoring_direction || '无' }}</p></template>
   </Column></section>
-  <section v-if="!materialPackage&&data.steps.some(step=>step.ordinal===9&&step.status==='succeeded')" class="surface-card p-16"><Column :gap="12"><h2 class="section-title">可选脱敏材料 DOCX</h2><p class="text-sm text-muted">流程完成并归档后可手动生成，供后续自行上传。每个附件分别生成一份 DOCX。导出使用当前脱敏结果，不会新增或重跑工作流步骤；原件副本与 DOCX 保存在仓库的 <code>assets/out/附件库/</code> 下。<template v-if="!canExportDocx">当前还需完成：{{ currentStep?.name ?? '归档达标题目' }}。</template></p><p v-if="docxArchivePath" class="text-xs text-muted break-all">本题附件目录：{{ docxArchivePath }}</p><Row wrap :gap="8"><v-btn color="primary" variant="flat" :loading="exportingDocx" :disabled="exportingDocx||!canExportDocx" @click="exportDocx">生成脱敏 DOCX</v-btn><v-btn v-for="artifact in currentDocxArtifacts" :key="artifact.id" :href="`/api/artifacts/${artifact.id}/download`" color="secondary" variant="text">下载 {{ artifact.filename ?? '脱敏材料.docx' }}</v-btn></Row></Column></section>
+  <section v-if="!materialPackage&&data.steps.some(step=>step.ordinal===9&&step.status==='succeeded')" class="surface-card p-16"><Column :gap="12"><h2 class="section-title">脱敏材料 DOCX</h2><p class="text-sm text-muted">归档达标题目时会自动生成；每个附件分别生成一份 DOCX，写入 <code>assets/out/附件库/</code>。如需重试或重新导出，可在流程完成后使用下方按钮。</p><p v-if="docxArchivePath" class="text-xs text-muted break-all">本题附件目录：{{ docxArchivePath }}</p><Row wrap :gap="8"><v-btn color="primary" variant="flat" :loading="exportingDocx" :disabled="exportingDocx||!canExportDocx" @click="exportDocx">重新生成脱敏 DOCX</v-btn><v-btn v-for="artifact in currentDocxArtifacts" :key="artifact.id" :href="`/api/artifacts/${artifact.id}/download`" color="secondary" variant="text">下载 {{ artifact.filename ?? '脱敏材料.docx' }}</v-btn></Row></Column></section>
   <Row stack-on-mobile y="start" :gap="16">
    <StepTimeline :steps="visibleSteps" class="w-full lg:w-650px lg:flex-none">
     <template #actions="{step}">
@@ -157,7 +164,7 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
      <v-btn v-if="step.ordinal===5" color="primary" variant="flat" :loading="submitting" :disabled="answerDisabled" @click="answer">模型作答</v-btn>
      <v-btn v-if="step.ordinal===6" color="primary" variant="flat" :loading="submitting" :disabled="scoreDisabled" @click="score">独立评分</v-btn>
      <span v-if="step.ordinal===7 && !step.result" class="text-xs text-muted">独立评分完成后自动判定</span>
-     <Row v-if="step.ordinal===8" wrap y="center" :gap="8"><v-btn color="primary" variant="flat" :loading="submitting" :disabled="publishDisabled" @click="publish">{{ step.status==='succeeded' ? '重新执行项目交付' : '归档题目并执行项目交付' }}</v-btn><span v-if="step.status==='succeeded' && step.result?.delivery" class="text-xs text-muted">{{ deliveryLabel(step) }}</span></Row>
+   <Column v-if="step.ordinal===8" :gap="8" class="w-full"><Row v-if="isWorkProject" stack-on-mobile :gap="8"><v-text-field v-model="archiveTaskId" label="外部 task_id（LAW-序号）" placeholder="LAW-001" hint="填写已确认的平台任务编号；系统不会猜造。" persistent-hint :disabled="submitting" /><v-text-field v-model="archiveOrg" label="平台 org 代号" placeholder="小写字母或数字" hint="填写平台确认的组织代号。" persistent-hint :disabled="submitting" /></Row><Row wrap y="center" :gap="8"><v-btn color="primary" variant="flat" :loading="submitting" :disabled="publishDisabled||(isWorkProject&&!archiveIdentityValid)" @click="publish">{{ step.status==='succeeded' ? '重新执行项目交付' : '归档题目并执行项目交付' }}</v-btn><v-btn v-if="step.status==='succeeded' && step.result?.archive_workbook" :href="`/api/workflows/${data.workflow.id}/archive-xlsx`" color="secondary" variant="outlined">下载本题归档 Excel</v-btn><span v-if="step.status==='succeeded' && step.result?.delivery" class="text-xs text-muted">{{ deliveryLabel(step) }}</span></Row></Column>
     </template>
     <template #artifacts="{step}">
      <p v-if="step.ordinal===9 && redactionProgressLabel(step)" class="text-xs text-muted break-all">{{ redactionProgressLabel(step) }}</p>

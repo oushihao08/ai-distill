@@ -9,7 +9,7 @@ export interface HookAction {
  timeout_ms:number;idempotent:boolean;input_purpose?:string;model_request?:{config:ModelApiConfig;prompt:string};
 }
 export interface WorkflowConfig {
- contract:WorkflowContract;rules_text:string;reference_answer:'none'|'calibration';
+ content_contract?:'work_legal_v1';contract:WorkflowContract;rules_text:string;reference_answer:'none'|'calibration';
  hooks:{before:HookAction[];after:HookAction[]};
 }
 export type ScoringPolicy=Pick<WorkflowConfig,'contract'|'rules_text'|'reference_answer'>;
@@ -56,10 +56,11 @@ function actions(raw:unknown):HookAction[]{
 export function validateWorkflowConfig(raw:unknown):WorkflowConfig|undefined{
  if(raw===undefined)return undefined;
  if(!record(raw))return fail();
- keys(raw,['contract','rules_text','reference_answer','hooks']);
+ keys(raw,['contract','rules_text','reference_answer','hooks','content_contract']);
+ if(raw.content_contract!==undefined&&raw.content_contract!=='work_legal_v1')return fail();
  const contract=raw.contract??'legacy',rules_text=raw.rules_text??'',reference_answer=raw.reference_answer??'none',hooks=raw.hooks??{};
  if(!['legacy','model_report_v1'].includes(contract as string)||typeof rules_text!=='string'||rules_text.length>200000||!['none','calibration'].includes(reference_answer as string)||!record(hooks))return fail();
  if(contract==='legacy'&&reference_answer!=='none')return fail();
  keys(hooks,['before','after']);
- return {contract:contract as WorkflowContract,rules_text,reference_answer:reference_answer as 'none'|'calibration',hooks:{before:actions(hooks.before??[]),after:actions(hooks.after??[])}};
+ return {...(raw.content_contract?{content_contract:raw.content_contract as 'work_legal_v1'}:{}),contract:contract as WorkflowContract,rules_text,reference_answer:reference_answer as 'none'|'calibration',hooks:{before:actions(hooks.before??[]),after:actions(hooks.after??[])}};
 }

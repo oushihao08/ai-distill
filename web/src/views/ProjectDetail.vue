@@ -14,7 +14,7 @@ import { useResource } from '../composables/useResource';
 import { type ProjectDetail,type ProjectStage } from '../types/api';
 const route=useRoute();const router=useRouter();
 const {data,error,loading,refresh}=useResource<ProjectDetail>(`/projects/${route.params.id}`);
-const editOpen=shallowRef(false);const deleteOpen=shallowRef(false);const modelSettingsOpen=shallowRef(false);const materialsSettingsOpen=shallowRef(false);
+const editOpen=shallowRef(false);const tagsOpen=shallowRef(false);const deleteOpen=shallowRef(false);const modelSettingsOpen=shallowRef(false);const materialsSettingsOpen=shallowRef(false);
 const recordsStep=shallowRef<ProjectStage|null>(null);
 const settings=shallowRef<ProjectStage|null>(null);const busy=shallowRef<number|string|null>(null);const message=shallowRef('');
 const exportError=shallowRef('');
@@ -23,7 +23,6 @@ const syncMessage=shallowRef('');const syncError=shallowRef('');
 const materialPackages=computed(()=>data.value?.workflows.filter(flow=>flow.workflow_kind==='material_package')??[]);
 const questionWorkflows=computed(()=>data.value?.workflows.filter(flow=>flow.workflow_kind!=='material_package')??[]);
 const authorablePackages=computed(()=>materialPackages.value.filter(pkg=>pkg.material_redaction_status==='succeeded'&&!questionWorkflows.value.some(question=>question.source_workflow_id===pkg.id)));
-function readyCount(step:ProjectStage){return step.ready+(step.ordinal===4?authorablePackages.value.length:0);}
 const recordsWorkflows=computed(()=>recordsStep.value&&[1,9].includes(recordsStep.value.ordinal)&&data.value?.project.material_mode==='material_packages'?materialPackages.value:questionWorkflows.value);
 async function exportProject(){
  try{
@@ -41,11 +40,11 @@ async function exportProject(){
  }catch(cause){exportError.value=cause instanceof Error?cause.message:'导出失败';}finally{busy.value=null;}
 }
 const visibleSteps=computed(()=>data.value?.steps.filter(step=>step.ordinal!==10)??[]);
-async function runStep(step:ProjectStage){
+async function runStep(step:ProjectStage,fromPackages=false){
  try{
   busy.value=step.ordinal;message.value='';error.value='';batchFailures.value=[];
   const createdIds:string[]=[];
-  if(step.ordinal===4){
+  if(step.ordinal===4&&fromPackages){
    for(const pkg of authorablePackages.value){
     try{
      const versions=await api<{id:string}[]>(`/material-packages/${pkg.id}/versions`);
@@ -55,7 +54,7 @@ async function runStep(step:ProjectStage){
     }catch(cause){batchFailures.value.push({workflow_id:pkg.id,title:pkg.title,reason:cause instanceof Error?cause.message:'建题失败'});}
    }
   }
-  const result=await api<{results:{workflow_id:string;status:string;reused?:boolean;attempt_ids?:string[];reason?:string}[]}>(`/projects/${route.params.id}/steps/${step.ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(step.ordinal===4?{workflow_ids:[...questionWorkflows.value.map(question=>question.id),...createdIds]}:{})});
+  const result=await api<{results:{workflow_id:string;status:string;reused?:boolean;attempt_ids?:string[];reason?:string}[]}>(`/projects/${route.params.id}/steps/${step.ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(step.ordinal===4?{workflow_ids:fromPackages?createdIds:questionWorkflows.value.map(question=>question.id)}:{})});
   const queued=result.results.filter(item=>item.status==='queued').length;
   const completed=result.results.filter(item=>item.status==='succeeded').length;
   const notReady=result.results.filter(item=>item.status==='not_ready').length;
@@ -64,7 +63,7 @@ async function runStep(step:ProjectStage){
   const newTasks=result.results.filter(item=>item.status==='queued'&&!item.reused).reduce((sum,item)=>sum+taskCount(item),0);
   const reusedTasks=result.results.filter(item=>item.status==='queued'&&item.reused).reduce((sum,item)=>sum+taskCount(item),0);
   batchFailures.value.push(...result.results.filter(item=>item.status==='failed'||item.status==='not_found'||item.status==='not_ready').map(item=>({workflow_id:item.workflow_id,title:data.value?.workflows.find(workflow=>workflow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看服务端日志'})));
-  message.value=`${step.name}批量执行结果：新建 ${createdIds.length} 道题，新派发 ${newTasks} 个任务（${queued} 道题），复用 ${reusedTasks} 个已有任务，已完成 ${completed} 道，未就绪 ${notReady} 道，失败 ${failed+batchFailures.value.filter(item=>materialPackages.value.some(pkg=>pkg.id===item.workflow_id)).length} 道。`;
+  message.value=`${fromPackages?'从材料包建题并出题':step.name}批量执行结果：新建 ${createdIds.length} 道题，新派发 ${newTasks} 个任务（${queued} 道题），复用 ${reusedTasks} 个已有任务，已完成 ${completed} 道，未就绪 ${notReady} 道，失败 ${failed+batchFailures.value.filter(item=>materialPackages.value.some(pkg=>pkg.id===item.workflow_id)).length} 道。`;
   await refresh();
  }catch(cause){error.value=cause instanceof Error?cause.message:'执行失败';await refresh();}finally{busy.value=null;}
 }
@@ -78,6 +77,7 @@ async function removeProject(){
  catch(cause){error.value=cause instanceof Error?cause.message:'删除失败';}finally{busy.value=null;}
 }
 async function savedProject(){editOpen.value=false;await refresh();}
+async function savedTags(){tagsOpen.value=false;await refresh();}
 </script>
 <template><Column :gap="16">
  <RouterLink to="/" class="link-text text-sm">← 全部出题项目</RouterLink>
@@ -85,15 +85,17 @@ async function savedProject(){editOpen.value=false;await refresh();}
  <p v-if="loading&&!data" class="text-muted">正在读取项目…</p>
  <template v-if="data">
   <Row x="between" wrap :gap="12"><Column :gap="6" class="min-w-0"><h1 class="text-2xl font-bold text-ink-heading break-words">{{ data.project.name }}</h1><p v-if="data.project.description" class="text-sm text-muted">{{ data.project.description }}</p></Column><Row wrap :gap="8"><v-btn @click="modelSettingsOpen=true">作答模型设置</v-btn><v-btn @click="openMaterialsSettings">材料与 skill</v-btn><v-btn :disabled="busy!==null" @click="editOpen=true">编辑项目</v-btn><v-btn :loading="loading" @click="refresh">刷新</v-btn><v-btn color="error" :disabled="busy!==null" @click="deleteOpen=true">删除</v-btn></Row></Row>
+  <Row class="surface-card p-12" x="between" wrap y="center" :gap="8"><Row wrap y="center" :gap="6"><span class="text-sm font-medium text-ink-heading">本项目出题标签</span><v-chip v-for="tag in data.project.question_tags??[]" :key="tag" size="small" color="primary" variant="tonal">{{ tag }}</v-chip><span v-if="!data.project.question_tags?.length" class="text-sm text-muted">尚未创建</span></Row><v-btn size="small" variant="outlined" :disabled="busy!==null" @click="tagsOpen=true">{{ data.project.question_tags?.length?'管理标签':'创建标签' }}</v-btn></Row>
   <v-alert v-if="message" type="info" role="status"><Column :gap="6"><span>{{ message }}</span><details v-if="batchFailures.length"><summary class="cursor-pointer">查看派发失败题目</summary><ul class="my-0 pl-20"><li v-for="item in batchFailures" :key="item.workflow_id">{{ item.title }}（{{ item.workflow_id }}）：{{ item.reason }}</li></ul></details></Column></v-alert>
    <ProjectCodexSettings :key="data.project.id" :project-id="data.project.id" />
-  <p class="text-xs text-muted">状态在打开页面、提交操作或手动刷新时更新。批量出题会先为已脱敏且尚无题目的材料包建立首道题，再派发就绪题目。第一步未完成的记录不会进入第二步。</p>
-  <Column :gap="10"><section v-for="step in visibleSteps" :key="step.ordinal" class="surface-card p-16"><Row x="between" wrap :gap="12"><Row :gap="12"><v-avatar color="primary" variant="tonal" size="32"><span class="text-sm">{{ step.position }}</span></v-avatar><Column :gap="6"><button type="button" class="bg-transparent border-none p-0 text-left text-sm font-semibold text-ink-heading hover:text-primary cursor-pointer" @click="recordsStep=step">{{ step.name }}</button><Row wrap :gap="12" class="text-xs text-muted"><span class="text-primary">就绪 {{ readyCount(step) }}</span><span>排队 {{ step.queued }}</span><span>运行 {{ step.running }}</span><template v-if="step.ordinal===7"><span class="text-success">达标 {{ step.succeeded }}</span><span class="text-warning-text">未达标 {{ step.needs_repair }}</span><span v-if="step.quarantined" class="text-danger">隔离 {{ step.quarantined }}</span></template><span v-else class="text-success">成功 {{ step.succeeded }}</span><span :class="step.failed?'text-danger':''">失败 {{ step.failed }}</span></Row></Column></Row><Row :gap="8"><v-btn @click="recordsStep=step">{{ data.project.material_mode==='material_packages'&&[1,9].includes(step.ordinal)?'查看材料包':'查看题目' }}</v-btn><v-btn v-if="[9,4,5,6].includes(step.ordinal)" @click="settings=step">{{ step.ordinal===5?'流程设置':'设置' }}</v-btn><v-btn color="primary" variant="flat" :loading="busy===step.ordinal" :disabled="busy!==null||!step.implemented||readyCount(step)===0" @click="runStep(step)">{{ step.ordinal===7?'批量判断':step.implemented?`执行就绪 ${readyCount(step)}`:'尚未接入' }}</v-btn></Row></Row></section></Column>
+  <p class="text-xs text-muted">状态在打开页面、提交操作或手动刷新时更新。“出题就绪”只统计已创建题目；已脱敏但尚无题目的材料包单独显示为“可建题”。第一步未完成的记录不会进入第二步。</p>
+  <Column :gap="10"><section v-for="step in visibleSteps" :key="step.ordinal" class="surface-card p-16"><Row x="between" wrap :gap="12"><Row :gap="12"><v-avatar color="primary" variant="tonal" size="32"><span class="text-sm">{{ step.position }}</span></v-avatar><Column :gap="6"><button type="button" class="bg-transparent border-none p-0 text-left text-sm font-semibold text-ink-heading hover:text-primary cursor-pointer" @click="recordsStep=step">{{ step.name }}</button><Row wrap :gap="12" class="text-xs text-muted"><span class="text-primary">就绪 {{ step.ready }}</span><span v-if="step.ordinal===4&&data.project.material_mode==='material_packages'" class="text-muted">可建题材料包 {{ authorablePackages.length }}</span><span>排队 {{ step.queued }}</span><span>运行 {{ step.running }}</span><template v-if="step.ordinal===7"><span class="text-success">达标 {{ step.succeeded }}</span><span class="text-warning-text">未达标 {{ step.needs_repair }}</span><span v-if="step.quarantined" class="text-danger">隔离 {{ step.quarantined }}</span></template><span v-else class="text-success">成功 {{ step.succeeded }}</span><span :class="step.failed?'text-danger':''">失败 {{ step.failed }}</span></Row></Column></Row><Row :gap="8"><v-btn @click="recordsStep=step">{{ data.project.material_mode==='material_packages'&&[1,9].includes(step.ordinal)?'查看材料包':'查看题目' }}</v-btn><v-btn v-if="[9,4,5,6].includes(step.ordinal)" @click="settings=step">{{ step.ordinal===5?'流程设置':'设置' }}</v-btn><v-btn color="primary" variant="flat" :loading="busy===step.ordinal" :disabled="busy!==null||!step.implemented||step.ready===0" @click="runStep(step)">{{ step.ordinal===7?'批量判断':step.implemented?`执行就绪 ${step.ready}`:'尚未接入' }}</v-btn><v-btn v-if="step.ordinal===4&&data.project.material_mode==='material_packages'" color="primary" variant="outlined" :loading="busy===4" :disabled="busy!==null||authorablePackages.length===0" @click="runStep(step,true)">从材料包建题并出题 {{ authorablePackages.length }}</v-btn></Row></Row></section></Column>
    <ProjectMaterialRecords v-if="data.project.material_mode==='material_packages'" :project-id="data.project.id" :packages="materialPackages" :questions="questionWorkflows" @refresh="refresh" />
    <ProjectQuestionRecords :project-id="data.project.id" :workflows="questionWorkflows" :packages="materialPackages" :material-packages-enabled="data.project.material_mode==='material_packages'" @refresh="refresh" />
    <AcceptedQuestionList :workflows="questionWorkflows" :packages="materialPackages" :exporting="busy==='export'" :export-error="exportError" @export="exportProject" />
   <v-dialog :model-value="recordsStep!==null" max-width="1280" @update:model-value="recordsStep=null"><ProjectStepRecords v-if="recordsStep" :key="`${data.project.id}-${recordsStep.ordinal}`" :step="recordsStep" :workflows="recordsWorkflows" @close="recordsStep=null" /></v-dialog>
   <v-dialog v-model="editOpen" max-width="560"><ProjectForm v-if="editOpen" :project="data.project" @created="savedProject" @close="editOpen=false" /></v-dialog>
+  <v-dialog v-model="tagsOpen" max-width="560"><ProjectForm v-if="tagsOpen" :project="data.project" tags-only @created="savedTags" @close="tagsOpen=false" /></v-dialog>
   <v-dialog v-model="modelSettingsOpen" max-width="980" scrollable>
    <v-card class="surface-card max-h-[90vh] overflow-hidden">
     <v-card-title class="p-20 pb-8"><Row x="between" y="center" :gap="12"><h2 class="section-title">作答模型设置</h2><v-btn icon="$close" variant="text" aria-label="关闭作答模型设置" @click="modelSettingsOpen=false" /></Row></v-card-title>

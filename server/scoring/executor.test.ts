@@ -1,6 +1,6 @@
 /** 验证评分仅接收同版题面、rubric、附件和匿名答案；覆盖独立会话、文本总分、绑定与取消，不调用真实模型。 */
 import {test,expect} from 'bun:test';
-import {mkdtemp,readdir,rm} from 'node:fs/promises';
+import {mkdtemp,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -130,5 +130,47 @@ test('cancelled grading never invokes Codex or creates an execution directory',a
  try{
   await expect(runIndependentScore(context,{root,model:'fixture',reasoning_effort:'low',signal:controller.signal,execute:async()=>{called=true;throw new Error('unexpected');}})).rejects.toThrow('取消');
   expect(called).toBe(false);expect(await readdir(root)).toEqual([]);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('评分收到冻结的文字呈现边界，保留Rubric且不豁免实际错误',()=>{
+ const presentation={mode:'text_deliverables_v1',deliverables:[{name:'意见.md',description:'法律意见',required:true}],instructions:'以文字呈现，不代表实际创建文件'};
+ const input=buildAnonymousInput({...context,answer_presentation:presentation} as any);
+ const files=buildScoreFiles(input),text=files.map(f=>f.text).join('\n');
+ expect(text).toContain('文字呈现');expect(text).toContain('意见.md');expect(text).toContain('外部检索');
+ expect(text).toContain('不因未复述/app/output/等运行目录前缀');
+ expect(text).toContain('其他有业务意义的结构、字段及格式要求仍按原Rubric核对');
+ expect(text).toContain('不得改变Rubric分值或豁免专业内容要求');
+ expect(input.rubric).toEqual(context.rubric);
+});
+
+
+test('model-report评分给Agent原始权重和只读复算工具，累计扣分及否决不改变业务判断',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'grading-arithmetic-'));
+ try{
+  const weights=[7,7,7,7,7,10,10,10,10,-7,null];
+  const rubric=weights.map((score,i)=>({id:`R${i}`,criterion:'本次判据',rule:'按本条冻结规则',metadata:{score,priority:score===null?'Veto':'Important'}}));
+  const input={...buildAnonymousInput(context),rubric,scoring_policy:{contract:'model_report_v1',rules_text:'净分除以所有正项满分',reference_answer:'none'}} as any;
+  const files=buildScoreFiles(input);
+  const weightsFile=files.find(f=>f.name==='计分条目.json'),tool=files.find(f=>f.name==='复算评分.py');
+  expect(weightsFile).toBeDefined();expect(tool).toBeDefined();
+  expect(JSON.parse(weightsFile!.text).map((x:any)=>x.score)).toEqual(weights);
+  for(const f of [weightsFile!,tool!])await writeFile(join(root,f.name),f.text);
+  const deltas=[7,7,0,0,0,10,10,10,10,-7,null];
+  const items=weights.map((_,i)=>({id:`R${i}`,score_delta:deltas[i]}));
+  await writeFile(join(root,'draft.json'),JSON.stringify({items}));
+  const run=Bun.spawnSync(['python3','复算评分.py','draft.json'],{cwd:root});
+  expect(run.exitCode).toBe(0);
+  expect(JSON.parse(run.stdout.toString())).toMatchObject({raw_score:47,full_score:75,net_percentage:62.66666667});
+  expect(JSON.parse(run.stdout.toString())).not.toHaveProperty('veto_triggered');
+  expect(buildScoreMessage(input)).toContain('复算评分.py');
+  await writeFile(join(root,'draft.json'),JSON.stringify({items:items.slice(1)}));
+  expect(Bun.spawnSync(['python3','复算评分.py','draft.json'],{cwd:root}).exitCode).not.toBe(0);
+  await writeFile(join(root,'draft.json'),JSON.stringify({items:[...items,items[0]]}));
+  expect(Bun.spawnSync(['python3','复算评分.py','draft.json'],{cwd:root}).exitCode).not.toBe(0);
+  const negativeItems=items.map((x:any)=>({...x,score_delta:x.id==='R9'?-100:x.score_delta}));
+  await writeFile(join(root,'draft.json'),JSON.stringify({items:negativeItems}));
+  const negative=Bun.spawnSync(['python3','复算评分.py','draft.json'],{cwd:root});
+  expect(JSON.parse(negative.stdout.toString())).toMatchObject({raw_score:-46,full_score:75,net_percentage:0});
  }finally{await rm(root,{recursive:true,force:true});}
 });

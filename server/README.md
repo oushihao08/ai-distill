@@ -47,19 +47,19 @@ Bun + Hono + PostgreSQL（pg）的本地工作台后端。`app.ts` 装配 API，
 - [达标判断](decisions/README.md)、[成果发布](publishing/README.md)、[统计与导出](reporting/README.md)
 - [本地监控](monitoring/README.md)
 
-当前 worker：材料接收／提取并发跟随持久化的模型 API 并发设置；作答、API 脱敏和 API 评分共用 API 通道并轮转；skill、Codex 脱敏、出题和 Codex 评分共用 Agent 通道并轮转。模型 API 请求另由同一配置控制的全局请求槽位限制；API 脱敏队列一次只运行一个题目；单题内的分批请求仍受该全局请求槽位限制。评分队列按任务冻结的 provider 分流，旧任务缺少 provider 时按 Codex 处理。系统设置可保存安全范围内的 Agent 1–4、API 1–8，写入 API 与 worker 共享的 `STORAGE_DIR/.concurrency/agent-slots.sqlite3`，无须 PostgreSQL 迁移。设置在 API 与 worker 重启后生效；未保存时兼容 `AGENT_CONCURRENCY` 与 `LLM_API_CONCURRENCY` 环境变量（各自范围 1–32）。Agent 槽位记录与配置共用该 SQLite 文件；连接测试与 worker 任务使用同一 Agent 上限，进程异常退出后，下一次领取会清理已退出进程的槽位。当前只支持一个本地 worker，模型 API 上限是该 worker 内所有 API 队列的总上限，不是每供应商／每队列各自上限。普通工作流由用户派发。
+当前 worker：材料接收／提取并发跟随持久化的模型 API 并发设置；作答和 API 评分通过 API worker 通道轮转，API 脱敏由独立消费池处理；skill、Codex 脱敏、出题和 Codex 评分共用 Agent 通道并轮转。API 脱敏任务池并发跟随同一 `llmApi` 配置，脱敏任务内部的分批请求和其他模型调用仍由全局 API 请求槽位共同限流。评分队列按任务冻结的 provider 分流，旧任务缺少 provider 时按 Codex 处理。系统设置可保存安全范围内的 Agent 1–4、API 1–8，写入 API 与 worker 共享的 `STORAGE_DIR/.concurrency/agent-slots.sqlite3`，无须 PostgreSQL 迁移。设置在 API 与 worker 重启后生效；未保存时兼容 `AGENT_CONCURRENCY` 与 `LLM_API_CONCURRENCY` 环境变量（各自范围 1–32）。Agent 槽位记录与配置共用该 SQLite 文件；连接测试与 worker 任务使用同一 Agent 上限，进程异常退出后，下一次领取会清理已退出进程的槽位。当前只支持一个本地 worker，模型 API 上限是该 worker 内所有 API 队列的总上限，不是每供应商／每队列各自上限。普通工作流由用户派发。
 
 API／Agent 通道每轮先查询是否存在等待任务或超时未心跳的运行任务；确定为空时跳过各队列的领取事务。命中后仍由原队列按既有锁、顺序和恢复条件领取；空队列轮询间隔保持 3 秒。此处减少空转数据库往返，不改变模型调用。
 
 `attempts.ts` 的 HTTP 等待每秒查询一次（截止时间不足1秒时只等待剩余时间），取消及时唤醒且不取消持久任务。`GET /api/attempts/:id?view=status` 不查询或返回结果正文，只返回任务元信息；省略视图或 `view=full` 兼容完整结果读取。CLI 默认等待使用状态视图，`attempt show` 和 `attempt wait --full` 读取全文。此处减少状态观察开销，不修改 Codex 工具、权限、会话或队列并发。
 
-项目步骤汇总、逐题记录和批量派发共用 `workflowStepReadiness()` 判断：当前步骤待执行或失败、没有活动尝试、步骤启用，且最近一个启用的可见前置步骤成功；未达标后可按普通步骤重新派发出题、模型作答或独立评分，重跑上游会清除并使后续结果失效。发布还要求第七步结果明确为 `accepted`，未达标结果不能进入发布。达标汇总将判定结果拆分为达标、未达标和隔离，不把未达标的判定计作达标。入库将 PDF/DOCX 提取状态与活动尝试一并计算，评分允许对已全部终结且至少一个成功的部分模型答案派发。历史 ordinal 2、3、10 不作为可见前置条件。批量按配置分块处理所有项目题目，单题结果独立返回；第七步达标判断继续在评分完成后自动触发，也可用项目批量入口重算符合条件的题目，仍只执行程序分数判断、不调用模型。
+项目步骤汇总、逐题记录和批量派发共用 `workflowStepReadiness()` 判断：当前步骤待执行或失败、没有活动尝试、步骤启用，且最近一个启用的可见前置步骤成功；未达标后可按普通步骤重新派发出题、模型作答或独立评分，重跑上游会清除并使后续结果失效。发布还要求第七步结果明确为 `accepted`，未达标结果不能进入发布。达标汇总将判定结果拆分为达标、未达标和隔离，不把未达标的判定计作达标。达标项目的模型身份来自项目模型集合；若配置 ordinal 7 的 `aggregation`，程序按该项目策略计算均分并在当前结果投影中保留，否则沿用逐模型百分制上限。入库将 PDF/DOCX 提取状态与活动尝试一并计算，评分允许对已全部终结且至少一个成功的部分模型答案派发。历史 ordinal 2、3、10 不作为可见前置条件。批量按配置分块处理所有项目题目，单题结果独立返回；第七步达标判断继续在评分完成后自动触发，也可用项目批量入口重算符合条件的题目，仍只执行程序分数判断、不调用模型。
 
 ## 数据与维护约束
 
-以 PostgreSQL 中的附件与任务状态为依据：脱敏读取数据库中的原始提取文本；出题、作答和评分读取数据库中的脱敏附件。出题还读取本次步骤设置、单题可选出题方向及项目本地 skill；`PATCH /api/workflows/:id/authoring-direction` 保存方向，空值不增加出题指令，变更仅使本题出题及下游当前结果失效。评分 Agent 与评分 API 都只接收同版题面、rubric、匿名答案、数据库脱敏附件和评分步骤提示词，不接收作答思路、标准答案、项目 skill、目标分数或作答模型身份；思路与标答仅用于内部完整性和版本绑定校验。任务记录输入文件指纹、评分方式及模型设置，结果提交前再次校验；历史不能随当前界面顺序重新编号。旧编号规则绑定只用于历史尝试兼容，不用于新任务。
+以 PostgreSQL 中的附件与任务状态为依据：脱敏读取数据库中的原始提取文本；出题、作答和评分读取数据库中的脱敏附件。出题还读取本次步骤设置、单题可选出题方向及项目本地 skill；`PATCH /api/workflows/:id/authoring-direction` 保存方向、场景及角色视角，支持部分更新，未传字段保持原值；空值不增加对应指令，变更仅使本题出题及下游当前结果失效。方向最多4000字符，场景及角色各180字符。评分 Agent 与评分 API 都只接收同版题面、rubric、匿名答案、数据库脱敏附件和评分步骤提示词，不接收作答思路、标准答案、项目 skill、目标分数或作答模型身份；思路与标答仅用于内部完整性和版本绑定校验。任务记录输入文件指纹、评分方式及模型设置，结果提交前再次校验；历史不能随当前界面顺序重新编号。旧编号规则绑定只用于历史尝试兼容，不用于新任务。
 
-当前已有各阶段入口，不等于真实卷宗闭环验收。归档步骤校验达标依据后执行主项目 `delivery.ts`，缺失时执行内置空函数；脚本成功才写入本次归档结果，DOCX 和 Excel 保持独立操作。迁移应用、进程状态、认证／额度、真实模型行为、材料准确性和业务结果必须分别验证。操作限制见 [AGENTS.md](../AGENTS.md)，整体关系见 [架构设计](../docs/architecture.md)。
+当前已有各阶段入口，不等于真实卷宗闭环验收。归档步骤校验达标依据后优先执行主项目 `scripts/delivery.ts`（兼容旧根目录入口），缺失时执行内置空函数；成功归档后自动导出脱敏 DOCX 和单题数据 Excel，DOCX 可从题目页下载或重试，Excel 有独立下载接口。Work 归档页面要求输入已确认的 Harbor task_id/org；该信息只参与本次归档和去重，不由出题器猜造。项目级完整 Excel 导出仍单独触发。Work 项目脚本已接入 AI 模拟专家成果、检索轨迹、Siriser 内容稿五件套及 Harbor 单题六件套预备包；Harbor 预备包仍标记不可提交，正式规范验收未完成。单题 Excel 不替代这些专用交付物。迁移应用、进程状态、认证／额度、真实模型行为、材料准确性和业务结果必须分别验证。操作限制见 [AGENTS.md](../AGENTS.md)，整体关系见 [架构设计](../docs/architecture.md)。
 
 工作流重置只在没有排队或运行中任务时执行：事务删除该题的材料、尝试、产物和步骤结果，并清除该题的存储管理目录及提取缓存。项目来源目录和 `source_manifest` 保留，供再次入库；单题导出及其文件删除，多题导出标记过期以保留其他题目的数据。
 
@@ -67,7 +67,7 @@ API／Agent 通道每轮先查询是否存在等待任务或超时未心跳的�
 
 `logging.ts` 是整个后端共用的安全事件记录器，覆盖 API、数据库访问、worker、业务步骤、外部调用和文件边界，不是某个服务的专属功能。普通 JSONL 只保存 `error` 级失败事件；成功、进度、性能告警和正常业务状态只供调用点使用，不落盘。出题、评分、skill 生成及 Codex 脱敏失败会附带安全的 `failure_phase`，便于区分输入校验、Agent 执行、结果校验和结果保存。JSONL 写入 `<STORAGE_DIR>/logs/<UTC日期>/`，每行带 `build_id`；部署可设置 `APP_BUILD_ID`，本机默认标记为 `local`。API 每个非健康请求生成 `request_id` 并通过 `X-Request-ID` 返回；无任务的管理操作另有关联 `operation_id`。服务入口监视未捕获异常；致命异常同步写入安全事件，未处理 Promise 拒绝记录后以非零状态退出。日志字段按白名单投影，不记录 SQL 参数、材料正文、提示词、答案、凭证或原始模型错误。Codex 失败元数据与脱敏 attempt/step result 中的错误摘要只保留安全类别、原因码、调用 ID、重试标记和发生时间。Codex 的 `events.jsonl` 仍是受限私有产物，不复制到普通日志。
 
-查询本机日志可运行 `bun scripts/read-logs.ts --attempt-id <id>`，也支持按 `--service`、`--component`、`--operation`、`--request-id`、`--operation-id`、`--project-id`、`--workflow-id`、`--skill-attempt-id`、`--call-id`、`--level`、`--from`、`--to` 过滤。脚本只读普通日志目录，并限制文件数、扫描字节和返回条数；汇总中的 `incomplete_tail_lines` 指出缺少换行结束符的末尾记录。`GET /api/monitor` 的 `logging` 字段提供写入健康状态、最近成功时间及丢弃计数。管理 API 已通过合成请求验证 request ID 回传及 project/operation 日志关联。
+查询本机日志可运行 `bun scripts/diagnostics/read-logs.ts --attempt-id <id>`，也支持按 `--service`、`--component`、`--operation`、`--request-id`、`--operation-id`、`--project-id`、`--workflow-id`、`--skill-attempt-id`、`--call-id`、`--level`、`--from`、`--to` 过滤。脚本只读普通日志目录，并限制文件数、扫描字节和返回条数；汇总中的 `incomplete_tail_lines` 指出缺少换行结束符的末尾记录。`GET /api/monitor` 的 `logging` 字段提供写入健康状态、最近成功时间及丢弃计数。管理 API 已通过合成请求验证 request ID 回传及 project/operation 日志关联。
 
 当前已接 API/worker 入口、数据库连接/查询/事务、项目文件与步骤设置、Codex 与脱敏优先链，以及主要业务和文件边界；旧规则绑定入口已停用。全系统逐入口验收仍未完成。OCR provider 和提取任务专项按用户要求跳过。设计进度和逐项缺口见[后端日志计划](../docs/plans/2026-10-09-backend-logging-design.md)。
 
@@ -112,3 +112,7 @@ API／Agent 通道每轮先查询是否存在等待任务或超时未心跳的�
 阶段队列恢复失联主尝试时，在原恢复事务及锁内调用 recoverInterruptedStageHooks：旧无钩子任务不查新表；成功检查点及意见保留，运行中同步记录／主检查点转 needs_review，并给原尝试保存 project_hook_failed 标识。续跑读取全部当前同步／检查点记录，因此主操作成功后、后置钩子尚未登记的中断也能继续；未知主检查点仍拒绝重复调用模型。
 
 健康检查对结构性迁移保持未完成即503；033是可选钩子表，空钩子文字流程不以它作为就绪前置。钩子记录接口单独报告表是否可用；启用钩子前仍需人工应用033，不自动迁移。
+
+workflow-view.ts 的完整题目投影保留 work_legal_v1 的独立内容字段；轻量状态接口继续省略正文。具体契约与验证边界见 authoring/README.md。
+
+文字作答支持跨项目成果清单适配：`answer-models/input.ts`派生并冻结公开清单的文字呈现方式；队列实际发送该约定，评分回读同版约定并保持原Rubric。无清单的旧题不变，Work草稿与非文字输入不放开。该能力是文字成果测试，不代表文件、检索或工具执行已验收；详见answer-models与scoring模块README。

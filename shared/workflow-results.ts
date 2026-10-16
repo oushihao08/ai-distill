@@ -42,15 +42,16 @@ export interface ScoreStepResult {models:ScoreStepModelSummary[]}
 
 export interface ModelAcceptance {
  score_contract?:'model_report_v1';raw_score?:number|null;full_score?:number|null;veto_triggered?:boolean|null;
- status:'passed'|'not_passed'|'pending'|'invalid';
+ status:'passed'|'not_passed'|'pending'|'invalid'|'included';
  score?:number;
  max_score?:number;
  percentage?:number;
  threshold:number;
 }
+export interface AcceptanceAggregate {mode:'mean_at_most';model_count:number;mean_percentage:number;threshold:number}
 export type AcceptanceResult =
- | {decision:'waiting'|'quarantine';reasons:string[];model_scores?:Record<string,ModelAcceptance>}
- | {decision:'accepted'|'repair';reasons:string[];model_scores:Record<string,ModelAcceptance>};
+ | {decision:'waiting'|'quarantine';reasons:string[];model_scores?:Record<string,ModelAcceptance>;aggregate?:AcceptanceAggregate}
+ | {decision:'accepted'|'repair';reasons:string[];model_scores:Record<string,ModelAcceptance>;aggregate?:AcceptanceAggregate};
 
 type UnknownRecord=Record<string,unknown>;
 const isRecord=(value:unknown):value is UnknownRecord=>!!value&&typeof value==='object'&&!Array.isArray(value);
@@ -89,7 +90,7 @@ export function readScoreStepResult(value:unknown):ScoreStepResult|undefined{
 }
 
 function readModelAcceptance(value:unknown):value is ModelAcceptance{
- if(!isRecord(value)||!['passed','not_passed','pending','invalid'].includes(String(value.status))||!finite(value.threshold))return false;
+ if(!isRecord(value)||!['passed','not_passed','pending','invalid','included'].includes(String(value.status))||!finite(value.threshold))return false;
  if(value.score_contract!==undefined&&value.score_contract!=='model_report_v1')return false;
  if(['raw_score','full_score'].some(key=>value[key]!==undefined&&value[key]!==null&&!finite(value[key])))return false;
  if(value.veto_triggered!==undefined&&value.veto_triggered!==null&&typeof value.veto_triggered!=='boolean')return false;
@@ -102,5 +103,6 @@ export function readAcceptanceResult(value:unknown):AcceptanceResult|undefined{
  const scores=value.model_scores;
  if(scores!==undefined&&(!isRecord(scores)||!Object.values(scores).every(readModelAcceptance)))return;
  if((decision==='accepted'||decision==='repair')&&!scores)return;
+ if(value.aggregate!==undefined&&(!isRecord(value.aggregate)||value.aggregate.mode!=='mean_at_most'||!Number.isInteger(value.aggregate.model_count)||Number(value.aggregate.model_count)<1||!finite(value.aggregate.mean_percentage)||value.aggregate.mean_percentage<0||value.aggregate.mean_percentage>100||!finite(value.aggregate.threshold)||value.aggregate.threshold<0||value.aggregate.threshold>100))return;
  return value as AcceptanceResult;
 }

@@ -6,7 +6,7 @@ import {expect,test} from 'bun:test';
 import {mkdtemp,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {redactExtractedMaterials} from './redaction';
+import {redactExtractedMaterials,filterRedactionFormatting,applyStructuredRedactions} from './redaction';
 
 const config={provider:'api' as const,api:{provider:'openrouter' as const,base_url:'https://openrouter.ai/api/v1',model:'fixture-model'},prompt:'<任务>只输出纯文本并跳过无可转写页面。</任务><脱敏规则>姓名脱敏。</脱敏规则>'};
 const material=(text:string)=>({material_id:'material-a',source_sha256:'source-sha',pages:[{page:1,text,method:'ocr' as const,structure:[{id:'b1',kind:'paragraph' as const,text}]}]});
@@ -36,15 +36,28 @@ test('OCR已遮罩编号的星号转义可以定位，仍按原文位置遮盖�
  for(const slash of ['\\','\\\\']){
   const code='622845'+(slash+'*').repeat(8)+'8593573';
   const result=await redactExtractedMaterials({directory:'unused',materials:[material(`编号${code}，金额12.34元`)],config,executeApi:async request=>response(request,()=>[{source_text:'622845********8593573',kind:'identifier'}])});
-  expect(result.materials[0]!.pages[0]!.text).toBe('编号62'+'*'.repeat([...code].length-4)+'73，金额12.34元');
+  expect(result.materials[0]!.pages[0]!.text).toBe('编号62'+'*'.repeat([...filterRedactionFormatting(code)].length-4)+'73，金额12.34元');
  }
 });
 test('汉字姓名中夹入OCR反斜线和波浪号时可定位，数字标点仍保持区别',async()=>{
  const result=await redactExtractedMaterials({directory:'unused',materials:[material('联系人：肖\\~玲，编号12-34，金额12.34元')],config,executeApi:async request=>response(request,()=>[{source_text:'肖玲',kind:'name'}])});
  expect(result.materials[0]!.pages[0]!.text).toBe('联系人：肖**，编号12-34，金额12.34元');
 });
-test('金额不得脱敏规则拒绝模型错误遮盖，不发布被改变的金额',async()=>{
- await expect(redactExtractedMaterials({directory:'unused',materials:[material('金额12345元')],config:{...config,prompt:'金额不得脱敏，保持原文。'},executeApi:async request=>response(request,()=>[{source_text:'12345',kind:'amount'}])})).rejects.toMatchObject({reason_code:'preserved_amount_masked'});
+test('金额不得脱敏时程序保留原金额，不因模型误标失败',async()=>{
+ const result=await redactExtractedMaterials({directory:'unused',materials:[material('金额12345元')],config:{...config,prompt:'金额不得脱敏，保持原文。'},executeApi:async request=>response(request,()=>[{source_text:'12345',kind:'amount'}])});
+ expect(result.materials[0]!.pages[0]!.text).toBe('金额12345元');
+});
+test('固定格式过滤清除扫描水印并保留剩余主体脱敏',()=>{
+ expect(filterRedactionFormatting('甲\\_乙 [Barcode] $50\\%$')).toBe('甲_乙  50%');
+ const source=filterRedactionFormatting('12345_2024-06-01 12:00:00 甲公司');
+ expect(applyStructuredRedactions(source,[{source_text:'甲公司',kind:'organization'}],'m','t',undefined,true,true)).toBe(' *公司');
+});
+test('固定过滤编号前缀扫描水印并保留正文日期',()=>{
+ expect(filterRedactionFormatting('57660\\_2025-03-26 15:20:36 正文日期2025-03-26；18836 2025.03.26 15:20；8836.2025-03-26')).toBe(' 正文日期2025-03-26；；');
+});
+test('金额日期误标敏感类别仍原样保留，重复垃圾逐处清除',()=>{
+ expect(applyStructuredRedactions('金额100元，2024年6月1日',[{source_text:'100元',kind:'identifier'},{source_text:'2024年6月1日',kind:'identifier'}],'m','t',undefined,true,true)).toBe('金额100元，2024年6月1日');
+ expect(applyStructuredRedactions('□电话人 □电话人',[{source_text:'□电话人',kind:'cleanup'}],'m','t')).toBe(' ');
 });
 test('金额由程序只遮数字，模型整段遮罩或省略遮罩都不能吞掉币种单位',async()=>{
  for(const mask_text of [undefined,'人民币5344.4元']){

@@ -6,6 +6,8 @@ Codex 或维护者通过 CLI 调用现有 Hono API，API 冻结输入并派发�
 
 远程命令是唯一需要本机凭证的入口：Bun 从本机 `.env` 读取 `REMOTE_MATERIAL_API_URL` 与 `REMOTE_MATERIAL_TOKEN`，通过 SSH 隧道连接服务器回环 API。材料命令发起入库、PDF 提取、API 脱敏并取回管理副本；作答命令让服务器按现有模型配置生成答案。两者都不执行 Agent。先确认服务器已同步对应材料包或旧模式题目的来源目录、运行数据库已应用 `034_remote_material_operations.sql`，并部署 `WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server` 的 worker。服务器 API 仅在 `MATERIAL_EXECUTION_TARGET=server` 且配置至少32字符 `REMOTE_MATERIAL_TOKEN` 时注册远程路由。本机通过 SSH 建立本地转发，例如：
 
+**远程 CLI 只调用服务器已开放的 API 能力，不会在服务器启动 Codex Agent。**当前远程范围是入库、PDF/DOCX 提取、API 脱敏和模型作答；不能通过远程命令运行 Agent 出题或 Agent 评分。出题和 Agent 评分仍需在有 Codex 的本机环境，通过本机 API/worker 执行。若步骤选择大模型 API 评分，应按本机 API 工作流执行；远程服务器 worker 当前不领取评分队列。
+
 ```sh
 ssh -N -L 13700:127.0.0.1:3700 <ssh-user>@<server-host>
 # 本机 .env（不把实际令牌写入命令行或对话）

@@ -27,6 +27,6 @@
 
 后端全量 572 项测试、1426 条断言、0 失败；前后端类型检查与前端构建通过。针对性测试覆盖两角色独立执行、私有标答、质检拒绝、能力不支持、入队前置条件、JSONB 指纹、材料内容变化及晚到结果保护。
 
-真实数据库／Codex 验证脚本为 `scripts/verify-authoring-flow.ts`，结果见 [authoring-flow-results.json](../evidence/authoring-flow-results.json)。采用临时隔离 schema、合成脱敏附件及规则，通过实际 API 入队并由真实第四步 worker 执行两次 Codex 调用；第五步仅验证入队，不发起计费作答。质检拒绝和晚到结果使用注入执行，不能算真实模型失败实验。临时数据库及文件在脚本结束时清理。
+真实数据库／Codex 验证脚本为 `scripts/verification/verify-authoring-flow.ts`，结果见 [authoring-flow-results.json](../evidence/authoring-flow-results.json)。采用临时隔离 schema、合成脱敏附件及规则，通过实际 API 入队并由真实第四步 worker 执行两次 Codex 调用；第五步仅验证入队，不发起计费作答。质检拒绝和晚到结果使用注入执行，不能算真实模型失败实验。临时数据库及文件在脚本结束时清理。
 
 未验收：真实法律卷宗的出题质量、浏览器按钮操作、完整八步自动工作流。本次结果不改变完整 MVP 尚未验收的结论。

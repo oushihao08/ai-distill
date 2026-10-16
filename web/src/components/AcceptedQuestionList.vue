@@ -19,7 +19,7 @@ const accepted=computed(()=>props.workflows.filter(flow=>flow.current_ordinal===
 const packageNames=computed(()=>Object.fromEntries(props.packages.map(item=>[item.id,item.title])));
 function scores(flow:Workflow){return Object.entries(flow.acceptance_result?.model_scores??{}) as [string,ModelResult][];}
 function modelName(flow:Workflow,id:string){return flow.answer_models?.find(model=>model.model_id===id)?.name??id.slice(0,8);}
-function hasAnomaly(flow:Workflow){const values=scores(flow);return !values.length||values.some(([,score])=>score.status!=='passed')||Boolean(flow.answer_models?.length&&flow.answer_models.length!==values.length);}
+function hasAnomaly(flow:Workflow){const values=scores(flow);if(flow.acceptance_result?.aggregate)return !values.length||values.some(([,score])=>score.status!=='included')||Boolean(flow.answer_models?.length&&flow.answer_models.length!==values.length);return !values.length||values.some(([,score])=>score.status!=='passed')||Boolean(flow.answer_models?.length&&flow.answer_models.length!==values.length);}
 const anomalousCount=computed(()=>accepted.value.filter(hasAnomaly).length);
 const publishedCount=computed(()=>accepted.value.filter(flow=>flow.publication_status==='succeeded').length);
 const exportedCount=computed(()=>accepted.value.filter(flow=>flow.exported).length);
@@ -31,8 +31,8 @@ const filtered=computed(()=>accepted.value.filter(flow=>{
 const pageCount=computed(()=>Math.max(1,Math.ceil(filtered.value.length/pageSize)));
 const visible=computed(()=>filtered.value.slice((page.value-1)*pageSize,page.value*pageSize));
 function formatPercent(value:number|null|undefined){return typeof value==='number'?`${Number(value.toFixed(1))}%`:'—';}
-function scoreSummary(flow:Workflow){const values=scores(flow);return values.length?values.length+' 个模型 · '+values.filter(([,score])=>score.status==='passed').length+' 个通过':'缺少评分';}
-function scoreHint(flow:Workflow){return scores(flow).map(([id,result])=>modelName(flow,id)+' '+(result.raw_score??result.score??'—')+'/'+(result.full_score??result.max_score??'—')+' · '+formatPercent(result.percentage)+' / 门槛 '+(result.threshold??'—')+'%').join('；');}
+function scoreSummary(flow:Workflow){const values=scores(flow);if(flow.acceptance_result?.aggregate)return `${values.length} 个模型 · 均分 ${formatPercent(flow.acceptance_result.aggregate.mean_percentage)} / ≤${flow.acceptance_result.aggregate.threshold}%`;return values.length?values.length+' 个模型 · '+values.filter(([,score])=>score.status==='passed').length+' 个通过':'缺少评分';}
+function scoreHint(flow:Workflow){return scores(flow).map(([id,result])=>modelName(flow,id)+' '+(result.raw_score??result.score??'—')+'/'+(result.full_score??result.max_score??'—')+' · '+formatPercent(result.percentage)+(flow.acceptance_result?.aggregate?' · 计入均分':' / 门槛 '+(result.threshold??'—')+'%')).join('；');}
 watch([search,filter],()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 </script>

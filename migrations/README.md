@@ -28,6 +28,7 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 | `036_system_step_prompts.sql` | 在系统配置中保存脱敏、出题、作答和独立评分的系统级提示词；新建项目复制当时的提示词快照，旧项目和旧任务不被系统默认变更回写。 |
 | `037_project_question_tags.sql` | 项目保存本期可选出题标签，题目保存创建时已选标签快照；将本项目历史 `target_level` 值加入可选目录，不改写旧题或旧任务。执行状态以目标库 `schema_migrations` 为准。 |
 | `038_docx_redaction_declaration.sql` | 材料增加默认 `model` 的脱敏方式字段；DOCX 可按附件指纹显式声明 `declared_redacted`，既有材料保持默认。新代码部署前需单独核对并应用。 |
+| `039_remote_operation_compatibility.sql` | 补齐早期已登记 034 的部署缺少的 `redaction_config_digest` 与 `claim_token`；只新增可空字段，保留已有记录。 |
 | `031_project_period_root.sql` | 将已归组的第五期 `projects.material_root` 与对应 `workflows.source_manifest` 路径切换到 `projects/豆包高经济价值/第五期/questions/`；保留附件哈希、清单字段、材料行、步骤状态和执行历史。 |
 
 执行前核对目标数据库、已登记文件和全部未执行 SQL。`024_remove_automation_control.sql` 删除旧自动批次、成员、阻断表、派发函数及项目暂停字段，不能为修复 Codex 设置顺便执行。数据库迁移、服务重启和真实接口核对是不同操作，均遵守根 [AGENTS.md](../AGENTS.md) 的授权约束。

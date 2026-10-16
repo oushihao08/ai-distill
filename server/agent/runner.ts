@@ -12,7 +12,7 @@ import {registerAgentProcess} from './processes';
 export interface AgentTask<T=unknown>{
  task_type:string;
  directory:string;
- execution_profile?:'fresh_authoring';
+	execution_profile?:'fresh_authoring'|'project_delivery';
  working_directory?:string;
  prompt:string;
  model:string;
@@ -36,7 +36,8 @@ export function configureAgentAdapter(adapter:AgentAdapter<any>|null){configured
 /** 评分与普通出题不覆盖宿主开发者指令；其余业务任务保留通用边界指令。 */
 export async function runAgent<T>(task:AgentTask<T>,adapter:AgentAdapter<T>=configuredAdapter as AgentAdapter<T>):Promise<AgentResult<T>>{
  if(!task.task_type.trim()||!task.prompt.trim()||!task.directory.trim()||!task.model.trim()||!task.reasoning_effort.trim())throw new Error('Agent任务配置无效');
- if(task.execution_profile&&(task.task_type!=='question_authoring'||!task.working_directory?.trim()))throw new Error('普通出题执行配置无效');
+ if(task.execution_profile==='fresh_authoring'&&(task.task_type!=='question_authoring'||!task.working_directory?.trim()))throw new Error('普通出题执行配置无效');
+ if(task.execution_profile==='project_delivery'&&task.task_type!=='project_delivery')throw new Error('项目交付执行配置无效');
  return adapter({...task,developer_instructions:task.task_type==='independent_scoring'||task.execution_profile==='fresh_authoring'?'':AGENT_DEVELOPER_INSTRUCTIONS});
 }
 

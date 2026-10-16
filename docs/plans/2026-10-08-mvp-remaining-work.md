@@ -68,8 +68,8 @@
 
 - B 已推进到模型目录、项目集合与逐模型作答派发：新增 `system_answer_models` 和 `project_answer_models`、012／013 迁移（完整配置 JSON 快照）、系统登记／启停 API、项目集合读写 API，以及项目页面模型登记与阈值设置。对相同供应商／端点／模型做去重；配置不能含密钥字段。项目可选 1–8 个模型，作答按稳定模型 ID 创建独立尝试并在输入中冻结完整集合、达标线与集合摘要。摘要逐模型保留答案状态；评分输入检查对应答案尝试与哈希。旧单模型配置保留。
 - 尚未完成 B：评分队列仍按单个答案工作，达标读取、各模型结果视图和失败模型的恢复路径需要接续；配置页未经过浏览器验收。不能将当前第五步标为多模型闭环完成。
-- 凭证复测：执行 `bun run scripts/verify-qwen.ts` 使用当前 `.env` 向 OpenRouter 请求 `qwen/qwen-plus`，结果 HTTP 401。另按 Quickstart 在命令行请求 `~openai/gpt-sol-latest`，响应 HTTP 401 `User not found`。请求均为合成提示，没有使用真实案例资料，未输出密钥。记录见 `docs/evidence/qwen-api-smoke-results.json`。
-- 验证：模型集合及作答队列定向单测 31 项、60 条断言通过；`bun scripts/verify-project-folders.ts` 在隔离临时 PostgreSQL schema 内验证模型登记、项目选取／阈值、重复登记阻断，并完成既有目录版本回归；`bun run migrate` 已应用 012／013；`bun run check` 通过；后端全量 595 项通过、0 失败、1474 条断言，前端构建通过。
+- 凭证复测：执行 `bun run scripts/verification/verify-qwen.ts` 使用当前 `.env` 向 OpenRouter 请求 `qwen/qwen-plus`，结果 HTTP 401。另按 Quickstart 在命令行请求 `~openai/gpt-sol-latest`，响应 HTTP 401 `User not found`。请求均为合成提示，没有使用真实案例资料，未输出密钥。记录见 `docs/evidence/qwen-api-smoke-results.json`。
+- 验证：模型集合及作答队列定向单测 31 项、60 条断言通过；`bun scripts/verification/verify-project-folders.ts` 在隔离临时 PostgreSQL schema 内验证模型登记、项目选取／阈值、重复登记阻断，并完成既有目录版本回归；`bun run migrate` 已应用 012／013；`bun run check` 通过；后端全量 595 项通过、0 失败、1474 条断言，前端构建通过。
 - A 的真实推理仍阻断；C、D 尚未实施；E 真实文件交付未验；F 浏览器及备份／压力验收仍缺。原 A–F 范围继续有效。
 
 ## 执行记录：第三批（2026-10-08）

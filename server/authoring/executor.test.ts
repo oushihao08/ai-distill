@@ -24,6 +24,7 @@ test('上传附件没有目录清单时，索引和真实渲染器使用附件�
    const input=await Bun.file(join(call.directory,'input/input.json')).json();
    expect(input.source_files).toEqual([{name:'上传判决.docx'}]);
    const contract=await Bun.file(join(call.directory,'input/delivery.json')).json();
+   expect(contract.input_files).toBeUndefined();
    await Bun.write(contract.result_path,JSON.stringify(draft));
    expect(await Bun.spawn(contract.render_command,{stdout:'pipe',stderr:'pipe'}).exited).toBe(0);
    return {result:call.validate(draft),session_id:'fixture',usage:null,duration_ms:1,diagnostic_path:'private',provider:'fixture',model:'fixture'};
@@ -57,6 +58,23 @@ test('ordinary authoring cannot silently accept a historical feedback package',a
  const root=await mkdtemp(join(tmpdir(),'author-feedback-'));let called=false;
  try{await expect(runAuthoring({...options(root,async()=>{called=true;return{result:draft};}),evaluation_feedback:{previous_question:{question:'旧题'}}} as any)).rejects.toThrow('历史反馈');expect(called).toBe(false);}
  finally{await rm(root,{recursive:true,force:true});}
+});
+test('Work 法律全场景缺少 model_report_v1 时不启动出题模型',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'author-work-contract-'));let called=false;
+ try{
+  const task=options(root,async()=>{called=true;return{result:draft};});
+  await expect(runAuthoring({...task,project_name:'Work法律全场景 - 首批筹备'})).rejects.toThrow('必须配置 model_report_v1');
+  expect(called).toBe(false);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('Work 出题提示允许缺省登记身份但专业映射仍必填',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'author-work-harbor-'));let prompt='';
+ const value={...draft,rubric:[{id:'amount',criterion:'准确核算',rule:'按材料核算',metadata:{score:3}}]};
+ try{
+  const task=options(root,async()=>{throw new Error('unexpected');});
+  await expect(runAuthoring({...task,project_name:'Work法律全场景 - 首批筹备',scoring_policy:{contract:'model_report_v1',rules_text:'保留正负分规则',reference_answer:'calibration'},execute:(async(call:any)=>{prompt=call.prompt;return{result:value,session_id:'fixture',usage:null,duration_ms:1,diagnostic_path:'private',provider:'fixture',model:'fixture'};}) as any})).rejects.toThrow('project_context.harbor');
+  expect(prompt).toContain('未提供可省略或为 null');
+ }finally{await rm(root,{recursive:true,force:true});}
 });
 test.each(['missing','mismatch','symlink'])('ordinary authoring rejects %s Markdown without changing the result',async(mode)=>{
  const root=await mkdtemp(join(tmpdir(),'author-document-'));
@@ -184,4 +202,19 @@ test('ordinary authoring cannot include unrelated project materials as task inpu
  const root=await mkdtemp(join(tmpdir(),'author-skill-only-'));let called=false;
  try{const task=options(root,async()=>{called=true;throw new Error('unexpected');});await expect(runAuthoring({...task,project_context:{source_digest:'a'.repeat(64),files:[{path:'materials/old-question.md',text:'历史题目'}]}})).rejects.toThrow('仅接受指定skill');expect(called).toBe(false);}
  finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('Work交付说明冻结附件映射名称，作者不依赖不存在的模板',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'author-work-input-map-'));
+ try{
+  const task=options(root,async()=>{throw new Error('unexpected');});
+  await expect(runAuthoring({...task,content_contract:'work_legal_v1',scoring_policy:{contract:'model_report_v1',rules_text:'保留正负分规则',reference_answer:'calibration'},execute:async(call:any)=>{
+   const contract=await Bun.file(join(call.directory,'input/delivery.json')).json();
+   expect(contract.input_files).toEqual([{attachment_id:'artifact-1',name:'附件1',description:'由作者依据本份材料填写完整用途说明'}]);
+   expect(call.prompt).toContain('原文件名只作显示，不替换映射名称');
+   expect(call.prompt).toContain('若有模板则按其导航读取');
+   expect(call.prompt).not.toContain('完整读取指定Skill中的题目模板');
+   throw new Error('fixture-inspected');
+  }})).rejects.toThrow('fixture-inspected');
+ }finally{await rm(root,{recursive:true,force:true});}
 });

@@ -1,15 +1,16 @@
 /**
- * 职责：将超过单附件限制的 PDF 按页拆到其所在目录，不重新渲染页面。
- * 公开入口：splitLargePdf() 供题目目录同步调用；全部分片落盘并核对后删除超限原件。
+ * 职责：将超过单附件限制的 PDF 按页拆到管理存储，不修改来源目录或原件。
+ * 公开入口：splitLargePdf() 供题目目录同步调用；分片缓存于 .storage/pdf-splits 并按指纹复用。
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { copyFile, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, unlink } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { HTTPException } from 'hono/http-exception';
 import { storageDirectory } from '../paths';
 import { MAX_FILE } from '../validation';
+import { classifyLogError, logEvent } from '../logging';
 
 const run = promisify(execFile);
 const splitRoot = () => join(storageDirectory(), 'pdf-splits');
@@ -37,10 +38,11 @@ export async function splitLargePdf(path: string, sourceBytes: Uint8Array): Prom
  const existing=await readdir(directory).catch(()=>[]);
  if(existing.length&&existing.every(name=>name.endsWith('.pdf'))){
   const files=existing.sort().map(name=>({name,path:join(directory,name)}));
-  if((await Promise.all(files.map(file=>stat(file.path)))).every(info=>info.size>0&&info.size<=MAX_FILE))return installBesideSource(path,digest,files);
+  if((await Promise.all(files.map(file=>stat(file.path)))).every(info=>info.size>0&&info.size<=MAX_FILE))return files;
  }
  await mkdir(splitRoot(),{recursive:true,mode:0o700});
  const temporary=await mkdtemp(join(splitRoot(),'.building-'));
+ let phase='pdfseparate';
  try {
   const pagePattern=join(temporary,'page-%d.pdf');
   await run('pdfseparate',['-f','1','-l',String(pages),path,pagePattern]);
@@ -48,7 +50,9 @@ export async function splitLargePdf(path: string, sourceBytes: Uint8Array): Prom
   async function writeRange(first:number,last:number):Promise<void>{
    const name=`${prefix}-页${String(pageOffset+first).padStart(4,'0')}-${String(pageOffset+last).padStart(4,'0')}.pdf`;
    const target=join(temporary,name);
+   phase='pdfunite';
    await run('pdfunite',[...Array.from({length:last-first+1},(_,index)=>join(temporary,`page-${first+index}.pdf`)),target]);
+   phase='verify_parts';
    if((await stat(target)).size<=MAX_FILE){result.push({name,path:target});return;}
    await rm(target);
    if(first===last)throw new HTTPException(400,{message:`PDF 第 ${first} 页单独保存后仍超过单文件限制`});
@@ -57,42 +61,17 @@ export async function splitLargePdf(path: string, sourceBytes: Uint8Array): Prom
   }
   for(let first=1;first<=pages;first+=MAX_PDF_PAGES)await writeRange(first,Math.min(first+MAX_PDF_PAGES-1,pages));
   if(result.length>100)throw new HTTPException(400,{message:'PDF 分片超过100份限制'});
+  phase='cleanup_pages';
   for(let page=1;page<=pages;page++)await rm(join(temporary,`page-${page}.pdf`));
+  phase='verify_source';
  if(createHash('sha256').update(String(MAX_FILE)).update(String(MAX_PDF_PAGES)).update(basename(path)).update(await readFile(path)).digest('hex')!==digest)throw new HTTPException(409,{message:'PDF 在拆分过程中发生变化，请重试同步'});
+  phase='cache_commit';
   try { await rename(temporary,directory); }
   catch(error){if(!['EEXIST','ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code??''))throw error;}
-  return await installBesideSource(path,digest,result.map(file=>({name:file.name,path:join(directory,file.name)})));
+  return result.map(file=>({name:file.name,path:join(directory,file.name)}));
  } catch(error) {
   if(error instanceof HTTPException)throw error;
+  logEvent('pdf_split.failed',{level:'error',component:'materials',operation:'pdf_split',reason_code:`${phase}_failed`,...classifyLogError(error)});
   throw new HTTPException(400,{message:'PDF 拆分失败，请检查 pdfinfo、pdfseparate、pdfunite 是否可用及来源文件是否有效'});
  } finally { await rm(temporary,{recursive:true,force:true}); }
-}
-
-async function installBesideSource(source:string,digest:string,parts:{name:string;path:string}[]):Promise<{name:string;path:string}[]> {
- const installed:{name:string;path:string}[]=[];
- for(const part of parts){
-  const target=join(dirname(source),part.name);
-  const expected=createHash('sha256').update(await readFile(part.path)).digest('hex');
-  const current=await readFile(target).catch(error=>{
-   if((error as NodeJS.ErrnoException).code==='ENOENT')return null;
-   throw error;
-  });
-  if(current){
-   if(createHash('sha256').update(current).digest('hex')!==expected)throw new HTTPException(409,{message:`PDF 分片目标已存在且内容不同：${part.name}`});
-  }else{
-   const temporary=join(dirname(source),`.pdf-split-${randomUUID()}.tmp`);
-   try{
-    await copyFile(part.path,temporary);
-    try{await link(temporary,target);}
-    catch(error){
-     if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;
-     if(createHash('sha256').update(await readFile(target)).digest('hex')!==expected)throw new HTTPException(409,{message:`PDF 分片目标已存在且内容不同：${part.name}`});
-    }
-   }finally{await rm(temporary,{force:true});}
-  }
-  installed.push({name:part.name,path:target});
- }
- if(createHash('sha256').update(String(MAX_FILE)).update(String(MAX_PDF_PAGES)).update(basename(source)).update(await readFile(source)).digest('hex')!==digest)throw new HTTPException(409,{message:'PDF 在拆分过程中发生变化，请重试同步'});
- await unlink(source);
- return installed;
 }

@@ -70,13 +70,13 @@
 - 排查先确定项目／题目及本次 `attempt_id`，结合数据库 `steps`、`step_attempts` 的当前状态、结果和错误，再查同一任务的日志时间线。优先使用下列只读命令（在仓库根目录执行，替换示例 ID）：
 
 ```sh
-bun scripts/read-logs.ts --attempt-id <attempt_id>
-bun scripts/read-logs.ts --workflow-id <workflow_id> --from '2026-10-09T17:00:00+08:00' --to '2026-10-09T18:00:00+08:00'
-bun scripts/read-logs.ts --call-id <call_id>
-bun scripts/read-logs.ts --service worker --level error --from '2026-10-09T17:00:00+08:00'
+bun scripts/diagnostics/read-logs.ts --attempt-id <attempt_id>
+bun scripts/diagnostics/read-logs.ts --workflow-id <workflow_id> --from '2026-10-09T17:00:00+08:00' --to '2026-10-09T18:00:00+08:00'
+bun scripts/diagnostics/read-logs.ts --call-id <call_id>
+bun scripts/diagnostics/read-logs.ts --service worker --level error --from '2026-10-09T17:00:00+08:00'
 ```
 
-- 查询入口为 `scripts/read-logs.ts`，还支持 `--project-id`、`--request-id`、`--operation-id`、`--skill-attempt-id`、`--component`、`--operation`；多个过滤条件同时满足才返回。日期示例不是默认范围，按实际故障时间填写并明确时区。API 响应头 `X-Request-ID` 可用于关联请求日志，`call_id` 用于关联外部模型／Agent 调用。
+- 查询入口为 `scripts/diagnostics/read-logs.ts`，还支持 `--project-id`、`--request-id`、`--operation-id`、`--skill-attempt-id`、`--component`、`--operation`；多个过滤条件同时满足才返回。日期示例不是默认范围，按实际故障时间填写并明确时区。API 响应头 `X-Request-ID` 可用于关联请求日志，`call_id` 用于关联外部模型／Agent 调用。
 - 先看完整时间线，再筛错误：区分入队／领取、输入校验、模型调用开始／返回、输出校验、文件写入和数据库提交。审查拒绝、评分争议、达标未通过应结合对应结果报告判断，不能一律当作模型请求失败。脱敏校验查看 `reason_code`、`material_id`、`page`、`expected_count`／`actual_count` 等字段；JSON 解析失败为 `invalid_json`。字段只在对应事件和已加载相关实现的进程中存在，不补造历史日志。
 - 查询脚本限制最多 50 个文件、20 MiB 扫描量和 500 条匹配记录。检查末尾汇总的 `truncated`、`malformed_lines`、`incomplete_tail_lines`；没有匹配不等于没有发生。必要时按实际存储目录、日期和运行实例核查原始 JSONL 文件，输出仍须遵守敏感信息边界。`GET /api/monitor` 的 `logging` 提供日志写入健康、最近写入成功时间及丢弃计数，API 与 worker 是不同实例，须结合目标进程日志判断。
 - 普通日志不记录材料正文、提示词、题面、答案、SQL 参数、凭证或原始供应商错误。Codex 的私有 `events.jsonl` 与业务报告不是普通日志，确需读取时按现有受限产物边界处理，不整份复制到日志或回复。

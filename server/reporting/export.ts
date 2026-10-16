@@ -37,10 +37,10 @@ function attachmentAddress(storageRoot:string|undefined,storagePath:string){
  return pathToFileURL(path).href;
 }
 
-export async function collectProjectResults(pool:Pool|PoolClient,projectId:string,batch?:string,attachmentRoot=fileURLToPath(new URL('../../assets/out/',import.meta.url))){
+export async function collectProjectResults(pool:Pool|PoolClient,projectId:string,batch?:string,attachmentRoot=fileURLToPath(new URL('../../assets/out/',import.meta.url)),workflowId?:string){
  const project=(await pool.query('SELECT id,name,material_root,local_skill_path FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[projectId])).rows[0];
  if(!project)throw new Error('project_not_found');
- const workflows=await pool.query("SELECT w.id,w.source_key,w.title,s.status AS acceptance_status FROM ai_distill.workflows w LEFT JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=7 WHERE w.project_id=$1 AND w.deleted_at IS NULL AND ($2::text IS NULL OR w.source_key=$2) ORDER BY w.source_key,w.id",[projectId,batch??null]);
+ const workflows=await pool.query("SELECT w.id,w.source_key,w.title,s.status AS acceptance_status FROM ai_distill.workflows w LEFT JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=7 WHERE w.project_id=$1 AND w.deleted_at IS NULL AND ($2::text IS NULL OR w.source_key=$2) AND ($3::uuid IS NULL OR w.id=$3) ORDER BY w.source_key,w.id",[projectId,batch??null,workflowId??null]);
  const ids=workflows.rows.map((row:any)=>row.id);
  if(!ids.length)return {records:[] as ResultExportRecord[]};
 
@@ -53,9 +53,11 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
   const current=byWorkflow.get(workflow.id)??[];
   const latest=(ordinal:number)=>current.filter(row=>row.ordinal===ordinal).at(-1);
   const questionAttempt=latest(4),question=object(questionAttempt?.result)??{},acceptance=latest(7),decision=object(acceptance?.result)??{};
+  const aggregate=object(decision.aggregate);
   if(questionAttempt?.id)questionAttemptByWorkflow.set(workflow.id,questionAttempt);
   return {
    workflow_id:String(workflow.id),title:text(workflow.title),accepted:workflow.acceptance_status==='succeeded'&&questionAttempt?.status==='succeeded'&&acceptance?.status==='succeeded'&&decision.decision==='accepted',
+   ...(aggregate?.mode==='mean_at_most'&&typeof aggregate.model_count==='number'&&typeof aggregate.mean_percentage==='number'&&typeof aggregate.threshold==='number'?{acceptance_aggregate:{mode:'mean_at_most' as const,model_count:aggregate.model_count,mean_percentage:aggregate.mean_percentage,threshold:aggregate.threshold}}:{}),
    task_name:text(question.task_name),question:text(question.question),input_attachments:[],
    model_scores:Object.entries(object(decision.model_scores)??{}).map(([modelId,value])=>{
     const score=object(value)??{};
@@ -135,11 +137,11 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
 
 export function workbookSha256(bytes:Uint8Array){return createHash('sha256').update(bytes).digest('hex');}
 
-export async function buildProjectExport(pool:Pool|PoolClient,projectId:string,batch?:string,attachmentRoot?:string){
+export async function buildProjectExport(pool:Pool|PoolClient,projectId:string,batch?:string,attachmentRoot?:string,workflowId?:string){
  return withLogContext({component:'reporting',project_id:projectId,operation:'export'},async()=>{
   logEvent('export.started',{level:'info'});
   try{
-   const result=await collectProjectResults(pool,projectId,batch,attachmentRoot),records=result.records.filter(record=>record.accepted),bytes=buildResultWorkbook(records);
+   const result=await collectProjectResults(pool,projectId,batch,attachmentRoot,workflowId),records=result.records.filter(record=>record.accepted),bytes=buildResultWorkbook(records);
    await verifyProjectAuthoringRules(pool,projectId,records.map(record=>record.workflow_id));
    logEvent('export.completed',{level:'info',state:'succeeded',attempt_count:records.length,output_bytes:bytes.length});
    return {...result,records,bytes};

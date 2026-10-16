@@ -12,7 +12,7 @@ import {HTTPException} from 'hono/http-exception';
 import {mkdir,writeFile,rm} from 'node:fs/promises';
 import {dirname,resolve,join,relative} from 'node:path';
 import {createHash} from 'node:crypto';
-import {authoringQuestion,buildAnswerInput,inputDigest,AnswerInputError,type AnswerPackage} from './input';
+import {authoringQuestion,buildAnswerInput,buildAnswerMessage,inputDigest,matchesInputDigest,AnswerInputError,type AnswerPackage} from './input';
 import {QwenError,type QwenAnswer} from './qwen';
 import {DomesticError} from './domestic';
 import {resolveAnswerConfig,createAnswerClient,type ResolvedAnswerConfig} from './dispatch';
@@ -27,7 +27,7 @@ async function currentQuestion(db:PoolClient,id:string){
  try {
   const row=(await db.query("SELECT a.id,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[id])).rows[0];
   if(!row)throw new AnswerInputError('当前题目尚未出题成功');
-  return {...authoringQuestion(row.result),question_attempt_id:row.id};
+  return {...authoringQuestion(row.result),...(row.result.deliverables!==undefined?{deliverables:row.result.deliverables}:{}),question_attempt_id:row.id};
  }catch(error){throw error;}
 }
 export async function readAnswerAttachment(_root:string,artifact:{storage_path?:string;sha256:string;content?:string|null}){
@@ -99,7 +99,7 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
 async function matchesQuestion(db:PoolClient,job:any){
  try{
   const current=await currentQuestion(db,job.workflow_id);
-  return current.question_attempt_id===job.input.question_attempt_id&&current.question_version===job.input.question_version&&current.question===job.input.question&&JSON.stringify(current.attachment_ids)===JSON.stringify(job.input.attachments.map((a:any)=>a.id));
+  return (!job.input.presentation||canonicalJson(current.presentation)===canonicalJson(job.input.presentation))&&current.question_attempt_id===job.input.question_attempt_id&&current.question_version===job.input.question_version&&current.question===job.input.question&&JSON.stringify(current.attachment_ids)===JSON.stringify(job.input.attachments.map((a:any)=>a.id));
  }catch(error){if(error instanceof AnswerInputError)return false;throw error;}
 }
 async function matchesModelSet(db:PoolClient,job:any){
@@ -160,18 +160,18 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
  let wrote=false;
  try{
   // Validate the stored snapshot before dispatch, then check current source again at publication.
-  const packaged:AnswerPackage={question_version:job.input.question_version,question:job.input.question,materials:job.input.materials,attachments:job.input.attachments,...(typeof job.input.system_prompt==='string'?{system_prompt:job.input.system_prompt}:{})};
-  if(inputDigest(packaged)!==job.input.input_digest)throw new AnswerInputError();
+  const packaged:AnswerPackage={question_version:job.input.question_version,question:job.input.question,materials:job.input.materials,attachments:job.input.attachments,...(typeof job.input.system_prompt==='string'?{system_prompt:job.input.system_prompt}:{}),...(job.input.presentation?{presentation:job.input.presentation}:{})};
+  if(!matchesInputDigest(packaged,job.input.input_digest))throw new AnswerInputError('作答输入指纹不一致，未发送模型请求');
   if(job.input.hooks&&job.input.hook_digest!==createHash('sha256').update(canonicalJson(job.input.hooks)).digest('hex'))throw new AnswerInputError('项目钩子快照已变化');
   const before=await pool.connect();try{await before.query('BEGIN');const w=(await before.query(activeWorkflow,[job.workflow_id])).rows[0];if(!w||!await matchesQuestion(before,job)||!await matchesModelSet(before,job))throw new AnswerInputError('题目或项目模型配置已变化');await before.query('COMMIT');}catch(error){await before.query('ROLLBACK');throw error;}finally{before.release();}
   const generationPolicy=resolveAnswerGenerationPolicy(job.input.answer_generation_policy);
   const callSettings=resolveAnswerCallSettings(generationPolicy);
-  const hookContext={pool,attempt_id:job.id,workflow_id:job.workflow_id,stage:'answer' as const,binding_digest:createHash('sha256').update(canonicalJson({input:job.input.input_digest,config:job.config,generation_policy:generationPolicy})).digest('hex'),input:{question:packaged.question,materials:packaged.materials},hooks:job.input.hooks,signal};
-  const result=await executeWithStageHooks({...hookContext,runMain:()=>runExternalCall({attempt_id:job.id,operation:'answer'},call_id=>answer({config:resolveAnswerConfig(job.config),question:packaged.question,materials:packaged.materials,system_prompt:job.input.system_prompt,signal,call_id,timeout_ms:callSettings.timeout_ms,...(callSettings.observe_reasoning?{observe_reasoning:true}:{})})),outputForHooks:value=>({text:value.text})});
+  const hookContext={pool,attempt_id:job.id,workflow_id:job.workflow_id,stage:'answer' as const,binding_digest:createHash('sha256').update(canonicalJson({input:job.input.input_digest,config:job.config,generation_policy:generationPolicy})).digest('hex'),input:{question:buildAnswerMessage(packaged),materials:packaged.materials},hooks:job.input.hooks,signal};
+  const result=await executeWithStageHooks({...hookContext,runMain:()=>runExternalCall({attempt_id:job.id,operation:'answer'},call_id=>answer({config:resolveAnswerConfig(job.config),question:buildAnswerMessage(packaged),materials:packaged.materials,system_prompt:job.input.system_prompt,signal,call_id,timeout_ms:callSettings.timeout_ms,...(callSettings.observe_reasoning?{observe_reasoning:true}:{})})),outputForHooks:value=>({text:value.text})});
   const directory=join(resolve(root),job.workflow_id,job.id);await mkdir(directory,{recursive:true});
   const bytes=Buffer.from(result.text);const path=join(directory,'answer.txt');wrote=true;logEvent('file.write.started',{level:'info',file_kind:'model_answer',output_bytes:bytes.length});await writeFile(path,bytes,{mode:0o600});logEvent('file.write.completed',{level:'info',file_kind:'model_answer',output_bytes:bytes.length});
   const answer_sha256=createHash('sha256').update(bytes).digest('hex');
-  const publication={...result,provider:job.config.provider??'qwen',mode:job.config.enable_thinking===undefined?'provider_default':job.config.enable_thinking?'thinking_enabled':'thinking_disabled',model_id:job.input.model_id??null,model_name:job.input.model_name??null,answer_sha256,input_digest:job.input.input_digest,question_version:job.input.question_version,question_attempt_id:job.input.question_attempt_id,tools:[],output_mode:'text',execution_steps:null};
+  const publication={...result,provider:job.config.provider??'qwen',mode:job.config.enable_thinking===undefined?'provider_default':job.config.enable_thinking?'thinking_enabled':'thinking_disabled',model_id:job.input.model_id??null,model_name:job.input.model_name??null,answer_sha256,input_digest:job.input.input_digest,question_version:job.input.question_version,question_attempt_id:job.input.question_attempt_id,tools:[],output_mode:'text',execution_steps:null,...(job.input.presentation?{answer_presentation:job.input.presentation}:{})};
   const tx=await pool.connect();
   try{
    await tx.query('BEGIN');
