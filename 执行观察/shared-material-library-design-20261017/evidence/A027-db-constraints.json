@@ -1,0 +1,44 @@
+{
+  "synthetic": true,
+  "real_model_calls": false,
+  "all_writes_rolled_back": true,
+  "checks": [
+    {
+      "name": "immutable_revision",
+      "expected": "55000",
+      "actual": "55000",
+      "passed": true
+    },
+    {
+      "name": "immutable_private_snapshot",
+      "expected": "55000",
+      "actual": "55000",
+      "passed": true
+    },
+    {
+      "name": "terminal_job_cannot_requeue",
+      "expected": "55000",
+      "actual": "55000",
+      "passed": true
+    },
+    {
+      "name": "immutable_archive_event",
+      "expected": "55000",
+      "actual": "55000",
+      "passed": true
+    },
+    {
+      "name": "wrong_document_job_kind",
+      "expected": "23514",
+      "actual": "23514",
+      "passed": true
+    },
+    {
+      "name": "agent_cannot_run_on_server",
+      "expected": "23514",
+      "actual": "23514",
+      "passed": true
+    }
+  ],
+  "passed": true
+}

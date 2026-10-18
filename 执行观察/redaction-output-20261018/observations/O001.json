@@ -1,0 +1,20 @@
+{
+  "id": "O001",
+  "kind": "issue",
+  "status": "open",
+  "title": "32768 输出上限后这一批仍然 length",
+  "item_ids": ["package"],
+  "attempt_ids": ["A002"],
+  "facts": [
+    "attempt 3642f3f0-827c-4ad9-9cb9-9aa092a14119 于 2026-10-18T07:46:35Z 失败",
+    "redaction-structured-1、1-a、1-b 三次都是 HTTP 200、incomplete_finish_reason、finish_reason=length",
+    "这次尝试的日志里没有成功的模型调用"
+  ],
+  "hypotheses": ["对半后的批次仍写满 32768"],
+  "evidence": ["执行观察/redaction-output-20261018/attempts/A002.json"],
+  "impact": "材料包还不能出题",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-18T15:50:00+08:00",
+  "updated_at": "2026-10-18T15:50:00+08:00"
+}

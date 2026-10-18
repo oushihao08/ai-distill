@@ -1,18 +1,20 @@
 <!--
-职责：在材料包详情分页显示全部派生题目的独立五步状态和执行记录。
-Props：projectId、questions；当前页批量读取步骤状态，点击状态查看该题历史尝试。
+职责：在材料包详情分页显示派生题目状态、逐模型评分和执行记录。
+Props：projectId、questions；通过状态查看历史尝试、确认后逻辑删除单题，并通知父页刷新。
 -->
 <script setup lang="ts">
 import {api} from '../api/client';
 import {dateLabel} from '../utils/format';
-import type {WorkflowDetail} from '../types/api';
+import {readScoreStepResult,type ScoreStepModelSummary,type WorkflowDetail} from '../types/api';
 import {workflowStepDisplay,type WorkflowStatusView} from '../utils/workflow-status';
 import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
 
 type Question=NonNullable<WorkflowDetail['material_package_questions']>[number];
 const props=defineProps<{projectId:string;questions:Question[]}>();
+const emit=defineEmits<{refresh:[]}>();
 const page=shallowRef(1),views=shallowRef<Record<string,WorkflowStatusView>>({}),loading=shallowRef(false),error=shallowRef('');
 const history=shallowRef<{workflowId:string;title:string;ordinal:number;stepName:string}|null>(null);
+const deleteDialogOpen=shallowRef(false),deleteTarget=shallowRef<Question|null>(null),deletingId=shallowRef<string|null>(null),deleteError=shallowRef('');
 let requestVersion=0;
 const columns=[{ordinal:4,name:'出题'},{ordinal:5,name:'作答'},{ordinal:6,name:'评分'},{ordinal:7,name:'达标判断'},{ordinal:8,name:'归档'}];
 const pageSize=10;
@@ -26,6 +28,24 @@ async function refresh(){
  finally{if(version===requestVersion)loading.value=false;}
 }
 function openHistory(question:Question,column:typeof columns[number]){history.value={workflowId:question.id,title:question.title,ordinal:column.ordinal,stepName:column.name};}
+function scoreModels(question:Question){return readScoreStepResult(views.value[question.id]?.steps.find(step=>step.ordinal===6)?.result)?.models??[];}
+function modelScoreText(model:ScoreStepModelSummary){
+ const name=model.name||model.model_id||'未知模型';
+ const score=model.score_contract==='model_report_v1'?model.raw_score:model.score;
+ const maximum=model.score_contract==='model_report_v1'?model.full_score:model.max_score;
+ if(typeof score==='number'&&typeof maximum==='number')return `${name} ${model.score_contract==='model_report_v1'?'原始分 ':''}${score}/${maximum}${model.veto_triggered===true?' · 否决':''}`;
+ return `${name} ${model.score_status==='failed'?'评分失败':model.score_status==='running'?'评分中':model.score_status==='waiting'?'等待评分':'暂无分数'}`;
+}
+function requestDelete(question:Question){deleteTarget.value=question;deleteError.value='';deleteDialogOpen.value=true;}
+async function deleteQuestion(){
+ const target=deleteTarget.value;if(!target)return;
+ try{
+  deletingId.value=target.id;deleteError.value='';
+  await api(`/workflows/${target.id}`,{method:'DELETE'});
+  deleteDialogOpen.value=false;deleteTarget.value=null;emit('refresh');
+ }catch(cause){deleteError.value=cause instanceof Error?cause.message:'删除题目失败';}
+ finally{deletingId.value=null;}
+}
 watch([()=>props.questions,page],()=>{void refresh();});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 onMounted(refresh);
@@ -34,9 +54,10 @@ onMounted(refresh);
  <Row x="between" wrap y="center" :gap="8"><h2 class="section-title">本材料包的题目</h2><span class="text-xs text-muted">共 {{ questions.length }} 道 · 每页 {{ pageSize }} 道</span></Row>
  <v-alert v-if="error" type="error" density="compact">{{ error }}</v-alert>
  <p v-if="!questions.length" class="text-sm text-muted">此材料包还没有题目。完成脱敏后可在上方创建多道题目。</p>
- <Column v-else class="overflow-x-auto"><v-table density="comfortable" class="min-w-950px"><thead><tr><th scope="col">题目与脱敏版本</th><th v-for="column in columns" :key="column.ordinal" scope="col">{{ column.name }}</th></tr></thead>
-  <tbody><tr v-for="question in visible" :key="question.id"><td class="min-w-220px"><Column :gap="4"><RouterLink :to="`/workflows/${question.id}`" class="link-text font-medium">{{ question.title }}</RouterLink><span class="text-xs text-muted">脱敏尝试 {{ question.source_redaction_attempt_id }} · 正文指纹 {{ question.source_redaction_sha256?.slice(0,16) }}</span></Column></td><td v-for="column in columns" :key="column.ordinal"><Column :gap="4"><v-btn size="small" variant="text" :color="workflowStepDisplay(views[question.id],column.ordinal).color" @click="openHistory(question,column)">{{ workflowStepDisplay(views[question.id],column.ordinal).label }}</v-btn><span v-if="workflowStepDisplay(views[question.id],column.ordinal).reason" class="text-xs text-muted max-w-180px break-words">{{ workflowStepDisplay(views[question.id],column.ordinal).reason }}</span><span v-if="workflowStepDisplay(views[question.id],column.ordinal).finishedAt" class="text-xs text-muted">{{ dateLabel(workflowStepDisplay(views[question.id],column.ordinal).finishedAt!) }}</span></Column></td></tr></tbody>
+ <Column v-else class="overflow-x-auto"><v-table density="comfortable" class="min-w-1050px"><thead><tr><th scope="col">题目</th><th v-for="column in columns" :key="column.ordinal" scope="col">{{ column.name }}</th><th scope="col">操作</th></tr></thead>
+  <tbody><tr v-for="question in visible" :key="question.id"><td class="min-w-220px"><RouterLink :to="`/workflows/${question.id}`" class="link-text font-medium">{{ question.title }}</RouterLink></td><td v-for="column in columns" :key="column.ordinal"><Column :gap="4"><v-btn size="small" variant="text" :color="workflowStepDisplay(views[question.id],column.ordinal).color" @click="openHistory(question,column)">{{ workflowStepDisplay(views[question.id],column.ordinal).label }}</v-btn><span v-if="column.ordinal===6&&scoreModels(question).length" class="text-xs text-muted max-w-180px break-words">{{ scoreModels(question).map(modelScoreText).join('；') }}</span><span v-if="workflowStepDisplay(views[question.id],column.ordinal).finishedAt" class="text-xs text-muted">{{ dateLabel(workflowStepDisplay(views[question.id],column.ordinal).finishedAt!) }}</span></Column></td><td><v-btn size="small" variant="text" color="error" :disabled="deletingId===question.id" @click="requestDelete(question)">删除</v-btn></td></tr></tbody>
  </v-table></Column>
  <Row x="between" y="center"><span class="text-xs text-muted">{{ loading?'正在读取状态…':`第 ${page} / ${pageCount} 页` }}</span><v-pagination v-model="page" :length="pageCount" :total-visible="5" :disabled="pageCount<=1" aria-label="材料包题目分页" /></Row>
  <WorkflowAttemptHistory v-if="history" :key="`${history.workflowId}-${history.ordinal}`" v-bind="history" @close="history=null" />
+ <v-dialog v-model="deleteDialogOpen" max-width="460"><v-card><v-card-title>删除这道题？</v-card-title><v-card-text><v-alert v-if="deleteError" type="error" density="compact" class="mb-3">{{ deleteError }}</v-alert>将从材料包题目列表中逻辑删除“{{ deleteTarget?.title }}”，并停止该题正在执行的任务。材料包和原始材料会保留；删除后无法从此页面恢复。</v-card-text><v-card-actions><v-spacer /><v-btn :disabled="Boolean(deletingId)" @click="deleteDialogOpen=false">取消</v-btn><v-btn color="error" variant="flat" :loading="Boolean(deletingId)" :disabled="!deleteTarget" @click="deleteQuestion">删除题目</v-btn></v-card-actions></v-card></v-dialog>
 </Column></template>

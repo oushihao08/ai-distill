@@ -10,20 +10,21 @@ import {randomUUID} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
 
 type LogFields=Record<string,unknown>;
-type LogContext=Partial<Record<'request_id'|'operation_id'|'component'|'project_id'|'workflow_id'|'attempt_id'|'skill_attempt_id'|'ordinal'|'call_id'|'session_id'|'artifact_id'|'operation'|'provider'|'model'|'reasoning_effort',unknown>>;
+type LogContext=Partial<Record<'request_id'|'operation_id'|'component'|'project_id'|'workflow_id'|'attempt_id'|'skill_attempt_id'|'ordinal'|'call_id'|'session_id'|'artifact_id'|'operation'|'provider'|'model'|'reasoning_effort'|'library_package_id'|'library_revision_id'|'library_job_id'|'library_file_id',unknown>>;
 const context=new AsyncLocalStorage<LogContext>();
 const safeErrors=new Set(['authentication','quota','rate_limit','network','timeout','provider','configuration','cancelled','invalid_response','unknown','none']);
 const safeProviders=new Set(['codex','qwen','kimi','deepseek','doubao','openrouter','glm-ocr','mineru-api','mineru-cli','unknown']);
 const safeChangedFields=new Set(['credential_home','model','reasoning_effort','enabled','models','name','description','material_root','local_skill_path','provider','base_url','config','minimum_score','currency','input_per_million','output_per_million','cached_input_per_million','cache_write_per_million','source','valid_from','valid_until','ordinal','prompt','threshold','workspace_path','source_digest','expected_sha256','text','path','rubric','question','workflow_ids']);
-const allowed=new Set(['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','session_id','operation','provider','model','reasoning_effort','build_id','child_pid','timeout_ms','elapsed_ms','wall_elapsed_ms','timer_lateness_ms','exit_code','signal','error_kind','reason_code','failure_phase','retryable','http_status','material_count','page_count','input_bytes','output_bytes','token_usage','method','route','status_code','duration_ms','query_name','transaction_name','artifact_id','target_id','changed_fields','file_kind','dropped_count','state','queue_wait_ms','attempt_count','batch_index','last_heartbeat_at','threshold_ms','error_code','error_constraint','process_state','event_type','event_count','level','material_id','page','expected_count','actual_count','expected_page','actual_page','source_empty','diagnostic_id'
+const allowed=new Set(['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','session_id','operation','provider','model','reasoning_effort','library_package_id','library_revision_id','library_job_id','library_file_id','build_id','child_pid','timeout_ms','elapsed_ms','wall_elapsed_ms','timer_lateness_ms','exit_code','signal','error_kind','reason_code','finish_reason','failure_phase','retryable','http_status','material_count','page_count','input_bytes','output_bytes','token_usage','method','route','status_code','duration_ms','query_name','transaction_name','artifact_id','target_id','changed_fields','file_kind','dropped_count','state','queue_wait_ms','attempt_count','batch_index','last_heartbeat_at','threshold_ms','error_code','error_constraint','process_state','event_type','event_count','level','material_id','page','expected_count','actual_count','expected_page','actual_page','source_empty','diagnostic_id'
 ]);
-const correlationKeys=['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','operation','provider','model','reasoning_effort'] as const;
+const correlationKeys=['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','library_package_id','library_revision_id','library_job_id','library_file_id','ordinal','call_id','operation','provider','model','reasoning_effort'] as const;
 function safeString(key:string,value:string){
  if(value.length>(key==='route'?240:160)||/[\r\n\0]/.test(value)||/^(sk-[A-Za-z0-9_-]{12,}|Bearer\s|postgres(?:ql)?:\/\/)/i.test(value))return false;
  if(key==='route')return /^\/[A-Za-z0-9_./:-]*$/.test(value);
  if(key==='signal')return ['SIGTERM','SIGINT','SIGKILL','unknown'].includes(value);
  if(key==='error_kind')return safeErrors.has(value);
  if(key==='reason_code')return /^[a-z][a-z0-9_]{0,79}$/.test(value);
+ if(key==='finish_reason')return ['length','content_filter','tool_calls','unknown','missing'].includes(value);
  if(key==='changed_fields')return value==='none'||value.length<=512&&value.split(',').every(field=>safeChangedFields.has(field));
  if(key==='level')return ['debug','info','warn','error'].includes(value);
  if(key==='provider')return safeProviders.has(value);
@@ -151,10 +152,12 @@ export function installFatalErrorLogging(){
  process.on('unhandledRejection',reason=>{logEventSync('process.unhandled_rejection',{level:'error',component:'runtime',event_type:'unhandledRejection',...classifyLogError(reason)});process.exit(1);});
 }
 export function loggerHealth(){return active?.health()??Promise.resolve<LoggerHealth>({status:'degraded',instance_id:'unconfigured',last_success_at:null,dropped_count:0,error_kind:'filesystem'});}
-export function classifyLogError(error:unknown):{error_kind:'authentication'|'quota'|'rate_limit'|'network'|'timeout'|'provider'|'configuration'|'cancelled'|'invalid_response'|'unknown';http_status?:number;retryable?:boolean;reason_code?:string}{
+export function classifyLogError(error:unknown):{error_kind:'authentication'|'quota'|'rate_limit'|'network'|'timeout'|'provider'|'configuration'|'cancelled'|'invalid_response'|'unknown';http_status?:number;retryable?:boolean;reason_code?:string;finish_reason?:string}{
  const value=error&&typeof error==='object'?error as {kind?:unknown;status?:unknown;message?:unknown;retryable?:unknown;code?:unknown;http_status?:unknown;reason_code?:unknown}:{};
  const status=value.http_status??value.status;
- const details={...(typeof status==='number'&&Number.isInteger(status)&&status>=100&&status<=599?{http_status:status}:{}),...(typeof value.reason_code==='string'&&/^[a-z][a-z0-9_]{0,79}$/.test(value.reason_code)?{reason_code:value.reason_code}:{})};
+ const finish=typeof (value as {finish_reason?:unknown}).finish_reason==='string'?(value as {finish_reason:string}).finish_reason:'';
+ const finish_reason=['length','content_filter','tool_calls','unknown','missing'].includes(finish)?finish:finish?'unknown':undefined;
+ const details={...(typeof status==='number'&&Number.isInteger(status)&&status>=100&&status<=599?{http_status:status}:{}),...(typeof value.reason_code==='string'&&/^[a-z][a-z0-9_]{0,79}$/.test(value.reason_code)?{reason_code:value.reason_code}:{}),...(finish_reason?{finish_reason}:{})};
  const kinds=['authentication','quota','rate_limit','network','timeout','provider','configuration','cancelled','invalid_response'] as const;
  if(typeof value.kind==='string'&&(kinds as readonly string[]).includes(value.kind))return{error_kind:value.kind as typeof kinds[number],...details,...(typeof value.retryable==='boolean'?{retryable:value.retryable}:{})};
  const message=typeof value.message==='string'?value.message.toLowerCase():'';

@@ -1,0 +1,48 @@
+{
+  "id": "O005",
+  "kind": "result",
+  "status": "open",
+  "title": "排除L3，L4工伤转作答并继续L2队列",
+  "item_ids": [
+    "603eb6cd-8ad2-46ee-8582-19d25f252e15",
+    "1b2a94b2-0f97-4c23-9f62-13a01fb68066",
+    "d1af0602-5b84-4fd0-ad3c-dd0a1c742c05",
+    "62dcb64a-8b64-42b9-8e50-0d920c9b304c",
+    "23bd0d15-868c-4eab-8b89-e59594dc7139",
+    "3bf6bc26-6410-494c-9137-cd1d7399e55d"
+  ],
+  "attempt_ids": [
+    "9f973815-e36b-4f38-a573-a8e8e2a31e1f",
+    "fd0109dc-96a3-47a2-a6a7-3c8a23ca5262",
+    "0d442665-689b-4992-a2c1-6d1a4168254e",
+    "7acb7fa6-434d-4d7c-bfb4-281ebf79d8a6",
+    "2f632ee4-aeda-453e-8f33-ab0829349a43",
+    "c6d4195a-52e6-441b-85fb-2793e5b1629c"
+  ],
+  "facts": [
+    "用户明确要求不做L3；L3从后续出题、作答、评分、领取、上传中排除。",
+    "L4工伤作者attempt 9f973815-e36b-4f38-a573-a8e8e2a31e1f已succeeded，content_status=complete；ordinal 5显示ready。",
+    "已向L4工伤派发ordinal 5模型作答，attempt fd0109dc-96a3-47a2-a6a7-3c8a23ca5262，API返回queued。",
+    "GET /api/monitor显示running=3：L2运输回归作答0d442665-689b-4992-a2c1-6d1a4168254e、L2劳务出题7acb7fa6-434d-4d7c-bfb4-281ebf79d8a6、L2运输加压评分2f632ee4-aeda-453e-8f33-ab0829349a43；这些是当前活动任务。",
+    "L2合伙作答c6d4195a-52e6-441b-85fb-2793e5b1629c已succeeded，ordinal 6 ready，等待容量再派发。",
+    "L4民间借贷最新作者结果仍为draft，ordinal 5 ready=false，原因Work题目仍为草稿；没有派发下游。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "GET /api/monitor",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=...",
+    "POST /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/steps/5/run-batch"
+  ],
+  "impact": "L3不再处理。L4工伤进入新版本作答；L4民借继续受草稿阻断。L2活动任务继续占用本地执行容量。",
+  "updates": [
+    {
+      "at": "2026-10-17T16:38:00+08:00",
+      "action": "按“不用做L3”排除L3，复核L4/L2状态并派发L4工伤作答",
+      "result": "L4工伤作者完整；新作答attempt已排队。当前monitor运行3项；无L3派发。",
+      "evidence": "本机API状态及派发响应"
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-17T16:38:00+08:00",
+  "updated_at": "2026-10-17T16:38:00+08:00"
+}

@@ -1,0 +1,45 @@
+{
+  "id": "AUTH001",
+  "item_id": "bc42beb1-ad56-4d22-ad25-af0229dd0403",
+  "stage_id": "recovery_authorization",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": null,
+  "finished_at": "2026-10-17T06:13:55.103696+00:00",
+  "inputs": [
+    {
+      "ref": "房屋L4-再次恢复-bc42beb1.md",
+      "version": "2026-10-17-user-authorized-recovery",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "requested_changes": [
+      "本次输出路径核对",
+      "禁止旧临时脚本"
+    ],
+    "model_changed": false,
+    "threshold_changed": false,
+    "max_new_attempts": 1,
+    "direction_saved": true
+  },
+  "changes_from_previous": [
+    "新会话只在本次output写新脚本，先核对输出路径"
+  ],
+  "external_ids": {
+    "user_reply": "允许再恢复一次"
+  },
+  "environment": {
+    "target": "local API",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "explicit_user_authorization",
+      "result": "允许再恢复一次",
+      "evidence": "本轮request_user_input_async答复"
+    }
+  ],
+  "error": null
+}

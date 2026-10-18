@@ -200,3 +200,35 @@ test('评分阶段执行前后钩子且不泄漏思路或默认标答文件',asy
   expect(records.map(r=>r.result?.data)).toEqual([{phase:'before',approach:false,reference:false},{phase:'after',approach:false,reference:false}]);
  });
 });
+
+test('新model_report评分入队冻结核对正文，旧报告仍不附加',async()=>{
+ const policy={contract:'model_report_v1',rules_text:'按项目评分',reference_answer:'none'};
+ for(const provider of ['codex','api'] as const){
+  const f=fake({provider,policy});await enqueueScore(f.pool,'workflow');
+  const insert=f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;
+  const frozen=JSON.parse(insert.values[2]);
+  expect(frozen.execution_instructions.model_report_reading_instructions).toBe(scoreExecutionInstructions(provider,'model_report_v1').model_report_reading_instructions);
+  expect(typeof frozen.execution_instructions.model_report_reading_instructions).toBe('string');
+ }
+ const legacy=fake();await enqueueScore(legacy.pool,'workflow');
+ expect(JSON.parse(legacy.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!.values[2]).execution_instructions).not.toHaveProperty('model_report_reading_instructions');
+});
+test('新评分传递冻结核对正文，旧无字段任务传递空正文，改写快照拒绝执行',async()=>{
+ const policy={contract:'model_report_v1',rules_text:'按项目评分',reference_answer:'none'};
+ const root=await mkdtemp(join(tmpdir(),'score-frozen-reading-'));
+ try{
+  for(const provider of ['codex','api'] as const)for(const version of ['old','new','tampered']){
+   const f=fake({provider,policy});
+   if(version!=='old')f.job.input.execution_instructions=scoreExecutionInstructions(provider,'model_report_v1');
+   if(version==='tampered')f.job.input.execution_instructions.model_report_reading_instructions+='篡改';
+   let called=false,receivedGuide:unknown;
+   await runNextScore(f.pool,root,(async(_context:any,options:any)=>{
+    called=true;
+    receivedGuide=options.model_report_reading_instructions;
+    return {raw_text:'无有效结果',report:{},session_id:'fixture',usage:null,duration_ms:1};
+   }) as any,undefined,async()=>{},provider);
+   expect(called).toBe(version!=='tampered');
+   if(called)expect(receivedGuide).toBe(version==='new'?scoreExecutionInstructions(provider,'model_report_v1').model_report_reading_instructions:'');
+  }
+ }finally{await rm(root,{recursive:true,force:true});}
+});

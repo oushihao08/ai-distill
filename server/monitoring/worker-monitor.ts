@@ -20,9 +20,45 @@ export interface ActiveWorkflowTask {
  channel:'agent'|'api'|'unknown';project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;
  state:'running';started_at:string|null;attempt_id:string;
 }
+export type MaterialLibraryQueueStatus=
+ |{status:'unavailable'}
+ |{status:'known';totals:{queued:number;running:number;succeeded:number;failed:number;cancelled:number};items:{job_id:string;package_id:string;revision_id:string;package_name:string;kind:'intake'|'extract'|'redact';state:'queued'|'running';executor_kind:'internal'|'api'|'agent';execution_target:'local'|'server';progress:Record<string,string|number>;error_code:string|null;created_at:string|null;started_at:string|null}[]};
 export async function readActiveWorkflowTasks(pool:Pool):Promise<ActiveWorkflowTask[]>{
  const result=await pool.query("SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,s.name AS step_name,a.status AS state,a.started_at,CASE WHEN a.ordinal=5 THEN 'api' WHEN a.ordinal IN (4,6) THEN 'agent' WHEN a.ordinal=9 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=9 AND a.config->>'provider'='codex' THEN 'agent' ELSE 'unknown' END AS channel FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=a.ordinal WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status='running' AND a.ordinal IN (4,5,6,9) ORDER BY a.started_at,a.id LIMIT 500");
  return result.rows.map(row=>({attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:row.state,channel:row.channel,started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
+}
+function safeLibraryProgress(value:unknown):Record<string,string|number>{
+ if(!value||typeof value!=='object'||Array.isArray(value))return{};
+ const source=value as Record<string,unknown>,progress:Record<string,string|number>={};
+ if(typeof source.phase==='string'&&['intake','extract','redact'].includes(source.phase))progress.phase=source.phase;
+ for(const key of ['completed_files','total_files','issue_count','verified_bytes','page_count','file_count'])if(typeof source[key]==='number'&&Number.isSafeInteger(source[key])&&source[key]>=0)progress[key]=source[key];
+ return progress;
+}
+function safeTimestamp(value:unknown):string|null{
+ if(value instanceof Date)return Number.isFinite(value.getTime())?value.toISOString():null;
+ if(typeof value!=='string'&&typeof value!=='number')return null;
+ const date=new Date(value);return Number.isFinite(date.getTime())?date.toISOString():null;
+}
+/** 读取全局库任务摘要；旧数据库没有新表时返回 unavailable，不影响旧 worker/API。 */
+export async function readMaterialLibraryQueue(pool:Pool):Promise<MaterialLibraryQueueStatus>{
+ try{
+  const schema=await pool.query("SELECT to_regclass('ai_distill.library_jobs') IS NOT NULL AS available");
+  if(schema.rows[0]?.available!==true)return{status:'unavailable'};
+  const [counts,active]=await Promise.all([
+   pool.query(`SELECT count(*) FILTER(WHERE status='queued')::int AS queued,count(*) FILTER(WHERE status='running')::int AS running,
+    count(*) FILTER(WHERE status='succeeded')::int AS succeeded,count(*) FILTER(WHERE status='failed')::int AS failed,count(*) FILTER(WHERE status='cancelled')::int AS cancelled
+    FROM ai_distill.library_jobs`),
+   pool.query(`SELECT j.id,j.package_id,j.revision_id,COALESCE(p.name,'（材料包已归档）') AS package_name,j.kind,j.status,j.executor_kind,j.execution_target,j.progress,j.error_code,j.created_at,j.started_at
+    FROM ai_distill.library_jobs j LEFT JOIN ai_distill.library_packages p ON p.id=j.package_id WHERE j.status IN ('queued','running') ORDER BY j.created_at,j.id LIMIT 100`),
+  ]);
+  const row=counts.rows[0]??{},number=(value:unknown)=>{const parsed=Number(value);if(!Number.isSafeInteger(parsed)||parsed<0)throw new Error('invalid library queue count');return parsed;};
+  const totals={queued:number(row.queued),running:number(row.running),succeeded:number(row.succeeded),failed:number(row.failed),cancelled:number(row.cancelled)};
+  const items=active.rows.map(item=>{
+   if(!['intake','extract','redact'].includes(item.kind)||!['queued','running'].includes(item.status)||!['internal','api','agent'].includes(item.executor_kind)||!['local','server'].includes(item.execution_target))throw new Error('invalid library queue row');
+   return{job_id:String(item.id),package_id:String(item.package_id),revision_id:String(item.revision_id),package_name:String(item.package_name),kind:item.kind,state:item.status,executor_kind:item.executor_kind,execution_target:item.execution_target,progress:safeLibraryProgress(item.progress),error_code:typeof item.error_code==='string'?item.error_code:null,created_at:safeTimestamp(item.created_at),started_at:safeTimestamp(item.started_at)};
+  });
+  return{status:'known',totals,items};
+ }catch(error){logEvent('monitor.library_queue_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable'};}
 }
 const unavailable=():WorkerMonitorStatus=>({status:'unavailable',heartbeat_at:null,worker_pid:null,dispatch:null,advice:null,snapshot:null});
 const integer=(value:unknown)=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0;

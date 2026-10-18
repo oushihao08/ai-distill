@@ -1,0 +1,10 @@
+{
+  "original_status": 200,
+  "original_sha256_matches": true,
+  "extraction_status": 200,
+  "extracted_pages": 1,
+  "redaction_status": 200,
+  "redaction_contains_source": true,
+  "defaults_status": 200,
+  "default_has_prompt": true
+}

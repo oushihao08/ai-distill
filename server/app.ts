@@ -11,7 +11,7 @@ import { Hono, type Context } from 'hono';
 import {runAgent} from './agent';
 import {AgentConcurrencyConfigurationError,getAgentConcurrencyGate,readConcurrencySettings,readSavedWorkerConcurrencySettings,saveWorkerConcurrencySettings,SAFE_WORKER_CONCURRENCY_LIMITS} from './concurrency';
 import {clearProjectAgentSettings,configureAgentCredentialHome,readAgentCredentialHome,readAgentModelCatalog,readAgentSettings,readProjectAgentDefaults,readProjectAgentSettings,saveAgentSettings,saveProjectAgentSettings} from './agent/config';
-import {readActiveWorkflowTasks,readWorkerMonitor} from './monitoring/worker-monitor';
+import {readActiveWorkflowTasks,readMaterialLibraryQueue,readWorkerMonitor} from './monitoring/worker-monitor';
 import { HTTPException } from 'hono/http-exception';
 import { bodyLimit } from 'hono/body-limit';
 import type { Pool } from 'pg';
@@ -32,7 +32,7 @@ import {enqueueAnswer} from './answer-models/jobs';
 import {listAnswerModels,registerAnswerModel,setAnswerModelEnabled,readProjectModelSet,saveProjectModelSet} from './answer-models/model-set';
 import {mergeAnswerGenerationPolicyIntoStepConfig,parseAnswerGenerationPolicyMinutes,readAnswerGenerationPolicyFromStepConfig,serializeAnswerGenerationPolicyMinutes} from './answer-models/generation-policy';
 import {runAcceptance} from './decisions/jobs';
-import {publishWorkflow} from './publishing/jobs';
+import {publishWorkflow,readPublicationHistory,readSiriserArchive,withdrawPublication} from './publishing/jobs';
 import {buildProjectExport,verifyProjectAuthoringRules,workbookSha256,withProjectExportLock} from './reporting/export';
 import {readArchivedWorkflowWorkbook,writeArchivedWorkflowWorkbook} from './reporting/archive-workbook';
 import {exportRedactedDocx,readCurrentRedactedDocx} from './materials/redacted-docx-export';
@@ -48,6 +48,8 @@ import {registerWorkflowHookRoutes} from './workflow-hook-routes';
 import {registerWorkflowExecutionRoutes} from './workflow-execution-routes';
 import {registerRemoteMaterialRoutes} from './remote-material-routes';
 import {readSystemStepPrompts,saveSystemStepPrompts} from './system-step-prompts';
+import {registerMaterialLibraryRoutes} from './material-library/routes';
+import {registerProjectLibraryRoutes} from './material-library/projects-routes';
 
 const repositoryRoot=resolve(fileURLToPath(new URL('../',import.meta.url)));
 // 空钩子沿用旧表；033仅在启用可执行钩子时需要，不能使既有文字流程的健康检查失败。
@@ -78,10 +80,18 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   'put:/api/projects/:id/agent-settings':{operation:'project_agent_settings.update',fields:['model','reasoning_effort']},
   'delete:/api/projects/:id/codex-settings':{operation:'project_codex_settings.reset',fields:['model','reasoning_effort']},
   'delete:/api/projects/:id/agent-settings':{operation:'project_agent_settings.reset',fields:['model','reasoning_effort']},
-  'post:/api/projects':{operation:'project.create',fields:['name','description','material_root','local_skill_path']},
+  'post:/api/projects':{operation:'project.create',fields:['name','description','material_root','material_backend','workspace_path','local_skill_path']},
+  'post:/api/material-library/packages':{operation:'material_library.package.create',fields:['name','description','tags','processing_settings']},
+  'patch:/api/material-library/packages/:id':{operation:'material_library.package.update',fields:['name','description','tags','processing_settings']},
+  'delete:/api/material-library/packages/:id':{operation:'material_library.package.archive',fields:[]},
+  'post:/api/material-library/packages/:id/revisions':{operation:'material_library.revision.upload',fields:['files','redaction_modes']},
+  'post:/api/projects/:id/loaded-materials':{operation:'project.material_package.load',fields:['package_id','redaction_id']},
+  'patch:/api/projects/:id/loaded-materials/:linkId':{operation:'project.material_package.update',fields:['redaction_id','position']},
+  'delete:/api/projects/:id/loaded-materials/:linkId':{operation:'project.material_package.remove',fields:[]},
+  'post:/api/projects/:id/loaded-materials/:linkId/questions':{operation:'project.library_question.create',fields:['request_key','redaction_id','title','scenario','role_perspective','target_level','authoring_direction','question_tags']},
   'patch:/api/projects/:id':{operation:'project.update',fields:['name','description','material_root','local_skill_path']},
   'delete:/api/projects/:id':{operation:'project.delete',fields:[]},
-  'post:/api/answer-models':{operation:'answer_model.register',fields:['model']},
+  'post:/api/answer-models':{operation:'answer_model.register',fields:['provider','model','reasoning_effort']},
   'put:/api/answer-models/:id':{operation:'answer_model.update',fields:['enabled']},
   'put:/api/projects/:id/answer-models':{operation:'project_answer_models.update',fields:['models']},
   'put:/api/projects/:id/answer-generation-policy':{operation:'project_answer_generation_policy.update',fields:['request_timeout_minutes','reasoning_threshold_minutes','skip_scoring_on_qualified_timeout']},
@@ -208,7 +218,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const monitor=await readWorkerMonitor(storageRoot);
   let active_workflow_tasks:{status:'known'|'unavailable';items:Awaited<ReturnType<typeof readActiveWorkflowTasks>>}={status:'known',items:[]};
   try{active_workflow_tasks.items=await readActiveWorkflowTasks(pool);}catch(error){active_workflow_tasks.status='unavailable';logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});}
-  return c.json({...monitor,active_workflow_tasks,logging:await loggerHealth()});
+  return c.json({...monitor,active_workflow_tasks,material_library:await readMaterialLibraryQueue(pool),logging:await loggerHealth()});
  } catch(error) { throw error; } });
  app.get('/api/health', async c => {
    try {
@@ -300,8 +310,11 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    const tags=questionTags(body?.question_tags??[]);
    const materialMode=body?.material_mode??'question_folders';
    if(!['question_folders','material_packages'].includes(materialMode))throw new HTTPException(400,{message:'项目材料模式无效'});
-   const materialRoot = await validateFolder(body?.material_root);
-   const questions = await scanProjectFolder(materialRoot);
+   const materialBackend=body?.material_backend??'legacy';
+   if(!['legacy','library_v1'].includes(materialBackend))throw new HTTPException(400,{message:'项目材料后端无效'});
+   const workspacePath=materialBackend==='library_v1'?await validateFolder(body?.workspace_path,'项目规则工作区'):null;
+   const materialRoot = materialBackend==='legacy'?await validateFolder(body?.material_root):null;
+   const questions = materialRoot?await scanProjectFolder(materialRoot):[];
    const id = crypto.randomUUID();
    const db = await pool.connect();
    try {
@@ -311,13 +324,14 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     if(skillPaths.length>1)throw new HTTPException(409,{message:'同一项目的期次绑定了多个 skill 目录，请先统一项目 skill 路径'});
     const requestedSkill=body?.local_skill_path?await validateFolder(body.local_skill_path,'本地skill目录'):undefined;
     if(requestedSkill&&skillPaths.length&&requestedSkill!==skillPaths[0])throw new HTTPException(409,{message:'该项目已有共享 skill 目录，请使用项目现有 skill 路径'});
-    const inferredProjectRoot=phaseName&&basename(dirname(materialRoot))===phaseName?dirname(dirname(materialRoot)):undefined;
+    const inferredProjectRoot=workspacePath??(phaseName&&materialRoot&&basename(dirname(materialRoot))===phaseName?dirname(dirname(materialRoot)):undefined);
     const skillPath=requestedSkill??skillPaths[0]??(inferredProjectRoot?join(inferredProjectRoot,'skill'):resolve(storageRoot,'project-skills',id));
     await mkdir(skillPath,{recursive:true,mode:0o700});
-    const result = await db.query('INSERT INTO ai_distill.projects(id,name,description,material_root,local_skill_path,parent_name,phase_name,material_mode,question_tags) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',[id,name,description,materialRoot,skillPath,parentName,phaseName,materialMode,tags]);
+    const result = await db.query('INSERT INTO ai_distill.projects(id,name,description,material_root,local_skill_path,parent_name,phase_name,material_mode,question_tags,material_backend,workspace_path) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[id,name,description,materialRoot,skillPath,parentName,phaseName,materialMode,tags,materialBackend,workspacePath]);
     const prompts=await readSystemStepPrompts(db);
-    for(const ordinal of [4,5,6,9] as const)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:prompts[ordinal]})]);
-    await registerQuestionFolders(db,id,name,questions,materialMode);
+    const promptOrdinals:readonly (4|5|6|9)[]=materialBackend==='library_v1'?[4,5,6]:[4,5,6,9];
+    for(const ordinal of promptOrdinals)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:prompts[ordinal]})]);
+    if(materialRoot)await registerQuestionFolders(db,id,name,questions,materialMode);
     await db.query('COMMIT'); return c.json(result.rows[0],201);
    } catch(error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
  });
@@ -327,7 +341,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    if (!project.rowCount) throw new HTTPException(404,{message:'项目不存在'});
    const [workflows,steps] = await Promise.all([
     pool.query("SELECT w.*, (SELECT count(*)::int FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL) AS material_count,\n     (SELECT status FROM ai_distill.steps ms WHERE ms.workflow_id=w.id AND ms.ordinal=9) AS material_redaction_status,\n     COALESCE((SELECT CASE s.ordinal WHEN 1 THEN 1 WHEN 9 THEN 2 WHEN 4 THEN 3 WHEN 5 THEN 4 WHEN 6 THEN 5 WHEN 7 THEN 6 WHEN 8 THEN 7 END FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal NOT IN (2,3,10) AND (s.status NOT IN ('succeeded','skipped') OR (s.ordinal=7 AND s.result->>'decision'='repair')) ORDER BY s.display_position LIMIT 1),7) AS current_ordinal,\n     (SELECT status FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal NOT IN (2,3,10) AND (s.status NOT IN ('succeeded','skipped') OR (s.ordinal=7 AND s.result->>'decision'='repair')) ORDER BY display_position LIMIT 1) AS current_status,\n     (SELECT result->>'decision' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=7) AS current_decision,\n     (SELECT s.result FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=7 AND s.status='succeeded' AND s.result->>'decision'='accepted') AS acceptance_result,\n     (SELECT s.result->>'question_version' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4) AS current_question_version,\n     (SELECT s.result->>'rubric_version' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4) AS current_rubric_version,\n     (SELECT s.result->'models' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=5) AS answer_models,\n     (SELECT s.status FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=8) AS publication_status,\n     EXISTS(SELECT 1 FROM ai_distill.project_exports e WHERE e.project_id=w.project_id AND e.status='succeeded' AND w.id=ANY(e.workflow_ids)) AS exported\n     FROM ai_distill.workflows w WHERE project_id=$1 AND w.deleted_at IS NULL\n     ORDER BY CASE WHEN w.source_key ~ '^题目[0-9]+$' THEN substring(w.source_key from '^题目([0-9]+)$')::numeric END NULLS LAST,\n      w.source_key NULLS LAST,w.created_at DESC,w.id",[id]),
-    projectStepSummary(pool,id),
+    projectStepSummary(pool,id,project.rows[0].material_backend??'legacy'),
    ]);
    const skillExists = await Bun.file(join(project.rows[0].local_skill_path ?? '/nonexistent','SKILL.md')).exists();
    return c.json({project:{...project.rows[0],skill_exists:skillExists},workflows:workflows.rows,steps});
@@ -441,14 +455,13 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    const id = uuid(c.req.param('id'));
    const body = await c.req.json().catch(() => { throw new HTTPException(400,{message:'请提交有效JSON'}); });
    const legacyName = body?.name===undefined?undefined:text(body.name,'项目名称',120); const description = text(body?.description ?? '','项目说明',2000,false);
-   const root = await validateFolder(body?.material_root);
    const skill = body?.local_skill_path ? await validateFolder(body.local_skill_path,'本地skill目录') : undefined;
    const db = await pool.connect();
    try {
     await db.query('BEGIN');
     const previous = await db.query('SELECT * FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[id]);
     if (!previous.rowCount) throw new HTTPException(404,{message:'项目不存在'});
-    const prior=previous.rows[0],parentName=body?.parent_name===undefined?(prior.parent_name??legacyName??prior.name):text(body.parent_name,'项目名称',120),phaseName=body?.phase_name===undefined?(prior.phase_name??''):text(body.phase_name,'期数',120,false);
+    const prior=previous.rows[0],root=prior.material_backend==='library_v1'?null:await validateFolder(body?.material_root),parentName=body?.parent_name===undefined?(prior.parent_name??legacyName??prior.name):text(body.parent_name,'项目名称',120),phaseName=body?.phase_name===undefined?(prior.phase_name??''):text(body.phase_name,'期数',120,false);
     const tags=body?.question_tags===undefined?prior.question_tags:questionTags(body.question_tags);
     const groupedName=body?.parent_name!==undefined||body?.phase_name!==undefined?projectPhaseLabel(parentName,phaseName):legacyName??prior.name;
     const groupChanged=parentName!==prior.parent_name;
@@ -458,7 +471,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      const paths=[...new Set(groupSkills.rows.map(row=>String(row.local_skill_path)))];
      if(paths.length>1)throw new HTTPException(409,{message:'目标项目的期次绑定了多个 skill 目录，请先统一项目 skill 路径'});
      if(skill&&skill!==prior.local_skill_path&&paths.length&&skill!==paths[0])throw new HTTPException(409,{message:'目标项目已有共享 skill 目录，请先统一项目 skill 路径'});
-     const inferredProjectRoot=phaseName&&basename(dirname(root))===phaseName?dirname(dirname(root)):undefined;
+     const inferredProjectRoot=prior.material_backend==='library_v1'?prior.workspace_path:phaseName&&root&&basename(dirname(root))===phaseName?dirname(dirname(root)):undefined;
      nextSkill=paths[0]??(skill&&skill!==prior.local_skill_path?skill:undefined)??(inferredProjectRoot?join(inferredProjectRoot,'skill'):undefined)??prior.local_skill_path??resolve(storageRoot,'project-skills',id);
     }
     nextSkill??=resolve(storageRoot,'project-skills',id);
@@ -467,7 +480,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     if(skill&&skillBindingChanged)await db.query('UPDATE ai_distill.projects SET local_skill_path=$2 WHERE parent_name=$1 AND deleted_at IS NULL',[parentName,nextSkill]);
     await db.query("UPDATE ai_distill.workflows SET title=$2||'-'||source_key WHERE project_id=$1 AND source_key IS NOT NULL AND deleted_at IS NULL",[id,groupedName]);
     await mkdir(result.rows[0].local_skill_path,{recursive:true,mode:0o700});
-    if (root !== previous.rows[0].material_root) await registerQuestionFolders(db,id,groupedName,await scanProjectFolder(root),previous.rows[0].material_mode);
+    if (root&&root !== previous.rows[0].material_root) await registerQuestionFolders(db,id,groupedName,await scanProjectFolder(root),previous.rows[0].material_mode);
     if(skillBindingChanged)await invalidateProjectRuleOutputs(db,id);
     await db.query('COMMIT'); return c.json(result.rows[0]);
    } catch(error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
@@ -480,6 +493,8 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     const exportLock=(await db.query("SELECT pg_try_advisory_xact_lock(hashtext('ai-distill-project-export'),hashtext($1)) AS acquired",[id])).rows[0]?.acquired;
     if(!exportLock)throw new HTTPException(409,{message:'项目导出正在执行，结束后才能删除'});
     const workflows=(await db.query('SELECT id FROM ai_distill.workflows WHERE project_id=$1 ORDER BY id FOR UPDATE',[id])).rows;
+    const librarySchema=(await db.query("SELECT to_regclass('ai_distill.question_library_sources') IS NOT NULL AS available")).rows[0]?.available===true;
+    if(librarySchema)await db.query("UPDATE ai_distill.project_library_packages SET removed_at=COALESCE(removed_at,now()),lock_version=lock_version+1,updated_at=now() WHERE project_id=$1 AND removed_at IS NULL",[id]);
     await db.query('UPDATE ai_distill.projects SET deleted_at=now() WHERE id=$1',[id]);
     await db.query("UPDATE ai_distill.step_attempts a SET status='skipped',error='项目已删除',finished_at=now() FROM ai_distill.workflows w WHERE a.workflow_id=w.id AND w.project_id=$1 AND a.status IN ('waiting','running')",[id]);
     await db.query("UPDATE ai_distill.project_skill_attempts SET status='skipped',error='项目已删除',finished_at=now() WHERE project_id=$1 AND status IN ('waiting','running')",[id]);
@@ -487,6 +502,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      const workflowIds=workflows.map(row=>row.id);
      // 派生题目引用材料包尝试；项目整体删除时先解除来源外键，再按原有顺序清理记录。
      await db.query('UPDATE ai_distill.workflows SET source_workflow_id=NULL,source_redaction_attempt_id=NULL,source_redaction_sha256=NULL WHERE project_id=$1 AND source_workflow_id IS NOT NULL',[id]);
+     if(librarySchema)await db.query('DELETE FROM ai_distill.question_library_sources WHERE workflow_id=ANY($1::uuid[])',[workflowIds]);
      await db.query('DELETE FROM ai_distill.artifacts WHERE workflow_id=ANY($1::uuid[])',[workflowIds]);
      await db.query('DELETE FROM ai_distill.materials WHERE workflow_id=ANY($1::uuid[])',[workflowIds]);
      await db.query('DELETE FROM ai_distill.step_attempts WHERE workflow_id=ANY($1::uuid[])',[workflowIds]);
@@ -620,7 +636,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      // Keep timestamp serialization identical to the former SELECT * project row.
      if(project.created_at)project.created_at=new Date(project.created_at);
      if(project.deleted_at)project.deleted_at=new Date(project.deleted_at);
-     const [materials, steps, attempts, artifacts, materialPackageQuestions, sourceMaterialPackage] = await Promise.all([
+     const [materials, steps, attempts, artifacts, materialPackageQuestions, sourceMaterialPackage,publicationHistory] = await Promise.all([
        pool.query("SELECT id,original_name,sha256,size_bytes,content_type,processing_status,redaction_mode,created_at FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL ORDER BY created_at,id", [id]),
        pool.query(`SELECT ordinal,step_key,display_position,enabled,name,status,implemented,${stepResultProjection('s',content)} AS result,error,started_at,finished_at FROM ai_distill.steps s WHERE workflow_id=$1 ORDER BY display_position NULLS LAST,ordinal`, [id]),
        readWorkflowAttempts(pool,id,content),
@@ -631,13 +647,14 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
        workflowData.source_workflow_id
         ? pool.query("SELECT id,title FROM ai_distill.workflows WHERE id=$1 AND workflow_kind='material_package' AND deleted_at IS NULL",[workflowData.source_workflow_id])
         : Promise.resolve({rows:[]}),
+       readPublicationHistory(pool,id),
      ]);
      const hasPdf=materials.rows.some(material=>/\.(pdf|docx)$/i.test(String(material.original_name)));
      const extraction=steps.rows.find(step=>step.ordinal===2);
      const visibleSteps=steps.rows.filter(step=>![2,3,10].includes(step.ordinal)).map(step=>step.ordinal===1&&hasPdf&&extraction&&extraction.status!=='skipped'?{...step,status:extraction.status,result:extraction.result??step.result,error:extraction.error??step.error,started_at:extraction.started_at??step.started_at,finished_at:extraction.finished_at??step.finished_at}:step).map((step,index)=>({...step,display_position:index+1,position:index+1}));
      const workflowStates=new Map<number,WorkflowStepState>(visibleSteps.map(step=>[step.ordinal,{ordinal:step.ordinal,status:step.status,result:step.result,enabled:Boolean(step.enabled),workflow_kind:workflowData.workflow_kind,source_workflow_id:workflowData.source_workflow_id,active:attempts.rows.some(attempt=>attempt.ordinal===step.ordinal&&['waiting','running'].includes(attempt.status))||(step.ordinal===1&&hasPdf&&attempts.rows.some(attempt=>attempt.ordinal===2&&['waiting','running'].includes(attempt.status)))}]));
      const stepsWithReadiness=visibleSteps.map(step=>{const eligibility=workflowStepReadiness(step.ordinal,workflowStates);return{...step,ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};});
-     return c.json({ artifacts: artifacts.rows, workflow: workflowData, project, materials: materials.rows.map(m => ({ ...m, size_bytes: Number(m.size_bytes) })), steps: stepsWithReadiness, attempts: attempts.rows, material_package_questions: materialPackageQuestions.rows,source_material_package:sourceMaterialPackage.rows[0]??null });
+     return c.json({ artifacts: artifacts.rows, workflow: workflowData, project, materials: materials.rows.map(m => ({ ...m, size_bytes: Number(m.size_bytes) })), steps: stepsWithReadiness, attempts: attempts.rows, material_package_questions: materialPackageQuestions.rows,source_material_package:sourceMaterialPackage.rows[0]??null,publication_history:publicationHistory });
    } catch (error) { throw error; }
  });
  app.patch('/api/workflows/:id/authoring-direction',async c=>{
@@ -678,6 +695,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const result=await exportRedactedDocx(pool,workflowId,storageRoot,assetExportRoot);
   return c.json(result,result.reused?200:201);
  });
+ app.post('/api/workflows/:id/withdraw-archive',async c=>c.json(await withdrawPublication(pool,uuid(c.req.param('id')))));
  async function editMaterials(workflowId: string, incoming: File[], replaceId?: string, deleteId?: string) {
    const workflow = (await pool.query('SELECT w.* FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL',[workflowId])).rows[0];
    if (!workflow) throw new HTTPException(404,{message:'题目不存在'});
@@ -824,6 +842,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const {bytes,filename}=await readArchivedWorkflowWorkbook(pool,uuid(c.req.param('id')),assetExportRoot);
   return new Response(Uint8Array.from(bytes).buffer,{headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,'Cache-Control':'no-store'}});
  });
+ app.get('/api/workflows/:id/siriser-zip',async c=>{
+  const {bytes,filename}=await readSiriserArchive(pool,uuid(c.req.param('id')),assetExportRoot);
+  return new Response(Uint8Array.from(bytes).buffer,{headers:{'Content-Type':'application/zip','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,'Cache-Control':'no-store'}});
+ });
  registerWorkflowHookRoutes(app,pool);
  registerWorkflowExecutionRoutes(app,{
   pool,
@@ -836,6 +858,8 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   },
  });
  registerRemoteMaterialRoutes(app,pool,storageRoot);
+ registerMaterialLibraryRoutes(app,pool,storageRoot);
+ registerProjectLibraryRoutes(app,pool,storageRoot);
  app.get('/api/artifacts/:id/download', async c => {
    try {
      const artifactId=uuid(c.req.param('id'));

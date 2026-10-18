@@ -1,0 +1,2325 @@
+{
+  "version": 1,
+  "note": "仅适用于此冻结脱敏合订文本；按文书标题、连续页及报告/票据类型整理，重复判决副本合并。每个分册完整保留原页与正文，不认证业务L5等级。",
+  "sources": [
+    {
+      "sha256": "d9e52e6486ae6d4c7d10ed71e6ac9ffc11db529bb423d26f615a63abe8400886",
+      "documents": [
+        {
+          "title": "民事起诉状",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 1,
+              "last": 2
+            }
+          ],
+          "id": "DOC-001"
+        },
+        {
+          "title": "工伤待遇赔偿清单",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 3,
+              "last": 3
+            }
+          ],
+          "id": "DOC-002"
+        },
+        {
+          "title": "赔偿清单更新稿",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 4,
+              "last": 4
+            }
+          ],
+          "id": "DOC-003"
+        },
+        {
+          "title": "费用汇总清单",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 5,
+              "last": 5
+            }
+          ],
+          "id": "DOC-004"
+        },
+        {
+          "title": "受理案件通知书",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 6,
+              "last": 6
+            }
+          ],
+          "id": "DOC-005"
+        },
+        {
+          "title": "受理文书送达记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 7,
+              "last": 7
+            }
+          ],
+          "id": "DOC-006"
+        },
+        {
+          "title": "诉讼费减免申请",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 8,
+              "last": 8
+            }
+          ],
+          "id": "DOC-007"
+        },
+        {
+          "title": "困难证明",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 9,
+              "last": 9
+            }
+          ],
+          "id": "DOC-008"
+        },
+        {
+          "title": "诉讼费通知及交费说明一",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 10,
+              "last": 11
+            }
+          ],
+          "id": "DOC-009"
+        },
+        {
+          "title": "诉讼费通知及交费说明二",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 12,
+              "last": 13
+            }
+          ],
+          "id": "DOC-010"
+        },
+        {
+          "title": "交费通知送达回证",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 14,
+              "last": 14
+            }
+          ],
+          "id": "DOC-011"
+        },
+        {
+          "title": "缴款专用收据一",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 15,
+              "last": 15
+            }
+          ],
+          "id": "DOC-012"
+        },
+        {
+          "title": "缴款专用收据二",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 16,
+              "last": 16
+            }
+          ],
+          "id": "DOC-013"
+        },
+        {
+          "title": "应诉通知及查询告知",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 17,
+              "last": 18
+            }
+          ],
+          "id": "DOC-014"
+        },
+        {
+          "title": "应诉文书送达回证",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 19,
+              "last": 19
+            }
+          ],
+          "id": "DOC-015"
+        },
+        {
+          "title": "民事答辩状",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 20,
+              "last": 20
+            }
+          ],
+          "id": "DOC-016"
+        },
+        {
+          "title": "身份材料合册",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 21,
+              "last": 22
+            }
+          ],
+          "id": "DOC-017"
+        },
+        {
+          "title": "营业执照",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 23,
+              "last": 23
+            }
+          ],
+          "id": "DOC-018"
+        },
+        {
+          "title": "法定代表人身份证明",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 24,
+              "last": 24
+            }
+          ],
+          "id": "DOC-019"
+        },
+        {
+          "title": "电子送达确认材料",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 25,
+              "last": 26
+            }
+          ],
+          "id": "DOC-020"
+        },
+        {
+          "title": "送达地址确认书",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 27,
+              "last": 27
+            }
+          ],
+          "id": "DOC-021"
+        },
+        {
+          "title": "送达地址通知书",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 28,
+              "last": 28
+            }
+          ],
+          "id": "DOC-022"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第29页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 29,
+              "last": 29
+            }
+          ],
+          "id": "DOC-023"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第30页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 30,
+              "last": 30
+            }
+          ],
+          "id": "DOC-024"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第31页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 31,
+              "last": 31
+            }
+          ],
+          "id": "DOC-025"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第32页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 32,
+              "last": 32
+            }
+          ],
+          "id": "DOC-026"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第33页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 33,
+              "last": 33
+            }
+          ],
+          "id": "DOC-027"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第34页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 34,
+              "last": 34
+            }
+          ],
+          "id": "DOC-028"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第35页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 35,
+              "last": 35
+            }
+          ],
+          "id": "DOC-029"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第36页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 36,
+              "last": 36
+            }
+          ],
+          "id": "DOC-030"
+        },
+        {
+          "title": "诉讼代理授权及资格材料（原附件1第37页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 37,
+              "last": 37
+            }
+          ],
+          "id": "DOC-031"
+        },
+        {
+          "title": "诉讼通知册",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 38,
+              "last": 39
+            }
+          ],
+          "id": "DOC-032"
+        },
+        {
+          "title": "举证通知书",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 40,
+              "last": 40
+            }
+          ],
+          "id": "DOC-033"
+        },
+        {
+          "title": "诉讼材料签收清单",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 41,
+              "last": 41
+            }
+          ],
+          "id": "DOC-034"
+        },
+        {
+          "title": "工伤认定决定",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 42,
+              "last": 42
+            }
+          ],
+          "id": "DOC-035"
+        },
+        {
+          "title": "工伤认定行政一审判决",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 43,
+              "last": 55
+            }
+          ],
+          "id": "DOC-036"
+        },
+        {
+          "title": "工伤认定行政二审判决",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 56,
+              "last": 65
+            }
+          ],
+          "id": "DOC-037"
+        },
+        {
+          "title": "初次劳动能力鉴定及缴费材料",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 66,
+              "last": 67
+            }
+          ],
+          "id": "DOC-038"
+        },
+        {
+          "title": "再次劳动能力鉴定申请及结论",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 68,
+              "last": 70
+            }
+          ],
+          "id": "DOC-039"
+        },
+        {
+          "title": "后续劳动能力鉴定结论组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 71,
+              "last": 72
+            }
+          ],
+          "id": "DOC-040"
+        },
+        {
+          "title": "内部项目承包协议",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 73,
+              "last": 79
+            }
+          ],
+          "id": "DOC-041"
+        },
+        {
+          "title": "工伤认定调查笔录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 80,
+              "last": 80
+            }
+          ],
+          "id": "DOC-042"
+        },
+        {
+          "title": "再次鉴定结论及缴费材料",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 81,
+              "last": 82
+            }
+          ],
+          "id": "DOC-043"
+        },
+        {
+          "title": "医疗器具等发票（原附件1第83页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 83,
+              "last": 83
+            }
+          ],
+          "id": "DOC-044"
+        },
+        {
+          "title": "医疗器具等发票（原附件1第84页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 84,
+              "last": 84
+            }
+          ],
+          "id": "DOC-045"
+        },
+        {
+          "title": "医疗器具等发票（原附件1第85页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 85,
+              "last": 85
+            }
+          ],
+          "id": "DOC-046"
+        },
+        {
+          "title": "仲裁不予受理通知书",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 86,
+              "last": 86
+            }
+          ],
+          "id": "DOC-047"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第87页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 87,
+              "last": 87
+            }
+          ],
+          "id": "DOC-048"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第88页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 88,
+              "last": 88
+            }
+          ],
+          "id": "DOC-049"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第89页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 89,
+              "last": 89
+            }
+          ],
+          "id": "DOC-050"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第90页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 90,
+              "last": 90
+            }
+          ],
+          "id": "DOC-051"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第91页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 91,
+              "last": 91
+            }
+          ],
+          "id": "DOC-052"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第92页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 92,
+              "last": 92
+            }
+          ],
+          "id": "DOC-053"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第93页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 93,
+              "last": 93
+            }
+          ],
+          "id": "DOC-054"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第94页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 94,
+              "last": 94
+            }
+          ],
+          "id": "DOC-055"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第95页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 95,
+              "last": 95
+            }
+          ],
+          "id": "DOC-056"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第96页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 96,
+              "last": 96
+            }
+          ],
+          "id": "DOC-057"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第97页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 97,
+              "last": 97
+            }
+          ],
+          "id": "DOC-058"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第98页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 98,
+              "last": 98
+            }
+          ],
+          "id": "DOC-059"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第99页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 99,
+              "last": 99
+            }
+          ],
+          "id": "DOC-060"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第100页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 100,
+              "last": 100
+            }
+          ],
+          "id": "DOC-061"
+        },
+        {
+          "title": "耗材及医疗费用票据（原附件1第101页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 101,
+              "last": 101
+            }
+          ],
+          "id": "DOC-062"
+        },
+        {
+          "title": "同一民事裁定及卷内副本",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 102,
+              "last": 105
+            }
+          ],
+          "id": "DOC-063"
+        },
+        {
+          "title": "中止审理裁定及卷内副本",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 106,
+              "last": 109
+            }
+          ],
+          "id": "DOC-064"
+        },
+        {
+          "title": "裁定送达回证组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 110,
+              "last": 113
+            }
+          ],
+          "id": "DOC-065"
+        },
+        {
+          "title": "庭审传票存根组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 114,
+              "last": 119
+            }
+          ],
+          "id": "DOC-066"
+        },
+        {
+          "title": "庭审文书送达回证组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 120,
+              "last": 123
+            }
+          ],
+          "id": "DOC-067"
+        },
+        {
+          "title": "庭审公告组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 124,
+              "last": 125
+            }
+          ],
+          "id": "DOC-068"
+        },
+        {
+          "title": "第一次庭审笔录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 126,
+              "last": 135
+            }
+          ],
+          "id": "DOC-069"
+        },
+        {
+          "title": "第二次庭审笔录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 136,
+              "last": 139
+            }
+          ],
+          "id": "DOC-070"
+        },
+        {
+          "title": "一审代理词",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 140,
+              "last": 141
+            }
+          ],
+          "id": "DOC-071"
+        },
+        {
+          "title": "宣判笔录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 142,
+              "last": 142
+            }
+          ],
+          "id": "DOC-072"
+        },
+        {
+          "title": "一审民事判决及卷内副本",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 143,
+              "last": 164
+            },
+            {
+              "group": 3,
+              "first": 1,
+              "last": 12
+            }
+          ],
+          "id": "DOC-073"
+        },
+        {
+          "title": "补正裁定及卷内副本",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 165,
+              "last": 166
+            }
+          ],
+          "id": "DOC-074"
+        },
+        {
+          "title": "判决裁定送达回证组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 167,
+              "last": 170
+            }
+          ],
+          "id": "DOC-075"
+        },
+        {
+          "title": "退卷函",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 171,
+              "last": 171
+            }
+          ],
+          "id": "DOC-076"
+        },
+        {
+          "title": "二审民事判决",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 172,
+              "last": 185
+            },
+            {
+              "group": 3,
+              "first": 13,
+              "last": 26
+            }
+          ],
+          "id": "DOC-077"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第186页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 186,
+              "last": 186
+            }
+          ],
+          "id": "DOC-078"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第187页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 187,
+              "last": 187
+            }
+          ],
+          "id": "DOC-079"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第188页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 188,
+              "last": 188
+            }
+          ],
+          "id": "DOC-080"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第189页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 189,
+              "last": 189
+            }
+          ],
+          "id": "DOC-081"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第190页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 190,
+              "last": 190
+            }
+          ],
+          "id": "DOC-082"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第191页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 191,
+              "last": 191
+            }
+          ],
+          "id": "DOC-083"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第192页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 192,
+              "last": 192
+            }
+          ],
+          "id": "DOC-084"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第193页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 193,
+              "last": 193
+            }
+          ],
+          "id": "DOC-085"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第194页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 194,
+              "last": 194
+            }
+          ],
+          "id": "DOC-086"
+        },
+        {
+          "title": "后续费用及交通票据（原附件1第195页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 195,
+              "last": 195
+            }
+          ],
+          "id": "DOC-087"
+        },
+        {
+          "title": "门诊治疗单",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 196,
+              "last": 196
+            }
+          ],
+          "id": "DOC-088"
+        },
+        {
+          "title": "住院检验申请单",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 197,
+              "last": 197
+            }
+          ],
+          "id": "DOC-089"
+        },
+        {
+          "title": "CT检查申请材料组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 198,
+              "last": 199
+            }
+          ],
+          "id": "DOC-090"
+        },
+        {
+          "title": "诊疗证明",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 1,
+              "first": 200,
+              "last": 200
+            }
+          ],
+          "id": "DOC-091"
+        },
+        {
+          "title": "首次住院首页入院及病历材料",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 1,
+              "last": 6
+            }
+          ],
+          "id": "DOC-092"
+        },
+        {
+          "title": "免疫检验报告",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 7,
+              "last": 7
+            }
+          ],
+          "id": "DOC-093"
+        },
+        {
+          "title": "诊疗记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 8,
+              "last": 8
+            }
+          ],
+          "id": "DOC-094"
+        },
+        {
+          "title": "彩色多普勒报告",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 9,
+              "last": 9
+            }
+          ],
+          "id": "DOC-095"
+        },
+        {
+          "title": "X片报告",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 10,
+              "last": 10
+            }
+          ],
+          "id": "DOC-096"
+        },
+        {
+          "title": "CT报告",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 11,
+              "last": 11
+            }
+          ],
+          "id": "DOC-097"
+        },
+        {
+          "title": "首次住院医嘱及体温记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 12,
+              "last": 14
+            }
+          ],
+          "id": "DOC-098"
+        },
+        {
+          "title": "脊柱外科住院及手术麻醉记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 15,
+              "last": 25
+            }
+          ],
+          "id": "DOC-099"
+        },
+        {
+          "title": "影像及检验报告（原附件2第26页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 26,
+              "last": 26
+            }
+          ],
+          "id": "DOC-100"
+        },
+        {
+          "title": "影像及检验报告（原附件2第27页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 27,
+              "last": 27
+            }
+          ],
+          "id": "DOC-101"
+        },
+        {
+          "title": "影像及检验报告（原附件2第28页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 28,
+              "last": 28
+            }
+          ],
+          "id": "DOC-102"
+        },
+        {
+          "title": "影像及检验报告（原附件2第29页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 29,
+              "last": 29
+            }
+          ],
+          "id": "DOC-103"
+        },
+        {
+          "title": "影像及检验报告（原附件2第30页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 30,
+              "last": 30
+            }
+          ],
+          "id": "DOC-104"
+        },
+        {
+          "title": "影像及检验报告（原附件2第31页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 31,
+              "last": 31
+            }
+          ],
+          "id": "DOC-105"
+        },
+        {
+          "title": "影像及检验报告（原附件2第32页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 32,
+              "last": 32
+            }
+          ],
+          "id": "DOC-106"
+        },
+        {
+          "title": "影像及检验报告（原附件2第33页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 33,
+              "last": 33
+            }
+          ],
+          "id": "DOC-107"
+        },
+        {
+          "title": "影像及检验报告（原附件2第34页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 34,
+              "last": 34
+            }
+          ],
+          "id": "DOC-108"
+        },
+        {
+          "title": "影像及检验报告（原附件2第35页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 35,
+              "last": 35
+            }
+          ],
+          "id": "DOC-109"
+        },
+        {
+          "title": "影像及检验报告（原附件2第36页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 36,
+              "last": 36
+            }
+          ],
+          "id": "DOC-110"
+        },
+        {
+          "title": "影像及检验报告（原附件2第37页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 37,
+              "last": 37
+            }
+          ],
+          "id": "DOC-111"
+        },
+        {
+          "title": "影像及检验报告（原附件2第38页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 38,
+              "last": 38
+            }
+          ],
+          "id": "DOC-112"
+        },
+        {
+          "title": "影像及检验报告（原附件2第39页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 39,
+              "last": 39
+            }
+          ],
+          "id": "DOC-113"
+        },
+        {
+          "title": "影像及检验报告（原附件2第40页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 40,
+              "last": 40
+            }
+          ],
+          "id": "DOC-114"
+        },
+        {
+          "title": "影像及检验报告（原附件2第41页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 41,
+              "last": 41
+            }
+          ],
+          "id": "DOC-115"
+        },
+        {
+          "title": "影像及检验报告（原附件2第42页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 42,
+              "last": 42
+            }
+          ],
+          "id": "DOC-116"
+        },
+        {
+          "title": "影像及检验报告（原附件2第43页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 43,
+              "last": 43
+            }
+          ],
+          "id": "DOC-117"
+        },
+        {
+          "title": "影像及检验报告（原附件2第44页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 44,
+              "last": 44
+            }
+          ],
+          "id": "DOC-118"
+        },
+        {
+          "title": "影像及检验报告（原附件2第45页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 45,
+              "last": 45
+            }
+          ],
+          "id": "DOC-119"
+        },
+        {
+          "title": "影像及检验报告（原附件2第46页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 46,
+              "last": 46
+            }
+          ],
+          "id": "DOC-120"
+        },
+        {
+          "title": "影像及检验报告（原附件2第47页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 47,
+              "last": 47
+            }
+          ],
+          "id": "DOC-121"
+        },
+        {
+          "title": "影像及检验报告（原附件2第48页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 48,
+              "last": 48
+            }
+          ],
+          "id": "DOC-122"
+        },
+        {
+          "title": "影像及检验报告（原附件2第49页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 49,
+              "last": 49
+            }
+          ],
+          "id": "DOC-123"
+        },
+        {
+          "title": "影像及检验报告（原附件2第50页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 50,
+              "last": 50
+            }
+          ],
+          "id": "DOC-124"
+        },
+        {
+          "title": "影像及检验报告（原附件2第51页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 51,
+              "last": 51
+            }
+          ],
+          "id": "DOC-125"
+        },
+        {
+          "title": "影像及检验报告（原附件2第52页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 52,
+              "last": 52
+            }
+          ],
+          "id": "DOC-126"
+        },
+        {
+          "title": "影像及检验报告（原附件2第53页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 53,
+              "last": 53
+            }
+          ],
+          "id": "DOC-127"
+        },
+        {
+          "title": "影像及检验报告（原附件2第54页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 54,
+              "last": 54
+            }
+          ],
+          "id": "DOC-128"
+        },
+        {
+          "title": "脊柱外科连续医嘱记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 55,
+              "last": 65
+            }
+          ],
+          "id": "DOC-129"
+        },
+        {
+          "title": "康复住院首页入院及病历记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 66,
+              "last": 70
+            }
+          ],
+          "id": "DOC-130"
+        },
+        {
+          "title": "肌电诱发电位报告及波形附页",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 71,
+              "last": 75
+            }
+          ],
+          "id": "DOC-131"
+        },
+        {
+          "title": "康复检验报告（原附件2第76页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 76,
+              "last": 76
+            }
+          ],
+          "id": "DOC-132"
+        },
+        {
+          "title": "康复检验报告（原附件2第77页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 77,
+              "last": 77
+            }
+          ],
+          "id": "DOC-133"
+        },
+        {
+          "title": "康复检验报告（原附件2第78页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 78,
+              "last": 78
+            }
+          ],
+          "id": "DOC-134"
+        },
+        {
+          "title": "康复检验报告（原附件2第79页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 79,
+              "last": 79
+            }
+          ],
+          "id": "DOC-135"
+        },
+        {
+          "title": "康复连续生命体征医嘱记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 80,
+              "last": 87
+            }
+          ],
+          "id": "DOC-136"
+        },
+        {
+          "title": "后续康复住院记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 88,
+              "last": 98
+            }
+          ],
+          "id": "DOC-137"
+        },
+        {
+          "title": "康复生命体征医嘱记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 99,
+              "last": 102
+            }
+          ],
+          "id": "DOC-138"
+        },
+        {
+          "title": "后续康复住院记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 103,
+              "last": 107
+            }
+          ],
+          "id": "DOC-139"
+        },
+        {
+          "title": "后续DR报告",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 108,
+              "last": 108
+            }
+          ],
+          "id": "DOC-140"
+        },
+        {
+          "title": "后续MR报告",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 109,
+              "last": 109
+            }
+          ],
+          "id": "DOC-141"
+        },
+        {
+          "title": "肌电报告组及波形附页",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 110,
+              "last": 115
+            }
+          ],
+          "id": "DOC-142"
+        },
+        {
+          "title": "康复连续医嘱",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 116,
+              "last": 118
+            }
+          ],
+          "id": "DOC-143"
+        },
+        {
+          "title": "后续康复住院及医嘱记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 119,
+              "last": 125
+            }
+          ],
+          "id": "DOC-144"
+        },
+        {
+          "title": "后续康复住院及影像医嘱记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 126,
+              "last": 133
+            }
+          ],
+          "id": "DOC-145"
+        },
+        {
+          "title": "后续康复住院及检验医嘱记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 134,
+              "last": 142
+            }
+          ],
+          "id": "DOC-146"
+        },
+        {
+          "title": "后续康复住院及病历记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 143,
+              "last": 150
+            }
+          ],
+          "id": "DOC-147"
+        },
+        {
+          "title": "另一医院住院病案入出院及连续医嘱",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 151,
+              "last": 158
+            }
+          ],
+          "id": "DOC-148"
+        },
+        {
+          "title": "临床及用血材料组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 159,
+              "last": 160
+            }
+          ],
+          "id": "DOC-149"
+        },
+        {
+          "title": "住院及门诊收费票据（原附件2第161页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 161,
+              "last": 161
+            }
+          ],
+          "id": "DOC-150"
+        },
+        {
+          "title": "住院及门诊收费票据（原附件2第162页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 162,
+              "last": 162
+            }
+          ],
+          "id": "DOC-151"
+        },
+        {
+          "title": "住院及门诊收费票据（原附件2第163页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 163,
+              "last": 163
+            }
+          ],
+          "id": "DOC-152"
+        },
+        {
+          "title": "住院及门诊收费票据（原附件2第164页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 164,
+              "last": 164
+            }
+          ],
+          "id": "DOC-153"
+        },
+        {
+          "title": "住院及门诊收费票据（原附件2第165页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 165,
+              "last": 165
+            }
+          ],
+          "id": "DOC-154"
+        },
+        {
+          "title": "住院及门诊收费票据（原附件2第166页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 166,
+              "last": 166
+            }
+          ],
+          "id": "DOC-155"
+        },
+        {
+          "title": "住院及门诊收费票据（原附件2第167页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 167,
+              "last": 167
+            }
+          ],
+          "id": "DOC-156"
+        },
+        {
+          "title": "住院及门诊收费票据（原附件2第168页）",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 168,
+              "last": 168
+            }
+          ],
+          "id": "DOC-157"
+        },
+        {
+          "title": "麻醉保险条款",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 169,
+              "last": 169
+            }
+          ],
+          "id": "DOC-158"
+        },
+        {
+          "title": "劳动能力复查申请受理通知",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 170,
+              "last": 170
+            }
+          ],
+          "id": "DOC-159"
+        },
+        {
+          "title": "中止审理申请及法院记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 171,
+              "last": 172
+            }
+          ],
+          "id": "DOC-160"
+        },
+        {
+          "title": "行政案受理通知",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 173,
+              "last": 173
+            }
+          ],
+          "id": "DOC-161"
+        },
+        {
+          "title": "行政案传票",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 174,
+              "last": 174
+            }
+          ],
+          "id": "DOC-162"
+        },
+        {
+          "title": "相关庭审传票",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 175,
+              "last": 175
+            }
+          ],
+          "id": "DOC-163"
+        },
+        {
+          "title": "后续民事起诉状",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 176,
+              "last": 177
+            }
+          ],
+          "id": "DOC-164"
+        },
+        {
+          "title": "劳动能力鉴定管理办法全文",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 2,
+              "first": 178,
+              "last": 182
+            }
+          ],
+          "id": "DOC-165"
+        },
+        {
+          "title": "执行立案通知",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 27,
+              "last": 27
+            }
+          ],
+          "id": "DOC-166"
+        },
+        {
+          "title": "执行电子送达确认",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 28,
+              "last": 28
+            }
+          ],
+          "id": "DOC-167"
+        },
+        {
+          "title": "执行立案送达回证",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 29,
+              "last": 29
+            }
+          ],
+          "id": "DOC-168"
+        },
+        {
+          "title": "执行通知书",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 30,
+              "last": 31
+            }
+          ],
+          "id": "DOC-169"
+        },
+        {
+          "title": "报告财产令",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 32,
+              "last": 33
+            }
+          ],
+          "id": "DOC-170"
+        },
+        {
+          "title": "执行通知送达回证",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 34,
+              "last": 34
+            }
+          ],
+          "id": "DOC-171"
+        },
+        {
+          "title": "执行代理身份授权材料组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 35,
+              "last": 42
+            }
+          ],
+          "id": "DOC-172"
+        },
+        {
+          "title": "社保参保证明",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 43,
+              "last": 43
+            }
+          ],
+          "id": "DOC-173"
+        },
+        {
+          "title": "执行和解笔录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 44,
+              "last": 45
+            }
+          ],
+          "id": "DOC-174"
+        },
+        {
+          "title": "领款凭证",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 46,
+              "last": 46
+            }
+          ],
+          "id": "DOC-175"
+        },
+        {
+          "title": "银行转账凭证组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 47,
+              "last": 48
+            }
+          ],
+          "id": "DOC-176"
+        },
+        {
+          "title": "执行财产查控反馈整组",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 49,
+              "last": 62
+            }
+          ],
+          "id": "DOC-177"
+        },
+        {
+          "title": "执行询问笔录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 63,
+              "last": 64
+            }
+          ],
+          "id": "DOC-178"
+        },
+        {
+          "title": "执行查明的承包协议",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 65,
+              "last": 71
+            }
+          ],
+          "id": "DOC-179"
+        },
+        {
+          "title": "执行电话记录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 72,
+              "last": 72
+            }
+          ],
+          "id": "DOC-180"
+        },
+        {
+          "title": "失信决定书",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 73,
+              "last": 74
+            }
+          ],
+          "id": "DOC-181"
+        },
+        {
+          "title": "限制消费令",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 75,
+              "last": 76
+            }
+          ],
+          "id": "DOC-182"
+        },
+        {
+          "title": "拘留决定书",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 77,
+              "last": 77
+            }
+          ],
+          "id": "DOC-183"
+        },
+        {
+          "title": "传统查控调查笔录",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 78,
+              "last": 79
+            }
+          ],
+          "id": "DOC-184"
+        },
+        {
+          "title": "终本裁定",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 80,
+              "last": 81
+            }
+          ],
+          "id": "DOC-185"
+        },
+        {
+          "title": "终本裁定送达回证",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 82,
+              "last": 82
+            }
+          ],
+          "id": "DOC-186"
+        },
+        {
+          "title": "执行文书送达回证",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 3,
+              "first": 83,
+              "last": 83
+            }
+          ],
+          "id": "DOC-187"
+        },
+        {
+          "title": "后续行政上诉状",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 4,
+              "first": 1,
+              "last": 8
+            }
+          ],
+          "id": "DOC-188"
+        },
+        {
+          "title": "相关裁判材料",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 5,
+              "first": 1,
+              "last": 1
+            }
+          ],
+          "id": "DOC-189"
+        },
+        {
+          "title": "行政答辩材料",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 6,
+              "first": 1,
+              "last": 3
+            }
+          ],
+          "id": "DOC-190"
+        },
+        {
+          "title": "破产案件材料",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 7,
+              "first": 1,
+              "last": 2
+            }
+          ],
+          "id": "DOC-191"
+        },
+        {
+          "title": "后续行政判决",
+          "independent_document": true,
+          "ranges": [
+            {
+              "group": 8,
+              "first": 1,
+              "last": 8
+            }
+          ],
+          "id": "DOC-192"
+        }
+      ]
+    }
+  ]
+}

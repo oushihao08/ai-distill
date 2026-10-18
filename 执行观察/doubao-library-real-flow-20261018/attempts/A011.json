@@ -1,0 +1,41 @@
+{
+  "id": "A011",
+  "item_id": "real-flow",
+  "stage_id": "author-answer-score-decision-archive-export",
+  "previous_attempt_id": "A010",
+  "status": "running",
+  "started_at": "2026-10-18T09:17:07.423Z",
+  "finished_at": null,
+  "inputs": [
+    {
+      "ref": "workflow 91239d42-403b-4179-ace8-41c46b241506",
+      "version": "同一脱敏材料、同一题目快照；source_manifest.path 允许相对路径",
+      "sha256": "98ff8bfd4817aa63c3c951be3fff1a1d03b197b829bbe9dd079cad2dad0b6c59"
+    }
+  ],
+  "configuration": {
+    "project_id": "d26d2953-0f32-440a-a328-377eee9e9182",
+    "worker_pid": 71085,
+    "author_model": "gpt-6.1-sol",
+    "reasoning_effort": "low"
+  },
+  "changes_from_previous": [
+    "修复出题输入校验：来源清单路径用于元数据展示，不要求绝对路径；材料读取仍只使用冻结脱敏快照",
+    "回归用例先失败再通过；出题器/jobs相关42项通过",
+    "空闲时重启本地worker以加载修复"
+  ],
+  "external_ids": {
+    "workflow_id": "91239d42-403b-4179-ace8-41c46b241506",
+    "author_attempt_id": "2a268695-7b58-4ea5-89d7-af16d52452f3",
+    "failed_attempt_id": "f5fd5537-6fd6-415d-9eb6-45ff92e37373",
+    "project_id": "d26d2953-0f32-440a-a328-377eee9e9182",
+    "api": "http://127.0.0.1:3700"
+  },
+  "environment": {
+    "api": "http://127.0.0.1:3700",
+    "worker_session": 47684
+  },
+  "artifacts": [],
+  "verification": [],
+  "error": null
+}

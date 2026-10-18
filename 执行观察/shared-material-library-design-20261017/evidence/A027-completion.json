@@ -1,0 +1,47 @@
+{
+  "at": "2026-10-18T09:19:56.972412+08:00",
+  "scope": "新链路代码集成与用户授权的隔离合成验收",
+  "real_model_calls_by_verification": false,
+  "tests": {
+    "passed": 334,
+    "failed": 0,
+    "files": 25,
+    "expectations": 1307
+  },
+  "typecheck": "passed (Vue and root TypeScript)",
+  "database_constraints": {
+    "passed": 6,
+    "all_writes_rolled_back": true
+  },
+  "browser": {
+    "task_error_and_explicit_retry": "passed",
+    "task_refresh_keeps_dialog": "passed",
+    "package_settings_save_keeps_config_digest": "passed",
+    "extracted_and_redacted_text_preview": "passed",
+    "native_folder_selection": "not_exercised"
+  },
+  "api_worker": {
+    "api_port": 3700,
+    "worker_pid": 11326,
+    "observed_status": "running",
+    "source_reload": "both processes restarted after current code changes"
+  },
+  "completed": [
+    "全局包与不可变文件集合、入库/提取/脱敏队列",
+    "文件夹导入入口和PDF/DOCX清单规则",
+    "仅可用脱敏结果可加载的前后端门槛",
+    "跨项目引用、题目私有快照、4-8步骤",
+    "合成执行器后半段及DOCX/XLSX、归档撤回重归档",
+    "取消、重试、失租、晚到结果和包归档建题竞态",
+    "包级设置、按身份预览、任务错误和历史",
+    "删除合成项目B不影响全局包、任务或项目A",
+    "保留legacy与旧业务数据，文档及退役范围同步"
+  ],
+  "not_verified": [
+    "原生系统目录选择器的实际选择",
+    "真实PDF/DOCX供应商识别及模型脱敏质量",
+    "真实法律出题/作答/评分质量",
+    "远端双机与外部Siriser/Harbor平台验收"
+  ],
+  "legacy_retirement": "保留旧入口及共享表，不执行删除或业务迁移"
+}

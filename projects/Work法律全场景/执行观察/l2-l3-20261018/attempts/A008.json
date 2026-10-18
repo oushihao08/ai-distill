@@ -1,0 +1,113 @@
+{
+  "id": "A008",
+  "item_id": "l3-e525",
+  "stage_id": "redaction",
+  "previous_attempt_id": "A005",
+  "status": "failed",
+  "started_at": "2026-10-18T06:09:19.590Z",
+  "finished_at": "2026-10-18T06:32:49.935Z",
+  "inputs": [
+    {
+      "ref": "e525eb15-7b5f-435e-a34e-10e42ebdce77",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "worker_mode": "local",
+    "material_execution_target": "local",
+    "task_timeout_ms": 3600000,
+    "resume_checkpoint": true,
+    "last_confirmed_completed_fields": 3629,
+    "total_fields": 3951,
+    "deadline_at": "2026-10-18T07:09:20.939Z"
+  },
+  "changes_from_previous": [
+    "沿用相同材料、模型与提示词，通过已提交检查点续跑；仅处理未完成字段，不重做已提交字段。"
+  ],
+  "external_ids": {
+    "attempt_id": "fc0e126a-2288-4d17-8f29-9e1ea0ff7b73",
+    "previous_attempt_id": "1735e170-be34-44a2-98b7-b011d14616c6"
+  },
+  "environment": {
+    "target": "local",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "api_status",
+      "result": "API返回reused=false；当前attempt running；启动进度回读3629/3951，1次请求，0次重试。",
+      "evidence": "POST /api/workflows/e525eb15-7b5f-435e-a34e-10e42ebdce77/redact?wait_ms=0；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+    },
+    {
+      "kind": "api_status",
+      "result": "2026-10-18T06:12:21Z回读仍running；已完成字段仍3629/3951，累计请求2次、重试1次，当前1个请求活动；本次续跑已运行约119秒。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+    },
+    {
+      "kind": "safe_log",
+      "result": "A008首批及拆分子批次均为HTTP 200但reason_code=incomplete_finish_reason；耗时118498ms及111471ms。状态仍running，3629/3951字段，3请求/2重试，当前1请求活动。",
+      "evidence": "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+    },
+    {
+      "kind": "api_status",
+      "result": "2026-10-18T06:16:18Z回读running；3656/3951字段，4请求/3重试，1请求活动；较上次3629推进27字段。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+    },
+    {
+      "kind": "api_status",
+      "result": "2026-10-18T06:17:58Z回读running；3656/3951字段，5请求/4重试，1请求活动；相比14:17字段未增，新增不完整响应耗时116.4秒。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status；bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+    },
+    {
+      "kind": "api_status",
+      "result": "2026-10-18T06:21:04Z仍running；3669/3951字段，6请求/5重试，queue_wait 6ms；新增redaction_batch_budget_exceeded局部批次校验事件，整包未终态。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status；bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+    },
+    {
+      "kind": "api_status",
+      "result": "06:23:09Z回读仍running；3682/3951，8请求/6重试，queue_wait 8ms；较14:22增加13字段。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status"
+    },
+    {
+      "kind": "api_status",
+      "result": "06:24:57Z回读仍running；3720/3951字段，9请求/7重试，queue_wait 9ms，1请求活动；批次2最新不完整响应耗时113.1秒。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status；bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+    },
+    {
+      "kind": "api_status",
+      "result": "06:25:47Z回读running；仍3720/3951，10请求/8重试，queue_wait 10ms；批次2-b新增incomplete_finish_reason，耗时115.3秒。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status；bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+    },
+    {
+      "kind": "api_status",
+      "result": "06:27:37Z仍running；3739/3951字段，11请求/9重试，queue_wait 13ms，1请求活动；较14:27增加19字段。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+    },
+    {
+      "kind": "api_status",
+      "result": "06:29:07Z仍running；3758/3951字段，12请求/9重试，queue_wait 14ms；较14:30增加19字段，暂无新增失败。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status；bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+    },
+    {
+      "kind": "api_status",
+      "result": "06:30:43Z仍running；3847/3951字段，13请求/9重试，queue_wait 15ms；较14:32增加89字段。",
+      "evidence": "GET /api/monitor；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status；bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+    },
+    {
+      "kind": "safe_log",
+      "result": "06:31:15Z批次4出现HTTP 200 incomplete_finish_reason，耗时113.5秒；API仍running，3847/3951，14请求/9重试。",
+      "evidence": "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status"
+    }
+  ],
+  "error": {
+    "reason_code": "redaction_batch_budget_exceeded",
+    "completed_fields": 3852,
+    "total_fields": 3951,
+    "request_count": 14,
+    "retry_count": 9,
+    "queue_wait_ms": 18,
+    "capture": "redacted"
+  }
+}

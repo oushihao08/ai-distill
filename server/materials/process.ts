@@ -61,6 +61,24 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
      return{...page,structure:structured};
     });provider=result.provider;
    }
+   const ocrPagesToRecheck=pages.filter(page=>page.method==='ocr'&&(!page.text.trim()||page.issues?.length));
+   if(format==='pdf'&&ocrPagesToRecheck.length){
+    // Empty or flagged OCR output may be incomplete. Re-run the configured provider once and replace only flagged pages.
+    const recheck=await extractor.extract(sourcePath,currentTaskSignal());
+    if(recheck.sha256!==material.sha256||recheck.format!==format||recheck.pages.length!==pages.length)throw new Error('OCR 复识别结果与原件页序不一致');
+    const recheckedByPage=new Map(recheck.pages.map(page=>[page.page,page]));
+    const pageNumbersToRecheck=new Set(ocrPagesToRecheck.map(page=>page.page));
+    pages=pages.map(page=>{
+     if(!pageNumbersToRecheck.has(page.page))return page;
+     const replacement=recheckedByPage.get(page.page);
+     if(!replacement)throw new Error('OCR 复识别缺少对应原页');
+     if(replacement.structure?.length&&documentBlocksToText(replacement.structure)!==replacement.text)throw new Error('OCR 复识别正文与结构不一致');
+     const unresolvedIssues=replacement.issues?.filter(issue=>issue!=='empty_page')??[];
+     if(replacement.text.trim())return{...replacement,structure:replacement.structure?.length?replacement.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:replacement.text}],...(unresolvedIssues.length?{issues:[...new Set(unresolvedIssues.concat('ocr_recheck_unresolved'))]}:{})};
+     return{...replacement,structure:[],issues:[...new Set([...(page.issues??[]),...(replacement.issues??[]),'empty_after_recheck'])]};
+    });
+    provider=recheck.provider;mode='fresh';from_attempt_id=null;from_material_id=null;
+   }
    extracted.push({material_id:material.id,sha256:material.sha256,format,pages,provider,mode,from_attempt_id,from_material_id,...(cache_error?{cache_error}:{})});
   }
   const allPages=extracted.flatMap(material=>material.pages.map(page=>({...page,material_id:material.material_id,reused:material.mode==='cached'||page.reused===true})));

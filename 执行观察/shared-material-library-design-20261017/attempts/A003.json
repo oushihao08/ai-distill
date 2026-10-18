@@ -1,0 +1,45 @@
+{
+  "id": "A003",
+  "item_id": "design",
+  "stage_id": "review",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-17T22:33:14+08:00",
+  "finished_at": "2026-10-17T22:34:29+08:00",
+  "inputs": [
+    {
+      "ref": "docs/plans/2026-10-17-shared-material-library-design.md",
+      "version": "design-draft",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "scope": "document review capture",
+    "implementation": false
+  },
+  "changes_from_previous": [],
+  "external_ids": {},
+  "environment": {
+    "target": "local-source",
+    "runtime_version": null
+  },
+  "artifacts": [
+    {
+      "ref": "docs/plans/2026-10-17-shared-material-library-design.md",
+      "sha256": "672be10ace1d30d9e645b9ad293473006bb4b4b248d7959b7cb125f6cec1a838"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "document_static_review",
+      "result": "checked",
+      "evidence": "执行观察/shared-material-library-design-20261017/evidence/design-review.json"
+    },
+    {
+      "kind": "runtime_verification",
+      "result": "not_performed",
+      "evidence": "本轮仅交付设计，未执行DDL、测试、构建或真实模型调用"
+    }
+  ],
+  "error": null
+}

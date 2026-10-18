@@ -1,0 +1,61 @@
+{
+  "id": "R001-house-recovery",
+  "item_id": "bc42beb1-ad56-4d22-ad25-af0229dd0403",
+  "stage_id": "4",
+  "previous_attempt_id": "f1749bef-69d4-46a0-89bd-5b92f8c29c02",
+  "status": "succeeded",
+  "started_at": "2026-10-17T06:14:28.586Z",
+  "finished_at": "2026-10-17T06:22:44.568Z",
+  "inputs": [
+    {
+      "ref": "房屋L4-再次恢复-bc42beb1.md",
+      "version": "2026-10-17-user-authorized-recovery",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "requested_changes": [
+      "本次输出路径核对",
+      "禁止旧临时脚本"
+    ],
+    "model_changed": false,
+    "threshold_changed": false,
+    "max_new_attempts": 1,
+    "direction_saved": true
+  },
+  "changes_from_previous": [
+    "新会话只在本次output写新脚本，先核对输出路径"
+  ],
+  "external_ids": {
+    "workflow_id": "bc42beb1-ad56-4d22-ad25-af0229dd0403",
+    "attempt_id": "e7f0742b-7d10-4646-ae88-6bf4bc2737f2"
+  },
+  "environment": {
+    "target": "local API",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "API enqueue",
+      "result": "queued",
+      "evidence": ".storage/goal-runs/work-l4-house-recovery-20261017.json"
+    },
+    {
+      "kind": "API status",
+      "result": "running",
+      "evidence": "/api/attempts/e7f0742b-7d10-4646-ae88-6bf4bc2737f2?view=status"
+    },
+    {
+      "kind": "API result",
+      "result": "complete; input_mode=text; new author succeeded; answer 44819215-611a-450e-b4b1-e1f69c148abb queued",
+      "evidence": "/api/attempts/e7f0742b-7d10-4646-ae88-6bf4bc2737f2?view=full"
+    },
+    {
+      "kind": "private output inspection",
+      "result": "本次output内存在新建脚本、result.json、题目.md；事件中未检出旧 /tmp/build_work_question.py 路径。此检查不证明专业内容已通过验收。",
+      "evidence": ".storage/bc42beb1-ad56-4d22-ad25-af0229dd0403/e7f0742b-7d10-4646-ae88-6bf4bc2737f2/private/authoring-02692df0-2116-4435-ba00-44de98fea84b/author/output"
+    }
+  ],
+  "error": null
+}

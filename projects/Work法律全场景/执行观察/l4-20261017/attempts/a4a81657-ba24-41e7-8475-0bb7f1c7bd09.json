@@ -1,0 +1,29 @@
+{
+  "id": "a4a81657-ba24-41e7-8475-0bb7f1c7bd09",
+  "item_id": "37a527e1-aadb-4892-a84d-d75ee1b75c54",
+  "stage_id": "8",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-17T05:23:17.929Z",
+  "finished_at": "2026-10-17T05:23:17.929Z",
+  "inputs": [],
+  "configuration": {},
+  "changes_from_previous": [],
+  "external_ids": {
+    "workflow_id": "37a527e1-aadb-4892-a84d-d75ee1b75c54",
+    "attempt_id": "a4a81657-ba24-41e7-8475-0bb7f1c7bd09"
+  },
+  "environment": {
+    "target": "local API",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "API state",
+      "result": "succeeded",
+      "evidence": "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+    }
+  ],
+  "error": null
+}

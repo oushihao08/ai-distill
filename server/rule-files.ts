@@ -34,8 +34,8 @@ async function inventory(root:string,prefix='',ignoreHidden=true):Promise<RuleFi
  }catch(error){throw error;}
 }
 function sourcePath(view:RuleWorkspace,path:string){return path.startsWith('skill/')?join(view.skill_path,path.slice(6)):path.startsWith('materials/')?join(view.materials_path,path.slice(10)):join(view.workspace_path,path);}
-export async function resolveRuleWorkspacePaths(project:{material_root?:string|null;local_skill_path?:string|null}){
- const workspace=dirname(project.material_root??project.local_skill_path??'');
+export async function resolveRuleWorkspacePaths(project:{material_root?:string|null;workspace_path?:string|null;local_skill_path?:string|null}){
+ const workspace=project.workspace_path?resolve(project.workspace_path):dirname(project.material_root??project.local_skill_path??'');
  const shared=project.local_skill_path?dirname(project.local_skill_path):workspace;
  const relativeWorkspace=relative(shared,workspace),sharedIsAncestor=relativeWorkspace===''||(!isAbsolute(relativeWorkspace)&&relativeWorkspace!=='..'&&!relativeWorkspace.startsWith(`..${sep}`));
  return{workspace_path:workspace,materials_path:join(sharedIsAncestor?shared:workspace,'materials')};

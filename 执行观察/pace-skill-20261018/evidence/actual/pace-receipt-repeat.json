@@ -1,0 +1,181 @@
+{
+  "started_at": "2026-10-18T08:42:19.609496+00:00",
+  "ended_at": "2026-10-18T08:42:19.612408+00:00",
+  "elapsed_seconds": 0.0027798750015790574,
+  "timing_scope": "This single Python execution: immediately before initial snapshots through package processing and source/output/original receipt self-verification; receipt write and readback follow",
+  "tool_calls": {
+    "functions_exec": 1,
+    "exec_command": 1,
+    "counting_note": "One functions.exec invocation wrapping one exec_command; no other tool calls this round"
+  },
+  "items": [
+    {
+      "id": "Q1",
+      "source_sha256": "ab530e3159fa42cf8326f8f9b94a315c890745966851adae41b85b9c38af8bcf",
+      "checks": [
+        "Full source ZIP SHA256 computed in initial snapshot",
+        "Current full source SHA256 matches trusted cache; reused required_entries and CRC results",
+        "Existing destination full SHA256 computed in initial snapshot"
+      ],
+      "destination_sha256": "ab530e3159fa42cf8326f8f9b94a315c890745966851adae41b85b9c38af8bcf",
+      "status": "reused",
+      "reason": "Identical existing output preserved without rewriting"
+    },
+    {
+      "id": "Q2",
+      "source_sha256": "84ba9abbadc2ec6c887c39e8234990bebda00af37170870707b0b55c051903a9",
+      "checks": [
+        "Full source ZIP SHA256 computed in initial snapshot",
+        "Current full source SHA256 matches trusted cache; reused required_entries and CRC results",
+        "Existing destination full SHA256 computed in initial snapshot"
+      ],
+      "destination_sha256": "84ba9abbadc2ec6c887c39e8234990bebda00af37170870707b0b55c051903a9",
+      "status": "reused",
+      "reason": "Identical existing output preserved without rewriting"
+    },
+    {
+      "id": "Q3",
+      "source_sha256": "f2cbbe210b773f06ef0d0965f3af2edc188f4dedeeea27c45e725043c112bbb5",
+      "checks": [
+        "Full source ZIP SHA256 computed in initial snapshot",
+        "Current full source SHA256 matches trusted cache; reused required_entries and CRC results",
+        "Existing destination full SHA256 computed in initial snapshot"
+      ],
+      "destination_sha256": "92033bb418125140a8c0691805c5cd0a6e274387c378349f31d03ed81ef2f023",
+      "status": "conflict",
+      "reason": "Different existing output preserved without overwriting"
+    },
+    {
+      "id": "Q4",
+      "source_sha256": "40b5deffa889701fd02d007262dbafd60ff814554c4e2432323f0a29d55f838a",
+      "checks": [
+        "Full source ZIP SHA256 computed in initial snapshot",
+        "Cache absent or SHA256 differs; inspected current required entries and tested all ZIP CRCs"
+      ],
+      "status": "rejected",
+      "reason": "Missing required entries: ['golden_output/answer.txt']"
+    },
+    {
+      "id": "Q5",
+      "source_sha256": "99038c4388ee2dd19a5eab08fe12c99146d3c99e1d5578d45f5a5164db50d0ad",
+      "checks": [
+        "Full source ZIP SHA256 computed in initial snapshot",
+        "Cache absent or SHA256 differs; inspected current required entries and tested all ZIP CRCs"
+      ],
+      "status": "rejected",
+      "reason": "Missing required entries: ['rubric.json']"
+    },
+    {
+      "id": "Q6",
+      "source_sha256": "8d16d387e0ed80568e31766a82adb56cd008c77072a81ec34e766040383d4eb7",
+      "checks": [
+        "Full source ZIP SHA256 computed in initial snapshot",
+        "Cache absent or SHA256 differs; inspected current required entries and tested all ZIP CRCs",
+        "Existing destination full SHA256 computed in initial snapshot"
+      ],
+      "destination_sha256": "8d16d387e0ed80568e31766a82adb56cd008c77072a81ec34e766040383d4eb7",
+      "status": "reused",
+      "reason": "Identical existing output preserved without rewriting"
+    }
+  ],
+  "verification": {
+    "source_output_before": {
+      "source/Q2.zip": {
+        "sha256": "84ba9abbadc2ec6c887c39e8234990bebda00af37170870707b0b55c051903a9",
+        "mtime_ns": 1792312867245733187
+      },
+      "source/Q3.zip": {
+        "sha256": "f2cbbe210b773f06ef0d0965f3af2edc188f4dedeeea27c45e725043c112bbb5",
+        "mtime_ns": 1792312867245954399
+      },
+      "source/Q1.zip": {
+        "sha256": "ab530e3159fa42cf8326f8f9b94a315c890745966851adae41b85b9c38af8bcf",
+        "mtime_ns": 1792312867245472807
+      },
+      "source/Q4.zip": {
+        "sha256": "40b5deffa889701fd02d007262dbafd60ff814554c4e2432323f0a29d55f838a",
+        "mtime_ns": 1792312867246140027
+      },
+      "source/Q5.zip": {
+        "sha256": "99038c4388ee2dd19a5eab08fe12c99146d3c99e1d5578d45f5a5164db50d0ad",
+        "mtime_ns": 1792312867246478033
+      },
+      "source/Q6.zip": {
+        "sha256": "8d16d387e0ed80568e31766a82adb56cd008c77072a81ec34e766040383d4eb7",
+        "mtime_ns": 1792312867246662662
+      },
+      "output/Q2.zip": {
+        "sha256": "84ba9abbadc2ec6c887c39e8234990bebda00af37170870707b0b55c051903a9",
+        "mtime_ns": 1792312867245733187
+      },
+      "output/Q3.zip": {
+        "sha256": "92033bb418125140a8c0691805c5cd0a6e274387c378349f31d03ed81ef2f023",
+        "mtime_ns": 1792312867247069086
+      },
+      "output/Q1.zip": {
+        "sha256": "ab530e3159fa42cf8326f8f9b94a315c890745966851adae41b85b9c38af8bcf",
+        "mtime_ns": 1792312895584467022
+      },
+      "output/Q6.zip": {
+        "sha256": "8d16d387e0ed80568e31766a82adb56cd008c77072a81ec34e766040383d4eb7",
+        "mtime_ns": 1792312895586450267
+      }
+    },
+    "source_output_after": {
+      "source/Q2.zip": {
+        "sha256": "84ba9abbadc2ec6c887c39e8234990bebda00af37170870707b0b55c051903a9",
+        "mtime_ns": 1792312867245733187
+      },
+      "source/Q3.zip": {
+        "sha256": "f2cbbe210b773f06ef0d0965f3af2edc188f4dedeeea27c45e725043c112bbb5",
+        "mtime_ns": 1792312867245954399
+      },
+      "source/Q1.zip": {
+        "sha256": "ab530e3159fa42cf8326f8f9b94a315c890745966851adae41b85b9c38af8bcf",
+        "mtime_ns": 1792312867245472807
+      },
+      "source/Q4.zip": {
+        "sha256": "40b5deffa889701fd02d007262dbafd60ff814554c4e2432323f0a29d55f838a",
+        "mtime_ns": 1792312867246140027
+      },
+      "source/Q5.zip": {
+        "sha256": "99038c4388ee2dd19a5eab08fe12c99146d3c99e1d5578d45f5a5164db50d0ad",
+        "mtime_ns": 1792312867246478033
+      },
+      "source/Q6.zip": {
+        "sha256": "8d16d387e0ed80568e31766a82adb56cd008c77072a81ec34e766040383d4eb7",
+        "mtime_ns": 1792312867246662662
+      },
+      "output/Q2.zip": {
+        "sha256": "84ba9abbadc2ec6c887c39e8234990bebda00af37170870707b0b55c051903a9",
+        "mtime_ns": 1792312867245733187
+      },
+      "output/Q3.zip": {
+        "sha256": "92033bb418125140a8c0691805c5cd0a6e274387c378349f31d03ed81ef2f023",
+        "mtime_ns": 1792312867247069086
+      },
+      "output/Q1.zip": {
+        "sha256": "ab530e3159fa42cf8326f8f9b94a315c890745966851adae41b85b9c38af8bcf",
+        "mtime_ns": 1792312895584467022
+      },
+      "output/Q6.zip": {
+        "sha256": "8d16d387e0ed80568e31766a82adb56cd008c77072a81ec34e766040383d4eb7",
+        "mtime_ns": 1792312895586450267
+      }
+    },
+    "sha256_and_mtime_ns_unchanged": true,
+    "original_output_files": [
+      "Q1.zip",
+      "Q2.zip",
+      "Q3.zip",
+      "Q6.zip"
+    ],
+    "final_output_files": [
+      "Q1.zip",
+      "Q2.zip",
+      "Q3.zip",
+      "Q6.zip"
+    ],
+    "original_receipt_unchanged": true
+  }
+}

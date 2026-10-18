@@ -1,0 +1,53 @@
+{
+  "extraction_job_id": "daf77d2e-2330-440c-b7bc-c6813f2a2940",
+  "page_count": 57,
+  "issue_count": 37,
+  "probes": [
+    {
+      "page": 9,
+      "mode": "vlm_is_ocr_true",
+      "result": "image_without_text and no_text_placeholder retained"
+    },
+    {
+      "page": 9,
+      "mode": "pipeline_is_ocr_true",
+      "result": "image_without_text and block_without_text retained"
+    },
+    {
+      "page": 9,
+      "mode": "existing_glm_vision",
+      "result": "HTTP 500; no result published"
+    },
+    {
+      "page": 17,
+      "mode": "visual_source_review",
+      "result": "certificate scans contain readable text inside image regions; cannot waive all image_without_text as decorative",
+      "evidence": ".storage/verification/doubao-library-20261018/ocr-probe/page-17.png"
+    },
+    {
+      "page": 17,
+      "mode": "pipeline_is_ocr_true",
+      "status": "succeeded",
+      "exec_session": 82838,
+      "result": "53 characters; image_without_text retained; certificate body still omitted"
+    },
+    {
+      "page": 17,
+      "mode": "glm-4.6v-flash isolated vision",
+      "status": "succeeded",
+      "characters": 159,
+      "finish_reason": "stop",
+      "quality": "contains transcription inaccuracies; not published"
+    },
+    {
+      "page": 17,
+      "mode": "glm-4.6v isolated vision",
+      "status": "succeeded",
+      "characters": 185,
+      "finish_reason": "stop",
+      "quality": "requires source comparison; not published"
+    }
+  ],
+  "global_configuration_changed": false,
+  "original_changed": false
+}

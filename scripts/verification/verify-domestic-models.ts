@@ -4,10 +4,11 @@
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolveDomesticConfig,createDomesticClient,DomesticError,type DomesticConfig} from '../../server/answer-models/domestic';
 // Default is configuration-only. --call <provider> sends exactly one synthetic request.
-const providers:DomesticConfig['provider'][]=['kimi','deepseek','doubao','openrouter'];
-const keys:Record<DomesticConfig['provider'],string[]>={kimi:['KIMI_API_KEY','MOONSHOT_API_KEY'],deepseek:['DEEPSEEK_API_KEY'],doubao:['DOUBAO_API_KEY','ARK_API_KEY'],openrouter:['OPEN_ROUTER_KEY']};
+const providers=['kimi','deepseek','doubao','openrouter'] as const;
+type VerifiedProvider=typeof providers[number];
+const keys:Record<VerifiedProvider,string[]>={kimi:['KIMI_API_KEY','MOONSHOT_API_KEY'],deepseek:['DEEPSEEK_API_KEY'],doubao:['DOUBAO_API_KEY','ARK_API_KEY'],openrouter:['OPEN_ROUTER_KEY']};
 const args=process.argv.slice(2);
-const selected=args.length===2&&args[0]==='--call'&&providers.includes(args[1] as DomesticConfig['provider'])?args[1] as DomesticConfig['provider']:undefined;
+const selected=args.length===2&&args[0]==='--call'&&providers.includes(args[1] as VerifiedProvider)?args[1] as VerifiedProvider:undefined;
 const checks:Record<string,unknown>[]=[];
 if(args.length&&!selected){console.error('用法：bun scripts/verification/verify-domestic-models.ts [--call kimi|deepseek|doubao|openrouter]');process.exitCode=2;}
 else try{

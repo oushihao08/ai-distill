@@ -38,11 +38,11 @@ export async function runAgent<T>(task:AgentTask<T>,adapter:AgentAdapter<T>=conf
  if(!task.task_type.trim()||!task.prompt.trim()||!task.directory.trim()||!task.model.trim()||!task.reasoning_effort.trim())throw new Error('Agent任务配置无效');
  if(task.execution_profile==='fresh_authoring'&&(task.task_type!=='question_authoring'||!task.working_directory?.trim()))throw new Error('普通出题执行配置无效');
  if(task.execution_profile==='project_delivery'&&task.task_type!=='project_delivery')throw new Error('项目交付执行配置无效');
- return adapter({...task,developer_instructions:task.task_type==='independent_scoring'||task.execution_profile==='fresh_authoring'?'':AGENT_DEVELOPER_INSTRUCTIONS});
+ return adapter({...task,developer_instructions:task.task_type==='independent_scoring'||task.task_type==='model_answer'||task.execution_profile==='fresh_authoring'?'':AGENT_DEVELOPER_INSTRUCTIONS});
 }
 
 async function runCodexAdapter<T>(task:AgentTask<T>&{developer_instructions:string}){
  let unregister:(()=>void)|undefined;
- const result=await runCodex({directory:task.directory,execution_profile:task.execution_profile,working_directory:task.working_directory,prompt:task.prompt,model:task.model,reasoning_effort:task.reasoning_effort,schema:task.schema,output_format:task.output_format,input_files:task.input_files,validate:task.validate,timeout_ms:task.timeout_ms,signal:task.signal,call_id:task.call_id,developer_instructions:task.developer_instructions,isolate_context:task.task_type==='independent_scoring',onProcess(pid){if(pid===null){unregister?.();unregister=undefined;}else unregister=registerAgentProcess(pid);}});
+ const result=await runCodex({directory:task.directory,execution_profile:task.execution_profile,working_directory:task.working_directory,prompt:task.prompt,model:task.model,reasoning_effort:task.reasoning_effort,schema:task.schema,output_format:task.output_format,input_files:task.input_files,validate:task.validate,timeout_ms:task.timeout_ms,signal:task.signal,call_id:task.call_id,developer_instructions:task.developer_instructions,isolate_context:task.task_type==='independent_scoring'||task.task_type==='model_answer',onProcess(pid){if(pid===null){unregister?.();unregister=undefined;}else unregister=registerAgentProcess(pid);}});
  return{result:result.result,session_id:result.session_id,usage:result.usage,diagnostic_path:result.events_path,duration_ms:result.duration_ms,provider:'codex',model:task.model};
 }

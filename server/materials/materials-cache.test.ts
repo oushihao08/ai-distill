@@ -1,4 +1,4 @@
-/** 验证材料处理复用健康提取并绑定准确输入指纹。
+/** 验证材料处理复用健康提取、复查有问题缓存并绑定准确输入指纹。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import {test,expect} from 'bun:test';
@@ -13,10 +13,20 @@ test('material processing reuses verified healthy extraction and extracts a miss
  const root=await mkdtemp(join(tmpdir(),'cached-materials-'));let calls=0;
  try{
   await mkdir(join(root,'old'));await writeFile(join(root,'healthy.pdf'),'healthy source');await writeFile(join(root,'damaged.pdf'),'damaged source');
-  const content=JSON.stringify({source_sha256:hash('healthy source'),structure_version:'document-structure-v1',pages:[{page:1,text:'健康文本',method:'ocr',issues:['image_without_text'],structure:[{id:'p1-b1',kind:'paragraph',text:'健康文本'}]}]});await writeFile(join(root,'old','healthy.json'),content);
+  const content=JSON.stringify({source_sha256:hash('healthy source'),structure_version:'document-structure-v1',pages:[{page:1,text:'健康文本',method:'ocr',structure:[{id:'p1-b1',kind:'paragraph',text:'健康文本'}]}]});await writeFile(join(root,'old','healthy.json'),content);
   const result=await processMaterials(root,'workflow','attempt',[{id:'healthy',storage_path:'healthy.pdf',sha256:hash('healthy source'),extraction_cache:{storage_path:'old/healthy.json',sha256:hash(content),attempt_id:'old',material_id:'healthy'}},{id:'damaged',storage_path:'damaged.pdf',sha256:hash('damaged source')}],{} as any,{extract:async(path:string)=>{calls++;expect(path).toBe(join(root,'damaged.pdf'));return{format:'pdf',provider:'glm-ocr',sha256:hash('damaged source'),pages:[{page:1,text:'恢复原件中的金额100元',method:'ocr'}]};}});
-  expect(calls).toBe(1);expect(result.result.issues.length).toBeGreaterThan(0);expect(result.result.materials[0]?.extraction.mode).toBe('cached');expect(result.result.materials[1]?.extraction.mode).toBe('fresh');
+  expect(calls).toBe(1);expect(result.result.issues).toEqual([]);expect(result.result.materials[0]?.extraction.mode).toBe('cached');expect(result.result.materials[1]?.extraction.mode).toBe('fresh');
   expect(await Bun.file(join(root,'healthy.pdf')).text()).toBe('healthy source');expect(await Bun.file(join(root,'old','healthy.json')).text()).toBe(content);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('flagged OCR cache is rechecked once without altering the source or historical cache',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'flagged-materials-'));let calls=0;
+ try{
+  const source='original source';await mkdir(join(root,'old'));await writeFile(join(root,'source.pdf'),source);
+  const content=JSON.stringify({source_sha256:hash(source),structure_version:'document-structure-v1',pages:[{page:1,text:'部分原文',method:'ocr',issues:['image_without_text'],structure:[{id:'b1',kind:'paragraph',text:'部分原文'}]}]});await writeFile(join(root,'old','source.json'),content);
+  const result=await processMaterials(root,'workflow','attempt',[{id:'source',storage_path:'source.pdf',sha256:hash(source),extraction_cache:{storage_path:'old/source.json',sha256:hash(content),attempt_id:'old',material_id:'source'}}],undefined,{extract:async()=>{calls++;return{format:'pdf',provider:'mineru-api',sha256:hash(source),pages:[{page:1,text:'复识别完整原文',method:'ocr'}]};}});
+  expect(calls).toBe(1);expect(result.result.materials[0]?.extraction.mode).toBe('fresh');expect(result.result.issues).toEqual([]);
+  expect(await Bun.file(join(root,'source.pdf')).text()).toBe(source);expect(await Bun.file(join(root,'old','source.json')).text()).toBe(content);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 test('redaction input digest survives JSONB field ordering and still binds exact source artifacts',()=>{

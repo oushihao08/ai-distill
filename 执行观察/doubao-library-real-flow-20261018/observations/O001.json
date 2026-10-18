@@ -1,0 +1,46 @@
+{
+  "id": "O001",
+  "kind": "issue",
+  "status": "open",
+  "title": "提取问题使脱敏结果不可发布，数据库约束拒绝提交",
+  "item_ids": [
+    "real-flow"
+  ],
+  "attempt_ids": [
+    "A004"
+  ],
+  "facts": [
+    "修订6458c800-d17e-4132-a789-9821494546ae的成功提取任务包含57页和93条issues；当前读取摘要类型计数为unsupported_block_type 56、image_without_text 23、block_without_text 9、no_text_placeholder 5。",
+    "A004 job f0cd3b65-583c-4787-b08f-022ca79d5bd8于16:35:55开始、16:36:43失败，API记录error_code=unknown，修订的redactions数组仍为空。",
+    "worker安全日志记录同一call_id下3条redaction_source_not_found字段校验事件；该日志不证明这3项在任务结束时仍未修复。",
+    "同一任务提交时记录PostgreSQL error_code=23514及transaction_outcome_unknown；后续API回读确认任务failed且未发布脱敏结果。",
+    "当前runner仅在issues为空且每页正文非空时计算usable_for_question=true；迁移042要求成功脱敏任务必须发布一份usable_for_question=true的结果。"
+  ],
+  "hypotheses": [
+    "字段定位反馈是否影响了最终校验结果，普通日志未提供足够信息确认。"
+  ],
+  "evidence": [
+    ".storage/verification/doubao-library-20261018/retry-4-status.json",
+    ".storage/logs/2026-10-18/worker-c865df66-4851-4cac-a2d0-29c0ae68b734-000.jsonl",
+    "server/material-library/runner.ts:133-160",
+    "migrations/042_shared_material_library.sql:383-386"
+  ],
+  "impact": "没有发布可加载结果；项目加载及出题、作答、评分、达标、归档和导出阶段尚未执行。",
+  "updates": [
+    {
+      "observed_at": "2026-10-18T08:58:59.359162+00:00",
+      "facts": [
+        "新识别任务57页成功，37项issues保留；56项已知类型误报已消除",
+        "第17页原始响应只有52个字符页边信息，原件证件图像包含正文，确认不是全部可忽略的装饰图像",
+        "第9和17页pipeline/is_ocr小样未解决图像区域漏字",
+        "隔离视觉模型小样返回159/185字；未改全局配置、未写入材料库，不能视为原提取结果已修复"
+      ],
+      "evidence": [
+        "evidence/A007-ocr-probes.json"
+      ]
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-18T16:37:18+08:00",
+  "updated_at": "2026-10-18T08:58:59.359162+00:00"
+}

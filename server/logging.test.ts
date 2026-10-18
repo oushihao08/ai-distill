@@ -8,7 +8,7 @@ import {mkdir,mkdtemp,readFile,readdir,rm,unlink,writeFile} from 'node:fs/promis
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {REDACTION_PROTOCOL_VERSION} from './materials/redaction';
-import {configureLogger,createStructuredLogger,currentLogger,installFatalErrorLogging,sanitizeLogRecord,withLogContext} from './logging';
+import {classifyLogError,configureLogger,createStructuredLogger,currentLogger,installFatalErrorLogging,sanitizeLogRecord,withLogContext} from './logging';
 
 test('writes ordered, correlated JSONL events and drops unapproved private fields',async()=>{
  const root=await mkdtemp(join(tmpdir(),'ai-distill-logs-'));
@@ -82,6 +82,11 @@ test('rotates bounded JSONL files and removes only expired logger segments',asyn
  }finally{await logger.close();await rm(root,{recursive:true,force:true});}
 });
 
+test('结束原因只保留白名单枚举',()=>{
+ expect(classifyLogError({kind:'invalid_response',reason_code:'incomplete_finish_reason',finish_reason:'length'})).toMatchObject({finish_reason:'length'});
+ expect(classifyLogError({kind:'invalid_response',reason_code:'incomplete_finish_reason',finish_reason:'provider said private text'})).toMatchObject({finish_reason:'unknown'});
+ expect(classifyLogError({kind:'invalid_response',reason_code:'incomplete_finish_reason'})).not.toHaveProperty('finish_reason');
+});
 test('query sanitizer drops fields outside the normal log contract',async()=>{
  const raw={schema_version:1,event_id:'12345678-1234-1234-1234-123456789abc',seq:1,occurred_at:'2026-01-01T00:00:00.000Z',written_at:'2026-01-01T00:00:00.001Z',event:'request.failed',service:'api',instance_id:'12345678-1234-1234-1234-123456789abc',pid:1,level:'error',request_id:'request-a',prompt:'PRIVATE'};
  expect(sanitizeLogRecord(raw)).toMatchObject({event:'request.failed',request_id:'request-a',level:'error'});

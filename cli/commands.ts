@@ -43,6 +43,7 @@ export const HELP = `ai-distill：本机工作流工具（所有命令支持 --j
   export create --project UUID [--batch 批次]
 下载（仅写指定的新本机文件，不覆盖）：
   artifact download --artifact UUID --out 路径 | export download --export UUID --out 路径
+  siriser download --workflow UUID --out 五件套ZIP路径（需该题已有当前有效归档）
 STEP_KEY 使用 step list；不使用页面序号。派发只执行一个步骤，不自动继续。
 attempt wait 默认仅返回状态元信息；完整正文使用 attempt show 或 wait --full。
 退出码：0 完成/派发已接受（不等于业务达标），1 命令/HTTP 错误，2 部分失败/未就绪，3 等待到期仍运行，130 中断。
@@ -100,6 +101,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'models catalog':[],'models show':['project'],'attempt show':['attempt'],'attempt wait':['ids','timeout','full'],
       'result list':[],'result show':['workflow'],'step list':[],'step dispatch':['project','ids','all'],
       'export list':['project'],'export create':['project','batch'],'export download':['export','out'],
+      'siriser download':['workflow','out'],
       'export failed':['project','ids','all'],
       'export review':['project','ids'],
       'artifact download':['artifact','out'],'monitor show':[],
@@ -306,6 +308,13 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         try {await writeFile(out,bytes,{flag:'wx',mode:0o600});}
         catch {throw new CliError('无法写入下载文件；目标须不存在且父目录已创建',{kind:'file_error'});}
         data={path:out,bytes:bytes.length};break;
+      }
+      case 'siriser download': {
+        const out=required('out');
+        const bytes=await api.download(`/api/workflows/${uuid('workflow')}/siriser-zip`,signal);
+        try {await writeFile(out,bytes,{flag:'wx',mode:0o600});}
+        catch {throw new CliError('无法写入下载文件；目标须不存在且父目录已创建',{kind:'file_error'});}
+        data={path:out,bytes:bytes.length,package:'siriser_five_piece',submission_performed:false};break;
       }
     }
     return {outcome:'complete',data};

@@ -1,0 +1,14 @@
+{
+  "redaction_id": "99846ce1-5fea-4f1f-98b7-151ea6e372b6",
+  "extraction_job_id": "daf77d2e-2330-440c-b7bc-c6813f2a2940",
+  "scope": "extracted original vs redacted text, not original PDF OCR perfection or external acceptance",
+  "source_pages": 57,
+  "redacted_pages": 57,
+  "amount_date_difference_flags": [],
+  "mask_difference_count": 389,
+  "review_result": "核心借贷事实、金额利率、日期与裁判/程序内容未见实质损失；识别警告保留；非星号删除以页边噪声和机构识别信息为主",
+  "limitations": [
+    "仍有姓名/案号漏遮盖及机构名称被清理的现象，不能称为零漏脱敏；本轮按用户实质内容口径继续内部隔离流程，不作外部公开提交"
+  ],
+  "private_report": ".storage/verification/doubao-library-20261018/filtered-substance-comparison-private.json"
+}

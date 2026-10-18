@@ -15,6 +15,10 @@ Bun + Hono + PostgreSQL（pg）的本地工作台后端。`app.ts` 装配 API，
 
 `project-folders.ts` 按项目 `material_mode` 同步来源目录：旧模式登记题目，新模式登记材料包。`material-package-questions.ts` 从材料包的成功脱敏尝试创建题目私有快照，复制同工作流归属的材料和脱敏产物，记录来源 ID／正文哈希及本项目选中的出题标签；失败回滚数据库并清理新目录。`app.ts` 提供版本列表、建题、标签维护、执行历史分页和显式模式切换；项目列表保留工作流总数，同时分别计数未删除材料包与题目。材料包只派发 1／2／9；派生题目只派发 4–8。上传材料在新模式下登记材料包。旧工作流和模型／评分配置沿用原契约。源码支持不代表数据库已执行 035 与 037 迁移。
 
+## 独立材料库
+
+`material-library/` 与上述项目内旧材料包流程分开：`storage.ts` 用 SHA-256 路径保存原件 blob 并在读写时校验边界与摘要；`service.ts` 管理全局包、处理设置、不可变 revision 和幂等上传；`jobs.ts`/`runner.ts` 实现入库、提取、脱敏任务及租约终态；`routes.ts` 注册包、revision、任务和使用历史接口。worker 把 internal/API/Agent 任务公平加入现有材料/API/Agent 消费池；监控只投影队列计数和安全进度。新链路只写 `library_*` 表，不生成旧 `materials` 行或材料包工作流。项目加载、题目私有快照、出题/作答/评分/归档/DOCX/Excel 来源分流、材料库和项目页面已接入源码；归档历史冻结材料、项目和题目身份，撤回后保留记录并可重归档。042/043已在用户确认的隔离库登记，合成API/worker、快照和模拟下游验收见执行追踪；真实OCR/模型质量与远端双机未在本轮验证。材料库现以文件为阅读入口，支持原PDF/DOCX、原文/脱敏逐页对照；处理配置全库共用，任务入队冻结。DOCX预览使用隔离本地LibreOffice副本，资料与配置不混排，项目使用按题目汇总并展开归档历史。详见[材料库说明](material-library/README.md)。上传成功仅表示原件和文件清单已保存，不表示后续处理完成。
+
 
 
 `.env.example` 将 `WORKER_MODE` 设为 `local`，用于本机材料接收／提取及 Agent/Codex 队列；`api` 处理本机归属的作答、API脱敏和API评分；专用 `materials` 要求 `MATERIAL_EXECUTION_TARGET=server`，只处理服务器材料队列和组合操作；`server` 要求 `MATERIAL_EXECUTION_TARGET=server`，处理服务器材料任务及服务器归属作答，不启用 Agent 或评分队列；`all` 处理原有全量本机队列（worker 入口未设置时保持 `all` 兼容行为）。API 可通过 `HOST` 配置监听地址，以 `SERVE_WEB=1` 提供构建后的工作台；云端固定服务定义见根目录 `docker-stack.yml`。`GET /api/health` 同时检查数据库连接和当前文字工作流需要的迁移是否已登记；可选的 033 钩子迁移不阻挡旧文字链路就绪。健康检查只核对状态，不执行迁移。
@@ -30,6 +34,7 @@ Bun + Hono + PostgreSQL（pg）的本地工作台后端。`app.ts` 装配 API，
 | `task-signal.ts` | 任务取消状态和异步 AbortSignal 传播 |
 | `project-folders.ts` | 目录发现（超限 PDF 由 `materials/pdf-split.ts` 生成管理分片）、步骤投影、前置条件统一判断、分块批量及配置校验 |
 | `material-package-questions.ts` | 列成功脱敏版本，从材料包创建独立题目的私有整包快照、来源绑定与失败清理；不执行模型脱敏 |
+| `material-library/` | 独立共享材料库服务、受管 blob、包/revision/job/usage API、任务 runner、项目加载桥接和题目私有快照；维护边界见该目录 README |
 | `intake.ts`、`intake-jobs.ts`、`intake-jobs.test.ts` | 材料原件接收、目录入库任务及 worker 停止后的待处理状态恢复验证 |
 | `rules.ts`、`rule-files.ts`、`rule-currentness.test.ts` | 主项目共享 `materials/` 与 `skill/` 文件管理、期次 `project.json` 读取、引用检查、任务级文件指纹及历史快照校验；采用候选时写入稳定共享目录，`rule-loading.ts` 是已停用的旧规则绑定入口 |
 | `attempts.ts`、`attempts.test.ts`、`validation.ts` | 轻量／完整任务读取、有限请求等待、轮询／取消单测与接口输入边界 |
@@ -47,7 +52,7 @@ Bun + Hono + PostgreSQL（pg）的本地工作台后端。`app.ts` 装配 API，
 - [达标判断](decisions/README.md)、[成果发布](publishing/README.md)、[统计与导出](reporting/README.md)
 - [本地监控](monitoring/README.md)
 
-当前 worker：材料接收／提取并发跟随持久化的模型 API 并发设置；作答和 API 评分通过 API worker 通道轮转，API 脱敏由独立消费池处理；skill、Codex 脱敏、出题和 Codex 评分共用 Agent 通道并轮转。API 脱敏任务池并发跟随同一 `llmApi` 配置，脱敏任务内部的分批请求和其他模型调用仍由全局 API 请求槽位共同限流。评分队列按任务冻结的 provider 分流，旧任务缺少 provider 时按 Codex 处理。系统设置可保存安全范围内的 Agent 1–4、API 1–8，写入 API 与 worker 共享的 `STORAGE_DIR/.concurrency/agent-slots.sqlite3`，无须 PostgreSQL 迁移。设置在 API 与 worker 重启后生效；未保存时兼容 `AGENT_CONCURRENCY` 与 `LLM_API_CONCURRENCY` 环境变量（各自范围 1–32）。Agent 槽位记录与配置共用该 SQLite 文件；连接测试与 worker 任务使用同一 Agent 上限，进程异常退出后，下一次领取会清理已退出进程的槽位。当前只支持一个本地 worker，模型 API 上限是该 worker 内所有 API 队列的总上限，不是每供应商／每队列各自上限。普通工作流由用户派发。
+当前 worker：legacy 材料接收／提取与新材料库 internal 任务共用材料池；新库 API 任务轮转加入现有 API 队列，Agent 脱敏进入 Agent 队列，均在领取前占用相应 worker 槽位。材料接收／提取并发跟随持久化的模型 API 并发设置；作答和 API 评分通过 API worker 通道轮转，API 脱敏由独立消费池处理；skill、Codex 脱敏、出题和 Codex 评分共用 Agent 通道并轮转。API 脱敏任务池并发跟随同一 `llmApi` 配置，脱敏任务内部的分批请求和其他模型调用仍由全局 API 请求槽位共同限流。评分队列按任务冻结的 provider 分流，旧任务缺少 provider 时按 Codex 处理。系统设置可保存安全范围内的 Agent 1–4、API 1–8，写入 API 与 worker 共享的 `STORAGE_DIR/.concurrency/agent-slots.sqlite3`，无须 PostgreSQL 迁移。设置在 API 与 worker 重启后生效；未保存时兼容 `AGENT_CONCURRENCY` 与 `LLM_API_CONCURRENCY` 环境变量（各自范围 1–32）。Agent 槽位记录与配置共用该 SQLite 文件；连接测试与 worker 任务使用同一 Agent 上限，进程异常退出后，下一次领取会清理已退出进程的槽位。当前只支持一个本地 worker，模型 API 上限是该 worker 内所有 API 队列的总上限，不是每供应商／每队列各自上限。普通工作流由用户派发。
 
 API／Agent 通道每轮先查询是否存在等待任务或超时未心跳的运行任务；确定为空时跳过各队列的领取事务。命中后仍由原队列按既有锁、顺序和恢复条件领取；空队列轮询间隔保持 3 秒。此处减少空转数据库往返，不改变模型调用。
 
@@ -116,3 +121,5 @@ API／Agent 通道每轮先查询是否存在等待任务或超时未心跳的�
 workflow-view.ts 的完整题目投影保留 work_legal_v1 的独立内容字段；轻量状态接口继续省略正文。具体契约与验证边界见 authoring/README.md。
 
 文字作答支持跨项目成果清单适配：`answer-models/input.ts`派生并冻结公开清单的文字呈现方式；队列实际发送该约定，评分回读同版约定并保持原Rubric。无清单的旧题不变，Work草稿与非文字输入不放开。该能力是文字成果测试，不代表文件、检索或工具执行已验收；详见answer-models与scoring模块README。
+
+`projectStepSummary(pool, projectId, materialBackend)` 使用共享步骤注册表汇总项目适用流程；项目详情路由传入已读取的后端类型，library_v1只返回4–8，legacy缺省继续原可见步骤集合。

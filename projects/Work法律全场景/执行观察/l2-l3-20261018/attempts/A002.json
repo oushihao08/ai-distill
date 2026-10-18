@@ -1,0 +1,17 @@
+{
+  "id": "A002",
+  "item_id": "l3-e525",
+  "stage_id": "redaction",
+  "previous_attempt_id": "A001",
+  "status": "failed",
+  "started_at": "2026-10-18T04:03:23.815Z",
+  "finished_at": "2026-10-18T04:23:30.923Z",
+  "inputs": [{"ref": "e525eb15-7b5f-435e-a34e-10e42ebdce77", "version": null, "sha256": null}],
+  "configuration": {"total_fields": 3951, "request_count": 13, "total_batches": 27, "completed_fields": 1575, "active_requests": 0, "retry_count": 10, "deadline_at": "2026-10-18T04:23:25.722Z", "last_progress_at": "2026-10-18T04:21:21.025Z"},
+  "changes_from_previous": ["由后续本机worker消费；当前运行任务不受后来加载的代码变更影响。"],
+  "external_ids": {"attempt_id": "f2f9f64b-7da3-42c9-89e4-171087671503"},
+  "environment": {"target": "local", "runtime_version": null},
+  "artifacts": [],
+  "verification": [{"kind": "api_status", "result": "failed", "evidence": "GET /api/monitor 与项目workflow-status回读"}],
+  "error": {"kind": "timeout", "code": "redaction_task_timeout", "message": "最终 attempt 错误为脱敏执行失败或结果校验未通过；安全日志记录 redaction_task_timeout。", "exit_code": null, "http_status": null, "chain": ["HTTP 200但模型返回不完整结束原因；若干批次触发 redaction_batch_budget_exceeded；后续调用出现 fetch_failed；整题任务超时"], "raw_error_ref": null, "stderr_ref": null, "stdout_ref": null, "stack_ref": null, "capture": "complete", "redactions": [], "impact": "1575/3951字段已进入检查点，但没有成功脱敏版本，不能派生题目。", "confirmed_cause": "此attempt使用20分钟任务期限；当前源码对3951字段、单并发任务计算60分钟期限，但该次由旧worker PID 91526消费。", "hypotheses": ["incomplete_finish_reason的具体finish_reason未进入安全日志，无法确认是否为输出长度截断或其他结束原因。"], "actions": ["旧worker已在无活动任务后停止；启动了加载当前代码的新local worker PID 28558；保留API worker PID 21533。"]}
+}

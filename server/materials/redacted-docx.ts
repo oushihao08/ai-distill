@@ -6,7 +6,7 @@
 import {Document,HeadingLevel,Packer,Paragraph,Table,TableCell,TableRow,TextRun,WidthType} from 'docx';
 import type {DocumentBlock} from './pdf';
 
-export interface RedactedDocumentStructure {format:'redacted-structure-v1';pages:{page:number;blocks:DocumentBlock[]}[]}
+export interface RedactedDocumentStructure {format:'redacted-structure-v1';pages:{page:number;blocks:DocumentBlock[];issues?:string[]}[]}
 export const REDACTED_DOCX_RENDERER_VERSION='redacted-structure-docx-v1';
 
 function tableCells(line:string){return line.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(cell=>cell.trim());}

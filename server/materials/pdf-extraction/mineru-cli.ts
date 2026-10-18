@@ -13,7 +13,7 @@ import { DOCUMENT_STRUCTURE_VERSION, documentBlocksToText, type DocumentBlock, t
 import type { PdfExtractionProvider, PdfExtractionResult } from './types';
 
 // Increment when conversion semantics change: old text-only caches are incomplete.
-export const MINERU_OCR_VERSION = 'mineru-open-api-first-structured-v2';
+export const MINERU_OCR_VERSION = 'mineru-open-api-first-structured-v3';
 export const MINERU_DOCX_VERSION = 'mineru-docx-structured-v1';
 interface MineruBlock { page_idx?: number; type?: string; [key: string]: unknown }
 interface ParsedPage { blocks: DocumentBlock[]; issues: Set<string> }
@@ -126,7 +126,8 @@ function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): Docume
   if (fallback.length) addText('paragraph', fallback);
   else page.issues.add(type === 'image' ? 'image_without_text' : 'block_without_text');
  }
- if (!['title', 'text', 'paragraph', 'table', 'list', 'page_footnote', 'footnote', 'image', 'equation', 'equation_isolated', 'code', 'algorithm'].some(name => type === name || (name === 'table' && type.includes(name)) || (name === 'list' && type.includes(name)))) page.issues.add('unsupported_block_type');
+ // MinerU V1 原始结果含这些正文附属块；原文仍按段落保留，不误报未知类型。
+ if (!['title', 'text', 'paragraph', 'header', 'footer', 'page_number', 'aside_text', 'table', 'list', 'page_footnote', 'footnote', 'image', 'equation', 'equation_isolated', 'code', 'algorithm'].some(name => type === name || (name === 'table' && type.includes(name)) || (name === 'list' && type.includes(name)))) page.issues.add('unsupported_block_type');
  if (blocks.some(item => documentBlocksToText([item]).includes('[NO TEXT]'))) page.issues.add('no_text_placeholder');
  return blocks;
 }

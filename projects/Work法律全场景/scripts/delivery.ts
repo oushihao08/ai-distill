@@ -1,15 +1,17 @@
 /**
- * 职责：为 Work 达标题目生成 AI 模拟专家成果、Siriser 五件套、Harbor 六件套预备包及私有归档快照。
+ * 职责：为 Work 达标题目独立生成Siriser五件套，并尝试Harbor预备包及保存私有归档快照。
  * 关键入口：`deliver()` 在“归档达标题目”时由服务端独立进程调用。
- * 使用边界：Harbor 包缺少题目元数据、精确文件清单或可用成果时失败关闭；生成预备包不代表 Harbor 或平台验收通过。
+ * 使用边界：Siriser失败阻止归档；Harbor转换失败单独记pending，不阻断Siriser，不代表平台验收通过。
  */
+import type {RedactedDocumentStructure} from '../../../server/materials/redacted-docx';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,readFile,rename,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname,isAbsolute,join} from 'node:path';
-import {generateSiriserFivePiece} from './siriser/generate-five-piece';
+import {generateSiriserFivePiece,generateSiriserConfirmation} from './siriser/generate-five-piece';
 import {exportAcceptedTask,HARBOR_TOOL_SET,type HarborTaskMetadata} from './harbor/export-accepted-task';
 import type {WorkContent} from '../../../server/authoring/work-contract';
+import {documentBlocksToText} from '../../../server/materials/pdf';
 import {buildRedactedDocx} from '../../../server/materials/redacted-docx';
 import {buildXlsx,type WorkbookSheet} from '../../../server/reporting/xlsx';
 
@@ -24,7 +26,7 @@ interface DeliveryInput{
  rubric_version:string;
  question:{task_name:unknown;task_type:unknown;header:unknown;question:unknown;attachment_ids:unknown;rubric:unknown;answer_approach:unknown;reference_answer:unknown;delivery_identity?:{task_id:string;org:string}}&Partial<WorkContent>;
  acceptance:unknown;
- attachments:{id:string;sha256:string;name:string;text:string}[];
+ attachments:{id:string;sha256:string;name:string;text:string;documents?:RedactedDocumentStructure[]}[];
  simulation:{deliverable_type:'F1'|'F2'|'F3'|'F4'|'F5';deliverable_title:string;deliverable_markdown:string;harbor_files:{path:string;markdown:string;sheets:{name:string;columns:string[];rows:(string|number|boolean)[][]}[]}[];research_entries:{id:string;query:string;title:string;url:string;finding:string;version_or_date:string;used_in:string}[];unresolved:string[];generated_at:string;model:string;reasoning_effort:string;actual_search_queries:string[];actually_opened_urls:string[]};
 }
 
@@ -70,7 +72,7 @@ async function harborFileBytes(file:{path:string;markdown:string;sheets:{name:st
 
 async function generateHarborPackage(parent:string,input:DeliveryInput){
  const mapping=harborMapping(input.question),simulation=input.simulation;
- if(mapping.input_files.length!==input.attachments.length||mapping.input_files.some((file,index)=>file.path!==input.attachments[index]?.name||typeof file.description!=='string'||!file.description.trim()))throw new Error('Harbor 输入材料清单必须按实际脱敏附件顺序逐一映射并提供说明');
+ if(mapping.input_files.length!==input.attachments.length||mapping.input_files.some((file:{path:string;description:string},index:number)=>file.path!==input.attachments[index]?.name||typeof file.description!=='string'||!file.description.trim()))throw new Error('Harbor 输入材料清单必须按实际脱敏附件顺序逐一映射并提供说明');
  for(const item of mapping.input_files)assertHarborRelative(item.path);
  if(!Array.isArray(simulation.harbor_files)||!simulation.harbor_files.length)throw new Error('模拟专家成果没有 Harbor 文件映射');
  const workspace=await mkdtemp(join(tmpdir(),'ai-distill-harbor-'));
@@ -111,15 +113,56 @@ function parseInput(value:unknown):DeliveryInput{
  return input;
 }
 
-/** 同一来源摘要只生成同一份资料；成果目录里已有的 DOCX 不删除。快照不一致时拒绝覆盖。 */
+/** 兼容尚未重载的本地API：仅用公开只读成果接口补齐同次脱敏结构，不访问数据库或原件。 */
+async function hydrateRedactedDocuments(input:DeliveryInput){
+ if(input.question.content_contract!=='work_legal_v1'||input.attachments.every(item=>item.documents!==undefined))return;
+ const read=async(path:string)=>{
+  const response=await fetch(`http://127.0.0.1:3700/api/${path}`,{signal:AbortSignal.timeout(10000)});
+  if(!response.ok)throw new Error('无法读取冻结脱敏结构');
+  return response.json();
+ };
+ const workflow=await read(`workflows/${input.workflow_id}`);
+ if(workflow.workflow?.id!==input.workflow_id||workflow.workflow?.project_id!==input.project_id||!Array.isArray(workflow.artifacts))throw new Error('脱敏结构工作流不一致');
+ for(const attachment of input.attachments){
+  if(attachment.documents!==undefined)continue;
+  if(digest(attachment.text)!==attachment.sha256)throw new Error('冻结脱敏正文摘要不一致');
+  const artifact=workflow.artifacts.find((item:any)=>item.id===attachment.id&&item.kind==='redacted_markdown');
+  const indexes=workflow.artifacts.filter((item:any)=>item.attempt_id===artifact?.attempt_id&&item.kind==='redacted_index');
+  if(!artifact||indexes.length!==1)throw new Error('缺少同次脱敏结构索引');
+  const index=await read(`artifacts/${indexes[0].id}/download`);
+  if(index.redacted_sha256!==attachment.sha256||!Array.isArray(index.materials)||!index.materials.length)throw new Error('结构索引与冻结脱敏正文不一致');
+  const documents:RedactedDocumentStructure[]=[];
+  for(const material of index.materials){
+   if(!material.document){if(index.format==='redacted-index-v2')throw new Error('结构化索引缺少文档');continue;}
+   const document=material.document as RedactedDocumentStructure;
+   if(document.format!=='redacted-structure-v1'||!Array.isArray(document.pages)||!document.pages.length||document.pages.some(page=>!Number.isSafeInteger(page.page)||!Array.isArray(page.blocks))||digest(JSON.stringify(document))!==material.structure_sha256||document.pages.map(page=>documentBlocksToText(page.blocks)).join('\n\n')!==material.markdown)throw new Error('脱敏结构摘要或正文投影无效');
+   documents.push(document);
+  }
+  if(documents.length&&documents.length!==index.materials.length)throw new Error('脱敏结构部分缺失');
+  attachment.documents=documents;
+ }
+}
+
+/** 同一来源摘要只生成同一份资料；成果目录里已有的 DOCX 不删除。快照按内容摘要保留历史，当前指针允许切换到新的达标来源。 */
 export async function deliver(value:unknown):Promise<void>{
  const input=parseInput(value);
+ await hydrateRedactedDocuments(input);
  const parent=process.env.AI_DISTILL_DELIVERY_PARENT_DIR;
  if(!parent||!isAbsolute(parent))throw new Error('交付持久目录未配置');
  const snapshot=JSON.stringify(input,null,2)+'\n';
  const snapshotHash=digest(snapshot);
- const harbor=await generateHarborPackage(parent,input);
- const fivePiece=await generateSiriserFivePiece(parent,input,join(harbor.directory,'solution/golden_output'));
+ // Siriser是专家初次提交入口；Harbor后续转换不得阻断已经正确生成的五件套。
+ const fivePiece=input.question.content_contract==='work_legal_v1'
+  ?await generateSiriserConfirmation(parent,input)
+  :await generateSiriserFivePiece(parent,input);
+ let harbor:{directory:string}|undefined;
+ let harborStatus='未生成：尚无Harbor映射或当前转换不能无损承载判据；不影响Siriser五件套。';
+ try{harbor=await generateHarborPackage(parent,input);harborStatus=`预备目录已生成：${harbor.directory}；尚未正式验收。`;}
+ catch{
+  // 不把私有输入或供应商错误写入交付说明；独立状态明确保留未完成，不能冒称六件套已生成。
+  harborStatus='未生成：Harbor映射、成果格式或评分转换未通过；请独立核对，不删改原判据绕过。';
+ }
+ await writeFile(join(parent,'Harbor生成状态.json'),JSON.stringify({status:harbor?'generated':'pending',submission_ready:false,note:harborStatus},null,2)+'\n',{mode:0o600});
  const checklist=[
   '# Work 法律全场景｜逐题交付准备',
   '',
@@ -130,15 +173,15 @@ export async function deliver(value:unknown):Promise<void>{
   `Rubric 版本：${input.rubric_version}`,
   `快照 SHA-256：${snapshotHash}`,
   '',
-  '此目录保存归档冻结的私有题目快照。AI 模拟专家内容稿五件套已生成；这不是真人专家成果，也不是平台提交凭据。',
+  '此目录保存归档冻结的私有题目快照。Siriser五件套已独立生成；不是真人专家核定或平台提交凭据。',
   '快照含题面、Rubric、作答思路、参考答案和内部附件 ID，不得直接作为公开题包发送。',
   '',
   '## 正式提交前仍需完成',
   '',
-  `- Siriser 内容稿五件套：已写入 ${fivePiece.directory}，包含任务说明、题目信息、评分要点、脱敏输入材料、模拟专家主成果、Harbor 清单要求的全部交付文件及实际检索轨迹。`,
+  `- Siriser 五件套：已写入 ${fivePiece.directory}；新Work结构为三个JSON、脱敏输入、作者完整标准成果和检索轨迹Excel，并生成同名ZIP。`,
   '- 题目脱敏 DOCX 和通用单题 Excel 由归档 API 自动生成；通用 Excel 不替代 Siriser 或 Harbor 专用交付文件。',
   '- 本地内部评测可使用上述 AI 模拟成果；若用于外部正式提交，另按项目方要求核验真人专家来源、签署／核定等条件。当前归档快照只作为制作依据，不替代完整题包。',
-  `- Harbor 六件套目录：已生成 ${harbor.directory}；固定脚本摘要校验通过，Harbor Judge prompt 尚未核验为项目方原始模板，状态文件仍标记不可提交。`,
+  `- Harbor 六件套：${harborStatus}`,
   '- 核对 `task.toml` 中 artifacts 和 name/org 的项目方口径，完成镜像、Oracle、三模型及人工质检。',
   '- 归档执行不会运行 Oracle、Harbor 自测、三模型评测或人工质检，也不会上传平台；以上状态不得写成通过。',
   '',
@@ -147,11 +190,25 @@ export async function deliver(value:unknown):Promise<void>{
  ].join('\n');
  await mkdir(parent,{recursive:true});
  const snapshotPath=join(parent,'题目快照.json'),checklistPath=join(parent,'交付缺口.md');
+ // 同题重评后来源会变化；先持久保留旧版和新版，再原子更新当前快照。
+ const historyDir=join(parent,'快照历史');
+ await mkdir(historyDir,{recursive:true,mode:0o700});
+ const retain=async(content:string)=>{
+  const path=join(historyDir,`${digest(content)}.json`);
+  try{await writeFile(path,content,{mode:0o600,flag:'wx'});}
+  catch(error){
+   if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;
+   if(await readFile(path,'utf8')!==content)throw new Error('交付历史快照摘要冲突');
+  }
+ };
+ await retain(snapshot);
  try{
   const existing=await readFile(snapshotPath,'utf8');
-  if(digest(existing)!==snapshotHash)throw new Error('已有交付快照与本次数据不一致');
-  await writeFile(checklistPath,checklist,{mode:0o600});
-  return;
+  await retain(existing);
+  if(digest(existing)===snapshotHash){
+   await writeFile(checklistPath,checklist,{mode:0o600});
+   return;
+  }
  }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
  const temporary=join(parent,`.${input.source_digest}.${randomUUID()}.tmp`);
  try{

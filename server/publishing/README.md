@@ -34,3 +34,15 @@
 Work 的 work_legal_v1 新内容由 work-simulation.ts 直接投影作者冻结的逐份成果和检索记录，origin以model=author_snapshot标识；不另读模型配置或调用Agent、不补写标准答案。actual_search_queries/actually_opened_urls为空，避免把作者声明冒充归档新检索事件。旧题仍使用原模拟生成路径；新结构随 DeliveryInput 送入项目脚本。外部 task_id/org 由归档页录入并按 Harbor 格式校验；变更身份会产生新的归档键，不覆盖另一编号下的包。尚未取得平台编号时，归档会明确阻断，不猜造；这类输出仍是内部准备包，不代表外部验收。
 
 未采用的真实查询可以保留空关联和未核验说明，转换轨迹时没有URL就明确显示未取得正文，不生成空链接；实际用于成果或判据的来源未核验仍拒绝转换。这不替代逐处引用关联的专业核对。
+
+## Siriser初次提交适配（2026-10-16，覆盖上文Harbor必填口径）
+
+Work归档不再强制Harbor task_id/org；该可选参数提供时仍校验格式。项目脚本先生成独立Siriser确认稿JSON五件套及ZIP，Harbor另记generated/pending，不能连带阻断五件套。新契约只投影作者冻结成果，generated_at明确未随作者投影提供，不把每次归档时间冒充新生成时间，保证同一输入重复归档稳定。
+
+`readSiriserArchive`与`GET /api/workflows/:id/siriser-zip`只下载当前有效归档包：复核实时达标来源、冻结Skill、题面／Rubric版本、生成脚本摘要绑定、路径和ZIP摘要。题面更新或文件改变须重新归档。该下载不上传平台，不代表外部验收。Harbor转换接口未能承载的判据保留原样并标待处理。
+
+每次新归档把项目、题目、材料来源（材料包/版本/脱敏结果）、来源原件摘要和题目脱敏附件摘要冻结到归档尝试及 `workflow_publication_events`。题目页展示归档/撤回历史；`POST /api/workflows/:id/withdraw-archive` 只撤回当前 ordinal 8 状态，不删除尝试、事件或交付文件。再次归档重新验证当前达标输入并记录新的 `archived` 事件。材料库包的跨项目加载与归档引用由 `/api/material-library/packages/:id/usage` 查询。
+
+Work归档的附件载荷可含documents（脱敏结构），复用readCurrentRedactionForDocx校验当前索引、来源摘要和结构正文投影后传入项目脚本；不得把原始MinerU未脱敏结构传出。Siriser input_files输出DOCX，历史无结构输入保留Markdown兼容路径。此改动不改变候选作答附件、题面或评分输入。
+
+本地API尚未重载时，独立delivery脚本可通过127.0.0.1:3700的现有只读workflow/artifact接口补齐同attempt脱敏索引；校验工作流、正文SHA、结构SHA和正文投影后使用，不直连数据库、不获取原件、不改变归档资格。读取失败或结构部分缺失即停止归档；新API已传结构时不再查询。

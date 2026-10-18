@@ -1,6 +1,6 @@
 ---
 name: ai-distill-workflow
-description: Use when the user asks Codex to inspect ai-distill projects, run intake, redaction, authoring, model answers, scoring, acceptance, archiving, or exports without operating the web page.
+description: Use when the user asks to inspect, execute, or improve ai-distill workflow throughput, worker/API scheduling, long waits, batch processing, authoring, answering, scoring, acceptance, archiving, or Siriser five-piece preparation. Use browser-skill for actual external webpage operations.
 ---
 
 # 工作流操作
@@ -75,6 +75,17 @@ CLI 是工作流客户端，不是新的业务执行器：本机命令覆盖项�
 - 执行失败或确实无法继续的题，在运行记录中标记本轮跳过并说明原因；读取失败或请求结果未知时先核对原任务，不能直接标成执行失败。记录跳过不取消后台任务，不修改数据库状态。
 - 下次用户要求处理失败题时，重新核对服务端状态并创建新的本轮记录，不删除旧记录。本轮不自动重试；同题同一步的同一输入长任务若已明确失败两次，记录并报告，未经新的明确指示不继续重跑。
 - 中断恢复先读原运行记录，再通过 API 读取服务端状态；从首个仍未到终点且未跳过的分组继续，成功步骤不重做。记录不保存数据库状态、分数或重建任务历史；状态变化以服务端当前绑定为准。已完成分组全部跳过，不扩充固定总范围。
+
+### 效率调度
+
+- 每轮把 `GET /api/monitor` 与目标项目的 `workflow-status` 一起读取；前者看 `active_workflow_tasks`、内存派发状态和材料库队列，后者判定每题当前步骤、活动 attempt 和 `ready`。只用活动 attempt 数估计 Agent/API 占用；不要拿全局 waiting 数、页面进度或理论上限代替可执行性。
+- 读取 `GET /api/system/concurrency-settings` 的 `active`、`settings`、`limits`，以运行时返回值为准；不要把某次看到的 Agent 4/API 8 写成永久上限。Agent 与模型 API 是独立消费池，当前代码的安全范围为 Agent 1–4、API 1–8。若一池没有 ready 任务、另一池仍有积压，先核对当前配置、对应 worker 和系统资源；只有活动并发低于该池 `limits` 且确认有可消费任务时，才考虑通过设置 API 提高该池 `settings`，并说明重启影响、取得授权后再执行。空闲 API 槽位不能直接转成 Agent 槽位，也不能越过代码上限；加开同模式 worker仅用于修复消费者缺位或模式错配，不会提高共享槽位上限。不得为填满并发而造任务、重复派发、改模型/阈值或跳过步骤依赖。设置 API 返回 `restart_required=true` 时，需有相应授权再重启服务并复核 `active`，不要只改环境值或盲目多开进程。
+- 按用户优先级和业务顺序给就绪任务排队；一题完成即推进该题的下一 `ready` 步骤。同一轮可把多个已就绪工作流按步骤合并为一次 `run-batch`，但每个 workflow 同一步只派发一次。只在无可派发任务时等待；每次短等（默认 30 秒）后刷新目标组，等待期间继续检查其他独立题目的 ready 步骤，或完成只读核验、ZIP 预检、提交清单等不会与运行任务争用输入的工作。不得修改正在运行 attempt 的输入或复用其旧版本结果。
+- 等待不等于卡住：保留每个 attempt ID 和当前池；若相同 attempt 仍运行就继续等，不重派。若运行数低于池上限但 ready 任务排队，先核 worker 模式、健康状态和并发槽位；若池已满，只做其他独立 ready 工作，不反复轮询同一状态或启动超额消费者。
+- 等待超过本次配置时限或明显失去心跳时，不把`running`当作仍有进展：读同一 attempt 状态、`/api/monitor` 和窄时间窗诊断日志（`attempt_id`）；区分仍在模型执行、Codex超时、worker/数据库连接中断。响应未知时不重派；等原attempt终态后，若为可重试的基础设施失败且仍在授权范围内，再派一次并记下原因。不要把数据库/worker故障误记成题目不合格，也不要无限等状态页。
+- 出题步骤`succeeded`不保证题目可作答：先看当前题`content_status`与`ready_reason`。若为`draft`，把缺口分成“现有材料无法支撑题目核心任务”与“可作为任务内待核事项”的两类；前者报告具体缺失输入并停止盲目重出，后者可在用户授权的修订中把题目边界收窄到可由现有材料完成，并把待核事项、影响和核实路径本身作为交付要求。不能仅为推进流程把`draft`强改为`complete`。
+- Siriser 提交采用“批量预检、逐题提交、单次回读”：先批量核对所有候选题当前版 `accepted`、归档成功、正确等级/场景/外部任务身份；逐包检查 ZIP 五件套结构、DOCX 输入和 SHA-256，并一次性形成“工作流ID—ZIP路径/哈希—平台任务ID/subtask”清单。只有清单完整的题才进入平台操作；逐题打开准确任务页、上传对应 ZIP、正式提交，然后回“我的项目”核对平台题目 ID、提交时间和状态，再写台账与单题回执。不要每题重新扫描全项目、反复下载同一 ZIP、反复查看市场或复用含混的旧标签页。若 Agent 配置报错或无有效输出，不无限等待/重复运行，按页面是否阻断提交与本地 ZIP 核验结果处理并如实记警告。CLI 的 `siriser download` 只下载本地 ZIP，不会上传或提交；平台提交仍须通过 Siriser 页面完成。已存在的提交回执直接复用，不重复领取、上传或登记。
+- 可提速的工作与不能提速的部分分开：批量状态读取、合并就绪派发、预生成 ZIP 校验摘要和提交登记内容可减少重复操作；它们不会缩短单个模型生成时间，也不能替代平台验收。不要把模型等待时间用于不相关且会改变同批输入的操作。
 
 在当前对话的任务进度记录中保留：项目ID、固定题目ID集合、操作类型、目标步骤、逐题当前步骤、全部attempt ID及可取得的模型/答案关联、已完成项与阻断。派发后更新；长任务交接或上下文压缩前将这些字段写入交接摘要，不只留下“运行中”或总体成功数。
 

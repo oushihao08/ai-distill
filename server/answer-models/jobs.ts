@@ -16,13 +16,15 @@ import {authoringQuestion,buildAnswerInput,buildAnswerMessage,inputDigest,matche
 import {QwenError,type QwenAnswer} from './qwen';
 import {DomesticError} from './domestic';
 import {resolveAnswerConfig,createAnswerClient,type ResolvedAnswerConfig} from './dispatch';
-import type {AnswerRequest} from './provider';
+import type {AnswerRequest,AnswerResult} from './provider';
 import {answerModelSetDigest,readProjectModelSet,type RegisteredAnswerModel} from './model-set';
 import {DEFAULT_ANSWER_GENERATION_POLICY,answerProviderConfigFromStepConfig,isQualifiedLongGenerationTimeout,readAnswerGenerationPolicyFromStepConfig,resolveAnswerCallSettings,resolveAnswerGenerationPolicy} from './generation-policy';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import type {AnswerStepModelSummary,AnswerStepResult} from '../../shared/workflow-results';
 import {SYSTEM_STEP_PROMPTS} from '../../shared/step-prompts';
-const activeWorkflow="SELECT w.project_id,(SELECT p.local_skill_path FROM ai_distill.projects p WHERE p.id=w.project_id) AS local_skill_path FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) FOR UPDATE OF w";
+import {readQuestionMaterials} from '../question-materials';
+import type {QuestionMaterialOrigin} from '../../shared/material-library';
+const activeWorkflow="SELECT w.project_id,(SELECT p.local_skill_path FROM ai_distill.projects p WHERE p.id=w.project_id) AS local_skill_path,(SELECT p.material_backend FROM ai_distill.projects p WHERE p.id=w.project_id) AS material_backend FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) FOR UPDATE OF w";
 async function currentQuestion(db:PoolClient,id:string){
  try {
   const row=(await db.query("SELECT a.id,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[id])).rows[0];
@@ -57,12 +59,20 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   if(activeTarget.some((row:any)=>row.execution_target!==executionTarget))throw new HTTPException(409,{message:'当前作答任务由另一执行位置处理'});
   if(remoteRequestKey&&activeTarget.length)throw new HTTPException(409,{message:'当前已有作答任务；使用原请求标识查询，或等待完成后用新标识提交'});
   const question=await currentQuestion(db,id);
-  const artifacts=await db.query("SELECT ar.id,ar.kind,ar.sha256,ar.storage_path,ar.content FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 WHERE ar.workflow_id=$1 AND ar.id=ANY($2::uuid[]) AND ar.kind='redacted_markdown' AND a.ordinal=9 AND a.status='succeeded' AND s.status='succeeded'",[id,question.attachment_ids]);
-  const sources=[];for(const artifact of artifacts.rows)sources.push({...artifact,text:await readAnswerAttachment(root,artifact)});
+  let sources:any[]=[],materialOrigin:QuestionMaterialOrigin|undefined;
+  if(workflow.material_backend==='library_v1'){
+   const source=await readQuestionMaterials(db,id);
+   if(source.origin.kind!=='library_v1'||JSON.stringify(question.attachment_ids)!==JSON.stringify(source.attachments.map(item=>item.id)))throw new AnswerInputError('题目附件与 library_v1 私有快照不一致');
+   materialOrigin=source.origin;
+   sources=source.attachments.map(item=>({id:item.id,kind:'redacted_markdown',sha256:item.sha256,text:item.content}));
+  }else{
+   const artifacts=await db.query("SELECT ar.id,ar.kind,ar.sha256,ar.storage_path,ar.content FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 WHERE ar.workflow_id=$1 AND ar.id=ANY($2::uuid[]) AND ar.kind='redacted_markdown' AND a.ordinal=9 AND a.status='succeeded' AND s.status='succeeded'",[id,question.attachment_ids]);
+   for(const artifact of artifacts.rows)sources.push({...artifact,text:await readAnswerAttachment(root,artifact)});
+  }
   const input=buildAnswerInput({...question,answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}},sources);
   const rawStepConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5',[workflow.project_id])).rows[0]?.config??{};
   const systemPrompt=typeof rawStepConfig.prompt==='string'&&rawStepConfig.prompt.trim()?rawStepConfig.prompt:SYSTEM_STEP_PROMPTS[5];
-  const answerInput={...input,system_prompt:systemPrompt};
+  const answerInput={...input,system_prompt:systemPrompt,...(materialOrigin?{material_origin:materialOrigin}:{})};
   const snapshot={...answerInput,question_attempt_id:question.question_attempt_id,input_digest:inputDigest(answerInput)};
   const workflowConfig=validateWorkflowConfig(rawStepConfig.workflow);
   const needsHooks=!!(workflowConfig?.hooks.before.length||workflowConfig?.hooks.after.length);
@@ -72,6 +82,7 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   const hookDigest=hooks?createHash('sha256').update(canonicalJson(hooks)).digest('hex'):undefined;
   const generationPolicy=readAnswerGenerationPolicyFromStepConfig(rawStepConfig),overrides=answerProviderConfigFromStepConfig(rawStepConfig);
   const selected=await readProjectModelSet(db,workflow.project_id);const hasModelSet=selected.length>0;
+  if(executionTarget==='server'&&selected.some(model=>model.config.provider==='codex'))throw new HTTPException(409,{message:'Codex Agent 作答只支持本机执行'});
   const models:RegisteredAnswerModel[]=selected.length?selected:[{model_id:'',name:'',minimum_score:0,config:resolveAnswerConfig(overrides)}];
   const modelSetDigest=answerModelSetDigest(models);
   const modelSet=models.map(({model_id,name,minimum_score,config})=>({model_id,name,minimum_score,config}));
@@ -99,7 +110,10 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
 async function matchesQuestion(db:PoolClient,job:any){
  try{
   const current=await currentQuestion(db,job.workflow_id);
-  return (!job.input.presentation||canonicalJson(current.presentation)===canonicalJson(job.input.presentation))&&current.question_attempt_id===job.input.question_attempt_id&&current.question_version===job.input.question_version&&current.question===job.input.question&&JSON.stringify(current.attachment_ids)===JSON.stringify(job.input.attachments.map((a:any)=>a.id));
+  const originMatches=job.input.material_origin
+   ?canonicalJson((await readQuestionMaterials(db,job.workflow_id)).origin)===canonicalJson(job.input.material_origin)
+   :true;
+  return originMatches&&(!job.input.presentation||canonicalJson(current.presentation)===canonicalJson(job.input.presentation))&&current.question_attempt_id===job.input.question_attempt_id&&current.question_version===job.input.question_version&&current.question===job.input.question&&JSON.stringify(current.attachment_ids)===JSON.stringify(job.input.attachments.map((a:any)=>a.id));
  }catch(error){if(error instanceof AnswerInputError)return false;throw error;}
 }
 async function matchesModelSet(db:PoolClient,job:any){
@@ -129,12 +143,13 @@ async function refreshAnswerStep(db:PoolClient,job:any){
  * 领取一个当前版本的单模型作答任务，校验冻结输入后调用对应供应商并保存完整答案及 usage。
  * 发布前再次核对题面、附件、模型集合和活动尝试，防止过期响应覆盖当前步骤状态。
  */
-export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRequest<ResolvedAnswerConfig>)=>Promise<QwenAnswer>=createAnswerClient().answer,signal?:AbortSignal,workerMode:StageWorkerMode='all',executionTarget:'local'|'server'='local'){
+export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRequest<ResolvedAnswerConfig>)=>Promise<AnswerResult>=createAnswerClient().answer,signal?:AbortSignal,workerMode:StageWorkerMode='all',executionTarget:'local'|'server'='local',providerExecution:'api'|'codex'|'all'='api'){
  const affinity=stageHookAffinitySql(workerMode);
+ const providerAffinity=providerExecution==='all'?'TRUE':providerExecution==='codex'?"a.config->>'provider'='codex'":"COALESCE(a.config->>'provider','qwen')<>'codex'";
  const db=await pool.connect();let job:any,staleRows:any[]=[];
  try{
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,a.config,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=5 AND a.execution_target=$1 AND ${affinity} AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget]);
+  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,a.config,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=5 AND a.execution_target=$1 AND ${providerAffinity} AND ${affinity} AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget]);
   for(const row of stale.rows){
    const hookInterrupted=await recoverInterruptedStageHooks(db,row);
    const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='作答进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);
@@ -144,7 +159,7 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
    const row=staleRows.find(item=>item.workflow_id===workflowId)!;
    if(await matchesQuestion(db,row)&&await matchesModelSet(db,row))await refreshAnswerStep(db,row);
   }
-  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.execution_target=$1 AND ${affinity} AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[executionTarget])).rows[0];
+  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.execution_target=$1 AND ${providerAffinity} AND ${affinity} AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[executionTarget])).rows[0];
   if(!job){await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'answer',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:5,attempt_id:row.id,operation:'answer'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false;}
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=5",[job.workflow_id]);
@@ -160,18 +175,19 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
  let wrote=false;
  try{
   // Validate the stored snapshot before dispatch, then check current source again at publication.
-  const packaged:AnswerPackage={question_version:job.input.question_version,question:job.input.question,materials:job.input.materials,attachments:job.input.attachments,...(typeof job.input.system_prompt==='string'?{system_prompt:job.input.system_prompt}:{}),...(job.input.presentation?{presentation:job.input.presentation}:{})};
+  const packaged:AnswerPackage={question_version:job.input.question_version,question:job.input.question,materials:job.input.materials,attachments:job.input.attachments,...(typeof job.input.system_prompt==='string'?{system_prompt:job.input.system_prompt}:{}),...(job.input.presentation?{presentation:job.input.presentation}:{}),...(job.input.material_origin?{material_origin:job.input.material_origin}:{})};
   if(!matchesInputDigest(packaged,job.input.input_digest))throw new AnswerInputError('作答输入指纹不一致，未发送模型请求');
   if(job.input.hooks&&job.input.hook_digest!==createHash('sha256').update(canonicalJson(job.input.hooks)).digest('hex'))throw new AnswerInputError('项目钩子快照已变化');
   const before=await pool.connect();try{await before.query('BEGIN');const w=(await before.query(activeWorkflow,[job.workflow_id])).rows[0];if(!w||!await matchesQuestion(before,job)||!await matchesModelSet(before,job))throw new AnswerInputError('题目或项目模型配置已变化');await before.query('COMMIT');}catch(error){await before.query('ROLLBACK');throw error;}finally{before.release();}
   const generationPolicy=resolveAnswerGenerationPolicy(job.input.answer_generation_policy);
   const callSettings=resolveAnswerCallSettings(generationPolicy);
   const hookContext={pool,attempt_id:job.id,workflow_id:job.workflow_id,stage:'answer' as const,binding_digest:createHash('sha256').update(canonicalJson({input:job.input.input_digest,config:job.config,generation_policy:generationPolicy})).digest('hex'),input:{question:buildAnswerMessage(packaged),materials:packaged.materials},hooks:job.input.hooks,signal};
-  const result=await executeWithStageHooks({...hookContext,runMain:()=>runExternalCall({attempt_id:job.id,operation:'answer'},call_id=>answer({config:resolveAnswerConfig(job.config),question:buildAnswerMessage(packaged),materials:packaged.materials,system_prompt:job.input.system_prompt,signal,call_id,timeout_ms:callSettings.timeout_ms,...(callSettings.observe_reasoning?{observe_reasoning:true}:{})})),outputForHooks:value=>({text:value.text})});
+  const answerConfig=resolveAnswerConfig(job.config),attemptDirectory=join(resolve(root),job.workflow_id,job.id);
+  const result=await executeWithStageHooks({...hookContext,runMain:()=>runExternalCall({attempt_id:job.id,operation:'answer'},call_id=>answer({config:answerConfig,question:buildAnswerMessage(packaged),materials:packaged.materials,system_prompt:job.input.system_prompt,signal,call_id,timeout_ms:callSettings.timeout_ms,...(answerConfig.provider==='codex'?{directory:attemptDirectory}:{}),...(callSettings.observe_reasoning?{observe_reasoning:true}:{})})),outputForHooks:value=>({text:value.text})});
   const directory=join(resolve(root),job.workflow_id,job.id);await mkdir(directory,{recursive:true});
   const bytes=Buffer.from(result.text);const path=join(directory,'answer.txt');wrote=true;logEvent('file.write.started',{level:'info',file_kind:'model_answer',output_bytes:bytes.length});await writeFile(path,bytes,{mode:0o600});logEvent('file.write.completed',{level:'info',file_kind:'model_answer',output_bytes:bytes.length});
   const answer_sha256=createHash('sha256').update(bytes).digest('hex');
-  const publication={...result,provider:job.config.provider??'qwen',mode:job.config.enable_thinking===undefined?'provider_default':job.config.enable_thinking?'thinking_enabled':'thinking_disabled',model_id:job.input.model_id??null,model_name:job.input.model_name??null,answer_sha256,input_digest:job.input.input_digest,question_version:job.input.question_version,question_attempt_id:job.input.question_attempt_id,tools:[],output_mode:'text',execution_steps:null,...(job.input.presentation?{answer_presentation:job.input.presentation}:{})};
+  const publication={...result,provider:answerConfig.provider??'qwen',mode:result.execution_mode==='agent'?`agent:${result.reasoning_effort??'configured'}`:job.config.enable_thinking===undefined?'provider_default':job.config.enable_thinking?'thinking_enabled':'thinking_disabled',model_id:job.input.model_id??null,model_name:job.input.model_name??null,answer_sha256,input_digest:job.input.input_digest,question_version:job.input.question_version,question_attempt_id:job.input.question_attempt_id,output_mode:'text',execution_steps:null,...(job.input.presentation?{answer_presentation:job.input.presentation}:{})};
   const tx=await pool.connect();
   try{
    await tx.query('BEGIN');

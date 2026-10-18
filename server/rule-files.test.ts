@@ -5,7 +5,7 @@ import {test,expect,afterEach} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,readFile,rm,symlink,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot,changeRuleFile,readRuleFile} from './rule-files';
+import {scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot,changeRuleFile,readRuleFile,resolveRuleWorkspacePaths} from './rule-files';
 import {configureLogger} from './logging';
 const roots:string[]=[];
 afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
@@ -18,6 +18,10 @@ async function fixture(){
  await writeFile(join(root,'project.json'),JSON.stringify({assessment:{rubric:'binary_equal_weight'},unresolved:[{id:'external-eligibility',detail:'资格待核'}]}));
  return{root,skill:join(root,'skill')};
 }
+test('library-backed projects use their explicit workspace instead of deriving it from a material directory',async()=>{
+ const {root,skill}=await fixture();
+ expect(await resolveRuleWorkspacePaths({workspace_path:root,local_skill_path:skill})).toMatchObject({workspace_path:root,materials_path:join(root,'materials')});
+});
 test('rule inventory covers the whole skill package and keeps metadata separate from bodies',async()=>{
  const {root,skill}=await fixture();const result=await scanRuleWorkspace(root,skill);
  expect(result.files.map(f=>f.path)).toEqual(['materials/标准.md','project.json','skill/SKILL.md','skill/references/rule.md']);

@@ -59,3 +59,10 @@ export const DEFAULT_REDACTION_PROMPT = `你将对一份由OCR扫描得到的法
 export function getStepDefinition(key: string) {
   return STEP_REGISTRY.find(step => step.key === key);
 }
+
+/** 返回指定项目后端和工作流类型适用的可见步骤，不更改稳定 ordinal。 */
+export function getWorkflowStepDefinitions(materialBackend: 'legacy' | 'library_v1', workflowKind: 'question' | 'material_package' = 'question') {
+  if (workflowKind === 'material_package') return STEP_REGISTRY.filter(step => step.visible && (step.ordinal === 1 || step.ordinal === 9));
+  if (materialBackend === 'library_v1') return STEP_REGISTRY.filter(step => step.visible && step.ordinal >= 4 && step.ordinal <= 8);
+  return STEP_REGISTRY.filter(step => step.visible);
+}

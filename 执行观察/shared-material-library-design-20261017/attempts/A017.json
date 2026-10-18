@@ -1,0 +1,69 @@
+{
+  "id": "A017",
+  "item_id": "implementation",
+  "stage_id": "I7-verification",
+  "previous_attempt_id": "A016",
+  "status": "succeeded",
+  "started_at": "2026-10-18T08:42:18+08:00",
+  "finished_at": "2026-10-18T08:42:18+08:00",
+  "inputs": [
+    {
+      "ref": "127.0.0.1:3700/api/health",
+      "version": "live-read-only-response",
+      "sha256": null
+    },
+    {
+      "ref": "127.0.0.1:3700/api/monitor",
+      "version": "live-read-only-response",
+      "sha256": null
+    },
+    {
+      "ref": "server/app.ts",
+      "version": "current-worktree",
+      "sha256": null
+    },
+    {
+      "ref": "migrations/043_publication_provenance.sql",
+      "version": "current-worktree",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "scope": "恢复任务对齐；只读探测当前 API/worker 与材料库路由，不写业务数据",
+    "mutating_requests": false,
+    "database_connection_attempted": false,
+    "service_restart_attempted": false
+  },
+  "changes_from_previous": [],
+  "external_ids": {},
+  "environment": {
+    "target": "local-worktree",
+    "api_port": 3700,
+    "api_pid": 19252,
+    "worker_pid": 34520
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "health",
+      "result": "passed",
+      "evidence": "GET /api/health 返回 database=connected、schema=ready、phase=2。该进程启动早于 043 文件创建时间，因此不能证明它曾检查/应用 043。"
+    },
+    {
+      "kind": "material_library_read_api",
+      "result": "passed",
+      "evidence": "GET /api/material-library/packages?page=1&page_size=1 返回 200，total_count=0。只证明当前进程上的该只读路由和数据库查询可用。"
+    },
+    {
+      "kind": "runtime_source_alignment",
+      "result": "stale_or_unproven",
+      "evidence": "API PID 19252 启动于 2026-10-17 23:06:42；当前 server/app.ts 修改时间 23:58:33，043 修改时间 23:57:38。GET /api/monitor 缺少当前源码会返回的 material_library 字段。故不能把当前响应视作工作树最新版 API 验收。worker 正在运行，但其材料库队列状态也无法由此 API 监控响应证明。"
+    },
+    {
+      "kind": "authorization_boundary",
+      "result": "blocked",
+      "evidence": "要验证工作树最新版需重启/替换现有服务并启动前端开发服务；现行 AGENTS 明确禁止未经授权重启服务/运行 dev server。数据库连接目标是否为隔离测试库也无法从允许的只读响应确认，故未做写操作或迁移。"
+    }
+  ],
+  "error": null
+}

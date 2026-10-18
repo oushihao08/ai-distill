@@ -1,0 +1,57 @@
+{
+  "id": "A011",
+  "item_id": "l3-e525",
+  "stage_id": "authoring",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T08:47:19.791Z",
+  "finished_at": "2026-10-18T08:52:33.625Z",
+  "inputs": [
+    {
+      "ref": "b4424018-bcda-4cdd-9f34-f03473e7fbca",
+      "version": 1,
+      "sha256": "2868b236238440bc4e8646b2f3a7b0098a8b2881a112ae32217abe6a0dac470d"
+    }
+  ],
+  "configuration": {
+    "target_level": "L3",
+    "scenario": "LS03 财产线索调查与保全申请",
+    "role_perspective": null,
+    "question_tags": [
+      "L3"
+    ],
+    "workload": "local"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "attempt_id": "e9d2ff15-f469-4e74-bff5-78ac1e33aafc",
+    "workflow_id": "b4424018-bcda-4cdd-9f34-f03473e7fbca"
+  },
+  "environment": {
+    "target": "local",
+    "runtime_version": null
+  },
+  "artifacts": [
+    {
+      "kind": "authored_question",
+      "attempt_id": "e9d2ff15-f469-4e74-bff5-78ac1e33aafc",
+      "workflow_id": "b4424018-bcda-4cdd-9f34-f03473e7fbca"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "api_status",
+      "result": "出题attempt已由工作流API接收，当前状态waiting，尚未被worker领取；保留原attempt等待，不重复派发。",
+      "evidence": "POST /api/workflows/b4424018-bcda-4cdd-9f34-f03473e7fbca/author?wait_ms=0；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+    },
+    {
+      "kind": "api_status",
+      "result": "出题attempt终态succeeded，但题目content_status=draft；步骤5被API以“Work题目仍为草稿”阻止。",
+      "evidence": "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=b4424018-bcda-4cdd-9f34-f03473e7fbca"
+    }
+  ],
+  "error": {
+    "reason_code": "content_draft",
+    "summary": "题目结果因现行保全程序法条未核验而标记draft；步骤4执行成功但不能进入作答。"
+  }
+}

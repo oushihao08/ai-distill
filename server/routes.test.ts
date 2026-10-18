@@ -38,7 +38,7 @@ test('Work archive passes only validated external identity to the archive handle
  for(const identity of [{task_id:'12',org:'org-legal'},{task_id:'LAW-012',org:'Uppercase'},{task_id:'LAW-012',org:'org-legal',extra:'x'}])expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:identity})})).status).toBe(400);
 });
 test('step-eight publication has an execution route and rejects incomplete prerequisites',async()=>{
- const app=setup(sql=>sql.startsWith('SELECT w.project_id')?{rows:[{project_id:id}],rowCount:1}:empty);
+ const app=setup(sql=>sql.startsWith('SELECT workflow_kind,source_workflow_id')?{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1}:sql.startsWith('SELECT w.project_id')?{rows:[{project_id:id}],rowCount:1}:empty);
  expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST'})).status).toBe(409);
 });
 test('authored question public package can be downloaded through the artifact whitelist',async()=>{
@@ -170,10 +170,10 @@ test('unexpected database failures keep internal details out of API responses',a
 });
 test('extraction API rejects missing workflow and incomplete intake',async()=>{
  expect((await setup(()=>empty).request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(404);
- const app=setup(sql=>sql.startsWith('SELECT id')?{rows:[{}],rowCount:1}:sql.startsWith('SELECT ordinal')?{rows:[{status:'failed'}],rowCount:1}:empty);expect((await app.request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(409);
+ const app=setup(sql=>sql.startsWith('SELECT workflow_kind,source_workflow_id')?{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1}:sql.startsWith('SELECT id')?{rows:[{}],rowCount:1}:sql.startsWith('SELECT ordinal')?{rows:[{status:'failed'}],rowCount:1}:empty);expect((await app.request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(409);
 });
 test('authoring route refuses to enqueue when the current redacted artifact is missing',async()=>{
- const calls:string[]=[];const app=setup(sql=>{calls.push(sql);if(sql.startsWith('SELECT w.*,p.name AS project_name'))return{rows:[{project_id:id,title:'题目1',source_key:'题目1',source_manifest:[],project_name:'项目',local_skill_path:'/unused/skill',material_root:'/unused',ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};if(sql.includes("ordinal=9 AND status='succeeded'"))return{rows:[{id:'22222222-2222-4222-8222-222222222222'}],rowCount:1};return empty;});
+ const calls:string[]=[];const app=setup(sql=>{calls.push(sql);if(sql.startsWith('SELECT workflow_kind,source_workflow_id'))return{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1};if(sql.startsWith('SELECT w.*,p.name AS project_name'))return{rows:[{project_id:id,title:'题目1',source_key:'题目1',source_manifest:[],project_name:'项目',local_skill_path:'/unused/skill',material_root:'/unused',ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};if(sql.includes("ordinal=9 AND status='succeeded'"))return{rows:[{id:'22222222-2222-4222-8222-222222222222'}],rowCount:1};return empty;});
  const response=await app.request(`/api/workflows/${id}/author`,{method:'POST'});
  expect(response.status).toBe(409);expect(await response.json()).toMatchObject({error:'当前版本没有可用于出题的脱敏文本'});expect(calls.some(sql=>sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
 });

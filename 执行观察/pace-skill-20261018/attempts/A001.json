@@ -1,0 +1,40 @@
+{
+  "id": "A001",
+  "item_id": "skill",
+  "stage_id": "baseline",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T08:57:15.274044+08:00",
+  "finished_at": "2026-10-18T08:57:15.274044+08:00",
+  "inputs": [
+    {
+      "ref": "五组不加载新Skill的A-E场景",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "mode": "paper_scenarios",
+    "skill_loaded": false
+  },
+  "external_ids": {
+    "agent_task": "/root/pace_baseline"
+  },
+  "environment": {
+    "target": "isolated subagent; no business tools"
+  },
+  "artifacts": [
+    {
+      "ref": "evidence/baseline.md",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "behavior_review",
+      "result": "missing_boundaries",
+      "evidence": "A未限定替换执行器的授权；C同时推进其他网页包未说明共享表单隔离。不是实际平台失败。"
+    }
+  ],
+  "error": null
+}

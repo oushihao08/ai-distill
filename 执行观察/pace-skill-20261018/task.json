@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "id": "pace-skill-20261018",
+  "title": "Pace全局提效Skill实施",
+  "goal_ref": "当前会话：实施；上一轮六项能力设计及任务清单",
+  "scope": "创建全局pace、轻量接入goal-work、纸面行为与格式核验；不改业务并发或执行外部提交；2026-10-18用户追加授权实际隔离测试，对照不加载/加载Pace执行同一组合成ZIP准备任务，不上传真实平台",
+  "completion_criteria": [
+    "全局pace入口及UI元数据存在且格式有效",
+    "规则覆盖路径选择、依赖编排、条件重排、并发和等待、领域操作及结果复用",
+    "goal-work可发现pace但简单任务不强制增加规划",
+    "独立场景核验并记录限制；不声称真实提速"
+  ],
+  "items": [
+    {
+      "id": "skill",
+      "title": "Pace规则、集成及验证",
+      "plan_ref": "当前会话已定任务清单",
+      "stages": [
+        {
+          "id": "baseline",
+          "title": "不加载Skill的纸面基线",
+          "state": "succeeded",
+          "attempt_id": "A001",
+          "outcome": "基线识别一般风险，但未限定执行器替换授权及共享网页写入隔离",
+          "observed_at": "2026-10-18T08:57:15.274044+08:00",
+          "evidence": [
+            "evidence/baseline.md"
+          ]
+        },
+        {
+          "id": "implementation",
+          "title": "落地与验证",
+          "state": "succeeded",
+          "attempt_id": "A002",
+          "outcome": "Skill及集成完成；格式有效，8组纸面场景和幂等反例核验，非实际提速验收",
+          "observed_at": "2026-10-18T08:58:20.275094+08:00",
+          "evidence": [
+            "evidence/format.md",
+            "evidence/forward.md"
+          ]
+        },
+        {
+          "id": "actual",
+          "title": "实际隔离文件对照与幂等测试",
+          "state": "succeeded",
+          "attempt_id": "A003",
+          "outcome": "真实隔离文件测试及复跑正确，CRC损坏包拒绝；未证明实际提速",
+          "observed_at": "2026-10-18T16:43:20.241749+08:00",
+          "evidence": [
+            "evidence/actual/结果.md",
+            "evidence/actual/oracle.json"
+          ]
+        }
+      ]
+    }
+  ],
+  "next_actions": [],
+  "updated_at": "2026-10-18T16:43:20.241749+08:00"
+}

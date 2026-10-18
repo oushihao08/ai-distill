@@ -1,6 +1,6 @@
 /**
- * 职责：后台进程入口：按 `WORKER_MODE` 启动材料、API 模型或本地 Agent 队列，并监控资源与派发。
- * 关键方法与用途：进程入口注册持久队列消费者；`api` 与 `local` 模式可把云端 API 任务和本地任务分开。
+ * 职责：后台进程入口：按 `WORKER_MODE` 启动 legacy/材料库、API 模型或本地 Agent 队列，并监控资源与派发。
+ * 关键方法与用途：进程入口注册公平轮转的持久队列消费者；新材料库任务领取前使用对应 worker/API/Agent 槽位。
  * 使用场景：通过 `bun run server/worker.ts` 单独启动；默认 `all` 保持既有本地行为。
  */
 import {storageDirectory} from './paths';
@@ -19,26 +19,28 @@ import {runNextAuthoring} from './authoring/jobs';
 import {stageHookAffinitySql,type StageWorkerMode} from './workflow-hook-jobs';
 import {runNextHook} from './workflow-hook-worker';
 import {runNextRemoteMaterialOperation} from './remote-material-operations';
+import {hasLibraryQueueWork} from './material-library/jobs';
+import {runNextLibraryJob} from './material-library/runner';
 import {configureAgentCredentialHome,readAgentCredentialHome} from './agent/config';
 import {closeAgentConcurrencyGate,getAgentConcurrencyGate,readConcurrencySettings} from './concurrency';
 import {classifyLogError,configureLogger,installFatalErrorLogging,logEvent} from './logging';
 // The probe is a superset of each queue's claim predicate. Claiming and stale recovery
 // remain protected by their existing transactions and locks.
-async function hasModelApiQueueWork(pool:ReturnType<typeof createPool>,mode:StageWorkerMode='all'){
+async function hasModelApiQueueWork(pool:ReturnType<typeof createPool>,mode:StageWorkerMode='all',target:'local'|'server'='local'){
  const affinity=stageHookAffinitySql(mode);
  const result=await pool.query(`SELECT (
-  EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.ordinal=5 AND ${affinity} AND (a.status='waiting' OR (a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes')))
+  EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.ordinal=5 AND COALESCE(a.config->>'provider','qwen')<>'codex' AND ${affinity} AND (a.status='waiting' OR (a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes')))
   OR EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.ordinal=6 AND a.config->>'provider'='api' AND ${affinity} AND (a.status='waiting' OR (a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes')))
  ) AS pending`);
- return result.rows[0]?.pending===true;
+ return result.rows[0]?.pending===true||await hasLibraryQueueWork(pool,'api',target);
 }
 async function hasAgentQueueWork(pool:ReturnType<typeof createPool>){
  const result=await pool.query(`SELECT (
   EXISTS(SELECT 1 FROM ai_distill.project_skill_attempts a WHERE a.status='waiting' OR (a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes'))
-  OR EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE (a.ordinal=4 OR (a.ordinal=6 AND COALESCE(a.config->>'provider','codex')='codex')) AND (a.status='waiting' OR (a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes')))
+  OR EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE (a.ordinal=4 OR (a.ordinal=5 AND a.execution_target='local' AND a.config->>'provider'='codex') OR (a.ordinal=6 AND COALESCE(a.config->>'provider','codex')='codex')) AND (a.status='waiting' OR (a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes')))
   OR EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.ordinal=9 AND ((a.status='waiting' AND COALESCE(a.config->>'provider','codex')='codex') OR (a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes')))
  ) AS pending`);
- return result.rows[0]?.pending===true;
+ return result.rows[0]?.pending===true||await hasLibraryQueueWork(pool,'agent','local');
 }
 const logger=configureLogger({root:storageDirectory(),service:'worker'});
 installFatalErrorLogging();
@@ -62,14 +64,26 @@ logEvent('service.started',{level:'info',component:'task_worker',pid:process.pid
 try {
  await monitor.start();
  const dispatchAgentQueue=createFairQueueHandler([
+  ()=>runNextLibraryJob(pool,root,'agent','local',controller.signal),
+  ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,'all','local','codex'),
   ()=>runNextProjectSkill(pool,root,undefined,controller.signal),
   ()=>runNextRedaction(pool,root,controller.signal,undefined,'codex','local'),
   ()=>runNextAuthoring(pool,root,undefined,controller.signal),
   ()=>runNextScore(pool,root,undefined,controller.signal),
  ]);
  const dispatchApiQueue=createFairQueueHandler([
-  ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,workerMode as StageWorkerMode,materialExecutionTarget as 'local'|'server'),
+  ()=>runNextLibraryJob(pool,root,'api',materialExecutionTarget as 'local'|'server',controller.signal),
+  ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,workerMode as StageWorkerMode,materialExecutionTarget as 'local'|'server','api'),
   ()=>runNextScore(pool,root,runIndependentApiScore,controller.signal,undefined,'api',workerMode as StageWorkerMode),
+ ]);
+ const dispatchMaterialQueue=createFairQueueHandler([
+  ()=>runNextIntake(pool,root,undefined,controller.signal,materialExecutionTarget as 'local'|'server'),
+  ()=>runNextExtraction(pool,root,undefined,undefined,controller.signal,materialExecutionTarget as 'local'|'server'),
+  ()=>runNextLibraryJob(pool,root,'internal',materialExecutionTarget as 'local'|'server',controller.signal),
+ ]);
+ const dispatchServerRedactionApiQueue=createFairQueueHandler([
+  ()=>runNextRedaction(pool,root,controller.signal,undefined,'api','server'),
+  ()=>runNextLibraryJob(pool,root,'api','server',controller.signal),
  ]);
  const pools:Promise<void>[]=[];
  if(workerMode==='all'||workerMode==='local')pools.push(runWorkerPool(
@@ -77,15 +91,7 @@ try {
   {component:'workflow_hooks',concurrency:1,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('项目附加钩子执行失败，请查看对应记录');}},
  ));
  if(workerMode==='materials'||workerMode!=='api'||materialExecutionTarget==='server')pools.push(runWorkerPool(
-  async worker => {
-   try {
-    const root=storageDirectory();
-    // Reserve a preferred lane for each available stage, with fallback when its queue is empty.
-    return worker % 2 === 0
-     ? await runNextIntake(pool,root,undefined,controller.signal,materialExecutionTarget as 'local'|'server') || await runNextExtraction(pool,root,undefined,undefined,controller.signal,materialExecutionTarget as 'local'|'server')
-     : await runNextExtraction(pool,root,undefined,undefined,controller.signal,materialExecutionTarget as 'local'|'server') || await runNextIntake(pool,root,undefined,controller.signal,materialExecutionTarget as 'local'|'server');
-   } catch(error) { throw error; }
-  },
+  async()=>dispatchMaterialQueue(),
   {
    component:'materials',
    concurrency:materialConcurrency,
@@ -99,19 +105,19 @@ try {
  // local 仅在同一 API 并发池内处理带本地脚本的主任务，api 则排除它们。
  if(workerMode!=='materials'&&workerMode!=='server')pools.push(runWorkerPool(
   async()=>{try{
-   if(!await hasModelApiQueueWork(pool,workerMode as StageWorkerMode))return false;
+   if(!await hasModelApiQueueWork(pool,workerMode as StageWorkerMode,materialExecutionTarget as 'local'|'server'))return false;
    if(controller.signal.aborted)return false;
    return await dispatchApiQueue();
   }catch(error){throw error;}},
   {component:'model_api',concurrency:concurrency.llmApi,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('API 任务调度失败，稍后重试；未输出凭证或材料内容');}},
  ));
  if(workerMode!=='local'&&materialExecutionTarget==='server')pools.push(runWorkerPool(
-  ()=>runNextRedaction(pool,root,controller.signal,undefined,'api','server'),
+  ()=>workerMode==='server'||workerMode==='materials'?dispatchServerRedactionApiQueue():runNextRedaction(pool,root,controller.signal,undefined,'api','server'),
   {component:'redaction_api',concurrency:concurrency.llmApi,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('API 脱敏调度失败，稍后重试；未输出凭证或材料内容');}},
  ));
  if(workerMode==='server'){
   const dispatchRemoteApiQueue=createFairQueueHandler([
-   ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,'api','server'),
+   ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,'api','server','api'),
   ]);
   pools.push(runWorkerPool(
    async()=>{try{

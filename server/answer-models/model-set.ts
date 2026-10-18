@@ -5,6 +5,7 @@
  */
 import {HTTPException} from 'hono/http-exception';
 import {resolveAnswerConfig} from './dispatch';
+import {readConfiguredAgentModelCatalog} from '../agent/config';
 import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 
@@ -31,7 +32,7 @@ export function validateModelSet(raw:unknown):RegisteredAnswerModel[]{
   if(Object.keys(value).some(key=>!['model_id','name','minimum_score','config'].includes(key))||typeof value.model_id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.model_id)||ids.has(value.model_id)||typeof value.name!=='string'||!value.name.trim()||value.name.length>80||(value.minimum_score!==null&&(typeof value.minimum_score!=='number'||!Number.isFinite(value.minimum_score)||value.minimum_score<0||value.minimum_score>100)))throw new HTTPException(400,{message:'模型设置无效或重复'});
   let config:ReturnType<typeof resolveAnswerConfig>;
   try{config=resolveAnswerConfig(value.config,{});}catch{throw new HTTPException(400,{message:'模型端点或模型标识无效'});}
-  const identity=JSON.stringify([config.provider,config.base_url,config.model]);
+  const identity=JSON.stringify([config.provider,'base_url'in config?config.base_url:null,config.model,'reasoning_effort'in config?config.reasoning_effort:null]);
   if(identities.has(identity))throw new HTTPException(400,{message:'同一模型不能重复加入项目'});
   ids.add(value.model_id);identities.add(identity);
   return {model_id:value.model_id,name:value.name.trim(),minimum_score:value.minimum_score,config};
@@ -55,10 +56,31 @@ export async function listAnswerModels(db:Pool,enabledOnly=false){
 export async function registerAnswerModel(db:Pool,raw:unknown){
  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new HTTPException(400,{message:'模型登记须为JSON对象'});
  const value=raw as Record<string,unknown>;
+ if(value.provider==='codex'){
+  if(Object.keys(value).some(key=>!['provider','model','reasoning_effort'].includes(key))||typeof value.model!=='string'||typeof value.reasoning_effort!=='string')throw new HTTPException(400,{message:'Codex模型登记信息无效'});
+  const catalog=await readConfiguredAgentModelCatalog(db);
+  if(!catalog.some(item=>item.slug===value.model&&item.supported_reasoning_levels.some(level=>level.effort===value.reasoning_effort)))throw new HTTPException(400,{message:'所选Codex模型或推理强度不在本机可用目录中'});
+  const config=validateModelSet([{model_id:crypto.randomUUID(),name:`Codex ${value.model} · ${value.reasoning_effort}`,minimum_score:0,config:{provider:'codex',model:value.model,reasoning_effort:value.reasoning_effort}}])[0]!;
+  const id=config.model_id,baseUrl=`codex://local/${encodeURIComponent(value.reasoning_effort)}`;
+  const saved=await db.query(`INSERT INTO ai_distill.system_answer_models(id,name,provider,base_url,model,config)
+   VALUES($1,$2,'codex',$3,$4,$5::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,config.name,baseUrl,config.config.model,JSON.stringify(config.config)]);
+  return saved.rows[0];
+ }
+ if(value.provider==='siliconflow'){
+  if(Object.keys(value).some(key=>!['provider','model'].includes(key))||typeof value.model!=='string'||!value.model.trim())throw new HTTPException(400,{message:'SiliconFlow模型登记信息无效'});
+  const modelId=value.model.trim();
+  const id=crypto.randomUUID();
+  const model=validateModelSet([{model_id:id,name:`SiliconFlow · ${modelId}`,minimum_score:0,config:{provider:'siliconflow',model:modelId}}])[0]!;
+  if(model.config.provider==='codex')throw new HTTPException(400,{message:'SiliconFlow模型配置无效'});
+  const saved=await db.query(`INSERT INTO ai_distill.system_answer_models(id,name,provider,base_url,model,config)
+   VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,model.name,model.config.provider,model.config.base_url,model.config.model,JSON.stringify(model.config)]);
+  return saved.rows[0];
+ }
  if(Object.keys(value).some(key=>key!=='model_id')||typeof value.model_id!=='string'||!value.model_id.trim())throw new HTTPException(400,{message:'请填写OpenRouter模型ID'});
  const modelId=value.model_id.trim();
  const id=crypto.randomUUID();
  const model=validateModelSet([{model_id:id,name:modelId,minimum_score:0,config:{provider:'openrouter',model:modelId}}])[0]!;
+ if(model.config.provider==='codex')throw new HTTPException(400,{message:'OpenRouter模型配置无效'});
  const saved=await db.query(`INSERT INTO ai_distill.system_answer_models(id,name,provider,base_url,model,config)
   VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,model.name,model.config.provider,model.config.base_url,model.config.model,JSON.stringify(model.config)]);
  return saved.rows[0];

@@ -1,0 +1,9 @@
+{
+  "id":"A002","item_id":"real-flow","stage_id":"redact","previous_attempt_id":"A001","status":"failed",
+  "started_at":"2026-10-18T13:45:38+08:00","finished_at":"2026-10-18T13:54:45+08:00",
+  "inputs":[{"ref":"revision 6458c800-d17e-4132-a789-9821494546ae","version":"manifest f82e927b5bc2e6d9276e2f379a10f3b0bc8c144be2b5eed3fbbb0273f5b616fb","sha256":null}],
+  "configuration":{"provider":"siliconflow","model":"deepseek-ai/DeepSeek-V4.1-Flash","request_timeout_ms":180000,"task_timeout_ms":1200000},"changes_from_previous":[],
+  "external_ids":{"job_id":"3163d593-650d-4286-ad7f-7dae3bea6059"},"environment":{"target":"local","runtime_version":null},"artifacts":[],
+  "verification":[{"kind":"api_status","result":"failed","evidence":".storage/verification/doubao-library-20261018/state.json"}],
+  "error":{"kind":"process","code":"api_queue_timeout","message":"材料任务执行失败，请检查处理记录和服务配置","exit_code":null,"http_status":null,"chain":[],"raw_error_ref":"docs/evidence/2026-10-18-doubao-library-real-flow.md","stderr_ref":null,"stdout_ref":null,"stack_ref":null,"capture":"complete","redactions":[],"impact":"未发布可加载的脱敏结果","confirmed_cause":null,"hypotheses":["多次供应商不完整输出与本机API排队超时并存；槽位持有者未从日志确认"],"actions":[]}
+}

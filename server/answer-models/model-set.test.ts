@@ -2,7 +2,7 @@
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import {test,expect} from 'bun:test';
-import {answerModelSetDigest,validateModelSet,readProjectModelSet,saveProjectModelSet} from './model-set';
+import {answerModelSetDigest,validateModelSet,readProjectModelSet,saveProjectModelSet,registerAnswerModel} from './model-set';
 import type {Pool} from 'pg';
 
 const qwen={model_id:'11111111-1111-4111-8111-111111111111',name:'Qwen Plus',minimum_score:8,config:{provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'}} as const;
@@ -12,6 +12,13 @@ test('valid model set has stable registry identities and safe frozen provider co
  expect(validateModelSet([qwen,deepseek])).toEqual([qwen,deepseek]);
  expect(validateModelSet([{...qwen,minimum_score:null}])).toMatchObject([{model_id:qwen.model_id,minimum_score:null}]);
  expect(validateModelSet([{...qwen,name:'GLM',config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'z-ai/glm-5.3-flash'}}])).toMatchObject([{name:'GLM',config:{provider:'openrouter',model:'z-ai/glm-5.3-flash'}}]);
+});
+test('SiliconFlow model registration pins provider endpoint and never stores credentials',async()=>{
+ const inserts:any[]=[];
+ const db={query:async(sql:string,args:any[]=[])=>{if(sql.startsWith('INSERT INTO ai_distill.system_answer_models')){inserts.push({sql,args});return{rowCount:1,rows:[{id:args[0],name:args[1],provider:args[2],base_url:args[3],model:args[4],config:JSON.parse(args[5]),enabled:true}]};}return{rowCount:1,rows:[]};}} as unknown as Pool;
+ const saved=await registerAnswerModel(db,{provider:'siliconflow',model:'Qwen/Qwen3.8-2.4T-A95B'});
+ expect(saved).toMatchObject({provider:'siliconflow',base_url:'https://api.siliconflow.com/v1',model:'Qwen/Qwen3.8-2.4T-A95B'});
+ expect(JSON.stringify(inserts)).not.toContain('siliconflow-fixture');
 });
 test('model-set digest is stable when JSONB reorders nested object keys',()=>{
  const restored=[{config:{model:'qwen/qwen-plus',provider:'qwen' as const,base_url:'https://openrouter.ai/api/v1'},minimum_score:8,name:'Qwen Plus',model_id:qwen.model_id},{model_id:deepseek.model_id,name:'DeepSeek',minimum_score:7,config:{model:'deepseek-chat',base_url:'https://api.deepseek.com',provider:'deepseek' as const}}];

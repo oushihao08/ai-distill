@@ -1,0 +1,28 @@
+{
+  "id": "O002",
+  "kind": "result",
+  "status": "resolved",
+  "title": "实际对照文件测试正确，提速尚未证实",
+  "item_ids": [
+    "skill"
+  ],
+  "attempt_ids": [
+    "A003"
+  ],
+  "facts": [
+    "不加载和加载Pace两组实际6包处理均符合预设结果",
+    "两组实际复跑保持所有源/输出文件SHA及mtime_ns不变",
+    "Pace对必需条目齐全但CRC损坏包拒绝交付",
+    "计时起点不同，不作提速比例比较"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "evidence/actual/结果.md",
+    "evidence/actual/oracle.json"
+  ],
+  "impact": "补充真实文件操作证据，不外推真实模型调度或平台上传效率",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-18T16:43:20.241749+08:00",
+  "updated_at": "2026-10-18T16:43:20.241749+08:00"
+}

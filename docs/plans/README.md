@@ -5,6 +5,7 @@
 
 | 文件 | 用途 |
 | --- | --- |
+| [2026-10-17-shared-material-library-design.md](2026-10-17-shared-material-library-design.md) | 独立材料库、九张新表逐字段字典、项目加载与题目快照、任务/接口、既有模块衔接、实施切换及验收；代码集成中，迁移与真实运行未验证，不迁移旧数据。 |
 | [2026-10-11-cli-pipeline-and-lightweight-wait.md](2026-10-11-cli-pipeline-and-lightweight-wait.md) | 同批逐题推进、CLI轻量等待及一秒状态轮询；实现与定向测试记录，保留完整读取及Codex能力边界。 |
 | [2026-10-11-answer-duration-and-run-followups.md](2026-10-11-answer-duration-and-run-followups.md) | 稳健整改顺序、作者能力与正常流程不退化、配置／自检收口、45分钟证据及免评分分阶段启用、内容对照、回退与验收；实施中，含主目录合入与运行证据及未完成门槛。 |
 | [2026-10-11-codex-workflow-cli-skill.md](2026-10-11-codex-workflow-cli-skill.md) | 将现有入库至归档/导出流程包装为本地 CLI 与 Codex Workflow Skill 的实施计划；复用 API/worker/Agent 执行器，维持显式逐步编排与当前业务边界。 |

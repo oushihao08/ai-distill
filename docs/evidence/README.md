@@ -5,6 +5,8 @@
 
 | 文件 | 格式 | 用途 |
 | --- | --- | --- |
+| [2026-10-18-material-library-reader.md](2026-10-18-material-library-reader.md) | Markdown | 材料库逐文件阅读、对应版本对照、题目归档汇总、共用设置及DOCX中文/表格预览核对；只使用合成数据。 |
+| 2026-10-18-material-library-original.png、2026-10-18-material-library-compare.png、2026-10-18-material-library-usage.png | PNG | 上述界面核对的浏览器截图，由browser-skill生成；只包含合成样张，不手工改图。 |
 | [2026-10-14-material-question-workbench.md](2026-10-14-material-question-workbench.md) | Markdown | 合成 DOCX 的材料包一对多题目、标签冻结、版本快照和 101 题分页验收；明确未运行的模型与归档边界。 |
 | [2026-10-13-redaction-output-validation-audit.md](2026-10-13-redaction-output-validation-audit.md) | Markdown | 脱敏输出校验取舍、题目6最近失败的日志证据边界、v14 扁平协议及161项定向测试；未完成真实模型整卷验收。 |
 | [2026-10-11-cli-pipeline-and-lightweight-wait.md](2026-10-11-cli-pipeline-and-lightweight-wait.md) | Markdown | 同批逐题推进、轻量等待、一秒轮询；38项定向验证通过，完整路由集11项失败的临时基线对照及真实运行验收边界。 |
@@ -87,3 +89,5 @@
 | [rule-workspace-verification.md](rule-workspace-verification.md) | Markdown | 人工记录的调查或验收说明；结论仅限文件注明的日期与范围。 |
 | [source-baseline.json](source-baseline.json) | JSON | 结构化历史记录；结论仅限文件注明的日期与范围。 |
 | [unocss-px-results.json](unocss-px-results.json) | JSON | 结构化历史记录；结论仅限文件注明的日期与范围。 |
+
+- [2026-10-18 豆包材料独立材料库真实流程测试](2026-10-18-doubao-library-real-flow.md)：复制配置与单份真实PDF；入库/提取成功，脱敏失败，后续未执行。

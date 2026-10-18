@@ -106,7 +106,7 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 | 模型与运行 | `models catalog/show`、`attempt show/wait`、`monitor show` | `commands.ts`、`client.ts` | 本机 API；默认 wait 只看元信息，`--full` 才读取结果正文 |
 | 工作流步骤 | `step list`、`step dispatch STEP_KEY` | `commands.ts`、`shared/step-registry.ts` | 本机 API；只派发一个可见稳定步骤，不自动推进 |
 | 批次计划 | `batch create/show/skip` | `batches.ts`、`commands.ts` | 本机 JSON 文件；固定范围，不派发任务、不覆盖服务器状态 |
-| 结果与交付 | `result list/show`、`export list/create/download`、`artifact download` | `commands.ts`、`client.ts` | 本机 API 与显式下载；归档步骤与 Excel 导出分开 |
+| 结果与交付 | `result list/show`、`export list/create/download`、`artifact download`、`siriser download` | `commands.ts`、`client.ts` | 本机 API 与显式下载；`publish_export`归档与Siriser五件套ZIP下载、Excel导出分开；Siriser下载仅取当前有效归档，不上传或提交 |
 | 未达标复核 | `export failed`、`export review` | `failed-export.ts` | 读取当前绑定的题目/答案/评分并写入固定 `assets/未达标题目/`，不改数据库状态 |
 | 远程材料 | `remote material start/run/status/sync` | `remote-materials.ts`、`remote-material-routes.ts`、`remote-material-operations.ts` | SSH 隧道 + 固定 token；服务器执行入库、PDF提取、API脱敏；sync 校验哈希后取回管理副本 |
 | 远程作答 | `remote answer start/run/status` | `remote-answers.ts`、`remote-material-routes.ts`、`answer-models/jobs.ts` | SSH 隧道 + 固定 token；服务器执行 server-owned 作答 attempt；状态查询不返回答案正文 |

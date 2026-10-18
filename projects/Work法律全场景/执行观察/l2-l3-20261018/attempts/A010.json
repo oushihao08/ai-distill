@@ -1,0 +1,40 @@
+{
+  "id": "A010",
+  "item_id": "l3-e525",
+  "stage_id": "redaction",
+  "previous_attempt_id": "A009",
+  "status": "succeeded",
+  "started_at": "2026-10-18T08:10:30.389Z",
+  "finished_at": "2026-10-18T08:10:57.235Z",
+  "inputs": [
+    {
+      "ref": "e525eb15-7b5f-435e-a34e-10e42ebdce77",
+      "version": 9,
+      "sha256": "2868b236238440bc4e8646b2f3a7b0098a8b2881a112ae32217abe6a0dac470d"
+    }
+  ],
+  "configuration": {
+    "worker_mode": "local",
+    "thinking": false,
+    "single_request_timeout_ms": 60000
+  },
+  "changes_from_previous": [
+    "本次尝试关闭思考并使用60秒单请求闸；不改变材料和完整性校验。"
+  ],
+  "external_ids": {
+    "attempt_id": "2807cdcf-6b0f-44a8-a2a2-50ff9b193896"
+  },
+  "environment": {
+    "target": "local",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "api_status",
+      "result": "成功脱敏版本列表回读attempt 2807cdcf，status succeeded，attempt=9；材料包步骤9已成功，零个字段缺失证据。",
+      "evidence": "GET /api/material-packages/e525eb15-7b5f-435e-a34e-10e42ebdce77/versions；GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+    }
+  ],
+  "error": null
+}

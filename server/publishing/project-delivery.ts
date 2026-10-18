@@ -3,6 +3,7 @@
  * 关键入口：`resolveProjectDelivery()` 固定脚本版本；`runProjectDelivery()` 接收当前题目快照并等待脚本完成。
  * 使用场景：`publishWorkflow()` 在写入 ordinal 8 成功状态前调用；未配置脚本时执行内置空函数。
  */
+import type {RedactedDocumentStructure} from '../materials/redacted-docx';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {lstat,readFile,readdir,realpath} from 'node:fs/promises';
@@ -13,7 +14,7 @@ import {HTTPException} from 'hono/http-exception';
 const projectsRoot=resolve(dirname(fileURLToPath(import.meta.url)),'../../projects');
 const sha256=(bytes:Uint8Array|string)=>createHash('sha256').update(bytes).digest('hex');
 export interface ProjectDelivery {mode:'script'|'noop';digest:string;path?:string;projectRoot?:string}
-export interface DeliveryInput {version:1;project_id:string;workflow_id:string;title:string;source_digest:string;delivery_digest:string;question_version:string;rubric_version:string;question:{content_contract?:string;task_metadata?:unknown;input_files?:unknown;deliverables?:unknown;reference_outputs?:unknown;research_records?:unknown;task_requirements?:unknown;content_status?:unknown;delivery_identity?:{task_id:string;org:string};task_name:unknown;task_type:unknown;header:unknown;question:unknown;attachment_ids:unknown;rubric:unknown;answer_approach:unknown;reference_answer:unknown;scoring_policy?:unknown};acceptance:unknown;attachments:{id:string;sha256:string;name:string;text:string}[];simulation?:{deliverable_type:'F1'|'F2'|'F3'|'F4'|'F5';deliverable_title:string;deliverable_markdown:string;harbor_files:{path:string;markdown:string;sheets:{name:string;columns:string[];rows:(string|number|boolean)[][]}[]}[];research_entries:{id:string;query:string;title:string;url:string;finding:string;version_or_date:string;used_in:string}[];unresolved:string[];generated_at:string;model:string;reasoning_effort:string;actual_search_queries:string[];actually_opened_urls:string[]}}
+export interface DeliveryInput {version:1;project_id:string;workflow_id:string;title:string;source_digest:string;delivery_digest:string;question_version:string;rubric_version:string;question:{content_contract?:string;task_metadata?:unknown;input_files?:unknown;deliverables?:unknown;reference_outputs?:unknown;research_records?:unknown;task_requirements?:unknown;content_status?:unknown;delivery_identity?:{task_id:string;org:string};task_name:unknown;task_type:unknown;header:unknown;question:unknown;attachment_ids:unknown;rubric:unknown;answer_approach:unknown;reference_answer:unknown;scoring_policy?:unknown};acceptance:unknown;attachments:{id:string;sha256:string;name:string;text:string;documents?:RedactedDocumentStructure[]}[];simulation?:{deliverable_type:'F1'|'F2'|'F3'|'F4'|'F5';deliverable_title:string;deliverable_markdown:string;harbor_files:{path:string;markdown:string;sheets:{name:string;columns:string[];rows:(string|number|boolean)[][]}[]}[];research_entries:{id:string;query:string;title:string;url:string;finding:string;version_or_date:string;used_in:string}[];unresolved:string[];generated_at:string;model:string;reasoning_effort:string;actual_search_queries:string[];actually_opened_urls:string[]}}
 
 async function deliveryFiles(projectRoot:string,entry:string){
  const files:{path:string;sha256:string}[]=[];

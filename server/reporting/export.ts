@@ -12,6 +12,8 @@ import {HTTPException} from 'hono/http-exception';
 import {buildResultWorkbook,type ResultExportRecord} from './results';
 import {classifyLogError,logEvent,withLogContext} from '../logging';
 import {verifyFrozenProjectPrompt} from '../rule-files';
+import {readQuestionMaterials} from '../question-materials';
+import {canonicalJson} from '../../shared/workflow-config';
 
 const object=(value:unknown):Record<string,any>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,any>:undefined;
 const text=(value:unknown)=>typeof value==='string'?value:'';
@@ -93,19 +95,22 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
  await verifyProjectAuthoringRules(pool,projectId,acceptedWorkflowIds);
  if(acceptedQuestionAttempts.some((row:any)=>row?.status!=='succeeded'||!Array.isArray(object(row.result)?.attachment_ids)||!object(row.result)!.attachment_ids.length||object(row.result)!.attachment_ids.some((id:unknown)=>typeof id!=='string')))throw new Error('input_attachment_missing');
  if(acceptedQuestionAttempts.length){
+  for(const question of acceptedQuestionAttempts as any[]){
+   if(question.input?.material_origin?.kind==='library_v1'){
+    const materials=await readQuestionMaterials(pool,String(question.workflow_id));
+    if(JSON.stringify(question.result.attachment_ids)!==JSON.stringify(materials.attachments.map(item=>item.id))||canonicalJson(question.input.material_origin)!==canonicalJson(materials.origin))throw new HTTPException(409,{message:'当前题目与冻结材料来源不一致，不能导出'});
+   }
+  }
   const attachmentRows=await pool.query(`
    SELECT DISTINCT q.id AS question_attempt_id,docx.id AS docx_id,docx.storage_path,docx.material_id,w.source_key,p.material_root,
     (SELECT count(*)::int FROM ai_distill.materials current_material WHERE current_material.workflow_id=q.workflow_id AND current_material.deleted_at IS NULL) AS material_count
    FROM ai_distill.step_attempts q
    JOIN ai_distill.workflows w ON w.id=q.workflow_id
    JOIN ai_distill.projects p ON p.id=w.project_id
-   JOIN LATERAL jsonb_array_elements_text(COALESCE(q.result->'attachment_ids','[]'::jsonb)) selected(artifact_id) ON TRUE
-   JOIN ai_distill.artifacts redacted ON redacted.id::text=selected.artifact_id AND redacted.workflow_id=q.workflow_id AND redacted.kind='redacted_markdown'
-   JOIN ai_distill.step_attempts redaction ON redaction.id=redacted.attempt_id AND redaction.ordinal=9 AND redaction.status='succeeded'
-   JOIN ai_distill.steps current_redaction ON current_redaction.workflow_id=q.workflow_id AND current_redaction.ordinal=9 AND current_redaction.status='succeeded'
-   JOIN ai_distill.artifacts docx ON docx.workflow_id=q.workflow_id AND docx.attempt_id=redaction.id AND docx.kind='redacted_docx'
+   JOIN ai_distill.artifacts docx ON docx.workflow_id=q.workflow_id AND docx.kind='redacted_docx'
    JOIN ai_distill.materials m ON m.id=docx.material_id AND m.workflow_id=q.workflow_id AND m.deleted_at IS NULL
-   WHERE q.id=ANY($1::uuid[]) AND redaction.id::text=q.input->>'redaction_attempt_id'
+   WHERE q.id=ANY($1::uuid[]) AND ((q.input->'material_origin'->>'kind'='library_v1' AND docx.attempt_id IS NULL)
+    OR (COALESCE(q.input->'material_origin'->>'kind','legacy')<>'library_v1' AND docx.attempt_id::text=q.input->>'redaction_attempt_id'))
    ORDER BY q.id,docx.storage_path
   `,[acceptedQuestionAttempts.map((row:any)=>row.id)]);
   const countsByQuestionAttempt=new Map<string,number>();

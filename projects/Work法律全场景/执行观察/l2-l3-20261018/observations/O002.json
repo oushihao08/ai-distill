@@ -1,0 +1,320 @@
+{
+  "id": "O002",
+  "kind": "issue",
+  "status": "resolved",
+  "title": "修复脱敏停滞误判并续跑新增L3材料包",
+  "item_ids": [
+    "l3-e525",
+    "l3-aaef",
+    "l3-3370"
+  ],
+  "attempt_ids": [
+    "A005",
+    "A006",
+    "A007",
+    "A008",
+    "A009",
+    "A010"
+  ],
+  "facts": [
+    "L2已有7道题工作流步骤4–8全部成功；台账已有7道L2提交记录。",
+    "既有4道L3题工作流步骤4–8全部成功并有平台提交记录。",
+    "3个新增L3材料包的脱敏步骤此前失败，均未派发出题。",
+    "A004于04:54:45Z失败，安全检查点1923/3951；日志最终见redaction_progress_stalled，具体finish_reason未知。",
+    "修复后local worker PID 28558启动；API回读三份材料包均已创建新的脱敏attempt，当前运行中。",
+    "A005关联借款在新attempt启动后安全检查点从1923推进到1945个字段。",
+    "A007合作款清算当前安全检查点已有256个字段；A006钢材买卖与执行尚未形成已落盘字段检查点，三份attempt API状态仍为running。",
+    "2026-10-18 13:26只读回查：A005/A006/A007仍运行，监控无任务级终态失败；窄日志摘要显示A005、A006均有incomplete_finish_reason及redaction_batch_budget_exceeded；A007有redaction_source_not_found及incomplete_finish_reason。HTTP状态200但响应未满足结束标记；具体finish_reason未记录。",
+    "05:26Z–05:36Z新增安全日志：A005去重后1次、A006 2次、A007 3次incomplete_finish_reason；重复的model_api.call.failed与call.failed属于同一call_id。API三个attempt仍running。",
+    "05:36Z–05:39Z：A005新增1次incomplete_finish_reason；A006无新错误；A007新增redaction_batch_budget_exceeded及1次incomplete_finish_reason。三项API仍running。",
+    "13:43安全检查点字段计数：A005 3391，A006 1459，A007 1289；三包专属checkpoint文件mtime分别为13:43:06、13:42:51、13:40:06。只统计条目数，不读取字段键或正文。API三个attempt仍running。",
+    "A005终态failed于06:07:33Z，原因redaction_task_timeout；检查点3629/3951、45请求/25重试。唯一新增材料包已按检查点派发A008，API回读running，06:09:19Z启动。",
+    "A006钢材包与旧L3买卖包全附件SHA相同，旧题58c506d4已有Siriser提交；A007合作款包与旧L2合伙包全附件SHA相同，旧题23bd0d15已有Siriser提交。二者终态均为redaction_task_timeout，依重复材料去重要求不再重试/派生/提交。",
+    "SiliconFlow脱敏任务批次并发冻结为1以规避既往并发限流；任务时限按字段数的1500字段倍数计算并最多60分钟。A006 2289字段在40分钟deadline失败；A005/A007 60分钟后仍部分未完成。队列等待累计不足百毫秒，主要瓶颈为单请求慢响应及不完整结束标记后的拆批重试。",
+    "2026-10-18 A008终态失败：3852/3951，14请求/9重试，queue_wait 18ms，reason_code=redaction_batch_budget_exceeded；安全日志确认模型响应HTTP 200但未报告完整finish标记，具体provider finish_reason未写入日志。",
+    "修复后A009 `66dc3cbe-247c-4918-897a-f71f48a5858a`于06:54:41Z终态failed：3892/3951字段、7请求/5重试、queue_wait 7ms；安全日志有4次去重后的HTTP 200 incomplete_finish_reason和批次预算耗尽。立即拆批修复生效，但剩余字段在每批最多6次调用约束下仍未全部完成。",
+    "诊断延迟复盘：已有不完整响应日志和字段进度增长时，观察重点放在检查点推进，没有及时按attempt汇总重复错误与每批调用预算，直到A008终态才明确连起来；这是处理路径的问题。日志还缺normalized provider finish_reason，不能进一步断言供应商截断类型。",
+    "A010于2026-10-18T08:10:57.235Z成功生成并回读脱敏版本（attempt 9，hash 2868b236…470d）；此前A009失败仍保留为历史，不再把该包标为当前脱敏失败。"
+  ],
+  "hypotheses": [
+    "先前的停滞错误由执行活动与已提交字段进度共用计时导致；本次代码已分离两者，需以新attempt真实终态验证。"
+  ],
+  "evidence": [
+    "GET /api/monitor",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status",
+    "GET /api/workflows/:id/steps/9/attempts",
+    "server/materials/redaction.ts 中停滞计时与notify实现",
+    "git diff --check针对本次修改文件"
+  ],
+  "impact": "只有关联借款包可产生新增题；脱敏成功前不得建题。两个重复包保留来源和失败历史但不创建重复题。",
+  "updates": [
+    {
+      "at": "2026-10-18T13:08:00+08:00",
+      "action": "修复停滞计时根因、重启本机local worker、分别派发3个既有失败材料包的脱敏续跑。",
+      "result": "A005/A006/A007均已启动，当前无题目作答或评分派发；不改变既有L2/L3题、材料、模型或平台记录。",
+      "evidence": [
+        "worker PID 28558启动输出",
+        "GET /api/monitor",
+        "GET /api/projects/.../workflow-status"
+      ]
+    },
+    {
+      "at": "2026-10-18T13:09:00+08:00",
+      "action": "只读检查三个原attempt与本地脱敏检查点字段计数。",
+      "result": "A005 1945字段，A007 256字段；A006仍running但尚无checkpoint文件；均未重派。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/attempts/:id?view=status",
+        "本地checkpoint仅统计字段数"
+      ]
+    },
+    {
+      "at": "2026-10-18T13:26:37+08:00",
+      "action": "回查同一批3个活动脱敏attempt，并对05:07Z至05:26Z的安全日志字段做窄窗摘要。",
+      "result": "A005/A006/A007均仍running；A005和A006分别出现局部批次预算耗尽，A007出现来源映射校验失败；均没有整包终态，不能判成功或失败。保留原attempt，不重派、不重启。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=...",
+        "scripts/diagnostics/read-logs.ts按attempt和时间窗查询，仅汇总event、reason_code、HTTP状态及时间"
+      ]
+    },
+    {
+      "at": "2026-10-18T13:36:10+08:00",
+      "action": "只读复核A005/A006/A007的当前API状态，并汇总05:26Z–05:36Z窄窗口日志，按call_id语义去重。",
+      "result": "A005/A006/A007仍运行；分别新增1/2/3次不完整模型响应。没有整包终态，不重派、不重启。当前日志未记录可确认的具体finish_reason。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=...",
+        "scripts/diagnostics/read-logs.ts按attempt和窄时间范围查询并去重"
+      ]
+    },
+    {
+      "at": "2026-10-18T13:39:25+08:00",
+      "action": "同一批脱敏attempt的状态复查及05:36Z–05:39Z安全错误日志摘要。",
+      "result": "三个attempt仍运行。A005新增一次不完整响应；A006无新错误；A007新增一次局部批次预算耗尽和一次不完整响应。仅记录局部失败，不把整包状态改为失败，不重派。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=...",
+        "scripts/diagnostics/read-logs.ts按attempt与窄窗口汇总reason_code并按call_id去重"
+      ]
+    },
+    {
+      "at": "2026-10-18T13:43:41+08:00",
+      "action": "只读读取三包各自的结构化脱敏检查点，统计已提交字段数及mtime，不读取或输出任何正文。",
+      "result": "三条原attempt均运行中且检查点有近期写入：A005 3391字段，A006 1459字段，A007 1289字段。局部模型响应错误未使整项停止，worker继续处理其他批次；不重派。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=...",
+        "本地三份材料包redaction-checkpoint的字段数量与mtime"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:08:00+08:00",
+      "action": "三个材料包原attempt全部到终态后，按去重记录排除两个已提交重复包；唯一含新增材料的A005保留检查点并经现有API派发A008续跑。",
+      "result": "A008 fc0e126a-2288-4d17-8f29-9e1ea0ff7b73 running，启动时检查点3629/3951。A006/A007均failed但不重试，因为对应旧题已提交。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status",
+        "POST /api/workflows/e525eb15-7b5f-435e-a34e-10e42ebdce77/redact"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:12:21+08:00",
+      "action": "核对脱敏耗时根因并只读检查A008续跑进度。",
+      "result": "区分总流程等待与实际执行：入库/提取于09:59:58+08完成，脱敏到13:07:23+08才开始；A005实际脱敏运行约60分钟后于14:07:33+08超时。A005 queue_wait仅40ms、累计模型请求耗时约59分钟；A008从3629/3951检查点续跑，至14:12:21+08仍为3629，2次请求、1次重试、1个请求活动；当前续跑约119秒。根因是串行请求且单次响应约100–130秒、不完整响应触发拆批/重试，字段数量估算的60分钟deadline不足；不是worker排队。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "workflow-status中的步骤started_at/finished_at及进度计数"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:14:00+08:00",
+      "action": "按A008 attempt ID读取窄范围安全日志，区分模型响应错误与网络/排队错误。",
+      "result": "A008首批及其拆分子批次均返回HTTP 200但报`incomplete_finish_reason`；两次失败耗时约118.5秒和111.5秒。attempt仍running，API进度3629/3951、累计3次请求、2次重试，当前请求活动。日志扫描truncated=true，但所见两次调用证据完整；未读取或记录任何正文。",
+      "evidence": [
+        "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:17:00+08:00",
+      "action": "间隔60秒后回读A008同一attempt，确认任务是否推进。",
+      "result": "A008仍running，进度从3629推进到3656/3951（新增27字段）；累计4次请求、3次重试、1个请求活动，最近字段进度时间06:15:27Z。检查点有增长，不中断、不重派。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:18:00+08:00",
+      "action": "A008再次API回读并按attempt ID查增量安全日志。",
+      "result": "A008仍running，检查点3656/3951；累计5次请求、4次重试，当前请求活动。06:17:23Z新失败为HTTP 200 + incomplete_finish_reason，耗时116.4秒；字段检查点暂未继续增长。现有日志扫描truncated=true，但新增单条事件完整。继续观察同一attempt，不重派。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:22:00+08:00",
+      "action": "复查A008运行状态、字段检查点和新增redaction校验错误。",
+      "result": "A008仍running，进度3669/3951，累计6次请求/5次重试，queue_wait累计6ms，当前1请求活动。新增reason_code=redaction_batch_budget_exceeded；整题仍未终态，不能把局部批次耗尽误判为整包结束。继续原attempt，等待其他批次处理并核对最终全量校验。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:24:00+08:00",
+      "action": "间隔观察A008进度并确认任务仍未终态。",
+      "result": "A008仍running，检查点3682/3951（较14:22增加13），累计8请求/6重试、当前1请求活动，队列累计等待8ms；单次长请求仍是主要耗时。已有批次预算错误但整包仍处理其余字段，继续原attempt。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:25:00+08:00",
+      "action": "间隔观察A008并读取本轮增量安全日志。",
+      "result": "A008仍running，检查点3720/3951，较14:24增加38；累计9请求/7重试，队列等待9ms，1个请求活动。批次2又出现HTTP 200 incomplete_finish_reason（约113秒），错误局限该批次，其他字段继续提交检查点。仍不重派。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:27:00+08:00",
+      "action": "同一A008的监控、状态和增量日志复查。",
+      "result": "A008仍running，3720/3951字段未变；累计10请求/8重试、queue_wait 10ms、当前1请求活动。06:25:17Z批次2-b又出现HTTP 200 incomplete_finish_reason（115.3秒）。活动任务尚未终态；不重派/不重启，继续观察。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:30:00+08:00",
+      "action": "API回读A008确认字段检查点继续增长。",
+      "result": "A008仍running，3739/3951（较14:27增加19）；累计11请求/9重试，queue_wait 13ms，1请求活动，最近进度06:27:13Z。尽管局部批次曾报预算耗尽，其余处理仍在推进；保持原attempt。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:32:00+08:00",
+      "action": "API再读A008状态，确认续跑已落盘字段数量。",
+      "result": "A008仍running，3758/3951字段（较14:30增加19），累计12请求/9重试，queue_wait 14ms，当前1请求活动，最近字段进度06:28:08Z；无新失败事件。继续原attempt。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:33:00+08:00",
+      "action": "A008继续运行后回读进度。",
+      "result": "A008仍running，字段检查点推进到3847/3951，剩余104；较14:32增加89字段。累计13请求/9重试，queue_wait 15ms，当前1请求活动，无新错误事件。继续等同一attempt完成最终校验。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:35:00+08:00",
+      "action": "A008再次状态与安全日志核验。",
+      "result": "A008仍running，3847/3951字段、14请求/9重试、queue_wait 16ms、1请求活动，字段数未增。新增批次4调用HTTP 200但incomplete_finish_reason（113.5秒）；尝试会继续拆分/处理其余字段，仍未终态。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe77/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "bun scripts/diagnostics/read-logs.ts --attempt-id fc0e126a-2288-4d17-8f29-9e1ea0ff7b73"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:36:40+08:00",
+      "action": "回读监控、项目工作流状态并补记A008终态。",
+      "result": "A008已失败，attempt fc0e126a-2288-4d17-8f29-9e1ea0ff7b73；3852/3951字段，14次请求/9次重试，queue_wait 18ms，reason_code=redaction_batch_budget_exceeded。监控当前running=0。脱敏步骤未成功，不能派生题目。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:40:46+08:00",
+      "action": "针对多字段不完整响应增加立即缩批，并从已提交检查点恢复唯一新增L3材料包。",
+      "result": "不完整多字段响应不再先原样重试一次，立即缩批；共享原批次/整题请求预算及严格完整性校验。针对性文件40项测试全通过，git diff --check通过。仅重启本机worker，监控确认无活动任务后，通过现有API对e525eb15-7b5f-435e-a34e-10e42ebdce77派发一次；新attempt 66dc3cbe-247c-4918-897a-f71f48a5858a，reused=false，API监控显示running/api通道。",
+      "evidence": [
+        "server/materials/redaction.ts：多字段incomplete_finish_reason直接进入拆批",
+        "server/materials/redaction-performance.test.ts：40 pass",
+        "git diff --check",
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:45:31+08:00",
+      "action": "只读核验修复后A009子批行为。",
+      "result": "A009第1个多字段请求约121.4秒后不完整；代码立即拆批，未原样重试。随后1-a子批约122.8秒也不完整；attempt仍running，3852/3951，累计3请求/2重试/1活动请求，队列等待2ms。当前可证实重试路径改善；模型对更小子批仍有同类响应问题，尚不能宣称脱敏成功。",
+      "evidence": [
+        "bun scripts/diagnostics/read-logs.ts --attempt-id 66dc3cbe-247c-4918-897a-f71f48a5858a",
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:48:20+08:00",
+      "action": "回读修复后A009断点进度与活动请求。",
+      "result": "A009仍running；已提交字段3872/3951，比3852增加20；累计4请求/3重试、queue_wait 3ms、1请求活动。拆批后有效字段继续落盘，尚未全量成功，继续跟踪原attempt。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:49:51+08:00",
+      "action": "核对A009第3次子批调用和整包进度。",
+      "result": "`1-a-b`调用HTTP 200但incomplete_finish_reason，约118.1秒；API仍running，3872/3951，5请求/4重试、queue_wait 4ms、1请求活动。20个字段已由其他拆分子批保存，脱敏结果尚未整包通过。",
+      "evidence": [
+        "bun scripts/diagnostics/read-logs.ts --attempt-id 66dc3cbe-247c-4918-897a-f71f48a5858a",
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:51:36+08:00",
+      "action": "回读A009最新进度及API排队指标。",
+      "result": "A009仍running，3882/3951（较续跑起点增加30），6请求/5重试，queue_wait 5ms，1请求活动。拆批子批仍间歇出现约118–123秒不完整响应；有效字段继续落盘，尚未全量成功。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+      ]
+    },
+    {
+      "at": "2026-10-18T14:55:40+08:00",
+      "action": "只读确认A009终态并记录根因与诊断延误。",
+      "result": "A009 failed，3892/3951，7请求/5重试，queue_wait 7ms；直接失败原因为redaction_batch_budget_exceeded。4次HTTP 200 incomplete_finish_reason导致拆批修复仍耗尽每批6次调用预算。3小时为入库完成到脱敏启动的未运行间隔，具体未启动原因无证据；执行后模型慢响应/不完整响应是主要耗时。已记录代码改进只消除了原样重试，没有解决供应商不完整响应及预算不足。未重派。",
+      "evidence": [
+        "GET /api/monitor",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77",
+        "安全日志按attempt_id查询并按call_id去重"
+      ]
+    },
+    {
+      "at": "2026-10-18T16:48:00+08:00",
+      "action": "按API回读核实A009之后的成功脱敏版本，并继续目标流程。",
+      "result": "关联借款包脱敏成功，API回读到attempt 2807cdcf，版本校验存在；本次将该观察标记resolved。由该版本派生新L3题b4424018，出题attempt e9d2ff15已进入waiting队列。没有使用失败attempt的部分检查点作为题目输入。",
+      "evidence": [
+        "GET /api/material-packages/e525eb15-7b5f-435e-a34e-10e42ebdce77/versions",
+        "GET /api/workflows/e525eb15-7b5f-435e-a34e-10e42ebdce77?view=status",
+        "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+      ]
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-18T13:08:00+08:00",
+  "updated_at": "2026-10-18T16:48:00+08:00"
+}

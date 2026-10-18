@@ -7,13 +7,14 @@
 import {api} from '../api/client';
 
 const props=defineProps<{projectId:string}>();
-interface CatalogModel{id:string;name:string;provider:string;base_url:string;model:string;enabled:boolean}
-interface SelectedModel{model_id:string;name:string;minimum_score:number|null;config:{provider:string;base_url:string;model:string}}
+interface CatalogModel{id:string;name:string;provider:string;base_url:string;model:string;config?:{reasoning_effort?:string};enabled:boolean}
+interface SelectedModel{model_id:string;name:string;minimum_score:number|null;config:{provider:string;base_url?:string;model:string;reasoning_effort?:string}}
+interface AgentCatalog{model_options:{slug:string;supported_reasoning_levels:{effort:string}[]}[]}
 const catalog=shallowRef<CatalogModel[]>([]);const selected=shallowRef<SelectedModel[]>([]);
-const model=shallowRef('');
+const model=shallowRef('');const provider=shallowRef<'siliconflow'|'openrouter'|'codex'>('siliconflow');const reasoningEffort=shallowRef('ultra');const agentModels=shallowRef<AgentCatalog['model_options']>([]);
 const loading=shallowRef(false);const saving=shallowRef(false);const error=shallowRef('');const message=shallowRef('');
 async function refresh(){
- try{loading.value=true;error.value='';const [all,current]=await Promise.all([api<CatalogModel[]>('/answer-models'),api<SelectedModel[]>(`/projects/${props.projectId}/answer-models`)]);catalog.value=all;selected.value=current;}
+ try{loading.value=true;error.value='';const [all,current,agent]=await Promise.all([api<CatalogModel[]>('/answer-models'),api<SelectedModel[]>(`/projects/${props.projectId}/answer-models`),api<AgentCatalog>('/agent/config')]);catalog.value=all;selected.value=current;agentModels.value=agent.model_options;}
  catch(cause){error.value=cause instanceof Error?cause.message:'模型设置读取失败';}finally{loading.value=false;}
 }
 function toggle(item:CatalogModel){
@@ -23,7 +24,7 @@ function toggle(item:CatalogModel){
 }
 function updateMinimumScore(modelId:string,raw:unknown){const value=raw===''||raw===null?null:Number(raw);if(value!==null&&(!Number.isFinite(value)||value<0||value>100))return;selected.value=selected.value.map(item=>item.model_id===modelId?{...item,minimum_score:value}:item);}
 async function register(){
- try{error.value='';message.value='';saving.value=true;const saved=await api<CatalogModel>('/answer-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model_id:model.value.trim()})});catalog.value=[...catalog.value,saved];model.value='';message.value='模型已加入系统目录';}
+ try{error.value='';message.value='';saving.value=true;const body=provider.value==='codex'?{provider:'codex',model:model.value,reasoning_effort:reasoningEffort.value}:provider.value==='siliconflow'?{provider:'siliconflow',model:model.value.trim()}:{model_id:model.value.trim()};const saved=await api<CatalogModel>('/answer-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});catalog.value=[...catalog.value,saved];model.value='';message.value='模型已加入系统目录';}
  catch(cause){error.value=cause instanceof Error?cause.message:'模型登记失败';}finally{saving.value=false;}
 }
 async function save(){
@@ -45,6 +46,9 @@ onMounted(refresh);
   <Column v-for="item in selected" :key="item.model_id" :gap="4" class="border-t border-line-subtle pt-8"><span class="text-sm font-medium">{{ item.name }} · 分数上限（百分制）</span><v-text-field :model-value="item.minimum_score??''" type="number" min="0" max="100" step="0.5" label="低于此分通过，等于或超过则未达标（可留空）" hide-details @update:model-value="updateMinimumScore(item.model_id,$event)" /></Column>
   <Row x="end"><v-btn color="primary" variant="flat" :loading="saving" :disabled="saving||!selected.length" @click="save">保存项目模型集合</v-btn></Row>
   <v-divider />
-  <Column :gap="8"><h3 class="text-sm font-semibold">登记系统模型</h3><v-text-field v-model="model" label="OpenRouter 模型 ID" placeholder="例如：deepseek/deepseek-v4.1-flash" hide-details /><v-btn :disabled="saving||!model.trim()" :loading="saving" @click="register">登记模型</v-btn></Column>
+  <Column :gap="8"><h3 class="text-sm font-semibold">登记系统模型</h3><v-select v-model="provider" :items="[{title:'SiliconFlow API（默认）',value:'siliconflow'},{title:'OpenRouter API',value:'openrouter'},{title:'本机 Codex Agent',value:'codex'}]" label="执行方式" hide-details />
+   <template v-if="provider==='codex'"><v-select v-model="model" :items="agentModels.map(item=>({title:item.slug,value:item.slug}))" label="Codex 模型" hide-details /><v-select v-model="reasoningEffort" :items="(agentModels.find(item=>item.slug===model)?.supported_reasoning_levels??[]).map(item=>({title:item.effort,value:item.effort}))" label="推理强度" hide-details /></template>
+   <v-text-field v-else v-model="model" :label="provider==='siliconflow'?'SiliconFlow 模型 ID':'OpenRouter 模型 ID'" :placeholder="provider==='siliconflow'?'例如：Qwen/Qwen3.8-2.4T-A95B':'例如：deepseek/deepseek-v4.1-flash'" hide-details />
+   <v-btn :disabled="saving||(provider==='codex'?!model||!reasoningEffort:!model.trim())" :loading="saving" @click="register">登记模型</v-btn></Column>
  </Column>
 </template>

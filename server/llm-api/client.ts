@@ -21,7 +21,7 @@ function networkFailureReason(error:unknown):string{
  for(let depth=0;depth<4&&current;depth++){
   if(!record(current))break;
   const code=typeof current.code==='string'?current.code:'';
-  const known:Record<string,string>={ENOTFOUND:'dns_lookup_failed',EAI_NONAME:'dns_lookup_failed',EAI_AGAIN:'dns_temporary_failure',ECONNREFUSED:'connection_refused',ECONNRESET:'connection_reset',ETIMEDOUT:'connection_timeout',EHOSTUNREACH:'host_unreachable',ENETUNREACH:'network_unreachable',EPIPE:'connection_broken',UND_ERR_CONNECT_TIMEOUT:'connect_timeout',UND_ERR_SOCKET:'socket_failure'};
+  const known:Record<string,string>={ENOTFOUND:'dns_lookup_failed',EAI_NONAME:'dns_lookup_failed',EAI_AGAIN:'dns_temporary_failure',ECONNREFUSED:'connection_refused',ECONNRESET:'connection_reset',ETIMEDOUT:'connection_timeout',EHOSTUNREACH:'host_unreachable',ENETUNREACH:'network_unreachable',EPIPE:'connection_broken',UND_ERR_CONNECT_TIMEOUT:'connect_timeout',UND_ERR_SOCKET:'socket_failure',TimeoutError:'socket_idle_timeout',ConnectionClosed:'connection_closed',FailedToOpenSocket:'connection_failed'};
   if(known[code])return known[code]!;
   if(code.startsWith('ERR_TLS')||code.startsWith('CERT_'))return'tls_failure';
   current=current.cause;
@@ -120,7 +120,7 @@ async function parseStreamingCompletion(response:Response,config:ModelApiConfig,
   if(data.choices.length===0)return;
   if(data.choices.length!==1||!isRecord(data.choices[0]))throw invalid(data.choices.length>1?'unexpected_choice_count':'invalid_choice_shape');
   const choice=data.choices[0];
-  if(choice.finish_reason!==undefined&&choice.finish_reason!==null){if(choice.finish_reason!=='stop')throw invalid('incomplete_finish_reason');finished=true;}
+  if(choice.finish_reason!==undefined&&choice.finish_reason!==null){if(choice.finish_reason!=='stop')throw Object.assign(invalid('incomplete_finish_reason'),{finish_reason:['length','content_filter','tool_calls'].includes(String(choice.finish_reason))?choice.finish_reason:'unknown'});finished=true;}
   const delta=choice.delta;
   if(delta===undefined||delta===null)return;
   if(!isRecord(delta))throw invalid('invalid_stream_delta');
@@ -142,7 +142,7 @@ async function parseStreamingCompletion(response:Response,config:ModelApiConfig,
    const lines=buffer.split(/\r?\n/);buffer=lines.pop()??'';for(const line of lines)consumeLine(line);
   }
  }catch(error){if(error instanceof ModelApiError)throw error;throw new ModelApiError('network',true,response.status,null,requestId(response,null),networkFailureReason(error),activity());}
- if(!finished)throw invalid('incomplete_finish_reason');
+ if(!finished)throw Object.assign(invalid('incomplete_finish_reason'),{finish_reason:'missing'});
  if(!text.trim())throw invalid('empty_content');
  return{provider:config.provider,text,requested_model:config.model,model,request_id:requestId(response,{id:completion_id}),completion_id,usage,started_at,finished_at:new Date().toISOString(),duration_ms:Math.max(0,Math.round(performance.now()-started)),...(activity()?{generation_activity:activity()!}:{})};
 }
@@ -172,6 +172,8 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   // Resolve credentials at invocation time, outside the persisted configuration.
   const router = new URL(config.base_url).hostname === 'openrouter.ai';
   const key=readModelApiKey(config,env);
+  // SiliconFlow长答案使用已有SSE解析器；传输方式不改变作答输入或完整性门槛。
+  const stream=input.observe_reasoning===true||config.provider==='siliconflow';
   const started_at = new Date().toISOString(); const started = performance.now();
   const controller = new AbortController();
   let abortKind: 'timeout' | 'cancelled' | undefined;
@@ -189,19 +191,22 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
    withLogContext(callContext,()=>logEvent('model_api.call.started',{level:'info',timeout_ms:timeout}));
    const response = await request(config.base_url + '/chat/completions', {
     method: 'POST', redirect: 'error', signal: controller.signal,
+    // Bun默认空闲超时独立于AbortSignal；统一由上面的业务总时限和取消信号控制。
+    timeout: false,
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-     model: config.model, stream: input.observe_reasoning===true,
+     model: config.model, stream,
+     ...(config.provider==='siliconflow'?{stream_options:{include_usage:true}}:{}),
      ...(config.enable_thinking !== undefined ? (router ? {reasoning:{enabled:config.enable_thinking}} : {enable_thinking:config.enable_thinking}) : {}),
      ...(input.response_format?{response_format:input.response_format}:{}),
      ...(router&&(config.provider_options||input.response_format||config.enable_thinking!==undefined)?{provider:{...config.provider_options,require_parameters:true}}:{}),
      ...(config.max_tokens !== undefined ? { max_tokens: config.max_tokens } : {}),
      messages,
     }),
-   });
+   } as RequestInit & {timeout:false});
    receivedResponse=response;
    if (abortKind) throw abortError();
-   if(input.observe_reasoning===true&&response.ok){
+   if(stream&&response.ok){
     try{
      const result=await parseStreamingCompletion(response,config,started_at,started,controller.signal);
      generationActivity=result.generation_activity;

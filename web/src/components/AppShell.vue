@@ -5,8 +5,8 @@
 
 <script setup lang="ts">
 const route = useRoute();
-const navItems=[{label:'出题项目',to:'/',icon:'grid'},{label:'任务监控',to:'/monitor',icon:'activity'},{label:'成果库',to:'/results',icon:'file'},{label:'系统设置',to:'/settings',icon:'settings'}] as const;
-const section = computed(() => route.path==='/monitor'?'任务监控':route.path==='/results'?'成果库':route.path==='/settings'?'系统设置':route.path.startsWith('/workflows/')?'材料包／题目详情':route.path.startsWith('/projects/')?'项目详情':'出题项目');
+const navItems=[{label:'出题项目',to:'/',icon:'grid'},{label:'材料库',to:'/materials',icon:'file'},{label:'任务监控',to:'/monitor',icon:'activity'},{label:'成果库',to:'/results',icon:'file'},{label:'系统设置',to:'/settings',icon:'settings'}] as const;
+const section = computed(() => route.path==='/materials'?'独立材料库':route.path==='/monitor'?'任务监控':route.path==='/results'?'成果库':route.path==='/settings'?'系统设置':route.path.startsWith('/workflows/')?'材料包／题目详情':route.path.startsWith('/projects/')?'项目详情':'出题项目');
 function isActive(path:string){return path==='/'?route.path==='/'||route.path.startsWith('/projects/')||route.path.startsWith('/workflows/'):route.path===path;}
 </script>
 <template>

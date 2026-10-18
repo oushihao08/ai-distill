@@ -1,0 +1,86 @@
+{
+  "started_at": "2026-10-18T08:41:25.406343+00:00",
+  "ended_at": "2026-10-18T08:41:41.130673+00:00",
+  "timing_scope": "From first task-directory inspection; skill read preceded timing",
+  "tool_calls": {
+    "functions_exec": 4,
+    "exec_command": 4,
+    "counting_note": "4 tool invocations, each wrapping one exec_command; no other tools used"
+  },
+  "items": [
+    {
+      "id": "Q1",
+      "source_sha256": "ab530e3159fa42cf8326f8f9b94a315c890745966851adae41b85b9c38af8bcf",
+      "checks": [
+        "Computed full source ZIP SHA256",
+        "Source SHA256 matched trusted cache; reused cached required_entries and CRC results",
+        "Verified copied destination full SHA256 equals source"
+      ],
+      "destination_sha256": "ab530e3159fa42cf8326f8f9b94a315c890745966851adae41b85b9c38af8bcf",
+      "status": "copied",
+      "reason": "Valid package copied and fingerprint verified"
+    },
+    {
+      "id": "Q2",
+      "source_sha256": "84ba9abbadc2ec6c887c39e8234990bebda00af37170870707b0b55c051903a9",
+      "checks": [
+        "Computed full source ZIP SHA256",
+        "Source SHA256 matched trusted cache; reused cached required_entries and CRC results",
+        "Computed existing destination full SHA256"
+      ],
+      "destination_sha256": "84ba9abbadc2ec6c887c39e8234990bebda00af37170870707b0b55c051903a9",
+      "status": "reused",
+      "reason": "Identical destination preserved without rewriting"
+    },
+    {
+      "id": "Q3",
+      "source_sha256": "f2cbbe210b773f06ef0d0965f3af2edc188f4dedeeea27c45e725043c112bbb5",
+      "checks": [
+        "Computed full source ZIP SHA256",
+        "Source SHA256 matched trusted cache; reused cached required_entries and CRC results",
+        "Computed existing destination full SHA256"
+      ],
+      "destination_sha256": "92033bb418125140a8c0691805c5cd0a6e274387c378349f31d03ed81ef2f023",
+      "status": "conflict",
+      "reason": "Different destination preserved without overwriting"
+    },
+    {
+      "id": "Q4",
+      "source_sha256": "40b5deffa889701fd02d007262dbafd60ff814554c4e2432323f0a29d55f838a",
+      "checks": [
+        "Computed full source ZIP SHA256",
+        "Cache absent or fingerprint mismatch; inspected current ZIP required entries and tested all entry CRCs"
+      ],
+      "status": "rejected",
+      "reason": "Missing required entries: ['golden_output/answer.txt']"
+    },
+    {
+      "id": "Q5",
+      "source_sha256": "99038c4388ee2dd19a5eab08fe12c99146d3c99e1d5578d45f5a5164db50d0ad",
+      "checks": [
+        "Computed full source ZIP SHA256",
+        "Cache absent or fingerprint mismatch; inspected current ZIP required entries and tested all entry CRCs"
+      ],
+      "status": "rejected",
+      "reason": "Missing required entries: ['rubric.json']"
+    },
+    {
+      "id": "Q6",
+      "source_sha256": "8d16d387e0ed80568e31766a82adb56cd008c77072a81ec34e766040383d4eb7",
+      "checks": [
+        "Computed full source ZIP SHA256",
+        "Cache absent or fingerprint mismatch; inspected current ZIP required entries and tested all entry CRCs",
+        "Verified copied destination full SHA256 equals source"
+      ],
+      "destination_sha256": "8d16d387e0ed80568e31766a82adb56cd008c77072a81ec34e766040383d4eb7",
+      "status": "copied",
+      "reason": "Valid package copied and fingerprint verified"
+    }
+  ],
+  "verification": [
+    "Recomputed all six source SHA256 values and confirmed unchanged since processing",
+    "Verified copied/reused output SHA256; preserved conflicting destination SHA256",
+    "Confirmed rejected outputs absent and output file set exact"
+  ],
+  "elapsed_seconds": 15.72433
+}

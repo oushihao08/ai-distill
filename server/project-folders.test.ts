@@ -197,3 +197,13 @@ test('项目根目录的材料不被忽略，损坏PDF不能作为可解析材�
  await writeFile(join(root,'说明.md'),'原件');await expect(scanProjectFolder(root)).rejects.toThrow('根目录');await rm(join(root,'说明.md'));
  await writeFile(join(root,'题目 1','bad.pdf'),'broken');await expect(scanProjectFolder(root)).rejects.toThrow();
 });
+
+test('library project summary exposes only authoring through publishing even before its first question',async()=>{
+ const pool={query:async(sql:string)=>{
+  if(sql.startsWith('SELECT w.id AS workflow_id')||sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
+  if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-6-luna',reasoning_effort:'medium'}],rowCount:1};
+  throw new Error(`Unexpected query: ${sql}`);
+ }} as unknown as Pool;
+ expect((await projectStepSummary(pool,'project','library_v1')).map(step=>step.ordinal)).toEqual([4,5,6,7,8]);
+});

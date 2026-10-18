@@ -1,0 +1,30 @@
+{
+  "id": "O015",
+  "kind": "issue",
+  "status": "open",
+  "title": "L4民间借贷被等级依据误判为内容草稿，修正本题指令后重出",
+  "item_ids": [
+    "1b2a94b2-0f97-4c23-9f62-13a01fb68066"
+  ],
+  "attempt_ids": [
+    "ac45f18a-7fc9-4c74-89b1-aa811c096770"
+  ],
+  "facts": [
+    "当前 L4 六题中五题 ordinal 4–8 已完成；民间借贷题当前 author result 为 draft，ordinal 5–8 因此未就绪。",
+    "该 author result 的两个 issue 中，一个说明缺失原件和送达材料已用条件分支与核查动作处理；另一个仅指出附件内可证明的独立材料数和必要工作量不足以证明 L4。",
+    "项目 Skill 明确规定，等级依据未证明不自动使可完成的专业成果变成 draft；只有不可替代输入缺失导致必交成果无法合法完成时才标 draft。",
+    "当前活动任务仅有 L2 API 作答，L4 author 无活动 attempt；重出不会复用旧答案或评分。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "GET /api/attempts/ac45f18a-7fc9-4c74-89b1-aa811c096770?view=full（仅检查 content_status 与 level_basis 字段）",
+    "projects/Work法律全场景/skill/出题与评分规则.md:87-91,138-140",
+    "GET /api/monitor",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=1b2a94b2-0f97-4c23-9f62-13a01fb68066"
+  ],
+  "impact": "L4 六题流程完成率停在 5/6；只有修正内容状态判断后才能继续本题作答、评分、达标和归档。",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-17T09:16:00Z",
+  "updated_at": "2026-10-17T09:18:00Z"
+}

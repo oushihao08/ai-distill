@@ -1,0 +1,57 @@
+{
+  "id": "A009",
+  "item_id": "real-flow",
+  "stage_id": "redact",
+  "previous_attempt_id": "A004",
+  "status": "succeeded",
+  "started_at": "2026-10-18T09:08:48.758365+00:00",
+  "finished_at": "2026-10-18T09:09:41.902Z",
+  "inputs": [
+    {
+      "ref": "library extraction daf77d2e-2330-440c-b7bc-c6813f2a2940",
+      "version": "parser-v3; substantive content acceptance",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "original_changed": false,
+    "ocr_warnings_retained": true,
+    "model_changed": false
+  },
+  "changes_from_previous": [
+    "用户明确按实质内容验收；保留原件摘要和映射定位校验，OCR警告不作为失败"
+  ],
+  "external_ids": {
+    "request_key": "ee3ba7db-1f4d-4e48-a90b-3f1298456b7d",
+    "wait_for_attempt_id": "22ea2062-8797-40ac-be89-631588110552",
+    "library_job_id": "3c2ae6b5-6010-4ccb-b306-e915b4f1d745",
+    "api_exec_session": 17920,
+    "worker_exec_session": 28275
+  },
+  "environment": {
+    "api": "http://127.0.0.1:3700"
+  },
+  "artifacts": [
+    {
+      "ref": ".storage/verification/doubao-library-20261018/redact-substance-request.json",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "observed_at": "2026-10-18T09:08:16.982839+00:00",
+      "fact": "Existing unrelated author attempt is live; restart waits for its terminal state",
+      "attempt_id": "22ea2062-8797-40ac-be89-631588110552",
+      "status": "running"
+    },
+    {
+      "observed_at": "2026-10-18T09:08:16.982839+00:00",
+      "fact": "Prepared same-result-bound substantive comparison; OCR reruns differ in a few page texts, so old checkpoints not transplanted"
+    },
+    {
+      "result": "57 pages, usable_for_question true; redaction published by normal API/worker transaction",
+      "redaction_id": "99846ce1-5fea-4f1f-98b7-151ea6e372b6"
+    }
+  ],
+  "error": null
+}

@@ -1,0 +1,36 @@
+{
+  "id": "4e40399f-92df-404b-ab53-f631c4952520",
+  "item_id": "f7403b39-0b8f-4f98-8854-346ad207c875",
+  "stage_id": "4",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-16T15:02:51.382Z",
+  "finished_at": "2026-10-16T15:15:25.315Z",
+  "inputs": [
+    {
+      "ref": "workflow:f7403b39-0b8f-4f98-8854-346ad207c875",
+      "version": "dispatch-time current version",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "step_ordinal": 4
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "attempt_id": "4e40399f-92df-404b-ab53-f631c4952520",
+    "workflow_id": "f7403b39-0b8f-4f98-8854-346ad207c875"
+  },
+  "environment": {
+    "target": "local workflow API"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "api_status",
+      "result": "succeeded",
+      "evidence": "GET /api/attempts/4e40399f-92df-404b-ab53-f631c4952520?view=status"
+    }
+  ],
+  "error": null
+}

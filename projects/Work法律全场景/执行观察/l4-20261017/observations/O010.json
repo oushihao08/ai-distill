@@ -1,0 +1,44 @@
+{
+  "id": "O010",
+  "kind": "result",
+  "status": "open",
+  "title": "L2合伙评分完成，更新可用下游状态",
+  "item_ids": [
+    "23bd0d15-868c-4eab-8b89-e59594dc7139",
+    "603eb6cd-8ad2-46ee-8582-19d25f252e15",
+    "3bf6bc26-6410-494c-9137-cd1d7399e55d",
+    "d1af0602-5b84-4fd0-ad3c-dd0a1c742c05",
+    "46d67dee-ae4a-4d19-b37d-42c732b260c9"
+  ],
+  "attempt_ids": [
+    "98ccd1fc-0abe-4c05-b00f-d2adf81cca59",
+    "fd0109dc-96a3-47a2-a6a7-3c8a23ca5262",
+    "382b17af-3b03-4ea1-aa0e-92823a943033",
+    "a743c99c-6dc7-4009-8503-89f7c31f1dea",
+    "d966fc2e-479a-40eb-a4c3-1f0ae3096310"
+  ],
+  "facts": [
+    "L2合伙评分attempt 98ccd1fc-0abe-4c05-b00f-d2adf81cca59 succeeded；逐项汇总52/80=65%，有效、无否决。",
+    "系统达标判断为repair，reason=model_mean_above_threshold；现有单模型结果超过55%，不能归档或提交。",
+    "当前其他活动任务由最近monitor逐项追踪：L4工伤作答、L2运输回归评分、L2劳务作答、L2装修作答重试。",
+    "L3排除。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "GET /api/attempts/98ccd1fc-0abe-4c05-b00f-d2adf81cca59?view=status",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=23bd0d15-868c-4eab-8b89-e59594dc7139",
+    "GET /api/monitor"
+  ],
+  "impact": "合伙题不是达标题；继续按API ready状态处理，不能提交。L4工伤仍是首要待处理题。",
+  "updates": [
+    {
+      "at": "2026-10-17T16:46:00+08:00",
+      "action": "回读L2合伙评分与自动达标判断",
+      "result": "评分有效，52/80=65%；系统repair。",
+      "evidence": "attempt与workflow-status API"
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-17T16:46:00+08:00",
+  "updated_at": "2026-10-17T16:46:00+08:00"
+}

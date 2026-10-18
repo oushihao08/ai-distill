@@ -1,0 +1,36 @@
+{
+  "id": "e4dd90cf-6c21-45fe-af5f-d6c271d7e5f9",
+  "item_id": "d1af0602-5b84-4fd0-ad3c-dd0a1c742c05",
+  "stage_id": "5",
+  "status": "running",
+  "started_at": "2026-10-17T09:13:34.156Z",
+  "finished_at": null,
+  "inputs": [
+    {
+      "ref": "L2劳务题当前题面与脱敏附件",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "target": "local API worker",
+    "source": "frozen workflow answer config; not re-read in this turn"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "workflow_id": "d1af0602-5b84-4fd0-ad3c-dd0a1c742c05",
+    "attempt_id": "e4dd90cf-6c21-45fe-af5f-d6c271d7e5f9"
+  },
+  "environment": {
+    "target": "local"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "API attempt status",
+      "result": "running",
+      "evidence": "GET /api/attempts/e4dd90cf-6c21-45fe-af5f-d6c271d7e5f9?view=status"
+    }
+  ],
+  "error": null
+}

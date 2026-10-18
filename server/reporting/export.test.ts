@@ -35,7 +35,7 @@ async function exportFixture(options:{workflowId?:string;materialCount?:number;a
   if(sql.includes('FROM ai_distill.workflows w LEFT JOIN'))return{rows:[{id:workflowId,source_key:'题目1',title:'项目名-题目1',acceptance_status:options.accepted===false?'waiting':'succeeded'}]};
   if(sql.includes('ordinal IN (4,7)'))return{rows:[{...question,id:questionId,workflow_id:workflowId,input:{redaction_attempt_id:'redaction',...(!options.withoutPrompt?{project_prompt:projectPrompt}:{})}},{...accepted,workflow_id:workflowId,result:{...accepted.result}}]};
   if(sql.includes("COALESCE(result->>'model_name',input->>'model_name')"))return{rows:[{id:'answer-id',model_name:'Qwen 3.8'}]};
-  if(sql.includes('JOIN ai_distill.artifacts redacted'))return{rows};
+  if(sql.includes("docx.kind='redacted_docx'"))return{rows};
   if(sql.startsWith('SELECT ar.id,ar.workflow_id'))return{rows:[{id:'docx-artifact',workflow_id:workflowId,attempt_id:'redaction',storage_path:storagePath,sha256:sha(docx),material_id:materialId,source_key:'题目1',material_root:join(root,'project','questions')}]};
   if(sql.includes('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=9'))return{rows:[{status:'succeeded'}]};
   if(sql.includes("ar.kind='redacted_markdown'"))return{rows:[{id:'redaction',status:'succeeded',input,result:{redacted_sha256:redactedSha},content:markdown,sha256:redactedSha}]};

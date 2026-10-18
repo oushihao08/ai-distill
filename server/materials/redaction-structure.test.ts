@@ -6,7 +6,7 @@ import {expect,test} from 'bun:test';
 import {mkdtemp,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {redactExtractedMaterials,filterRedactionFormatting,applyStructuredRedactions} from './redaction';
+import {redactExtractedMaterials,filterRedactionFormatting,applyStructuredRedactions,countStructuredRedactionFields} from './redaction';
 
 const config={provider:'api' as const,api:{provider:'openrouter' as const,base_url:'https://openrouter.ai/api/v1',model:'fixture-model'},prompt:'<任务>只输出纯文本并跳过无可转写页面。</任务><脱敏规则>姓名脱敏。</脱敏规则>'};
 const material=(text:string)=>({material_id:'material-a',source_sha256:'source-sha',pages:[{page:1,text,method:'ocr' as const,structure:[{id:'b1',kind:'paragraph' as const,text}]}]});
@@ -14,6 +14,15 @@ const response=(request:any,redactionsFor:(target:{target_id:string;text:string}
  const input=JSON.parse(request.messages.at(-1).content),fields=input.targets.map((target:any)=>({target_id:target.target_id,redactions:redactionsFor(target)}));
  return{text:JSON.stringify({fields}),usage:null,duration_ms:1,call_id:request.call_id,completion_id:null};
 };
+
+test('大题预算字段计数与结构化脱敏实际目标一致',()=>{
+ const mixed={material_id:'material-b',source_sha256:'source-sha',pages:[{page:1,text:'正文',method:'ocr' as const,structure:[
+  {id:'p',kind:'paragraph' as const,text:'正文'},
+  {id:'list',kind:'list' as const,items:['列表一','列表二']},
+  {id:'empty',kind:'paragraph' as const,text:''},
+ ]}]};
+ expect(countStructuredRedactionFields([mixed])).toBe(3);
+});
 
 test('精确编号匹配不扩大到删除标点后相同的其他编号或小数',async()=>{
  const result=await redactExtractedMaterials({directory:'unused',materials:[material('编号12-34，其他1234，金额12.34元')],config,executeApi:async request=>response(request,()=>[{source_text:'12-34',mask_text:'12-34',kind:'identifier'}])});
@@ -170,7 +179,7 @@ test('structured API batches combine adjacent pages and preserve their original 
  expect(seen).toEqual([['第1页','第2页']]);
 });
 
-test('an oversized batch that fails twice is split without restarting completed fields',async()=>{
+test('an incomplete oversized batch is split immediately without restarting completed fields',async()=>{
  const blocks=Array.from({length:32},(_,index)=>({id:`b${index}`,kind:'paragraph' as const,text:`字段${index}`}));
  const source={material_id:'material-a',source_sha256:'source-sha',pages:[{page:1,text:blocks.map(block=>block.text).join('\n'),method:'ocr' as const,structure:blocks} as any]};
  const sizes:number[]=[];
@@ -179,7 +188,7 @@ test('an oversized batch that fails twice is split without restarting completed 
   if(size===32)throw Object.assign(new Error('incomplete response'),{kind:'invalid_response',reason_code:'incomplete_finish_reason'});
   return response(request);
  }});
- expect(sizes).toEqual([32,32,16,16]);
+ expect(sizes).toEqual([32,16,16]);
  expect(result.materials[0]?.pages[0]?.structure).toEqual(blocks);
 });
 

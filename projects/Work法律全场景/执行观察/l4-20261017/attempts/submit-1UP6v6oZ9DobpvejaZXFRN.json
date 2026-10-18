@@ -1,0 +1,28 @@
+{
+  "id": "submit-1UP6v6oZ9DobpvejaZXFRN",
+  "item_id": "bc42beb1-ad56-4d22-ad25-af0229dd0403",
+  "stage_id": "submit",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-17T07:10:00Z",
+  "finished_at": null,
+  "inputs": [],
+  "configuration": {},
+  "changes_from_previous": [],
+  "external_ids": {
+    "source": "receipt/API state"
+  },
+  "environment": {
+    "target": "local/API or Siriser UI",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "status reconciliation",
+      "result": "Siriser平台提交成功；平台显示验收中",
+      "evidence": "上传成功-L4房屋买卖-bc42beb1.md; GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+    }
+  ],
+  "error": null
+}

@@ -60,7 +60,7 @@ export async function enqueueScore(pool:Pool,id:string){
   const hooks=needsHooks?await freezeStageHooks(dirname(w.local_skill_path),config.workflow):undefined;
   for(const answerId of answerIds){
    const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];buildAnonymousInput(context);
-   const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
+   const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider,context.scoring_policy?.contract),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
@@ -145,12 +145,15 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
   const before=await pool.connect();try{await before.query('BEGIN');if(!await stillCurrent(before,job))throw new Error('obsolete');await before.query('COMMIT');}catch(error){await before.query('ROLLBACK');throw error;}finally{before.release();}
   const config=job.config;
   const executionProvider=config?.provider==='api'?'api':'codex';
-  if(job.input.execution_instructions&&scoreExecutionDigest(executionProvider,job.input.execution_instructions)!==scoreExecutionDigest(executionProvider))throw new Error('评分执行指令已变化，请重新派发评分');
+  // 旧无核对正文的队列继续原协议；新任务校验冻结正文，不在执行时给旧任务补新指令。
+  const frozenReading=job.input.execution_instructions?.model_report_reading_instructions;
+  const currentInstructions=scoreExecutionInstructions(executionProvider,frozenReading!==undefined?job.input.context.scoring_policy?.contract:undefined);
+  if(job.input.execution_instructions&&scoreExecutionDigest(executionProvider,job.input.execution_instructions)!==scoreExecutionDigest(executionProvider,currentInstructions))throw new Error('评分执行指令已变化，请重新派发评分');
   if(executionProvider==='codex'&&(typeof config.model!=='string'||!config.model.trim()||typeof config.reasoning_effort!=='string'||!['low','medium','high','xhigh','max','ultra'].includes(config.reasoning_effort)))throw new Error('invalid frozen config');
   if(executionProvider==='api'&&(!config.api||typeof config.api.model!=='string'))throw new Error('invalid frozen config');
   failurePhase='agent_execution';
   const hookContext={pool,attempt_id:job.id,workflow_id:job.workflow_id,stage:'scoring' as const,binding_digest:createHash('sha256').update(canonicalJson({input:job.input.digest,config:job.config})).digest('hex'),input:{files:buildScoreFiles(buildAnonymousInput({...job.input.context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined}))},hooks:job.input.hooks,signal};
-  const invocation=await executeWithStageHooks({...hookContext,runMain:additions=>runExternalCall({attempt_id:job.id,operation:'score'},call_id=>grade(job.input.context,executionProvider==='api'?{hook_additions:additions,config:config.api,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:1800000}:{hook_additions:additions,root:join(directory,'private'),model:config.model,reasoning_effort:config.reasoning_effort,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],signal,call_id,timeout_ms:1800000})),outputForHooks:value=>({raw_text:value.raw_text??'',report:value.report})});
+  const invocation=await executeWithStageHooks({...hookContext,runMain:additions=>runExternalCall({attempt_id:job.id,operation:'score'},call_id=>grade(job.input.context,executionProvider==='api'?{hook_additions:additions,config:config.api,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],model_report_reading_instructions:frozenReading??'',signal,call_id,timeout_ms:1800000}:{hook_additions:additions,root:join(directory,'private'),model:config.model,reasoning_effort:config.reasoning_effort,step_prompt:job.input.context.step_prompt??config.prompt??DEFAULT_STEP_PROMPTS[6],model_report_reading_instructions:frozenReading??'',signal,call_id,timeout_ms:1800000})),outputForHooks:value=>({raw_text:value.raw_text??'',report:value.report})});
   if(signal?.aborted)throw new Error('cancelled');
   failurePhase='result_validation';
   const isModelReport=job.input.context.scoring_policy?.contract==='model_report_v1';

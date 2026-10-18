@@ -178,6 +178,43 @@ test('malformed ID and cross-origin mutations are rejected before DB access', as
  } catch (error) { throw error; }
 });
 
+test('project deletion removes library snapshot references before artifacts and retains archive audit events',async()=>{
+ const statements:string[]=[];
+ const client={query:async(sql:string)=>{
+  statements.push(sql);
+  if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
+  if(sql.startsWith('SELECT pg_try_advisory_xact_lock'))return{rows:[{acquired:true}],rowCount:1};
+  if(sql.startsWith('SELECT id FROM ai_distill.workflows'))return{rows:[{id:'workflow'}],rowCount:1};
+  if(sql.includes('to_regclass(\'ai_distill.question_library_sources\')'))return{rows:[{available:true}],rowCount:1};
+  return{rows:[],rowCount:1};
+ },release(){}};
+ const pool={connect:async()=>client,query:client.query} as unknown as Pool,app=createApp(pool,tmpdir());
+ const response=await app.request(`/api/projects/${projectId}`,{method:'DELETE'});
+ expect(response.status).toBe(200);expect(await response.json()).toEqual({deleted:true});
+ const detachSource=statements.findIndex(sql=>sql.startsWith('DELETE FROM ai_distill.question_library_sources'));
+ const deleteArtifacts=statements.findIndex(sql=>sql.startsWith('DELETE FROM ai_distill.artifacts'));
+ expect(detachSource).toBeGreaterThan(-1);expect(detachSource).toBeLessThan(deleteArtifacts);
+ expect(statements.some(sql=>sql.startsWith('UPDATE ai_distill.project_library_packages SET removed_at'))).toBe(true);
+ expect(statements.some(sql=>sql.startsWith('DELETE FROM ai_distill.workflow_publication_events'))).toBe(false);
+});
+
+test('project deletion remains compatible before the optional library schema is installed',async()=>{
+ const statements:string[]=[];
+ const client={query:async(sql:string)=>{
+  statements.push(sql);
+  if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
+  if(sql.startsWith('SELECT pg_try_advisory_xact_lock'))return{rows:[{acquired:true}],rowCount:1};
+  if(sql.startsWith('SELECT id FROM ai_distill.workflows'))return{rows:[],rowCount:0};
+  if(sql.includes('to_regclass(\'ai_distill.question_library_sources\')'))return{rows:[{available:false}],rowCount:1};
+  return{rows:[],rowCount:1};
+ },release(){}};
+ const pool={connect:async()=>client,query:client.query} as unknown as Pool,app=createApp(pool,tmpdir());
+ const response=await app.request(`/api/projects/${projectId}`,{method:'DELETE'});
+ expect(response.status).toBe(200);
+ expect(statements.some(sql=>sql.startsWith('UPDATE ai_distill.project_library_packages'))).toBe(false);
+ expect(statements.some(sql=>sql.startsWith('DELETE FROM ai_distill.question_library_sources'))).toBe(false);
+});
+
 
 test('unscored timeout projections expose only aggregate evidence, never answer or reasoning text',async()=>{
  const projection=stepResultProjection('s',false);

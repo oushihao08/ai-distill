@@ -1,0 +1,63 @@
+{
+  "id": "A005",
+  "item_id": "l3-e525",
+  "stage_id": "redaction",
+  "previous_attempt_id": "A004",
+  "status": "failed",
+  "started_at": "2026-10-18T05:07:23.855Z",
+  "finished_at": "2026-10-18T06:07:33.012Z",
+  "inputs": [
+    {
+      "ref": "e525eb15-7b5f-435e-a34e-10e42ebdce77",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "worker_mode": "local",
+    "material_execution_target": "local",
+    "task_timeout_ms": 3600000,
+    "resume_checkpoint": true,
+    "code_change": "停滞期限按阶段/请求活动刷新，字段检查点时间独立保留",
+    "last_confirmed_completed_fields": 3629,
+    "total_fields": 3951,
+    "request_count": 45,
+    "retry_count": 25,
+    "deadline_at": "2026-10-18T06:07:25.013Z",
+    "terminal_reason_code": "redaction_task_timeout",
+    "last_confirmed_progress_at": "2026-10-18T06:07:33.012Z"
+  },
+  "changes_from_previous": [
+    "使用修复后的本机worker；仅续跑该材料包当前失败的脱敏，不修改材料、模型、提示词或其他题目。"
+  ],
+  "external_ids": {
+    "attempt_id": "1735e170-be34-44a2-98b7-b011d14616c6"
+  },
+  "environment": {
+    "target": "local",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "api_status",
+      "result": "API确认步骤9新attempt已启动；等待脱敏终态。",
+      "evidence": "GET /api/monitor 与 GET /api/projects/:id/workflow-status"
+    },
+    {
+      "kind": "checkpoint_progress",
+      "result": "本地安全检查点已提交1945个字段；未读取或输出字段内容。",
+      "evidence": "只读统计本地redaction-checkpoints JSON字段数；workflow-status仍为running"
+    },
+    {
+      "kind": "api_status",
+      "result": "2026-10-18T06:07:33.012Z终态failed；检查点3629/3951，45请求/25重试。",
+      "evidence": "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e525eb15-7b5f-435e-a34e-10e42ebdce77"
+    }
+  ],
+  "error": {
+    "reason_code": "redaction_task_timeout",
+    "summary": "固定任务期限到达后attempt失败；保留3629/3951字段检查点。",
+    "capture": "redacted"
+  }
+}

@@ -7,9 +7,10 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
-import {publishWorkflow} from './jobs';
+import {publishWorkflow,readPublicationHistory,withdrawPublication} from './jobs';
 import {acceptanceSourceDigest} from '../decisions/jobs';
 import {scanProjectPrompt} from '../rule-files';
+import {canonicalJson} from '../../shared/workflow-config';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 async function fixture(options:{withoutPrompt?:boolean}={}){
  const root=await mkdtemp(join(tmpdir(),'publish-test-'));const text='模型完整答案';
@@ -26,13 +27,26 @@ async function fixture(options:{withoutPrompt?:boolean}={}){
  const artifacts:{id:string|undefined;attempt_id:string|undefined;kind:string|undefined;storage_path:string|undefined;sha256:string;content?:string}[]=[];for(const [id,attempt,kind,body] of [['artifact-q','q1','authored_question','public question'],['artifact-a','a1','model_answer',text],['artifact-s','s1','score_report','public score'],['material','extract','redacted_markdown','脱敏材料']]){
   await writeFile(join(root,id!),body!);artifacts.push({id,attempt_id:attempt,kind,storage_path:id,sha256:hash(body!)});
  }
- const writes:{sql:string;values:unknown[]}[]=[];let previous:any=null;
+ const libraryFiles=[{library_file_id:'library-file',material_id:'material',source_sha256:hash('原件'),document_sha256:hash('结构'),source_artifact_id:'source-file',pages_artifact_id:'pages-file',position:1,original_name:'附件.docx'}];
+ const libraryIndex=JSON.stringify({format:'redacted-index-v2',redacted_sha256:hash('脱敏材料'),materials:[{material_id:'material',markdown:'脱敏材料',document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{type:'paragraph',text:'脱敏材料'}]}]},structure_sha256:'not-used'}]});
+ const libraryManifest={version:2,origin:{kind:'library_v1',package_id:'pkg',revision_id:'rev',redaction_id:'redact',source_digest:'d'.repeat(64)},files:libraryFiles,redacted_markdown:{artifact_id:'material',sha256:hash('脱敏材料')},redacted_index:{artifact_id:'library-index',sha256:hash(libraryIndex)}};
+ const librarySnapshotDigest=hash(canonicalJson(libraryManifest));
+ const writes:{sql:string;values:unknown[]}[]=[];let previous:any=null;let latestEventType:'archived'|'withdrawn'|null=null;
  const query=async(sql:string,values:unknown[]=[]):Promise<any>=>{
-  if(sql.startsWith('SELECT w.project_id'))return {rows:[{project_id:'project',title:'标题',material_root:join(root,'questions'),local_skill_path:skill}],rowCount:1};
+  if(sql.startsWith('SELECT p.material_backend'))return{rows:[{material_backend:(snapshot.question.input as any).material_origin?'library_v1':'legacy'}],rowCount:1};
+  if(sql.startsWith('SELECT s.snapshot_manifest'))return{rows:[{package_name:'标准材料包',snapshot_manifest:{version:2,files:libraryFiles,redacted_markdown:{artifact_id:'material',sha256:hash('脱敏材料')}}}],rowCount:1};
+  if(sql.startsWith('SELECT project_id,package_id,revision_id,redaction_id,source_digest,snapshot_manifest'))return{rows:[{project_id:'project',package_id:'pkg',revision_id:'rev',redaction_id:'redact',source_digest:'d'.repeat(64),snapshot_manifest:libraryManifest,snapshot_digest:librarySnapshotDigest,markdown_artifact_id:'material',index_artifact_id:'library-index'}],rowCount:1};
+  if(sql.startsWith('SELECT snapshot_manifest,redaction_id FROM ai_distill.question_library_sources'))return{rows:[{redaction_id:'redaction',snapshot_manifest:{files:libraryFiles,redacted_index:{artifact_id:'library-index'}}}],rowCount:1};
+  if(sql.startsWith('SELECT p.material_backend FROM ai_distill.workflows'))return{rows:[{material_backend:'library_v1'}],rowCount:1};
+  if(sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))return{rows:[{id:'material',kind:'redacted_markdown',attempt_id:null,sha256:hash('脱敏材料'),content:'脱敏材料'},{id:'library-index',kind:'redacted_index',attempt_id:null,sha256:hash(libraryIndex),content:libraryIndex}],rowCount:2};
+  if(sql.startsWith('SELECT id,content,sha256 FROM ai_distill.artifacts'))return{rows:[{id:'library-index',content:libraryIndex,sha256:hash(libraryIndex)}],rowCount:1};
+  if(sql.startsWith('SELECT w.project_id'))return {rows:[{project_id:'project',project_name:'项目',title:'标题',material_root:join(root,'questions'),local_skill_path:skill,status:'succeeded'}],rowCount:1};
   if(sql.startsWith('SELECT s.model_id'))return {rows:[{model_id:modelId,name:'Qwen',enabled:true,minimum_score:config.minimum_score_by_model[modelId],config:{provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'}}],rowCount:1};
   if(sql.startsWith('SELECT config'))return {rows:[{config}],rowCount:1};
   if(sql.startsWith('SELECT ordinal,status'))return {rows:[4,5,6,7].map(ordinal=>({ordinal,status:'succeeded'})),rowCount:4};
   if(sql.includes('ordinal=7')&&sql.startsWith('SELECT'))return {rows:[accepted],rowCount:1};
+  if(sql.startsWith('SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8')&&sql.includes('FOR UPDATE'))return {rows:[{id:'published',input:{material_provenance:{project_id:'project',workflow_id:'workflow',material_origin:{kind:'legacy',redaction_attempt_id:'extract'},materials:[{artifact_id:'material',sha256:hash('脱敏材料')}]}},result:{}}],rowCount:1};
+  if(sql.startsWith('SELECT event_type FROM ai_distill.workflow_publication_events'))return {rows:previous?[{event_type:latestEventType??'archived'}]:[],rowCount:previous?1:0};
   if(sql.includes('ordinal=8')&&sql.startsWith('SELECT'))return {rows:previous?[previous]:[],rowCount:previous?1:0};
   if(sql.startsWith('SELECT a.id,a.status,a.input,a.result'))return {rows:[q],rowCount:1};
   if(sql.startsWith('SELECT DISTINCT ON'))return {rows:[a],rowCount:1};
@@ -42,7 +56,7 @@ async function fixture(options:{withoutPrompt?:boolean}={}){
   if(sql.startsWith('INSERT')||sql.startsWith('UPDATE'))writes.push({sql,values});
   return {rows:[],rowCount:0};
  };
- return {root,skill,snapshot,accepted,artifacts,writes,pool:{query,connect:async()=>({query,release(){}})} as unknown as Pool,setPrevious:(value:any)=>{previous=value;}};
+ return {root,skill,snapshot,accepted,artifacts,writes,librarySnapshotDigest,pool:{query,connect:async()=>({query,release(){}})} as unknown as Pool,setPrevious:(value:any)=>{previous=value;},setLatestEvent:(value:'archived'|'withdrawn')=>{latestEventType=value;}};
 }
 async function publisher(){return publishWorkflow;}
 test('archive records the accepted version in the database without creating a published file',async()=>{
@@ -54,7 +68,44 @@ test('archive records the accepted version in the database without creating a pu
   expect(data).toHaveProperty('archived_at');expect(data).not.toHaveProperty('question');expect(data).not.toHaveProperty('reference_answer');
   expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
   expect(f.writes.some(row=>row.sql.includes("ordinal=8")&&row.sql.startsWith('UPDATE'))).toBe(true);
+ expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('archive provenance freezes project, library source version and redacted attachment identity',async()=>{
+ const f=await fixture();try{
+  (f.snapshot.question.input as any).material_origin={kind:'library_v1',package_id:'pkg',revision_id:'rev',redaction_id:'redact',snapshot_digest:f.librarySnapshotDigest};
+  f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);
+  const result=await publishWorkflow(f.pool,'workflow',f.root);expect(result.completed).toBe(true);
+  const attempt=f.writes.find(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;
+  const frozen=JSON.parse(String(attempt.values[2]));
+  expect(frozen.material_provenance).toEqual({project_id:'project',project_name:'项目',workflow_id:'workflow',workflow_title:'标题',material_origin:(f.snapshot.question.input as any).material_origin,materials:[{artifact_id:'material',sha256:hash('脱敏材料')}],standard_material_package_name:'标准材料包',source_files:[{file_id:'library-file',material_id:'material',original_name:'附件.docx',sha256:hash('原件')}]});
+  const event=f.writes.find(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))!;
+  expect(JSON.parse(String(event.values[5]))).toEqual(frozen.material_provenance);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('withdrawing archive clears only current publication and preserves the succeeded attempt',async()=>{
+ const f=await fixture();try{
+  const result=await withdrawPublication(f.pool,'workflow');expect(result.withdrawn).toBe(true);
+  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(true);
+  expect(f.writes.some(row=>row.sql.includes("SET implemented=true,status='waiting'")&&row.sql.includes('ordinal=8'))).toBe(true);
+  expect(f.writes.some(row=>row.sql.startsWith('DELETE FROM ai_distill.step_attempts'))).toBe(false);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('re-archiving after withdrawal restores current state and appends a new archive event',async()=>{
+ const f=await fixture();try{
+  f.setPrevious({id:'published',input:{material_provenance:{project_id:'project',workflow_id:'workflow',material_origin:{kind:'legacy',redaction_attempt_id:'extract'},materials:[]}},result:{source_digest:f.accepted.input.source_digest,acceptance_attempt_id:'accepted'}});
+  f.setLatestEvent('withdrawn');
+  const result=await publishWorkflow(f.pool,'workflow',f.root);
+  expect(result).toMatchObject({id:'published',reused:true,completed:true});
+  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events')&&row.values[4]==='archived')).toBe(true);
+  expect(f.writes.some(row=>row.sql.includes("SET implemented=true,status='succeeded'")&&row.sql.includes('ordinal=8'))).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('publication history remains readable after its workflow has been removed',async()=>{
+ let sql='';const pool={query:async(statement:string)=>{sql=statement;return{rows:[{workflow_id:'removed-workflow',workflow_title:null,workflow_exists:false,project_name:'项目',event_type:'archived'}]};}} as any;
+ const history=await readPublicationHistory(pool,'removed-workflow');
+ expect(history).toMatchObject([{workflow_id:'removed-workflow',workflow_exists:false,event_type:'archived'}]);
+ expect(sql).toContain('LEFT JOIN ai_distill.workflows w');
 });
 test.each(['changed_answer','changed_threshold','changed_file','changed_material'])('archive blocks %s without marking success',async mode=>{
  const publish=await publisher(),f=await fixture();try{

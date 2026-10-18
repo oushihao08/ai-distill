@@ -1,0 +1,50 @@
+{
+  "id": "A006",
+  "item_id": "focused-tests",
+  "stage_id": "quality-guards",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T16:51:20.021574+08:00",
+  "finished_at": "2026-10-18T16:51:20.021574+08:00",
+  "inputs": [
+    {
+      "ref": "docs/evidence/2026-10-18-doubao-library-real-flow.md",
+      "version": "four-failed-real-redactions",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "real_model_calls": false,
+    "quality_gate_relaxed": false
+  },
+  "changes_from_previous": [
+    "页眉/页脚/页码/旁注作为已知块保留原文，转换版本v3",
+    "同一提取质量校验用于派发及执行前，阻止付费调用后才23514失败",
+    "缓存测试区分健康缓存复用与带问题缓存复识别，不改当前process实现"
+  ],
+  "external_ids": {
+    "waiting_for_existing_attempt": "e9d2ff15-f469-4e74-bff5-78ac1e33aafc"
+  },
+  "environment": {
+    "target": "local code, offline replay, unit checks"
+  },
+  "artifacts": [
+    {
+      "ref": "evidence/A006-parser-replay.json",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "regression",
+      "result": "31 targeted tests and 141 downstream tests passed",
+      "evidence": "evidence/A006-verification.md"
+    },
+    {
+      "kind": "typecheck",
+      "result": "passed",
+      "evidence": "bun run check exit0"
+    }
+  ],
+  "error": null
+}

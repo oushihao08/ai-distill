@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "id": "shared-material-library-design-20261017",
+  "title": "独立共享材料库设计与实施",
+  "goal_ref": "docs/plans/2026-10-17-shared-material-library-design.md",
+  "scope": "材料库全局资源、跨项目加载与题目私有快照；旧流程保留。用户已确认隔离测试库并授权本地服务和合成验收；不调用真实模型。",
+  "completion_criteria": [
+    "D1 当前实现证据明确",
+    "D2 新增字段字典与约束完整",
+    "D3 架构衔接覆盖下游",
+    "D4 实施回退及验收方法具体",
+    "I1-I6 新库 schema、接口、任务、项目桥接、后半段和页面代码集成完成",
+    "新旧来源隔离，跨项目加载与题目私有快照规则有可执行验证证据",
+    "适用后端单测和安全隔离的数据库约束验证通过；未运行项明确列出"
+  ],
+  "items": [
+    {
+      "id": "design",
+      "title": "材料库详细设计",
+      "plan_ref": "docs/plans/2026-10-17-shared-material-library-design.md#本次任务与完成标准",
+      "stages": [
+        {
+          "id": "research",
+          "title": "D1 当前实现核对",
+          "state": "succeeded",
+          "outcome": "D1 当前源码和迁移已核对，在线约束未查询",
+          "attempt_id": "A001",
+          "observed_at": "2026-10-17T22:33:14+08:00",
+          "evidence": [
+            "migrations/035_material_package_questions.sql",
+            "server/material-package-questions.ts",
+            "server/authoring/jobs.ts",
+            "server/answer-models/jobs.ts",
+            "server/publishing/jobs.ts"
+          ]
+        },
+        {
+          "id": "specification",
+          "title": "D2 D3 数据和架构设计",
+          "state": "succeeded",
+          "outcome": "D2/D3 字段字典、接口、状态、事务和模块衔接文档已完成",
+          "attempt_id": "A002",
+          "observed_at": "2026-10-17T22:33:14+08:00",
+          "evidence": [
+            "docs/plans/2026-10-17-shared-material-library-design.md"
+          ]
+        },
+        {
+          "id": "review",
+          "title": "D4 设计审查和静态核对",
+          "state": "succeeded",
+          "outcome": "D4 设计静态核对完成：9表107字段、17条关系形状、17个本地引用、8阶段22验收；功能未实施",
+          "attempt_id": "A003",
+          "observed_at": "2026-10-17T22:34:29+08:00",
+          "evidence": [
+            "执行观察/shared-material-library-design-20261017/evidence/design-review.json",
+            "docs/plans/2026-10-17-shared-material-library-design.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "implementation",
+      "title": "独立共享材料库实施",
+      "plan_ref": "docs/plans/2026-10-17-shared-material-library-design.md#实施顺序、切换和回退",
+      "stages": [
+        {
+          "id": "design-gap-closure",
+          "title": "收口任务领取、归档竞态与导出绑定契约",
+          "state": "succeeded",
+          "outcome": "已把三处复判缺口写入实施契约：资源槽位先于领取；包-项目-加载关系统一锁序并最终复核；DOCX v2 manifest 绑定类型化来源与快照。",
+          "attempt_id": "A004",
+          "observed_at": "2026-10-17T22:41:13+08:00",
+          "evidence": [
+            "docs/plans/2026-10-17-shared-material-library-design.md"
+          ]
+        },
+        {
+          "id": "I1-schema-contract",
+          "title": "新增数据表、约束与共享契约",
+          "state": "succeeded",
+          "outcome": "042迁移、共享DTO和步骤适用集合已实现；静态核对9表107字段，相关步骤测试通过。迁移未执行，隔离PostgreSQL验证留待I7。",
+          "attempt_id": "A005",
+          "observed_at": "2026-10-17T22:49:54+08:00",
+          "evidence": [
+            "migrations/042_shared_material_library.sql",
+            "shared/material-library.ts",
+            "shared/step-registry.test.ts"
+          ]
+        },
+        {
+          "id": "I2-library-management",
+          "title": "材料库仓储、存储、服务与 API",
+          "state": "succeeded",
+          "outcome": "包管理、内容寻址上传、不可变 revision、幂等路由已实现并通过定向测试；数据库迁移未执行，API 运行未验证。",
+          "attempt_id": "A006",
+          "observed_at": "2026-10-17T23:14:56+08:00",
+          "evidence": [
+            "server/material-library/storage.ts",
+            "server/material-library/service.ts",
+            "server/material-library/routes.ts",
+            "server/material-library/service.test.ts",
+            "server/material-library/storage.test.ts"
+          ]
+        },
+        {
+          "id": "I3-processing-jobs",
+          "title": "入库、提取、脱敏任务及 worker 并发/日志",
+          "state": "succeeded",
+          "outcome": "材料库 runner、worker lane、取消/失租处理和安全监控摘要已集成；补正运行中取消终态并覆盖取消、过期租约和晚到结果隔离。运行数据库与实际 worker 仍未验证。",
+          "attempt_id": "A012",
+          "observed_at": "2026-10-17T23:57:16+08:00",
+          "evidence": [
+            "server/material-library/jobs.ts",
+            "server/material-library/runner.ts",
+            "server/worker.ts",
+            "server/monitoring/worker-monitor.ts",
+            "server/external-call.ts",
+            "server/material-library/jobs.test.ts",
+            "server/monitoring/worker-monitor.test.ts"
+          ]
+        },
+        {
+          "id": "I4-project-bridge",
+          "title": "项目加载关系与题目私有快照",
+          "state": "succeeded",
+          "outcome": "项目可加载共享包、选择可用脱敏结果并创建仅含 ordinal 4–8 的私有快照；跨项目加载与题目契约定向测试通过。",
+          "attempt_id": "A008",
+          "observed_at": "2026-10-17T23:50:08+08:00",
+          "evidence": [
+            "server/material-library/projects.ts",
+            "server/material-library/questions.ts",
+            "server/question-materials.ts",
+            "server/material-library/projects.test.ts",
+            "server/material-library/questions.test.ts"
+          ]
+        },
+        {
+          "id": "I5-downstream",
+          "title": "出题、作答、评分、归档及 DOCX/Excel/项目交付",
+          "state": "succeeded",
+          "outcome": "出题、作答、评分、归档、DOCX/Excel 已按 library_v1/legacy 类型化分流；归档冻结材料来源及项目/题目身份，撤回保留历史且可重归档；项目清理来源快照和运行工作流后材料库仍能显示审计历史，并区分题目已删除。旧 schema 下项目删除继续兼容。",
+          "attempt_id": "A013",
+          "observed_at": "2026-10-17T23:58:57+08:00",
+          "evidence": [
+            "server/authoring/jobs.ts",
+            "server/answer-models/jobs.ts",
+            "server/scoring/context.ts",
+            "server/publishing/jobs.ts",
+            "server/materials/redacted-docx-export.ts",
+            "server/reporting/export.ts",
+            "server/publishing/jobs.test.ts"
+          ]
+        },
+        {
+          "id": "I6-ui-operations",
+          "title": "材料库/项目/题目界面、监控与维护文档",
+          "state": "succeeded",
+          "outcome": "初次材料库/项目界面代码在A010集成；后续文件夹导入、设置、预览和任务维护入口的补齐及浏览器验证，见I7的A019/A026/A027记录。",
+          "attempt_id": "A010",
+          "observed_at": "2026-10-18T09:19:56.972412+08:00",
+          "evidence": [
+            "web/src/views/MaterialLibraryView.vue",
+            "web/src/components/ProjectLibraryMaterials.vue",
+            "web/src/views/ProjectDetail.vue",
+            "web/src/views/WorkflowDetail.vue",
+            "web/src/views/README.md",
+            "web/src/components/README.md"
+          ]
+        },
+        {
+          "id": "I7-verification",
+          "title": "针对性测试、隔离数据库约束与端到端验证审查",
+          "state": "succeeded",
+          "outcome": "本轮代码集成及授权的隔离合成验收通过：334测试/完整check、6项真实DB约束、API/worker/浏览器、模拟下游DOCX/XLSX、归档撤回及竞态和删除隔离。真实模型、原生目录选择和远端验收未执行。",
+          "attempt_id": "A027",
+          "observed_at": "2026-10-18T09:19:56.972412+08:00",
+          "evidence": [
+            "执行观察/shared-material-library-design-20261017/evidence/A027-completion.json",
+            "执行观察/shared-material-library-design-20261017/evidence/A027-db-constraints.json"
+          ]
+        }
+      ]
+    }
+  ],
+  "next_actions": [],
+  "updated_at": "2026-10-18T09:19:56.972412+08:00"
+}

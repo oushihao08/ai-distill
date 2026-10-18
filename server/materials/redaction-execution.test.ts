@@ -1,6 +1,6 @@
 /** 验证脱敏执行预算校验及 DeepSeek 默认配置，不读取环境凭证、不调用模型。 */
 import {expect,test} from 'bun:test';
-import {DEFAULT_REDACTION_EXECUTION,resolveRedactionExecution,estimateRedactionTokens} from './redaction-execution';
+import {DEFAULT_REDACTION_EXECUTION,resolveRedactionExecution,estimateRedactionTokens,taskTimeoutForRedactionFieldCount} from './redaction-execution';
 import {readModelApiDefaults} from '../llm-api/config';
 import {mergeRedactionDefaults} from './redaction-config';
 test('脱敏统一默认是DeepSeek V4.1 Flash并关闭思考',()=>{
@@ -16,4 +16,11 @@ test('预算拒绝无界并发、非法时限及未知字段',()=>{
  expect(resolveRedactionExecution({concurrency:2,max_calls:3})).toMatchObject({concurrency:2,max_calls:3});
  expect(DEFAULT_REDACTION_EXECUTION.concurrency).toBe(8);
  expect(estimateRedactionTokens('姓名张三')).toBeGreaterThan(estimateRedactionTokens('abcd'));
+});
+test('大批量脱敏按已观测处理速率扩展整题时限并封顶三倍',()=>{
+ expect(taskTimeoutForRedactionFieldCount(1_200_000,1_500,1)).toBe(1_200_000);
+ expect(taskTimeoutForRedactionFieldCount(1_200_000,1_501,1)).toBe(2_400_000);
+ expect(taskTimeoutForRedactionFieldCount(1_200_000,3_951,1)).toBe(3_600_000);
+ expect(taskTimeoutForRedactionFieldCount(1_200_000,20_000,1)).toBe(3_600_000);
+ expect(taskTimeoutForRedactionFieldCount(1_200_000,3_951,8)).toBe(1_200_000);
 });

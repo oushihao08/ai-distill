@@ -1,0 +1,36 @@
+{
+  "id": "bffcb610-8e47-479b-8d56-c01840063347",
+  "item_id": "23bd0d15-868c-4eab-8b89-e59594dc7139",
+  "stage_id": "5",
+  "status": "running",
+  "started_at": "2026-10-17T09:17:56.144Z",
+  "finished_at": null,
+  "inputs": [
+    {
+      "ref": "L2合伙题新题面与允许的脱敏材料",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "target": "local API worker",
+    "source": "frozen workflow answer config; not re-read in this turn"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "workflow_id": "23bd0d15-868c-4eab-8b89-e59594dc7139",
+    "attempt_id": "bffcb610-8e47-479b-8d56-c01840063347"
+  },
+  "environment": {
+    "target": "local"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "API attempt status",
+      "result": "running",
+      "evidence": "GET /api/attempts/bffcb610-8e47-479b-8d56-c01840063347?view=status"
+    }
+  ],
+  "error": null
+}

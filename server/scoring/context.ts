@@ -11,6 +11,7 @@ import {validateScore,extractModelReport,scoreRubricSnapshot,scoreRubricBindingT
 import {readProjectPrompt,scanProjectPrompt,verifyRuleSnapshot} from '../rule-files';
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
 import {dirname} from 'node:path';
+import {readQuestionMaterials} from '../question-materials';
 // Inputs come from persisted successful attempts, never from the submitted score report.
 export async function readScoreContext(db:PoolClient,workflowId:string,attemptId:string,legacyRules=false,legacyProjectPrompt=false):Promise<ScoreContext>{
  try{
@@ -45,9 +46,12 @@ export async function readScoreContext(db:PoolClient,workflowId:string,attemptId
   }
   if(!input||!result||!Array.isArray(input.materials)||!Array.isArray(input.attachments)||typeof result.text!=='string')throw new HTTPException(409,{message:'作答留存不完整'});
   // 作答提示词参与输入绑定，但不发送给评分模型；旧尝试没有该字段时保留旧摘要。
-  const snapshot={question_version:input.question_version,question:input.question,materials:input.materials,attachments:input.attachments,...(typeof input.system_prompt==='string'?{system_prompt:input.system_prompt}:{}),...(input.presentation?{presentation:input.presentation}:{})};
+  const snapshot={question_version:input.question_version,question:input.question,materials:input.materials,attachments:input.attachments,...(typeof input.system_prompt==='string'?{system_prompt:input.system_prompt}:{}),...(input.presentation?{presentation:input.presentation}:{}),...(input.material_origin?{material_origin:input.material_origin}:{})};
+  const materialOriginMatches=input.material_origin
+   ?canonicalJson((await readQuestionMaterials(db,workflowId)).origin)===canonicalJson(input.material_origin)
+   :true;
   const answer_sha256=createHash('sha256').update(result.text).digest('hex');
-  if((input.presentation&&canonicalJson(question.presentation)!==canonicalJson(input.presentation))||author.id!==input.question_attempt_id||question.question_version!==input.question_version||question.question!==input.question||JSON.stringify(question.attachment_ids)!==JSON.stringify(input.attachments.map((a:any)=>a.id))||!matchesInputDigest(snapshot,input.input_digest)||result.input_digest!==input.input_digest||result.answer_sha256!==answer_sha256)throw new HTTPException(409,{message:'题目、附件或作答版本不一致'});
+  if(!materialOriginMatches||(input.presentation&&canonicalJson(question.presentation)!==canonicalJson(input.presentation))||author.id!==input.question_attempt_id||question.question_version!==input.question_version||question.question!==input.question||JSON.stringify(question.attachment_ids)!==JSON.stringify(input.attachments.map((a:any)=>a.id))||!matchesInputDigest(snapshot,input.input_digest)||result.input_digest!==input.input_digest||result.answer_sha256!==answer_sha256)throw new HTTPException(409,{message:'题目、附件或作答版本不一致'});
   const context:ScoreContext={project_name:w.project_name,question_id:w.source_key||w.title,binding:{question_version:question.question_version,input_digest:input.input_digest,rubric_version,rubric_digest:createHash('sha256').update(scoreRubricBindingText(rubric,scoring_policy)).digest('hex'),answer_attempt_id:attemptId,answer_sha256},question:input.question,materials:input.materials,answer:result.text,...(input.presentation?{answer_presentation:input.presentation}:{}),rubric,...(scoring_policy?{scoring_policy}:{}),answer_approach:author.result.answer_approach,reference_answer:author.result.reference_answer,...(projectContext?{project_prompt:projectContext}:{}),...(projectRules?{project_rules:projectRules}:{})};
   return context;
  }catch(error){if(error instanceof AnswerInputError)throw new HTTPException(409,{message:error.message});throw error;}

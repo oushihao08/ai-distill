@@ -1,0 +1,51 @@
+{
+  "id": "A026",
+  "item_id": "implementation",
+  "stage_id": "I7-verification",
+  "previous_attempt_id": "A025",
+  "status": "succeeded",
+  "started_at": "2026-10-18T09:09:15.539919+08:00",
+  "finished_at": "2026-10-18T09:13:02.757802+08:00",
+  "inputs": [
+    {
+      "ref": "执行观察/shared-material-library-design-20261017/evidence/A025-job-faults.json",
+      "version": "cancelled-lease-retry",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "scope": "任务详情UI查看错误与显式重试；共享worker不停止",
+    "real_model_calls": false
+  },
+  "changes_from_previous": [
+    "增加LibraryJobHistory详情/取消/重试入口",
+    "只投影重试和取消所需身份字段，不返回配置或提示词",
+    "修复扩展4项失败与2项TS错误，86测试及全库check通过"
+  ],
+  "external_ids": {
+    "previous_job_id": "06a3bfa5-6e66-4bbf-b23b-6d5689c8c2d9",
+    "retry_job_id": "cfb8bf6a-fb6a-41a2-b490-274adf993503"
+  },
+  "environment": {
+    "target": "user-confirmed-disposable-test-db"
+  },
+  "artifacts": [
+    {
+      "ref": "执行观察/shared-material-library-design-20261017/evidence/A026-retry-result.json",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "real_browser_and_worker",
+      "result": "passed",
+      "evidence": "页面从取消任务显式重试得到cfb8bf6a，实际worker提取成功；刷新状态后弹窗仍显示相同成功任务。捕获0 errors。"
+    },
+    {
+      "kind": "targeted_tests",
+      "result": "passed",
+      "evidence": "19 tests / 61 expectations；此前86项回归及完整check通过。"
+    }
+  ],
+  "error": null
+}

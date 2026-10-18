@@ -7,7 +7,13 @@ export type {RedactionProgress} from '../../shared/types';
 // Fixed per-task ceiling matches the shared API worker's default 8 slots; the global gate still caps
 // aggregate traffic, so one task can use otherwise-idle capacity without creating unbounded requests.
 // These are operating bounds, not a provider-speed promise. Queue time is included in request/task deadlines.
-export const DEFAULT_REDACTION_EXECUTION:Readonly<RedactionExecutionPolicy>=Object.freeze({max_fields:256,max_characters:10000,max_input_tokens:12000,max_output_tokens:16384,concurrency:8,queue_timeout_ms:45000,request_timeout_ms:180000,task_timeout_ms:1200000,stall_timeout_ms:360000,max_calls:0});
+export const DEFAULT_REDACTION_EXECUTION:Readonly<RedactionExecutionPolicy>=Object.freeze({max_fields:256,max_characters:10000,max_input_tokens:12000,max_output_tokens:32768,concurrency:8,queue_timeout_ms:45000,request_timeout_ms:60000,task_timeout_ms:1200000,stall_timeout_ms:360000,max_calls:0});
+/** Large low-concurrency jobs need a wall-clock budget proportional to their observed field throughput. */
+export function taskTimeoutForRedactionFieldCount(baseTimeoutMs:number,totalFields:number,concurrency:number):number{
+ if(!Number.isSafeInteger(baseTimeoutMs)||baseTimeoutMs<1||!Number.isSafeInteger(totalFields)||totalFields<0||!Number.isSafeInteger(concurrency)||concurrency<1||concurrency>8)throw new Error('脱敏字段数、并发或任务时限无效');
+ const multiplier=concurrency===1?Math.min(3,Math.max(1,Math.ceil(totalFields/1500))):1;
+ return Math.max(baseTimeoutMs,Math.min(3*DEFAULT_REDACTION_EXECUTION.task_timeout_ms,baseTimeoutMs*multiplier));
+}
 export function resolveRedactionExecution(value:Partial<RedactionExecutionPolicy>={}):RedactionExecutionPolicy{
  if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!Object.hasOwn(DEFAULT_REDACTION_EXECUTION,key)))throw new Error('脱敏执行预算无效');
  const policy={...DEFAULT_REDACTION_EXECUTION,...value};

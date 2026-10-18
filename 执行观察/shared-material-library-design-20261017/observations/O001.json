@@ -1,0 +1,37 @@
+{
+  "id": "O001",
+  "kind": "result",
+  "status": "resolved",
+  "title": "设计审查补齐的必要边界",
+  "item_ids": [
+    "design"
+  ],
+  "attempt_ids": [
+    "A001",
+    "A002"
+  ],
+  "facts": [
+    "旧materials/steps/step_attempts/artifacts仍用于新题私有快照与后半段，不能整表退役",
+    "当前规则工作区部分由material_root推导，新项目需显式workspace_path",
+    "ExternalCallContext当前必填attempt_id，新库调用需明确库任务身份分支",
+    "创建材料版本和建题请求应有独立request_key及request_digest列"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "docs/plans/2026-10-17-shared-material-library-design.md",
+    "server/external-call.ts",
+    "server/authoring/jobs.ts",
+    "server/rule-files.ts"
+  ],
+  "impact": "已修正设计；这些发现不代表相关代码已实施",
+  "updates": [
+    {
+      "at": "2026-10-17T22:33:14+08:00",
+      "action": "写入方案字段、约束、衔接与退役章节",
+      "result": "设计文本已覆盖"
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-17T22:33:14+08:00",
+  "updated_at": "2026-10-17T22:33:14+08:00"
+}

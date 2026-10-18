@@ -198,6 +198,15 @@ test('project task inputs preserve skill files and put task instructions before 
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
+test('library question accepts relative source manifest paths used only as display metadata',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'author-library-source-path-'));
+ try{
+  const task=options(root,async()=>{throw new Error('unexpected');});
+  const result=await runAuthoring({...task,source_files:[{name:'(2023)渝0104民初2679号.pdf',path:'91239d42/redacted_markdown.md'}],execute:async call=>finish(call,{result:call.validate(draft),session_id:'fixture',usage:null,duration_ms:1})});
+  expect(result.package_text).toContain('(2023)渝0104民初2679号.pdf');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
 test('ordinary authoring cannot include unrelated project materials as task inputs',async()=>{
  const root=await mkdtemp(join(tmpdir(),'author-skill-only-'));let called=false;
  try{const task=options(root,async()=>{called=true;throw new Error('unexpected');});await expect(runAuthoring({...task,project_context:{source_digest:'a'.repeat(64),files:[{path:'materials/old-question.md',text:'历史题目'}]}})).rejects.toThrow('仅接受指定skill');expect(called).toBe(false);}

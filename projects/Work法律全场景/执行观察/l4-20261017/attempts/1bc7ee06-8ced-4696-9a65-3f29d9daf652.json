@@ -1,0 +1,36 @@
+{
+  "id": "1bc7ee06-8ced-4696-9a65-3f29d9daf652",
+  "item_id": "23bd0d15-868c-4eab-8b89-e59594dc7139",
+  "stage_id": "5",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-17T08:56:00.227Z",
+  "finished_at": "2026-10-17T09:02:25.456Z",
+  "inputs": [],
+  "configuration": {
+    "dispatch": "L2合伙题模型作答",
+    "channel": "api"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "api_attempt_id": "1bc7ee06-8ced-4696-9a65-3f29d9daf652"
+  },
+  "environment": {
+    "target": "local API",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "attempt_status",
+      "result": "running at 2026-10-17 16:56 Asia/Shanghai",
+      "evidence": "GET /api/monitor and project workflow status"
+    },
+    {
+      "kind": "api_status",
+      "result": "succeeded",
+      "evidence": "GET /api/attempts/1bc7ee06-8ced-4696-9a65-3f29d9daf652?view=status"
+    }
+  ],
+  "error": null
+}

@@ -1,7 +1,7 @@
 /**
  * 职责：匿名评分执行器：准备题面、rubric、附件与匿名答案，通过独立临时文件向 Codex 会话提供材料，保存评分原文并在返回后提取总分。
  * 关键方法与用途：`buildAnonymousInput()` 白名单化并匿名化内部评分上下文；`runIndependentScore()` 在隔离 Codex 会话评分；`buildScoreFiles()` 生成实际提供给模型的文件；`buildScoreMessage()` 说明文件与提示词；`scoreSchema` 保留旧报告兼容。
- * 使用场景：由评分 worker 调用；评分模型不接收作答思路、标准答案、目标分或作答模型身份。
+ * 使用场景：由评分 worker 调用；不提供思路、目标分或作答模型身份，标准答案仅按显式校准政策提供。
  */
 import {mkdir,realpath,readFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
@@ -25,6 +25,15 @@ const string={type:'string'};
 const object=(properties:Record<string,unknown>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
 export const scoreSchema=object({assessment_valid:{type:'boolean'},items:{type:'array',items:object({id:string,score:{type:'number'},reason:string,missing:{type:'boolean'},evidence:{type:'array',items:object({source:{type:'string',enum:['answer','question','material','rubric']},quote:string,material_index:{type:['integer','null']}})}})},total:{type:'number'},max_score:{type:'number'},disputes:{type:'array',items:string}});
 export const SCORE_TASK_PROMPT='';
+/** 新报告的证据核对方法；入队冻结正文，模型仍负责业务判断及原始成绩。 */
+const MODEL_REPORT_READING_INSTRUCTIONS=[
+ '核对顺序与来源边界：',
+ '先依据题面、Rubric、待评答案.txt和附件完成独立判断，再按本次政策使用校准参考答案。参考答案的事实、措辞和检索记录不代表候选完成过，不覆盖附件，也不增加唯一答案条件。',
+ '有文件工具时分段读取长文件；遇到omitted、truncated或其他省略提示，补读遗漏范围后再判断。一次cat、搜索结果截断或文件已列出都不证明全文已读完。无工具的API模式只核对本次实际提供的正文，不声称调用工具或读取未提供内容。',
+ '判“未找到”前，核对脱敏别名、同姓主体、案号空格／括号／星号、OCR格式及同一文书的不同版本，并回读相关段落。精确关键词没有命中不等于材料不存在；不能只凭姓名显示形式不同把真实案件判为编造。主体无法可靠区分时说明证据限度，不猜身份。',
+ '在每项reason中区分候选证据与核对依据：候选引文只从待评答案.txt逐字复制；材料、题面、Rubric或校准标答的引文注明实际文件及可定位位置。提交前回查引文确实位于所标来源；不得将校准标答的语句或访问记录写成候选证据。未找到时说明核对范围，不补造反证。',
+ 'Rubric与附件或适用规范冲突时，说明原判据、冲突来源及影响，不用标答覆盖事实、不擅改权重或计分口径；无法形成可靠比较指标时，按冻结规则保留不确定及原因。将工具未执行、事实／法律判断错误和调用失败分别说明，不把能力限制当已完成，也不把技术失败当有效零分。',
+].join('\n');
 /** 文件只在 Codex 的系统临时工作区生成，不写入持久化评分目录。 */
 export function buildScoreFiles(input:ReturnType<typeof buildAnonymousInput>){
  return [
@@ -37,12 +46,12 @@ export function buildScoreFiles(input:ReturnType<typeof buildAnonymousInput>){
  ];
 }
 /** 仅说明文件用途、完整阅读要求及用户原样评分提示词。 */
-export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>){
+export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>,readingInstructions=MODEL_REPORT_READING_INSTRUCTIONS){
  const rubricIds=input.rubric.map(item=>item.id);
  const presentationNote=input.answer_presentation?'完整读取本次文字呈现约定.txt，结合本次实际执行边界评价；不改变原Rubric。':'';
  if(input.scoring_policy?.contract==='model_report_v1')return [
   ...(presentationNote?[presentationNote]:[]),'题面与评分标准：题面与评分标准.txt',`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,'待评分答案：待评答案.txt',
-  '完整读取上述文件，依据本次冻结项目规则逐项独立判断并说明答案证据。每项失分指出本条实际要求及答案中的缺失或错误，不增设目录前缀、措辞或标答唯一表达等条件。必要材料已实际提供时，模型漏读、误读或未答按有效Rubric评价，不反推为出题缺陷；技术调用失败不能当作有效零分。',input.step_prompt??'',`本题冻结项目规则：\n${input.scoring_policy.rules_text}`,
+  '完整读取上述文件，依据本次冻结项目规则逐项独立判断并说明答案证据。每项失分指出本条实际要求及答案中的缺失或错误，不增设目录前缀、措辞或标答唯一表达等条件。必要材料已实际提供时，模型漏读、误读或未答按有效Rubric评价，不反推为出题缺陷；技术调用失败不能当作有效零分。',...(readingInstructions?[readingInstructions]:[]),input.step_prompt??'',`本题冻结项目规则：\n${input.scoring_policy.rules_text}`,
   input.scoring_policy.reference_answer==='calibration'?'校准参考答案：校准参考答案.txt。仅用于结构、字段和数量级校准；不得当作唯一答案键，不得因候选措辞、顺序或同等有效方案不同而扣分。Rubric是计分依据。':'不提供参考答案。',
   `本题条目ID（每个恰好一次，不增加或删改）：${JSON.stringify(rubricIds)}`,
   '算术工具：计分条目.json直接来自本次Rubric，不手抄权重。先完成逐项业务判断，把最终items保存为JSON，再执行python3 复算评分.py <该JSON路径>。工具只求实际加扣分之和、正项满分和净分比例，不判断业务或否决；仅在冻结规则采用净分/正项满分口径时，将net_percentage作为evaluation_percent。其他计分口径不能套用该比例。无工具的API模式如实按冻结规则核算，不声称执行脚本。正文与最终JSON必须对应同一组items；不要在工具计算后改动条目却沿用旧汇总。',
@@ -66,12 +75,14 @@ function collectScore(text:string,context:ScoreContext,binding:ScoreContext['bin
  return {score_extraction:extraction,report:{binding,total:extraction.total,max_score:extraction.max_score} as Record<string,unknown>};
 }
 /** 配置界面与实际执行共用同一指令来源，不以当前指令冒充历史快照。 */
-export function scoreExecutionInstructions(provider:'codex'|'api'='codex'){return {provider,developer_instructions:'',task_prompt:SCORE_TASK_PROMPT,input_format:provider==='api'?'inline_text_blind_v3':'separate_input_files_blind_v3',output_format:'text' as const,isolation_config:provider==='codex'?SCORE_ISOLATION_CONFIG:{}};}
+export function scoreExecutionInstructions(provider:'codex'|'api'='codex',contract?:string){return {provider,developer_instructions:'',task_prompt:SCORE_TASK_PROMPT,input_format:provider==='api'?'inline_text_blind_v3':'separate_input_files_blind_v3',output_format:'text' as const,isolation_config:provider==='codex'?SCORE_ISOLATION_CONFIG:{},...(contract==='model_report_v1'?{model_report_reading_instructions:MODEL_REPORT_READING_INSTRUCTIONS}:{})};}
 /** JSONB 不保留键顺序，绑定比较按固定字段与排序后的配置项计算。 */
 export function scoreExecutionDigest(provider:'codex'|'api'='codex',instructions=scoreExecutionInstructions(provider)){
- return hash(JSON.stringify([instructions.developer_instructions,instructions.task_prompt,instructions.input_format,instructions.output_format,Object.entries(instructions.isolation_config).sort(([a],[b])=>a.localeCompare(b))]));
+ const values:unknown[]=[instructions.developer_instructions,instructions.task_prompt,instructions.input_format,instructions.output_format,Object.entries(instructions.isolation_config).sort(([a],[b])=>a.localeCompare(b))];
+ if(instructions.model_report_reading_instructions!==undefined)values.push(instructions.model_report_reading_instructions);
+ return hash(JSON.stringify(values));
 }
-export async function runIndependentScore(context:ScoreContext,options:{root:string;model:string;reasoning_effort:string;step_prompt?:string;hook_additions?:HookAddition[];signal?:AbortSignal;timeout_ms?:number;call_id?:string;execute?:typeof runAgent}){
+export async function runIndependentScore(context:ScoreContext,options:{root:string;model:string;reasoning_effort:string;step_prompt?:string;model_report_reading_instructions?:string;hook_additions?:HookAddition[];signal?:AbortSignal;timeout_ms?:number;call_id?:string;execute?:typeof runAgent}){
  // 项目身份与旧项目文件元数据只用于队列绑定，不发送给评分 Agent。
  const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:scoringPrompt(context,options.step_prompt)});
  if(options.signal?.aborted)throw new Error('评分执行已取消');
@@ -81,9 +92,10 @@ export async function runIndependentScore(context:ScoreContext,options:{root:str
   await mkdir(resolve(options.root),{recursive:true,mode:0o700});
   const root=await realpath(resolve(options.root));
   directory=join(root,`score-${randomUUID()}`);await mkdir(directory,{mode:0o700});
-  const prompt=buildScoreMessage(input)+hookAdditionText(options.hook_additions);
+  const readingInstructions=options.model_report_reading_instructions??MODEL_REPORT_READING_INSTRUCTIONS;
+  const prompt=buildScoreMessage(input,readingInstructions)+hookAdditionText(options.hook_additions);
   const input_files=buildScoreFiles(input);
-  const execution_request={...scoreExecutionInstructions(),step_prompt:input.step_prompt,model:options.model,reasoning_effort:options.reasoning_effort,input_sha256:hash(JSON.stringify({stdin:prompt,input_files})),stdin:prompt,input_files:input_files.map(file=>({name:file.name,sha256:hash(file.text),size_bytes:Buffer.byteLength(file.text)}))};
+  const execution_request={...scoreExecutionInstructions(),...(input.scoring_policy?.contract==='model_report_v1'&&readingInstructions?{model_report_reading_instructions:readingInstructions}:{}),step_prompt:input.step_prompt,model:options.model,reasoning_effort:options.reasoning_effort,input_sha256:hash(JSON.stringify({stdin:prompt,input_files})),stdin:prompt,input_files:input_files.map(file=>({name:file.name,sha256:hash(file.text),size_bytes:Buffer.byteLength(file.text)}))};
   const invocation=await (options.execute??runAgent)({task_type:'independent_scoring',directory,prompt,model:options.model,reasoning_effort:options.reasoning_effort,output_format:'text',input_files,signal:options.signal,timeout_ms:options.timeout_ms,call_id:options.call_id,validate(value){
    if(typeof value!=='string'||!value.trim())throw new Error('评分未返回文本');
    return value;
@@ -96,10 +108,11 @@ export async function runIndependentScore(context:ScoreContext,options:{root:str
 }
 
 /** API评分接收与Agent相同的脱敏文件正文和评分指令；不读取宿主资料或会话记忆。 */
-export async function runIndependentApiScore(context:ScoreContext,options:{config:ModelApiConfig;step_prompt?:string;hook_additions?:HookAddition[];signal?:AbortSignal;timeout_ms?:number;call_id?:string;complete?:ReturnType<typeof createModelApiClient>['complete']}){
+export async function runIndependentApiScore(context:ScoreContext,options:{config:ModelApiConfig;step_prompt?:string;model_report_reading_instructions?:string;hook_additions?:HookAddition[];signal?:AbortSignal;timeout_ms?:number;call_id?:string;complete?:ReturnType<typeof createModelApiClient>['complete']}){
  const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:scoringPrompt(context,options.step_prompt)});
  if(options.signal?.aborted)throw new Error('评分执行已取消');
- const input_files=buildScoreFiles(input),prompt=buildScoreMessage(input)+hookAdditionText(options.hook_additions);
+ const readingInstructions=options.model_report_reading_instructions??MODEL_REPORT_READING_INSTRUCTIONS;
+ const input_files=buildScoreFiles(input),prompt=buildScoreMessage(input,readingInstructions)+hookAdditionText(options.hook_additions);
  const body=[prompt,'【以下为本次评分文件的完整正文】',...input_files.map(file=>`<file name="${file.name}">\n${file.text}\n</file>`)].join('\n\n');
  const call=options.complete??createModelApiClient().complete;
  const result=await call({config:options.config,messages:[{role:'user',content:body}],timeout_ms:options.timeout_ms??1800000,signal:options.signal,call_id:options.call_id});
@@ -116,6 +129,6 @@ export async function runIndependentApiScore(context:ScoreContext,options:{confi
   duration_ms:result.duration_ms,
   provider:result.provider,
   model:result.model??result.requested_model,
-  execution_request:{provider:result.provider,model:result.requested_model,returned_model:result.model,request_id:result.request_id,completion_id:result.completion_id,input_sha256:digest(body),input_files:input_files.map(file=>({name:file.name,sha256:digest(file.text),size_bytes:Buffer.byteLength(file.text)})),started_at:result.started_at,finished_at:result.finished_at},
+  execution_request:{provider:result.provider,...(input.scoring_policy?.contract==='model_report_v1'&&readingInstructions?{model_report_reading_instructions:readingInstructions}:{}),model:result.requested_model,returned_model:result.model,request_id:result.request_id,completion_id:result.completion_id,input_sha256:digest(body),input_files:input_files.map(file=>({name:file.name,sha256:digest(file.text),size_bytes:Buffer.byteLength(file.text)})),started_at:result.started_at,finished_at:result.finished_at},
  };
 }

@@ -53,6 +53,12 @@ test('作答领取及中断恢复都按 worker 主机筛选脚本任务',async()
  const local=fake({empty:true});await runNextAnswer(local.pool,'unused',answer,undefined,'local');
  expect(local.calls.find(c=>c.sql.startsWith('SELECT a.*'))?.sql).toContain("AND (a.input->'hooks'");
 });
+test('API 与 Codex Agent 作答 worker 按冻结 provider 分流领取和中断恢复',async()=>{
+ const codex=fake({empty:true});await runNextAnswer(codex.pool,'unused',answer,undefined,'all','local','codex');
+ for(const call of codex.calls.filter(c=>c.sql.startsWith('SELECT a.*')||c.sql.startsWith('SELECT a.id,a.workflow_id,')))expect(call.sql).toContain("a.config->>'provider'='codex'");
+ const api=fake({empty:true});await runNextAnswer(api.pool,'unused',answer,undefined,'all','local','api');
+ for(const call of api.calls.filter(c=>c.sql.startsWith('SELECT a.*')||c.sql.startsWith('SELECT a.id,a.workflow_id,')))expect(call.sql).toContain("COALESCE(a.config->>'provider','qwen')<>'codex'");
+});
 test('enqueue pins safe input and configuration, duplicate does not create attempt',async()=>fixture(async root=>{const a=fake();await enqueueAnswer(a.pool,'workflow',root);const inserted=a.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;expect(JSON.parse(inserted.values[2])).toMatchObject({question_attempt_id:'author',question_version:'v1',materials:[{name:'附件1',text:'脱敏'}]});expect(inserted.values.join(' ')).not.toContain('OPEN_ROUTER_KEY');const b=fake({reuse:true});expect(await enqueueAnswer(b.pool,'workflow',root)).toEqual({id:'existing',reused:true});expect(b.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);}));
 test('enqueue rejects changed database text and rolls back',async()=>fixture(async root=>{const {pool,calls}=fake({content:'原始私密'});await expect(enqueueAnswer(pool,'workflow',root)).rejects.toThrow('指纹不一致');expect(calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);expect(calls.at(-1)?.sql).toBe('ROLLBACK');}));
 test('enqueue freezes timeout settings but disables unverified automatic score skipping',async()=>fixture(async root=>{

@@ -4,3 +4,7 @@
 `format.ts` 提供 `dateLabel`（固定上海时区、中文日期时间）及 `fileSize`（KB/MB）纯格式函数。调用方负责传入有效时间与字节数。
 
 `workflow-status.ts` 根据服务端步骤、就绪原因及活动尝试形成列表展示文字；材料包表、题目表和材料包详情共用。它不派发步骤，也不把普通 `waiting` 状态解释为已排队。
+
+`material-folder.ts` 统一新包与新文件集合的文件夹选择规则：PDF/DOCX/TXT/MD、最多100份、拒绝同名文件；仅处理File引用，不读取正文。
+
+`material-folder.test.ts` 用合成File清单验证PDF/DOCX混合目录、目录命名、忽略其他类型和同名冲突；不替代操作系统原生文件夹选择验收。

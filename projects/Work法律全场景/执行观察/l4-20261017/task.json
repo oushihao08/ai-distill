@@ -1,0 +1,1073 @@
+{
+  "schema_version": 1,
+  "id": "l4-20261017",
+  "title": "L4六题全流程及达标题上传",
+  "goal_ref": "当前线程目标及L4流程与提交汇总.md",
+  "scope": "项目db617d63-cdc5-4c0a-a791-ec530e2fe625当前6道L4；L3明确排除；所有达标题提交Siriser并登记；L4优先，出题槽空闲时推进已有L2题，不改模型和55%阈值。；当L4无ready步骤时，仅用已授权的L2 repair候选填充空闲槽；不包含L3。 本轮新增执行重点：加速L2实际题目的当前版本出题至归档；既有活动L4评分继续观察，不另扩L3或新L4任务。",
+  "completion_criteria": [
+    "6题各自完成有效版本出题、作答、评分和达标判断",
+    "所有当前accepted题生成DOCX输入五件套并正式提交、回读验收中",
+    "平台ID、ZIP指纹、钉钉登记和本地回执一致；未达标不冒记提交"
+  ],
+  "items": [
+    {
+      "id": "bb3e9082-b160-4321-8f35-16ea0cd65e63",
+      "title": "装修",
+      "plan_ref": "L4流程与提交汇总.md",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "complete",
+          "attempt_id": "8d4832ce-8a02-4f46-aced-078745f98145",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "c5fa6e8f-366f-4506-9bdc-89a9a60195b0",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "2cbf6cd3-1121-4588-9462-1084de93efb3",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "4ebef69d-3fe5-49de-ab34-364b58153170",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "b103fb5a-afdd-46fb-a2d1-b51fe059261f",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "submit",
+          "title": "Siriser提交及登记",
+          "state": "succeeded",
+          "outcome": "submitted_review_pending",
+          "attempt_id": "submit-2rsJ94QTyjR8FIKFsJ0EX5",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "上传成功-L4装修-bb3e9082.md",
+            ".storage/goal-runs/work-l4-submissions-20261017.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "1b2a94b2-0f97-4c23-9f62-13a01fb68066",
+      "title": "民借",
+      "plan_ref": "L4流程与提交汇总.md",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "running",
+          "outcome": "修正后的当前版出题运行中；旧版草稿不接续",
+          "attempt_id": "76b877e7-0435-4ebd-9273-2d2ed18a6c86",
+          "observed_at": "2026-10-17T09:22:24Z",
+          "evidence": [
+            "GET /api/monitor",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=1b2a94b2-0f97-4c23-9f62-13a01fb68066"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "blocked",
+          "outcome": "等待当前版出题终态；不得沿用旧版本答案或评分",
+          "attempt_id": null,
+          "observed_at": "2026-10-17T09:22:24Z",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=1b2a94b2-0f97-4c23-9f62-13a01fb68066"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "blocked",
+          "outcome": "等待当前版出题终态；不得沿用旧版本答案或评分",
+          "attempt_id": null,
+          "observed_at": "2026-10-17T09:22:24Z",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=1b2a94b2-0f97-4c23-9f62-13a01fb68066"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "blocked",
+          "outcome": "等待当前版出题终态；不得沿用旧版本答案或评分",
+          "attempt_id": null,
+          "observed_at": "2026-10-17T09:22:24Z",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=1b2a94b2-0f97-4c23-9f62-13a01fb68066"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "blocked",
+          "outcome": "等待当前版出题终态；不得沿用旧版本答案或评分",
+          "attempt_id": null,
+          "observed_at": "2026-10-17T09:22:24Z",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=1b2a94b2-0f97-4c23-9f62-13a01fb68066"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bc42beb1-ad56-4d22-ad25-af0229dd0403",
+      "title": "房屋买卖",
+      "plan_ref": "L4流程与提交汇总.md",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "complete; text",
+          "attempt_id": "R001-house-recovery",
+          "observed_at": "2026-10-17T16:34:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=bc42beb1-ad56-4d22-ad25-af0229dd0403",
+            "上传成功-L4房屋买卖-bc42beb1.md"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": "Qwen作答成功",
+          "attempt_id": "7266feea-a5de-4c0a-b32e-d5102dac7b6e",
+          "observed_at": "2026-10-17T16:34:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=bc42beb1-ad56-4d22-ad25-af0229dd0403",
+            "上传成功-L4房屋买卖-bc42beb1.md"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": "41/92=44.5652%",
+          "attempt_id": "866c5ba5-d9eb-4bc6-a60e-3e2143709c40",
+          "observed_at": "2026-10-17T16:34:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=bc42beb1-ad56-4d22-ad25-af0229dd0403",
+            "上传成功-L4房屋买卖-bc42beb1.md"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "98b492cf-bc27-4208-b9a9-da2e5ccdde15",
+          "observed_at": "2026-10-17T16:34:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=bc42beb1-ad56-4d22-ad25-af0229dd0403",
+            "上传成功-L4房屋买卖-bc42beb1.md"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "succeeded",
+          "outcome": "本地归档成功",
+          "attempt_id": "e49d4306-b4ad-4ba1-bc76-d7a9d3fb9c2d",
+          "observed_at": "2026-10-17T16:34:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=bc42beb1-ad56-4d22-ad25-af0229dd0403",
+            "上传成功-L4房屋买卖-bc42beb1.md"
+          ]
+        },
+        {
+          "id": "recovery_authorization",
+          "title": "再次恢复授权",
+          "state": "succeeded",
+          "outcome": "用户已明确允许再恢复一次",
+          "attempt_id": "AUTH001",
+          "observed_at": "2026-10-17T06:13:33.043221+00:00",
+          "evidence": [
+            "用户仅允许额外一次文字修正；新的恢复问题待回复",
+            "observations/O001.json"
+          ]
+        },
+        {
+          "id": "submit",
+          "title": "Siriser提交及登记",
+          "state": "succeeded",
+          "outcome": "Siriser提交成功；平台验收中",
+          "attempt_id": "submit-1UP6v6oZ9DobpvejaZXFRN",
+          "observed_at": "2026-10-17T16:34:00+08:00",
+          "evidence": [
+            "上传成功-L4房屋买卖-bc42beb1.md",
+            "场景领取码记录.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "f1f8499a-da14-4884-bb8c-6886904072a6",
+      "title": "建工",
+      "plan_ref": "L4流程与提交汇总.md",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "complete",
+          "attempt_id": "2d0beb7f-7065-4c5a-a7c5-337d1cb4f380",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "ce7e1262-ba45-4403-a584-f171aa1bbe08",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "1e5628d9-5fab-4f97-a65b-9cc2b33c6844",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "d124892a-bcce-4160-9b0e-b8e32274a55b",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "c5ab7a49-8446-4d54-ab24-946d42b24b02",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "submit",
+          "title": "Siriser提交及登记",
+          "state": "succeeded",
+          "outcome": "submitted_review_pending",
+          "attempt_id": "submit-5zlMSu32z1OcUOi8Cf1OGf",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "场景领取码记录.md",
+            ".storage/goal-runs/work-l4-submissions-20261017.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "603eb6cd-8ad2-46ee-8582-19d25f252e15",
+      "title": "工伤",
+      "plan_ref": "L4流程与提交汇总.md",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "complete",
+          "attempt_id": "9f973815-e36b-4f38-a573-a8e8e2a31e1f",
+          "observed_at": "2026-10-17T16:38:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=603eb6cd-8ad2-46ee-8582-19d25f252e15"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": "Qwen answer succeeded",
+          "attempt_id": "fd0109dc-96a3-47a2-a6a7-3c8a23ca5262",
+          "observed_at": "2026-10-17T16:52:18+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status",
+            "GET /api/attempts/1be7436d-6476-49cb-8e06-3520bc0f4e46?view=status"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": "89/200=44.5%; valid; accepted",
+          "attempt_id": "4154feac-ef1d-4f62-8890-d9eec8703f27",
+          "observed_at": "2026-10-17T16:52:18+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status",
+            "GET /api/attempts/1be7436d-6476-49cb-8e06-3520bc0f4e46?view=status"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "7c6644d3-5f0f-4505-8192-d2d792de0b66",
+          "observed_at": "2026-10-17T16:52:18+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status",
+            "GET /api/attempts/1be7436d-6476-49cb-8e06-3520bc0f4e46?view=status"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "succeeded",
+          "outcome": "archive succeeded; Siriser ZIP generated",
+          "attempt_id": "1be7436d-6476-49cb-8e06-3520bc0f4e46",
+          "observed_at": "2026-10-17T16:52:18+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status",
+            "GET /api/attempts/1be7436d-6476-49cb-8e06-3520bc0f4e46?view=status"
+          ]
+        },
+        {
+          "id": "submit",
+          "title": "Siriser上传、提交与回读",
+          "state": "succeeded",
+          "outcome": "ZIP已上传并正式提交；Mine回读验收中；浏览与质检Agent未通过/未执行，平台警告留档",
+          "attempt_id": "submit-1Jr84aWWcYgQZ2swBeaVqS",
+          "observed_at": "2026-10-17T16:54:05+08:00",
+          "evidence": [
+            "Siriser task page: submission success, status 验收中",
+            "Siriser L4 project status: 1Xk4gjPGRbgAlp9ZzerPob submitted 2026/10/17 16:54, 验收中",
+            "projects/Work法律全场景/上传成功-L4工伤-603eb6cd.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "37a527e1-aadb-4892-a84d-d75ee1b75c54",
+      "title": "运输",
+      "plan_ref": "L4流程与提交汇总.md",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "complete",
+          "attempt_id": "de298e65-fdef-40c9-891d-0f6aea2653ce",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "8394e079-73c2-4e1e-abe6-7d2d209aa0f3",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "40556366-94f8-48fb-a07a-94162d0ed46e",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "2421e586-3a93-4065-b15a-9c80ac2b9acd",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "succeeded",
+          "outcome": null,
+          "attempt_id": "a4a81657-ba24-41e7-8475-0bb7f1c7bd09",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "submit",
+          "title": "Siriser提交及登记",
+          "state": "succeeded",
+          "outcome": "submitted_review_pending",
+          "attempt_id": "submit-4xw0GRaVkO9IHRxWquoJYf",
+          "observed_at": "2026-10-17T05:36:08.783185+00:00",
+          "evidence": [
+            "上传成功-L4运输-37a527e1.md",
+            ".storage/goal-runs/work-l4-submissions-20261017.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d1af0602-5b84-4fd0-ad3c-dd0a1c742c05",
+      "title": "L2劳务",
+      "plan_ref": "L2空闲容量补充；本地既有goal授权",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "complete",
+          "attempt_id": "44b7dcc4-b9d1-44a6-b482-711beec3ac94",
+          "observed_at": "2026-10-17T09:18:00Z",
+          "evidence": [
+            "GET /api/attempts/{attempt_id}?view=status",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "running",
+          "outcome": "模型作答进行中",
+          "attempt_id": "e4dd90cf-6c21-45fe-af5f-d6c271d7e5f9",
+          "observed_at": "2026-10-17T09:18:00Z",
+          "evidence": [
+            "GET /api/attempts/{attempt_id}?view=status",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "stale",
+          "outcome": "此前评分73/107 repair；新题完成后须重新作答评分",
+          "attempt_id": "e68eda40-0ccb-4591-854a-666fa4aec20d",
+          "observed_at": "2026-10-17T17:09:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "46d67dee-ae4a-4d19-b37d-42c732b260c9",
+      "title": "L2装修",
+      "plan_ref": "L2空闲容量补充；本地既有goal授权",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "complete",
+          "attempt_id": "3cadcfb4-290a-43cf-ba9c-b4568d9cd5c8",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=46d67dee-ae4a-4d19-b37d-42c732b260c9"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "running",
+          "outcome": "正在执行；按同题当前版本接续",
+          "attempt_id": "8bb66285-b6cd-420f-ace9-06d7939bceba",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=46d67dee-ae4a-4d19-b37d-42c732b260c9"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "waiting",
+          "outcome": "此前评分71/94 repair；新题完成后须重做",
+          "attempt_id": "fd3a07b3-8aa5-4d99-9d27-f73daee72022",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=46d67dee-ae4a-4d19-b37d-42c732b260c9"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": "5015c26b-d17e-46a1-96ea-b24f7dc48512",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=46d67dee-ae4a-4d19-b37d-42c732b260c9"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": null,
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=46d67dee-ae4a-4d19-b37d-42c732b260c9"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "23bd0d15-868c-4eab-8b89-e59594dc7139",
+      "title": "L2合伙",
+      "plan_ref": "L2空闲容量补充；本地既有goal授权",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "complete",
+          "attempt_id": "df4b45f6-ba7a-4062-a693-c58a30e6d338",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=23bd0d15-868c-4eab-8b89-e59594dc7139"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": "新版本作答进行中",
+          "attempt_id": "bffcb610-8e47-479b-8d56-c01840063347",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=23bd0d15-868c-4eab-8b89-e59594dc7139"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": "旧评分不可绑定新题",
+          "attempt_id": "9a5b41ca-76c9-4c64-bd36-381a7ed1dfe8",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=23bd0d15-868c-4eab-8b89-e59594dc7139"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "a7a223f4-8dc3-4086-9c77-754716b97014",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=23bd0d15-868c-4eab-8b89-e59594dc7139"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "succeeded",
+          "outcome": "本地归档成功",
+          "attempt_id": "04fbd61f-990d-44f4-9c50-5c96f20140b8",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=23bd0d15-868c-4eab-8b89-e59594dc7139"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "3bf6bc26-6410-494c-9137-cd1d7399e55d",
+      "title": "L2运输回归",
+      "plan_ref": "L2空闲容量补充；本地既有goal授权",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "当前题目完整",
+          "attempt_id": "41f5f729-8322-4783-af1c-55380a073a98",
+          "observed_at": "2026-10-17T17:09:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": "Qwen作答成功",
+          "attempt_id": "a8a5a0ee-2d6f-48f4-b994-7560d683ed88",
+          "observed_at": "2026-10-17T17:09:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": "当前评分完成",
+          "attempt_id": "835d9539-87b4-4765-9e24-f55681f59db2",
+          "observed_at": "2026-10-17T09:18:00Z",
+          "evidence": [
+            "GET /api/attempts/{attempt_id}?view=status",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "auto-decision-3bf6bc26",
+          "observed_at": "2026-10-17T09:18:00Z",
+          "evidence": [
+            "GET /api/attempts/{attempt_id}?view=status",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "blocked",
+          "outcome": "按L4优先暂缓L2归档",
+          "attempt_id": null,
+          "observed_at": "2026-10-17T09:18:00Z",
+          "evidence": [
+            "GET /api/attempts/{attempt_id}?view=status",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "62dcb64a-8b64-42b9-8e50-0d920c9b304c",
+      "title": "L2运输加压",
+      "plan_ref": "L2空闲容量补充；本地既有goal授权",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "当前题目完整",
+          "attempt_id": "650c1f09-43f1-419b-acc4-04c3e58c8b32",
+          "observed_at": "2026-10-17T17:09:00+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": "Qwen作答成功",
+          "attempt_id": "f23476ce-2af3-437c-8ada-5e7fb96357d8",
+          "observed_at": "2026-10-17T09:18:00Z",
+          "evidence": [
+            "GET /api/attempts/{attempt_id}?view=status",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": "独立评分成功",
+          "attempt_id": "93eb1cd8-0f10-4950-8d06-d3e862b078a4",
+          "observed_at": "2026-10-17T09:18:00Z",
+          "evidence": [
+            "GET /api/attempts/{attempt_id}?view=status",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "调用完成但当前系统decision仍waiting",
+          "attempt_id": "3817ade4-bd49-4a4f-ab74-46dcc52acb18",
+          "observed_at": "2026-10-17T09:18:00Z",
+          "evidence": [
+            "GET /api/attempts/{attempt_id}?view=status",
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "f7403b39-0b8f-4f98-8854-346ad207c875",
+      "title": "L2房屋买卖",
+      "plan_ref": "L2 API空槽补充（用户已授权）",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "当前题面complete",
+          "attempt_id": "4e40399f-92df-404b-ab53-f631c4952520",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=f7403b39-0b8f-4f98-8854-346ad207c875"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": "供应商限流失败后的重试正在运行",
+          "attempt_id": "1e7e8b6d-b6ee-453a-8cc9-75a6f31f029b",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=f7403b39-0b8f-4f98-8854-346ad207c875"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": "当前步骤成功",
+          "attempt_id": "8158ce04-15eb-41a5-a96b-309b4481fafd",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=f7403b39-0b8f-4f98-8854-346ad207c875"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "ae3364e7-8a69-43e3-8436-a5f418411fff",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=f7403b39-0b8f-4f98-8854-346ad207c875"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "succeeded",
+          "outcome": "本地归档成功",
+          "attempt_id": "28d064ac-812f-496e-ac65-64435caaaa31",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=f7403b39-0b8f-4f98-8854-346ad207c875"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "eb812b75-fd20-48bc-9ed5-4950b4ec08c5",
+      "title": "L2建工",
+      "plan_ref": "L2 API空槽补充（用户已授权）",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "当前题面complete",
+          "attempt_id": "d8b92cb6-1468-4042-afb6-285bfbcfddfb",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=eb812b75-fd20-48bc-9ed5-4950b4ec08c5"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "running",
+          "outcome": "正在执行；按同题当前版本接续",
+          "attempt_id": "4eefc412-c21e-4383-8c84-8731e7063ce6",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=eb812b75-fd20-48bc-9ed5-4950b4ec08c5"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": "29c539e4-7787-48d1-af72-de1527fdd748",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=eb812b75-fd20-48bc-9ed5-4950b4ec08c5"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": "cb7db880-e2a9-417f-972a-aa47257dd275",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=eb812b75-fd20-48bc-9ed5-4950b4ec08c5"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": null,
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=eb812b75-fd20-48bc-9ed5-4950b4ec08c5"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "7d89d296-d273-4f17-9b61-b2f365594914",
+      "title": "L2民间借贷",
+      "plan_ref": "L2 API空槽补充（用户已授权）",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "当前题面complete",
+          "attempt_id": "4ff82d89-959e-40af-8e93-f9cf49ef43a3",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=7d89d296-d273-4f17-9b61-b2f365594914"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "succeeded",
+          "outcome": "供应商限流失败后的重试正在运行",
+          "attempt_id": "26128210-af06-4e8c-8227-964ff72bee71",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=7d89d296-d273-4f17-9b61-b2f365594914"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "succeeded",
+          "outcome": "当前步骤成功",
+          "attempt_id": "5aef0c42-d4ac-4cca-ada3-055c90a6f49a",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=7d89d296-d273-4f17-9b61-b2f365594914"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "succeeded",
+          "outcome": "accepted",
+          "attempt_id": "dce5c75d-1350-4b1c-aca2-2894c0e6f8dc",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=7d89d296-d273-4f17-9b61-b2f365594914"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "succeeded",
+          "outcome": "本地归档成功",
+          "attempt_id": "5bf4bfa7-0779-42aa-86bb-ba59ae20ccfd",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=7d89d296-d273-4f17-9b61-b2f365594914"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "e3ea054b-ce93-464a-aa7a-030b1ae216e9",
+      "title": "L2劳务合同",
+      "plan_ref": "L2 API空槽补充（用户已授权）",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "当前题面complete",
+          "attempt_id": "9b115684-d2b2-4c9f-88af-01e0a65d9e28",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e3ea054b-ce93-464a-aa7a-030b1ae216e9"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "waiting",
+          "outcome": "供应商限流失败后的重试正在运行",
+          "attempt_id": "a37ea162-c3c2-4185-a524-63d3524a9a16",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e3ea054b-ce93-464a-aa7a-030b1ae216e9"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": "742719fe-4c4b-4c00-8c95-454615ef957d",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e3ea054b-ce93-464a-aa7a-030b1ae216e9"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": "36c8a3a2-95d3-4c9d-bacf-ef8eeb3b3cda",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e3ea054b-ce93-464a-aa7a-030b1ae216e9"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": null,
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=e3ea054b-ce93-464a-aa7a-030b1ae216e9"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "2c029cfc-3a50-403f-bf16-eed6849714f7",
+      "title": "L2运输",
+      "plan_ref": "当前任务执行日志.md",
+      "stages": [
+        {
+          "id": "4",
+          "title": "出题",
+          "state": "succeeded",
+          "outcome": "当前步骤成功",
+          "attempt_id": "eb29fd0d-1380-467b-8468-bf8605619abb",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=2c029cfc-3a50-403f-bf16-eed6849714f7"
+          ]
+        },
+        {
+          "id": "5",
+          "title": "模型作答",
+          "state": "running",
+          "outcome": "正在执行；按同题当前版本接续",
+          "attempt_id": "a8730c84-72f0-4462-b2bb-cb38577b6824",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=2c029cfc-3a50-403f-bf16-eed6849714f7"
+          ]
+        },
+        {
+          "id": "6",
+          "title": "独立评分",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": "912d437f-1313-4176-81b3-6e9ccb47cd19",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=2c029cfc-3a50-403f-bf16-eed6849714f7"
+          ]
+        },
+        {
+          "id": "7",
+          "title": "达标判断",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": "9e53fd35-eb4e-4a57-921c-5e8fe6973d2f",
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=2c029cfc-3a50-403f-bf16-eed6849714f7"
+          ]
+        },
+        {
+          "id": "8",
+          "title": "归档达标题目",
+          "state": "waiting",
+          "outcome": null,
+          "attempt_id": null,
+          "observed_at": "2026-10-17T17:40:08+08:00",
+          "evidence": [
+            "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=2c029cfc-3a50-403f-bf16-eed6849714f7"
+          ]
+        }
+      ]
+    }
+  ],
+  "next_actions": [
+    "L3明确排除，不领取、不上传、不派发L3步骤。",
+    "L4五道题当前版本出题至归档成功且已提交Siriser；平台仍为验收中。民间借贷当前作者attempt 76b877e7-0435-4ebd-9273-2d2ed18a6c86运行中，终态后读取workflow-status并接续当前版下一个ready步骤。",
+    "每项终态后读取当前workflow-status并立即派发本题下一ready步骤；如L4出现ready步骤，优先L4。只归档当前版accepted题。",
+    "Siriser正式提交累计17题；平台状态及登记证据见场景领取码记录.md和各上传回执。",
+    "L2只在L4当前没有ready步骤时填充空闲槽；不重派running任务，作者变更后不复用旧答案和评分。",
+    "L2运输加压题达标判断因当前评分模型结果valid=false仍为waiting；不归档、不宣称达标。L5 ready作答不在本轮范围。"
+  ],
+  "updated_at": "2026-10-17T09:25:09Z"
+}

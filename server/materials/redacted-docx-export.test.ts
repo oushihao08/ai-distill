@@ -144,3 +144,18 @@ test('corrupt structured index fails closed before copying or exporting material
  await expect(exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('脱敏结构与正文投影不一致');
  expect(f.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
 });
+
+test.each([false,true])('library completion gate uses only applicable stages before material validation (incomplete=%s)',async incomplete=>{
+ const calls:string[]=[];
+ const client={release(){},async query(sql:string){
+  calls.push(sql);
+  if(sql.startsWith('SELECT w.id AS workflow_id'))return{rows:[{workflow_id:workflowId,project_id:workflowId,material_backend:'library_v1',workflow_kind:'question',project_name:'合成项目',title:'合成题目'}],rowCount:1};
+  if(sql.startsWith('SELECT ordinal,status'))return{rows:[4,5,6,7,8].map(ordinal=>({ordinal,status:incomplete&&ordinal===6?'waiting':'succeeded'})),rowCount:5};
+  if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT'))throw new Error('已进入材料读取边界');
+  return{rows:[],rowCount:0};
+ }};
+ const pool={connect:async()=>client} as unknown as Pool;
+ await expect(exportRedactedDocx(pool,workflowId,'unused','unused')).rejects.toThrow(incomplete?'请先完成当前工作流并归档达标题目':'已进入材料读取边界');
+ expect(calls.at(-1)).toBe('ROLLBACK');
+});

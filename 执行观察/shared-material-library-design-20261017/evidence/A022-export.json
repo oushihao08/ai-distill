@@ -1,0 +1,172 @@
+{
+  "started_at": "2026-10-18T00:58:58.254Z",
+  "synthetic": true,
+  "real_model_calls": false,
+  "ids": {
+    "workflow_id": "ec4e3b93-00ae-429c-a748-56446f03ed53",
+    "project_id": "8780d3c0-2fe2-4a29-b1c6-6da84c41f79d",
+    "model_id": "56758ade-094f-4975-b14f-302c167e2762",
+    "author_attempt_id": "9ac5019b-1f43-41ad-8ec2-91e218e8cc99",
+    "answer_attempt_id": "61f9e37b-2186-4c57-acb3-db0bbc9e2b85",
+    "score_attempt_id": "892b48a9-1a64-4963-814f-9633f80da528"
+  },
+  "checks": [
+    {
+      "path": "/api/workflows/ec4e3b93-00ae-429c-a748-56446f03ed53/publish",
+      "method": "POST",
+      "status": 200,
+      "expected": [
+        200
+      ]
+    },
+    {
+      "path": "/api/workflows/ec4e3b93-00ae-429c-a748-56446f03ed53",
+      "method": "GET",
+      "status": 200,
+      "expected": [
+        200
+      ]
+    },
+    {
+      "path": "/api/workflows/ec4e3b93-00ae-429c-a748-56446f03ed53/redacted-docx",
+      "method": "POST",
+      "status": 200,
+      "expected": [
+        200,
+        201
+      ]
+    },
+    {
+      "path": "/api/workflows/ec4e3b93-00ae-429c-a748-56446f03ed53/withdraw-archive",
+      "method": "POST",
+      "status": 200,
+      "expected": [
+        200
+      ]
+    },
+    {
+      "path": "/api/workflows/ec4e3b93-00ae-429c-a748-56446f03ed53",
+      "method": "GET",
+      "status": 200,
+      "expected": [
+        200
+      ]
+    },
+    {
+      "path": "/api/workflows/ec4e3b93-00ae-429c-a748-56446f03ed53/publish",
+      "method": "POST",
+      "status": 200,
+      "expected": [
+        200
+      ]
+    },
+    {
+      "path": "/api/workflows/ec4e3b93-00ae-429c-a748-56446f03ed53",
+      "method": "GET",
+      "status": 200,
+      "expected": [
+        200
+      ]
+    },
+    {
+      "path": "/api/material-library/packages/47d5253c-d86d-4ae5-8e64-bea1345ece57/usage",
+      "method": "GET",
+      "status": 200,
+      "expected": [
+        200
+      ]
+    },
+    {
+      "path": "/api/projects/8780d3c0-2fe2-4a29-b1c6-6da84c41f79d/export",
+      "method": "POST",
+      "status": 201,
+      "expected": [
+        201
+      ]
+    }
+  ],
+  "publication": {
+    "id": "bb4fe384-5ac5-4b42-a265-c9db2a606378",
+    "reused": true,
+    "completed": true,
+    "docx_archive_path": "附件库/I7合成未脱敏加载门槛-20261018/I7合成快照题目-a",
+    "docx_artifact_count": 1,
+    "archive_workbook_path": "附件库/I7合成未脱敏加载门槛-20261018/I7合成快照题目-a/成果/题目归档数据.xlsx"
+  },
+  "step_8": {
+    "status": "succeeded",
+    "error": null
+  },
+  "docx": {
+    "artifact_id": "635eb494-45b4-443e-a294-05fb7227fe29",
+    "material_id": "eaf3d344-f33e-40be-9005-62190cf87dab",
+    "filename": "synthetic-脱敏-eaf3d344.docx",
+    "sha256": "a9764d4972ed402c9cf4b26517da483fa703d73eb7e04aaa11db38ec7fe6c15d",
+    "reused": true,
+    "artifacts": [
+      {
+        "artifact_id": "635eb494-45b4-443e-a294-05fb7227fe29",
+        "material_id": "eaf3d344-f33e-40be-9005-62190cf87dab",
+        "filename": "synthetic-脱敏-eaf3d344.docx",
+        "sha256": "a9764d4972ed402c9cf4b26517da483fa703d73eb7e04aaa11db38ec7fe6c15d",
+        "reused": true
+      }
+    ],
+    "archive_path": "附件库/I7合成未脱敏加载门槛-20261018/I7合成快照题目-a"
+  },
+  "xlsx": {
+    "bytes": 3974,
+    "sha256": "aa0502ca62c32728db4723e5d040666eb8562821793ddaa10752f387c916102b"
+  },
+  "withdrawal": {
+    "withdrawn": true,
+    "attempt_id": "bb4fe384-5ac5-4b42-a265-c9db2a606378"
+  },
+  "rearchive": {
+    "id": "bb4fe384-5ac5-4b42-a265-c9db2a606378",
+    "reused": true,
+    "completed": true,
+    "docx_archive_path": "附件库/I7合成未脱敏加载门槛-20261018/I7合成快照题目-a",
+    "docx_artifact_count": 1,
+    "archive_workbook_path": "附件库/I7合成未脱敏加载门槛-20261018/I7合成快照题目-a/成果/题目归档数据.xlsx"
+  },
+  "history": [
+    {
+      "event_type": "archived",
+      "id": "cd394bfd-13c0-478a-b464-ae01bcb434bf"
+    },
+    {
+      "event_type": "withdrawn",
+      "id": "10dca67c-596d-4bee-8a87-f372ebdc7703"
+    },
+    {
+      "event_type": "archived",
+      "id": "4266dcb7-9a06-4aec-9e09-82752e8e6fe9"
+    }
+  ],
+  "usage_events": [
+    {
+      "workflow_id": "ec4e3b93-00ae-429c-a748-56446f03ed53",
+      "event_type": "archived",
+      "current_publication_event": "archived"
+    },
+    {
+      "workflow_id": "ec4e3b93-00ae-429c-a748-56446f03ed53",
+      "event_type": "withdrawn",
+      "current_publication_event": "archived"
+    },
+    {
+      "workflow_id": "ec4e3b93-00ae-429c-a748-56446f03ed53",
+      "event_type": "archived",
+      "current_publication_event": "archived"
+    }
+  ],
+  "project_export": {
+    "id": "b0c879c2-b822-423e-a402-b905df64a77b",
+    "status": "succeeded",
+    "sha256": "aa0502ca62c32728db4723e5d040666eb8562821793ddaa10752f387c916102b",
+    "workflow_count": 1
+  },
+  "status": "passed",
+  "finished_at": "2026-10-18T01:00:12.223Z"
+}

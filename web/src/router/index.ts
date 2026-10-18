@@ -8,4 +8,5 @@ import WorkflowDetail from '../views/WorkflowDetail.vue';
 import MonitorView from '../views/MonitorView.vue';
 import ResultsLibraryView from '../views/ResultsLibraryView.vue';
 import SettingsView from '../views/SettingsView.vue';
-export default createRouter({ history: createWebHistory(), routes: [ { path: '/', component: ProjectList }, { path: '/monitor', component: MonitorView }, { path: '/results', component: ResultsLibraryView }, { path: '/settings', component: SettingsView }, { path: '/projects/:id', component: ProjectDetail }, { path: '/workflows/:id', component: WorkflowDetail } ] });
+import MaterialLibraryView from '../views/MaterialLibraryView.vue';
+export default createRouter({ history: createWebHistory(), routes: [ { path: '/', component: ProjectList }, { path: '/materials', component: MaterialLibraryView }, { path: '/monitor', component: MonitorView }, { path: '/results', component: ResultsLibraryView }, { path: '/settings', component: SettingsView }, { path: '/projects/:id', component: ProjectDetail }, { path: '/workflows/:id', component: WorkflowDetail } ] });

@@ -1,0 +1,36 @@
+{
+  "id": "a8a5a0ee-2d6f-48f4-b994-7560d683ed88",
+  "item_id": "3bf6bc26-6410-494c-9137-cd1d7399e55d",
+  "stage_id": "5",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-17T08:56:00.196Z",
+  "finished_at": "2026-10-17T09:05:58.130Z",
+  "inputs": [],
+  "configuration": {
+    "dispatch": "L2运输回归题模型作答",
+    "channel": "api"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "api_attempt_id": "a8a5a0ee-2d6f-48f4-b994-7560d683ed88"
+  },
+  "environment": {
+    "target": "local API",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "attempt_status",
+      "result": "running at 2026-10-17 16:56 Asia/Shanghai",
+      "evidence": "GET /api/monitor and project workflow status"
+    },
+    {
+      "kind": "api_status",
+      "result": "succeeded",
+      "evidence": "GET /api/attempts/a8a5a0ee-2d6f-48f4-b994-7560d683ed88?view=status"
+    }
+  ],
+  "error": null
+}

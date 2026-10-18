@@ -3,11 +3,19 @@
  */
 import {test,expect} from 'bun:test';
 import {resolveAnswerConfig,createAnswerClient} from './dispatch';
+import {configureAgentAdapter} from '../agent/runner';
 const router={provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'} as const;
 test('legacy Qwen and three native provider configurations resolve without credentials',()=>{
  expect(resolveAnswerConfig(router,{})).toEqual(router);
  expect(resolveAnswerConfig({...router,provider:undefined},{}).provider).toBe('qwen');
  for(const provider of ['kimi','deepseek','doubao'] as const)expect(resolveAnswerConfig({provider,model:'explicit-model'},{}).provider).toBe(provider);
+});
+test('SiliconFlow freezes its OpenAI-compatible endpoint and uses its own credential',async()=>{
+ const requests:{url:string;authorization:string|null;model:string}[]=[];
+ const client=createAnswerClient({SILICONFLOW_API_KEY:'siliconflow-fixture',OPEN_ROUTER_KEY:'router-fixture'},async(url,init)=>{requests.push({url,authorization:new Headers(init?.headers).get('Authorization'),model:JSON.parse(init!.body as string).model});return Response.json({model:'actual',choices:[{finish_reason:'stop',message:{role:'assistant',content:'答案'}}]});});
+ const config=resolveAnswerConfig({provider:'siliconflow',model:'Qwen/Qwen3.8-2.4T-A95B'},{});
+ await client.answer({config,question:'题面',materials:[]});
+ expect(requests).toEqual([{url:'https://api.siliconflow.com/v1/chat/completions',authorization:'Bearer siliconflow-fixture',model:'Qwen/Qwen3.8-2.4T-A95B'}]);
 });
 test('invalid provider and private config fields cannot reach a client',()=>{
  expect(()=>resolveAnswerConfig({provider:'unknown',model:'x'},{})).toThrow();
@@ -33,4 +41,18 @@ test('dispatcher sends each OpenRouter model through its single gateway key',asy
  const client=createAnswerClient({OPEN_ROUTER_KEY:'router-only'},async(url,init)=>{requests.push({url,authorization:new Headers(init?.headers).get('Authorization'),model:JSON.parse(init!.body as string).model});return Response.json({choices:[{finish_reason:'stop',message:{role:'assistant',content:'答案'}}]});});
  for(const model of ['z-ai/glm-5.3-flash','qwen/qwen-plus','moonshotai/kimi-k2.5'])await client.answer({config:resolveAnswerConfig({provider:'openrouter',model},{}),question:'题面',materials:[]});
  expect(requests).toEqual(['z-ai/glm-5.3-flash','qwen/qwen-plus','moonshotai/kimi-k2.5'].map(model=>({url:'https://openrouter.ai/api/v1/chat/completions',authorization:'Bearer router-only',model})));
+});
+
+test('Codex Agent answer receives only the frozen question and redacted materials with selected effort',async()=>{
+ let received:any;
+ configureAgentAdapter(async task=>{received=task;return{result:'候选答案',session_id:'agent-session',usage:null,diagnostic_path:'private/events.jsonl',duration_ms:12,provider:'codex',model:task.model};});
+ try{
+  const config=resolveAnswerConfig({provider:'codex',model:'gpt-6-astra',reasoning_effort:'ultra'},{});
+  const client=createAnswerClient({});
+  const result=await client.answer({config,directory:'/tmp/answer-agent',question:'题面',materials:[{name:'附件1',text:'已脱敏材料'}],system_prompt:'作答系统指令'});
+  expect(received).toMatchObject({task_type:'model_answer',model:'gpt-6-astra',reasoning_effort:'ultra',output_format:'text'});
+  expect(received.prompt).toContain('题面');expect(received.prompt).toContain('已脱敏材料');expect(received.prompt).toContain('作答系统指令');
+  expect(received.prompt).not.toMatch(/reference_answer|answer_approach|rubric|score|历史答案|标准答案/);
+  expect(result).toMatchObject({text:'候选答案',execution_mode:'agent',reasoning_effort:'ultra',model:'gpt-6-astra'});
+ }finally{configureAgentAdapter(null);}
 });

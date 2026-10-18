@@ -6,6 +6,21 @@
 import {expect,test} from 'bun:test';
 import {parseMineruDocxJson,parseMineruJson} from './mineru-cli';
 
+test('known MinerU page furniture and aside text retain source text without false unknown-type issues',()=>{
+ const [page]=parseMineruJson([
+  {type:'header',page_idx:0,text:'原文页眉'},
+  {type:'text',page_idx:0,text:'正文'},
+  {type:'aside_text',page_idx:0,text:'原文旁注'},
+  {type:'footer',page_idx:0,text:'原文页脚'},
+  {type:'page_number',page_idx:0,text:'1'},
+ ],1);
+ expect(page!.text).toBe('原文页眉\n正文\n原文旁注\n原文页脚\n1');
+ expect(page!.issues??[]).toEqual([]);
+ const [unknown]=parseMineruJson([{type:'unexpected_source_shape',page_idx:0,text:'未知形状正文'}],1);
+ expect(unknown!.text).toBe('未知形状正文');
+ expect(unknown!.issues).toContain('unsupported_block_type');
+});
+
 test('DOCX keeps document order and structured text without requiring PDF page numbers',()=>{
  const [page]=parseMineruDocxJson([
   {type:'title',text:'标题',text_level:1},

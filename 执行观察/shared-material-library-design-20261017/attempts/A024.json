@@ -1,0 +1,64 @@
+{
+  "id": "A024",
+  "item_id": "implementation",
+  "stage_id": "I7-verification",
+  "previous_attempt_id": "A023",
+  "status": "succeeded",
+  "started_at": "2026-10-18T09:01:54.263264+08:00",
+  "finished_at": "2026-10-18T09:04:23.093725+08:00",
+  "inputs": [
+    {
+      "ref": "web/src/components/ProjectForm.vue",
+      "version": "default-library-v1",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "scope": "真实浏览器新建合成项目，确认默认library_v1及项目内无入库脱敏入口",
+    "real_model_calls": false
+  },
+  "changes_from_previous": [
+    "新建项目页面固定独立材料库，既有legacy项目继续兼容",
+    "浏览器实测发现projectStepSummary仍汇总全部旧步骤，新增失败回归后改为按后端适用集合汇总"
+  ],
+  "external_ids": {
+    "browser_session": "zrvy",
+    "project_id": "37090ec0-440a-44da-a8af-9e51c0d369c9"
+  },
+  "environment": {
+    "target": "user-confirmed-disposable-test-db"
+  },
+  "artifacts": [
+    {
+      "ref": "执行观察/shared-material-library-design-20261017/evidence/A024-browser-summary.json",
+      "sha256": null
+    },
+    {
+      "ref": "执行观察/shared-material-library-design-20261017/evidence/A024-project-default.json",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "real_browser",
+      "result": "passed",
+      "evidence": "在新建表单填合成项目、期数、规则工作区并提交；POST201且返回library_v1，刷新后仅五个出题至归档步骤按钮，无入库脱敏按钮和console error"
+    },
+    {
+      "kind": "api_legacy_compatibility",
+      "result": "passed",
+      "evidence": "新项目步骤4-8；只读既有legacy项目仍为1/9/4-8"
+    },
+    {
+      "kind": "targeted_regression",
+      "result": "passed",
+      "evidence": "新增library summary回归先失败后通过；Vue类型检查与diff检查通过"
+    },
+    {
+      "kind": "expanded_checks",
+      "result": "partial",
+      "evidence": "扩展97项：93通过，4失败；routes三个旧mock期望409实际404，project-folders旧Codex默认测试期望脱敏config_source=system实际project；新增library测试通过。根目录tsc另有此前记录的2项错误，未据此宣称全库验证通过。"
+    }
+  ],
+  "error": null
+}

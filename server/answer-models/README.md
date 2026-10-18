@@ -5,13 +5,15 @@
 
 接收当前 ordinal 4 出题成功的题面和允许的脱敏附件，按项目模型集合创建逐模型任务，保存完整答案、usage 和当前集合汇总。模型集合全部终结后，只要至少一个模型成功，评分步骤即可对成功答案继续评分；失败或跳过的模型不阻断其他答案。
 
+作答模型目录支持各 API provider 与本机 Codex Agent；登记新 API 模型时默认选 SiliconFlow，现有目录模型保持各自冻结渠道。SiliconFlow 使用官方 OpenAI 兼容端点和服务端 `SILICONFLOW_API_KEY`。Codex answer attempt 由 local/all worker 的 Agent 队列消费，API/server worker 排除该 provider；派发时冻结模型和推理强度。隔离会话仅提交题面、获准的脱敏附件、成果呈现约定及步骤作答指令；不提交答案思路、标准答案、Rubric、既有答案、评分结果或项目 Skill。Codex 会话关闭宿主 Skill、插件、MCP、浏览器、记忆和网络入口，文件系统限制在本次 attempt 工作区。保存执行模式、模型、推理强度和会话 ID 用于追溯，不把“可用工具”冒记为“实际调用工具”。Codex 仅支持本机执行，服务器归属作答拒绝 Codex provider。
+
 远程作答复用同一队列：带固定请求标识的 `enqueueAnswer(..., 'server', requestKey)` 创建服务器归属 attempt；worker 按 `execution_target` 精确领取。服务器远程入口不接受项目步骤钩子；默认本机调用继续归属 `local`。CLI 只查看远程 attempt 状态，答案正文仍由现有工作流结果接口读取。
 
 ## 文件职责
 
 | 文件 | 说明 |
 | --- | --- |
-| `dispatch.ts` | 作答输入门面：隔离题面/允许附件，附加固定的纯文本输出要求，转换消息并调用独立 llm-api。 |
+| `dispatch.ts` | 作答输入门面：隔离题面/允许附件；API provider 调用 llm-api，Codex provider 调用隔离 Agent。 |
 | `domestic.ts` | 其他供应商作答兼容入口；配置、凭证和 HTTP 由 llm-api 管理。 |
 | `input.ts` | 作答输入契约：校验出题成功的题目和脱敏附件引用，组装无工具的文字输入并计算指纹。 |
 | `file-executor.ts` | Work文件作答的容器执行基础模块：固定Claude Code版本、保留OpenRouter模型、只挂载公开任务及脱敏附件并收集实际候选文件；尚未接入持久队列或改变现有就绪判断。 |
@@ -24,13 +26,13 @@
 
 ## 数据流与依赖
 
-input.ts → jobs.ts 从数据库取当前题面获准的脱敏附件并冻结输入／配置 → dispatch.ts 发送固定系统提示词及仅含题面与脱敏附件的用户消息 → 独立 llm-api 按冻结供应商配置调用 → 保存当前答案。系统提示词要求答案直接写在回复正文、只返回纯文本，不生成或附加 DOCX、PDF 等文件。model-set.ts 管理稳定模型身份、顺序及阈值摘要。
+input.ts → jobs.ts 从数据库取当前题面获准的脱敏附件并冻结输入／配置 → dispatch.ts 只发送题面、脱敏附件、成果呈现约定和作答步骤提示词 → API provider 走独立 llm-api，Codex provider 走隔离 Agent → 保存当前答案。系统提示词要求答案直接写在回复正文、只返回纯文本，不生成或附加 DOCX、PDF 等文件。model-set.ts 管理稳定模型身份、顺序及阈值摘要。
 
 ## 维护边界
 
-不发送 rubric、标答或目标分数给作答者；`answer_requirements=text/text/tools=[]` 反映此处真实执行契约：目前是纯文字 API 请求／响应，没有候选模型工具调用循环。作者 Codex 的文件、shell、搜索或 MCP 能力不属于作答器能力。供应商与密钥来源明确，失败不自动切换端点。修改模型集合后不能用旧集合答案冒充当前结果。真实题目多模型作答及交付能力仍需单独验收。
+不发送作答思路、Rubric、标答、历史答案、评分结果、目标分数或项目 Skill 给作答者。API provider 是纯文字请求／响应；Codex provider 是本机隔离 Agent，可调用受限工作区内的 shell/unified_exec，但网络、记忆、宿主 Skill、插件、MCP 和浏览器均关闭。不同执行方式记录真实 provider/model/reasoning effort，不自动切换。修改模型集合后不能用旧集合答案冒充当前结果。
 
-`workAnswerCapabilityIssue()`供实际派发与项目就绪列表共用。Work草稿和非文字输入继续阻断；`task_requirements`中的文件输出及工具是业务要求，不再直接阻断本轮文字成果测试。`answer_requirements=text/text/tools=[]`仍是实际执行能力，未增加工具调用。
+`workAnswerCapabilityIssue()`供实际派发与项目就绪列表共用。Work草稿和非文字输入继续阻断；`task_requirements`中的文件输出及外部工具需求不由本机文字呈现路径伪装满足。对 Agent 派发仍保持题目声明的 `answer_requirements` 与正文成果能力边界。
 
 任何项目的题目具有合法`deliverables`清单（`path`、`description`或`desc`、`required`）时，`answerPresentation()`只提取名称、说明、必交标记，生成`text_deliverables_v1`呈现快照。`buildAnswerMessage()`将原题面、快照说明、成果清单组成实际用户消息，附件仍完整发送；不读取Rubric、标答、思路或Skill。模型在回复中逐项呈现成果，不能声称实际创建文件或完成外部操作。无成果清单的旧文字题维持原输入。
 
@@ -43,7 +45,7 @@ input.ts → jobs.ts 从数据库取当前题面获准的脱敏附件并冻结�
 供应商 HTTP、超时、取消、响应校验、安全错误与用量统一由 [llm-api](../llm-api/README.md) 提供。该模块与 Agent 并列，也可供脱敏使用。作答模块不直接请求 OpenRouter 或其他供应商。
 
 
-新增系统模型固定使用 OpenRouter。登记表单只要求 OpenRouter 模型 ID；目录显示名沿用该 ID，API 地址由服务端统一解析为 OpenRouter 地址，密钥只从 `OPEN_ROUTER_KEY` 读取。既有目录记录保留原冻结供应商配置。
+OpenRouter 与 SiliconFlow 模型登记分别固定使用其官方 API 地址和对应服务端密钥；登记表单只要求供应商模型 ID，SiliconFlow 为新登记 API 模型的默认渠道。系统目录保存非敏感 provider、端点及模型配置，密钥只在服务端请求时读取。既有目录记录保留原冻结供应商配置；改变渠道须登记新 provider 的模型并更新项目模型集合，不能静默改写历史任务。
 
 项目模型的兼容字段 `minimum_score` 表示百分制分数上限（0—100，null表示未配置）；模型原始分数换算后严格低于上限，题目才通过该模型的难度要求。
 

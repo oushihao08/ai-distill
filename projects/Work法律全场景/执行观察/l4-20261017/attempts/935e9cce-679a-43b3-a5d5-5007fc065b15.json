@@ -1,0 +1,36 @@
+{
+  "id": "935e9cce-679a-43b3-a5d5-5007fc065b15",
+  "item_id": "46d67dee-ae4a-4d19-b37d-42c732b260c9",
+  "stage_id": "5",
+  "status": "running",
+  "started_at": "2026-10-17T09:17:55.258Z",
+  "finished_at": null,
+  "inputs": [
+    {
+      "ref": "L2装修题新题面与允许的脱敏材料",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "target": "local API worker",
+    "source": "frozen workflow answer config; not re-read in this turn"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "workflow_id": "46d67dee-ae4a-4d19-b37d-42c732b260c9",
+    "attempt_id": "935e9cce-679a-43b3-a5d5-5007fc065b15"
+  },
+  "environment": {
+    "target": "local"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "API attempt status",
+      "result": "running",
+      "evidence": "GET /api/attempts/935e9cce-679a-43b3-a5d5-5007fc065b15?view=status"
+    }
+  ],
+  "error": null
+}

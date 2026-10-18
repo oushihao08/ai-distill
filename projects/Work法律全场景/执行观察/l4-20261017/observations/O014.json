@@ -1,0 +1,115 @@
+{
+  "id": "O014",
+  "kind": "result",
+  "status": "open",
+  "title": "L4步骤耗尽时用就绪L2题填充空闲作者槽，并记录页面操作路径",
+  "item_ids": [
+    "d1af0602-5b84-4fd0-ad3c-dd0a1c742c05",
+    "46d67dee-ae4a-4d19-b37d-42c732b260c9",
+    "23bd0d15-868c-4eab-8b89-e59594dc7139",
+    "3bf6bc26-6410-494c-9137-cd1d7399e55d",
+    "62dcb64a-8b64-42b9-8e50-0d920c9b304c",
+    "f7403b39-0b8f-4f98-8854-346ad207c875",
+    "eb812b75-fd20-48bc-9ed5-4950b4ec08c5",
+    "7d89d296-d273-4f17-9b61-b2f365594914",
+    "e3ea054b-ce93-464a-aa7a-030b1ae216e9"
+  ],
+  "attempt_ids": [
+    "f23476ce-2af3-437c-8ada-5e7fb96357d8",
+    "44b7dcc4-b9d1-44a6-b482-711beec3ac94",
+    "302743b4-c410-4e56-b487-e14f6c01fdd1",
+    "df4b45f6-ba7a-4062-a693-c58a30e6d338",
+    "835d9539-87b4-4765-9e24-f55681f59db2",
+    "aa3d6923-bce9-46d8-8c98-71cd98e5da0e",
+    "1dc52d4c-6133-4c5d-a871-281b0a08dbc9",
+    "9e448cd1-53b9-48c3-8b83-0f181d34661e",
+    "0a4dd8b8-45a9-49ba-b520-2682109da8cb",
+    "1e7e8b6d-b6ee-453a-8cc9-75a6f31f029b",
+    "a64364b4-ed9d-4f34-b974-28e75768873d",
+    "26128210-af06-4e8c-8227-964ff72bee71",
+    "a37ea162-c3c2-4185-a524-63d3524a9a16",
+    "f23476ce-2af3-437c-8ada-5e7fb96357d8",
+    "44b7dcc4-b9d1-44a6-b482-711beec3ac94",
+    "835d9539-87b4-4765-9e24-f55681f59db2"
+  ],
+  "facts": [
+    "2026-10-17T09:06Z current project status: six L4 question workflows; five have ordinal 4-8 completed, and the L4 private-lending workflow's current author result is draft, blocking ordinals 5-8.",
+    "2026-10-17T09:06Z monitor shows one active task: L2 transport pressure-test model answer attempt f23476ce-2af3-437c-8ada-5e7fb96357d8, started 2026-10-17T09:02:53.039Z.",
+    "Three L2 workflows with current repair decisions have ordinal 4 ready: labor d1af0602-5b84-4fd0-ad3c-dd0a1c742c05, decoration 46d67dee-ae4a-4d19-b37d-42c732b260c9, partnership 23bd0d15-868c-4eab-8b89-e59594dc7139.",
+    "The previous hour's slow increase from 16 submissions was caused by no new L4 current-version accepted+archived package becoming available; model authoring/answer/scoring are sequential per question. Platform upload is only attempted after archive eligibility.",
+    "At 2026-10-17T09:07:41.163Z monitor listed four active tasks: the existing L2 transport pressure-test answer plus the three new L2 authoring attempts.",
+    "The three authoring dispatches returned HTTP 202 with queued attempts 44b7dcc4-b9d1-44a6-b482-711beec3ac94 (labor), 302743b4-c410-4e56-b487-e14f6c01fdd1 (decoration), and df4b45f6-ba7a-4062-a693-c58a30e6d338 (partnership); all were observed running in workflow-status.",
+    "17:08:48 independent scoring for the already completed L2 transport-regression answer was dispatched and observed running, attempt 835d9539-87b4-4765-9e24-f55681f59db2; author retries had not yet invalidated this separate workflow.",
+    "At 2026-10-17T09:10:43.253Z monitor lists five active attempts: four L2 Agent author/scoring tasks (three reauthoring and one transport-regression score) and one L2 API answer; all five remain running on workflow-status.",
+    "Four more L2 API answer retries were dispatched after confirming each previous attempt had failed with rate/token usage limits, each current step was ready, and no active attempt existed. New attempts 1e7e8b6d-b6ee-453a-8cc9-75a6f31f029b, a64364b4-ed9d-4f34-b974-28e75768873d, 26128210-af06-4e8c-8227-964ff72bee71 and a37ea162-c3c2-4185-a524-63d3524a9a16 were observed running at 2026-10-17T09:12Z.",
+    "f23476ce-2af3-437c-8ada-5e7fb96357d8 succeeded at 2026-10-17T09:12:45.401Z; workflow 62dcb64a ordinal 6 became ready.",
+    "44b7dcc4-b9d1-44a6-b482-711beec3ac94 succeeded at 2026-10-17T09:12:59.441Z; workflow d1af0602 ordinal 5 became ready.",
+    "835d9539-87b4-4765-9e24-f55681f59db2 succeeded at 2026-10-17T09:12:07.674Z; workflow 3bf6bc26 system decision is accepted and ordinal 8 ready; archive is deferred until L4 priority threshold is reached."
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "GET /api/monitor at 2026-10-17T09:06:11.022Z",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=<33 question workflow IDs>",
+    "POST /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/steps/4/run-batch at 2026-10-17T09:07Z",
+    "GET /api/monitor at 2026-10-17T09:07:41.163Z",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=d1af0602-5b84-4fd0-ad3c-dd0a1c742c05,46d67dee-ae4a-4d19-b37d-42c732b260c9,23bd0d15-868c-4eab-8b89-e59594dc7139,62dcb64a-8b64-42b9-8e50-0d920c9b304c,1b2a94b2-0f97-4c23-9f62-13a01fb68066",
+    "GET /api/attempts/835d9539-87b4-4765-9e24-f55681f59db2?view=status",
+    "GET /api/monitor at 2026-10-17T09:10:43.253Z; GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=<five supplemental L2 workflows>",
+    "POST /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/steps/5/run-batch; GET /api/attempts/{new ids}?view=status"
+  ],
+  "impact": "Fill available authoring capacity with L2 repair candidates while the sole L2 answer remains active; preserve current-version bindings and continue prioritizing any newly ready L4 task.",
+  "updates": [
+    {
+      "at": "2026-10-17T17:07:41+08:00",
+      "action": "L4无ready步骤时以已有repair判定的三道L2题填充作者空槽；补充正式提交网页操作说明和慢速原因",
+      "result": "三道L2作者已运行；活动任务由1项增至4项；Siriser网页领取/上传/提交/回读及记录流程已写入说明",
+      "evidence": "POST run-batch HTTP 202; GET /api/monitor; workflow-status; 网页操作说明-题包上传与提交.md"
+    },
+    {
+      "at": "2026-10-17T17:08:36+08:00",
+      "action": "准备派发已有完整题面与成功作答的L2运输回归题当前版本独立评分",
+      "result": "ordinal 6 ready=true, 无活动尝试；当前4项活动，其中3个作者Agent、1个API作答",
+      "evidence": "GET /api/monitor; GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=3bf6bc26-6410-494c-9137-cd1d7399e55d"
+    },
+    {
+      "at": "2026-10-17T17:09:00+08:00",
+      "action": "派发L2运输回归的当前版本评分，补入追踪范围的L2辅助题目与attempt记录",
+      "result": "ordinal 6 attempt 835d9539-87b4-4765-9e24-f55681f59db2 running；三道L2重出仍在运行；任务记录现覆盖所有被引用L2题",
+      "evidence": "POST run-batch HTTP 202; GET attempt status; workflow-status"
+    },
+    {
+      "at": "2026-10-17T17:10:43+08:00",
+      "action": "回读滚动派发后的活跃任务与步骤状态",
+      "result": "5 active: L2作者3、运输回归评分1、运输加压作答1；均仍running，未重复派发",
+      "evidence": "GET /api/monitor; workflow-status"
+    },
+    {
+      "at": "2026-10-17T17:12:00+08:00",
+      "action": "准备重试四道API状态ready且无活动作答的L2题",
+      "result": "四个上次作答attempt均以供应商频率/Token用量限制失败；失败距今约8小时；当前单题状态仍failed且ready=true",
+      "evidence": "GET /api/attempts/{aa3d6923,1dc52d4c,9e448cd1,0a4dd8b8}?view=status; workflow-status"
+    },
+    {
+      "at": "2026-10-17T17:13:00+08:00",
+      "action": "在Agent槽已满且API有空位时，重试四个L2作答失败题",
+      "result": "四个当前attempt均running；提交前失败原因分别为供应商频率/Token限制；无L4ready步骤",
+      "evidence": "POST run-batch HTTP 202; GET attempt status; workflow-status"
+    },
+    {
+      "at": "2026-10-17T17:14:00+08:00",
+      "action": "确认终态后接续同题下游步骤",
+      "result": "L2运输加压作答f23476ce成功且ordinal6 ready；L2劳务作者44b7dcc4成功且ordinal5 ready；L2运输回归评分835d9539成功并由系统accepted，L2归档暂缓以保持L4优先",
+      "evidence": "GET /api/attempts/{ids}?view=status; workflow-status"
+    },
+    {
+      "at": "2026-10-17T17:18:00+08:00",
+      "action": "L4主任务与L2空闲槽滚动推进；重出L4民借并接续两个L2作者结果",
+      "result": "L4民借corrected author attempt运行；L2装修和合伙新版本作答运行；L2运输回归accepted待归档（按L4优先暂缓）；monitor 8项活动，Agent1/API7",
+      "evidence": "GET /api/monitor; workflow-status; POST author/run-batch"
+    }
+  ],
+  "lesson": "Use rolling per-question progression; do not wait for whole batches. When no L4 step is service-ready, use already authorized and repair-bound L2 authoring to fill idle capacity. Never reuse old answers or scores after authoring changes.",
+  "created_at": "2026-10-17T17:06:30+08:00",
+  "updated_at": "2026-10-17T17:18:00+08:00"
+}

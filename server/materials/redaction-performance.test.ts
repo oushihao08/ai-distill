@@ -73,13 +73,31 @@ test('预算允许时合并超过32个短字段，同时保留输出容量余量
  const sizes:number[]=[];await redactExtractedMaterials({...options(100),executeApi:async(r:any)=>{sizes.push(targets(r).length);return response(r);}});
  expect(sizes).toEqual([100]);
 });
+test('原文字符和字段数仍能装下时，不因输出估算拆批',async()=>{
+ const text='甲'.repeat(150);
+ const source={material_id:'material-a',source_sha256:'sha',pages:[{page:1,text:'',method:'text' as const,structure:Array.from({length:30},(_,i)=>({id:`b${i}`,kind:'paragraph' as const,text:`${text}${i}`}))}]};
+ const sizes:number[]=[];
+ await redactExtractedMaterials({...options(1),materials:[source],executeApi:async(r:any)=>{sizes.push(targets(r).length);return response(r);}});
+ expect(sizes).toEqual([30]);
+});
+test('硅基流动脱敏请求关闭思考，单次请求超过60秒即超时',async()=>{
+ const sent:any[]=[];
+ await redactExtractedMaterials({...options(1),config:{...config,api:{...config.api,provider:'siliconflow'}},executeApi:async(r:any)=>{sent.push(r);return response(r);}});
+ expect(sent[0].config.enable_thinking).toBe(false);
+ expect(sent[0].timeout_ms).toBe(60000);
+});
 test('请求使用有界输出上限，估算不能充当实际输出容量',async()=>{
  let budget=0;await redactExtractedMaterials({...options(1),executeApi:async(r:any)=>{budget=r.config.max_tokens;return response(r);}});
- expect(budget).toBe(16384);
+ expect(budget).toBe(32768);
 });
 test('明确输出截断立即缩批，避免原样重复收费请求',async()=>{
  const sizes:number[]=[];
  await redactExtractedMaterials({...options(4),executeApi:async(r:any)=>{sizes.push(targets(r).length);if(sizes.length===1)throw Object.assign(new Error('fixture'),{kind:'invalid_response',reason_code:'incomplete_finish_reason',finish_reason:'length'});return response(r);}});
+ expect(sizes).toEqual([4,2,2]);
+});
+test('不完整响应缺少finish reason时也直接缩批',async()=>{
+ const sizes:number[]=[];
+ await redactExtractedMaterials({...options(4),executeApi:async(r:any)=>{sizes.push(targets(r).length);if(sizes.length===1)throw Object.assign(new Error('fixture'),{kind:'invalid_response',reason_code:'incomplete_finish_reason'});return response(r);}});
  expect(sizes).toEqual([4,2,2]);
 });
 test('单字段修复可直接返回映射，程序绑定唯一字段且仍校验原文',async()=>{

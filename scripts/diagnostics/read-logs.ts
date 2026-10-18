@@ -14,9 +14,9 @@ for(let index=2;index<process.argv.length;index++){
  if(!value||value.startsWith('--')||values.has(key))throw new Error(`参数缺失或重复：${key}`);
  values.set(key,value);
 }
-const allowed=new Set(['--request-id','--operation-id','--project-id','--workflow-id','--attempt-id','--skill-attempt-id','--call-id','--service','--component','--operation','--level','--from','--to']);
+const allowed=new Set(['--request-id','--operation-id','--project-id','--workflow-id','--attempt-id','--skill-attempt-id','--library-job-id','--library-package-id','--call-id','--service','--component','--operation','--level','--from','--to']);
 for(const key of values.keys())if(!allowed.has(key))throw new Error(`不支持的查询参数：${key}`);
-for(const key of ['--request-id','--operation-id','--project-id','--workflow-id','--attempt-id','--skill-attempt-id','--call-id','--service','--component','--operation']){
+for(const key of ['--request-id','--operation-id','--project-id','--workflow-id','--attempt-id','--skill-attempt-id','--library-job-id','--library-package-id','--call-id','--service','--component','--operation']){
  const value=values.get(key);if(value&&!/^[A-Za-z0-9._:/-]{1,160}$/.test(value))throw new Error(`${key} 格式不合法`);
 }
 const level=values.get('--level');if(level&&!['debug','info','warn','error'].includes(level))throw new Error('--level 必须是 debug、info、warn 或 error');
@@ -46,7 +46,7 @@ for(const path of files){if(shown>=500||scanned>=20*1024*1024)break;const info=a
   if(typeof record?.occurred_at!=='string'||!Number.isFinite(Date.parse(record.occurred_at)))continue;
   const at=Date.parse(record.occurred_at);if(from!==undefined&&at<from||to!==undefined&&at>to)continue;
   if(level&&record.level!==level)continue;
-  let matched=true;for(const [argument,field] of [['--request-id','request_id'],['--operation-id','operation_id'],['--project-id','project_id'],['--workflow-id','workflow_id'],['--attempt-id','attempt_id'],['--skill-attempt-id','skill_attempt_id'],['--call-id','call_id'],['--service','service'],['--component','component'],['--operation','operation']] as const){const value=values.get(argument);if(value&&record[field]!==value)matched=false;}
+  let matched=true;for(const [argument,field] of [['--request-id','request_id'],['--operation-id','operation_id'],['--project-id','project_id'],['--workflow-id','workflow_id'],['--attempt-id','attempt_id'],['--skill-attempt-id','skill_attempt_id'],['--library-job-id','library_job_id'],['--library-package-id','library_package_id'],['--call-id','call_id'],['--service','service'],['--component','component'],['--operation','operation']] as const){const value=values.get(argument);if(value&&record[field]!==value)matched=false;}
   if(matched){matches.push(record);shown++;if(shown>=500)break;}
  }
 }

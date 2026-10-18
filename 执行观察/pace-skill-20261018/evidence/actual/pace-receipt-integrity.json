@@ -1,0 +1,28 @@
+{
+  "started_at": "2026-10-18T08:42:56.525504+00:00",
+  "ended_at": "2026-10-18T08:42:56.526162+00:00",
+  "elapsed_seconds": 0.0005230839960859157,
+  "tool_calls": {
+    "functions_exec": 1,
+    "exec_command": 1
+  },
+  "items": [
+    {
+      "id": "Q7",
+      "source_sha256": "786ab4c528e34fc2db8b1712cc4ddab9986b000430d8294bab8a6a5b1a281a31",
+      "checks": [
+        "Computed complete current source ZIP SHA256",
+        "Read ZIP central directory and checked required file entries",
+        "Invoked ZipFile.testzip to decompress entries and check CRC"
+      ],
+      "status": "rejected",
+      "missing_required_entries": [],
+      "crc_error_entry": "instruction.json",
+      "reason": "CRC failed: instruction.json"
+    }
+  ],
+  "verification": [
+    "Recomputed source SHA256 and checked mtime_ns unchanged",
+    "Verified rejected Q7 output absent"
+  ]
+}

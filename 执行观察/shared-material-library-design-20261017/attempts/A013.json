@@ -1,0 +1,60 @@
+{
+  "id": "A013",
+  "item_id": "implementation",
+  "stage_id": "I5-downstream",
+  "previous_attempt_id": "A011",
+  "status": "succeeded",
+  "started_at": "2026-10-17T23:57:20+08:00",
+  "finished_at": "2026-10-17T23:58:57+08:00",
+  "inputs": [
+    {
+      "ref": "server/app.ts",
+      "version": "current-project-deletion-transaction",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "scope": "项目删除兼容 library_v1 来源外键并保留材料归档审计",
+    "library_schema_present_tested": true,
+    "library_schema_absent_tested": true,
+    "database_migration_applied": false,
+    "real_database": false
+  },
+  "changes_from_previous": [
+    "项目删除先移除题目来源快照，再删附件/产物，修复 question_library_sources 对 artifact 的 RESTRICT 外键冲突",
+    "项目删除时标记本项目加载关系已移除，保留跨项目材料库历史；工作流/尝试删除不再级联删除归档事件"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local-worktree",
+    "runtime_version": "Bun 1.3.9"
+  },
+  "artifacts": [
+    {
+      "ref": "server/app.ts",
+      "sha256": null
+    },
+    {
+      "ref": "server/app.test.ts",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "targeted_tests",
+      "result": "passed",
+      "evidence": "bun test server/app.test.ts -t 'project deletion'：2 passed，9 expectations；覆盖 042 表存在时的外键清理顺序/归档事件保留，以及无新库 schema 的旧项目兼容。"
+    },
+    {
+      "kind": "expanded_regression",
+      "result": "passed",
+      "evidence": "材料库、归档、DOCX/Excel、题目材料、出题/作答/评分和 app 回归：159 passed，609 expectations，13 files。"
+    },
+    {
+      "kind": "web_and_full_types",
+      "result": "partial",
+      "evidence": "bun run check 中 vue-tsc 通过；全仓 tsc 仍有两个错误：verify-domestic-models.ts 缺 siliconflow provider 键，scoring/executor.test.ts 的 inferred disputes-only 对象无 summary。"
+    }
+  ],
+  "error": null
+}

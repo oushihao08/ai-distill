@@ -1,0 +1,47 @@
+{
+  "id": "O004",
+  "kind": "issue",
+  "status": "open",
+  "title": "L3范围排除并核对L4与L2当前流程状态",
+  "item_ids": [
+    "37a527e1-aadb-4892-a84d-d75ee1b75c54",
+    "bb3e9082-b160-4321-8f35-16ea0cd65e63",
+    "bc42beb1-ad56-4d22-ad25-af0229dd0403",
+    "f1f8499a-da14-4884-bb8c-6886904072a6",
+    "1b2a94b2-0f97-4c23-9f62-13a01fb68066",
+    "603eb6cd-8ad2-46ee-8582-19d25f252e15"
+  ],
+  "attempt_ids": [
+    "9f973815-e36b-4f38-a573-a8e8e2a31e1f"
+  ],
+  "facts": [
+    "用户明确排除L3；不再领取、上传或修改L3题目。",
+    "本机API回读确认4/6道L4已accepted并本地归档；四道分别为运输、装修、房屋买卖、建工，其中四道均已提交Siriser，平台验收状态仍待定。",
+    "L4民间借贷最新作者结果为draft；系统拒绝继续作答，不能沿用旧版本答案或评分。",
+    "L4工伤当前作者attempt 9f973815-e36b-4f38-a573-a8e8e2a31e1f仍running；当前下游步骤未就绪，旧版本结果标记stale。",
+    "三个已有L2模型作答attempt仍running；当前未发现可安全新增派发的L2作者任务。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "GET /api/monitor",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=...",
+    "GET /api/attempts/9f973815-e36b-4f38-a573-a8e8e2a31e1f?view=status",
+    "GET /api/attempts/71633fce-e6e2-4eb4-967b-590bfb15c179?view=status",
+    "GET /api/attempts/0d442665-689b-4992-a2c1-6d1a4168254e?view=status",
+    "GET /api/attempts/c6d4195a-52e6-441b-85fb-2793e5b1629c?view=status",
+    "场景领取码记录.md",
+    "上传成功-L4房屋买卖-bc42beb1.md"
+  ],
+  "impact": "L3停止。L4完成率4/6=66.7%，尚未达到85%（6题中需6题）；L4工伤和民间借贷未完成。L2已有答案任务继续运行。",
+  "updates": [
+    {
+      "at": "2026-10-17T16:34:00+08:00",
+      "action": "按用户最新指示从本任务范围排除L3，并用API复核L4与已有L2任务",
+      "result": "未派发新任务、未操作L3平台；四个现有attempt仍运行。修正trace中房屋评分/判断/归档状态，并将工伤旧版本下游标记stale。",
+      "evidence": "API状态回读及上述平台/本地回执"
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-17T16:34:00+08:00",
+  "updated_at": "2026-10-17T16:34:00+08:00"
+}

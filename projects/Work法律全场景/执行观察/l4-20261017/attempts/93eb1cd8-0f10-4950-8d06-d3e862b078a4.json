@@ -1,0 +1,36 @@
+{
+  "id": "93eb1cd8-0f10-4950-8d06-d3e862b078a4",
+  "item_id": "62dcb64a-8b64-42b9-8e50-0d920c9b304c",
+  "stage_id": "6",
+  "status": "succeeded",
+  "started_at": "2026-10-17T09:13:35.209Z",
+  "finished_at": "2026-10-17T09:16:00.181Z",
+  "inputs": [
+    {
+      "ref": "L2运输加压验收当前题面、rubric、脱敏附件与匿名作答",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "target": "local API worker",
+    "source": "frozen workflow scoring config; not re-read in this turn"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "workflow_id": "62dcb64a-8b64-42b9-8e50-0d920c9b304c",
+    "attempt_id": "93eb1cd8-0f10-4950-8d06-d3e862b078a4"
+  },
+  "environment": {
+    "target": "local"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "API attempt status",
+      "result": "succeeded",
+      "evidence": "GET /api/attempts/93eb1cd8-0f10-4950-8d06-d3e862b078a4?view=status"
+    }
+  ],
+  "error": null
+}

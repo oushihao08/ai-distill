@@ -1,0 +1,30 @@
+{
+  "synthetic": true,
+  "real_model_calls": false,
+  "started_at": "2026-10-18T01:00:47.471Z",
+  "ids": {
+    "package_id": "47d5253c-d86d-4ae5-8e64-bea1345ece57",
+    "revision_id": "1e56a749-cc2a-4e43-9722-73282054e74d",
+    "intake_job_id": "832ef76a-007a-4702-864f-b8edbbf12fcd",
+    "extraction_job_id": "621b346d-74ea-4853-b670-f5e087c5ad5c",
+    "project_a": "8780d3c0-2fe2-4a29-b1c6-6da84c41f79d",
+    "redaction_job_id": "8645a65b-e288-4fd0-855c-6ded3ee63d0d",
+    "redaction_id": "1805ccea-1f54-49e6-b957-c5515b913b2e",
+    "project_b": "63ad889d-f9d2-4a7d-9121-6d7ee0b22770",
+    "link_a": "da33c74e-3aa6-48e1-adcc-41dfdbd3ddea",
+    "question_a": "ec4e3b93-00ae-429c-a748-56446f03ed53",
+    "link_b": "90b7433c-12c9-441c-ba6e-857897bbadd5",
+    "question_b": "20620599-7f19-4da7-bffe-bf835f1d16ab"
+  },
+  "before_question_count": 1,
+  "blocked_create_observed": true,
+  "create_status": 409,
+  "create_result": {
+    "error": "材料包已归档或不存在，不能建题"
+  },
+  "after_question_count": 1,
+  "existing_snapshot_export_status": 200,
+  "status": "passed",
+  "restore_status": 200,
+  "finished_at": "2026-10-18T01:01:08.460Z"
+}

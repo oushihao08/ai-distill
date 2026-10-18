@@ -29,6 +29,10 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 | `037_project_question_tags.sql` | 项目保存本期可选出题标签，题目保存创建时已选标签快照；将本项目历史 `target_level` 值加入可选目录，不改写旧题或旧任务。执行状态以目标库 `schema_migrations` 为准。 |
 | `038_docx_redaction_declaration.sql` | 材料增加默认 `model` 的脱敏方式字段；DOCX 可按附件指纹显式声明 `declared_redacted`，既有材料保持默认。新代码部署前需单独核对并应用。 |
 | `039_remote_operation_compatibility.sql` | 补齐早期已登记 034 的部署缺少的 `redaction_config_digest` 与 `claim_token`；只新增可空字段，保留已有记录。 |
+| `040_codex_answer_provider.sql` | 允许作答模型目录真实登记本机 Codex Agent provider；不变更现有作答模型或尝试。 |
+| `041_siliconflow_answer_provider.sql` | 允许作答模型目录登记 SiliconFlow API provider；不变更现有作答模型或尝试。 |
+| `042_shared_material_library.sql` | 新增独立材料库、不可变文件集合/处理结果、材料任务、项目加载关系和题目来源快照；为项目增加 `material_backend` 与 `workspace_path`，为 artifacts 增加同题复合唯一键；不迁移或更新旧材料数据。 |
+| `043_publication_provenance.sql` | 追加可审计的归档/撤回事件，记录归档所用项目、题目、材料来源版本和脱敏附件摘要；事件保留工作流/尝试 UUID 为历史身份而不设外键，项目清理运行记录后仍能查材料使用历史；不改写既有归档尝试或删除交付文件。 |
 | `031_project_period_root.sql` | 将已归组的第五期 `projects.material_root` 与对应 `workflows.source_manifest` 路径切换到 `projects/豆包高经济价值/第五期/questions/`；保留附件哈希、清单字段、材料行、步骤状态和执行历史。 |
 
 执行前核对目标数据库、已登记文件和全部未执行 SQL。`024_remove_automation_control.sql` 删除旧自动批次、成员、阻断表、派发函数及项目暂停字段，不能为修复 Codex 设置顺便执行。数据库迁移、服务重启和真实接口核对是不同操作，均遵守根 [AGENTS.md](../AGENTS.md) 的授权约束。

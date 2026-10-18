@@ -1,0 +1,74 @@
+{
+  "id": "A025",
+  "item_id": "implementation",
+  "stage_id": "I7-verification",
+  "previous_attempt_id": "A024",
+  "status": "failed",
+  "started_at": "2026-10-18T09:05:46.684402+08:00",
+  "finished_at": "2026-10-18T09:09:15.539919+08:00",
+  "inputs": [
+    {
+      "ref": "执行观察/shared-material-library-design-20261017/task.json",
+      "version": "remaining-runtime-audit",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "scope": "共享worker保持运行；仅合成TXT的取消/重试与过期running租约注入，按本次job ID验收",
+    "real_model_calls": false,
+    "shared_workflow_tasks_present": true
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "package_id": "47d5253c-d86d-4ae5-8e64-bea1345ece57",
+    "revision_id": "1e56a749-cc2a-4e43-9722-73282054e74d",
+    "cancel_job": "c358db1c-0f20-45f0-a5d9-220bbe4fe76c",
+    "cancel_retry_job": "034408e0-b39d-4d01-ad9c-cf698c05aec4",
+    "expired_job": "54d7aac1-e1f9-44c0-bb5b-273a40c19045",
+    "lease_retry_job": "06a3bfa5-6e66-4bbf-b23b-6d5689c8c2d9"
+  },
+  "environment": {
+    "target": "user-confirmed-disposable-test-db"
+  },
+  "artifacts": [
+    {
+      "ref": "执行观察/shared-material-library-design-20261017/evidence/A025-job-faults.json",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "queued_cancel_and_retry",
+      "result": "passed",
+      "evidence": "排队任务取消后终态cancelled；同request_key复用原job；显式重试由共享worker执行合成TXT提取成功"
+    },
+    {
+      "kind": "lease_and_late_submission",
+      "result": "passed",
+      "evidence": "注入合成running任务过期租约，finish回调未运行即拒绝提交；实际worker将其终结failed/worker_interrupted，不退回queued"
+    },
+    {
+      "kind": "lease_retry",
+      "result": "interrupted",
+      "evidence": "新重试09:06:36开始，09:06:39取消；旧共享worker PID97287此后已退出，另一PID1462继续运行。未停止共享worker；继续从该cancelled任务显式重试。"
+    }
+  ],
+  "error": {
+    "kind": "execution_cancelled",
+    "code": "cancelled",
+    "message": "材料任务已取消或 worker 已停止",
+    "http_status": null,
+    "exit_code": 1,
+    "chain": [],
+    "capture": "complete",
+    "redactions": [],
+    "impact": "失租后的重试尚未成功；前面取消/重试与旧租约拒绝已验证",
+    "confirmed_cause": null,
+    "hypotheses": [
+      "领取该任务的共享worker在执行时停止；进程状态及取消时间一致，未取得历史成功级别日志"
+    ],
+    "actions": [
+      "不重复前面测试；通过新任务详情UI显式重试该cancelled合成任务"
+    ]
+  }
+}

@@ -34,7 +34,7 @@ const result=await createModelApiClient().complete({
 
 `GET /api/llm-api/models` 返回默认配置和系统模型选项，复用 `system_answer_models` 中启用模型的完整连接配置。表名保留历史命名，作答与脱敏共用目录。脱敏页面复用已有 `/api/answer-models` 目录接口，只选择模型，不重复填写供应商、API 地址或密钥；完整非敏感配置随任务冻结。该只读接口不调用推理 API，不改动项目作答集合。
 
-Qwen 原生使用 `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY`，Kimi 使用 `KIMI_API_KEY` 或 `MOONSHOT_API_KEY`，DeepSeek 使用 `DEEPSEEK_API_KEY`，豆包使用 `DOUBAO_API_KEY` 或 `ARK_API_KEY`，OpenRouter 使用 `OPEN_ROUTER_KEY`。密钥只在服务端请求时读取，不进入步骤配置、任务快照、前端或普通日志。端点只允许各供应商声明的 HTTPS 主机/路径，禁止携带凭证、查询参数和重定向。
+Qwen 原生使用 `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY`，Kimi 使用 `KIMI_API_KEY` 或 `MOONSHOT_API_KEY`，DeepSeek 使用 `DEEPSEEK_API_KEY`，豆包使用 `DOUBAO_API_KEY` 或 `ARK_API_KEY`，OpenRouter 使用 `OPEN_ROUTER_KEY`，SiliconFlow 使用 `SILICONFLOW_API_KEY`。SiliconFlow 采用 `https://api.siliconflow.com/v1` OpenAI 兼容端点。作答模型目录的新 API 登记默认选 SiliconFlow；通用 API（含脱敏）默认仍按 `LLM_API_PROVIDER`／现有默认值解析，不因作答默认渠道而切换。密钥只在服务端请求时读取，不进入步骤配置、任务快照、前端或普通日志。端点只允许各供应商声明的 HTTPS 主机/路径，禁止携带凭证、查询参数和重定向。
 
 旧 Qwen 作答配置支持通过 OpenRouter 提供 Qwen；其旧默认解析入口保留兼容。新的通用 API 默认值不使用这种推断；默认选择 DeepSeek V4.1 Flash，可显式覆盖。
 
@@ -46,7 +46,7 @@ Qwen 原生使用 `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY`，Kimi 使用 `KIMI_API
 - 不自动改供应商/模型、不自动重试收费请求。队列和返修调用账本继续由业务模块管理。
 - 只接受完整 `finish_reason=stop` 的非空 assistant 文本，拒绝工具调用、拒答字段和截断结果。usage、实际模型名和 completion ID 仅作可选元数据；格式异常时忽略该字段，不使完整正文失败。拒绝时日志使用安全的 `reason_code`；不记录请求/响应正文及密钥。
 
-当前支持纯文字非流式调用。长文仍受模型上下文与最大输出长度限制；脱敏批次规划由 `materials/redaction-execution.ts` 与脱敏执行器负责，不属于通用 API 客户端。真实 API、模型输出质量和浏览器操作需另外取得证据。
+当前支持纯文字非流式调用和 SSE 完整收集；SiliconFlow 默认使用 SSE。流式与非流式均保留白名单中的异常结束原因，脱敏可据 length 立即有限缩批，仍拒绝截断正文。长文仍受模型上下文与最大输出长度限制；脱敏批次规划由 `materials/redaction-execution.ts` 与脱敏执行器负责，不属于通用 API 客户端。真实 API、模型输出质量和浏览器操作需另外取得证据。
 
 调用开始日志记录实际超时；JSON 解析失败使用 `invalid_json`，业务校验失败沿用调用方的安全原因码。共用错误分类保留 HTTP 状态和安全原因码，不记录原始供应商说明或响应正文。作答失败时，作答任务将安全 `reason_code` 保存在失败结果中；工作流只读投影仅暴露该码，详情页显示对应的响应校验原因。历史失败没有原始响应或原因码的，仍无法追溯具体字段。
 
@@ -57,3 +57,6 @@ Qwen 原生使用 `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY`，Kimi 使用 `KIMI_API
 ## OpenRouter 上游路由
 
 `ModelApiConfig.provider_options` 可携带 `only` 和 `allow_fallbacks`，只在 OpenRouter 配置接受；客户端向 provider 转发并在需要 Schema／reasoning 参数时声明 `require_parameters`。模型身份和路由分别冻结，显式路由保持。CoreWeave 默认只由脱敏配置针对 `deepseek/deepseek-v4.1-flash` 注入，通用客户端和普通作答不指定默认上游。禁止不可用时静默更换模型或供应商。真实上游以供应商返回元数据核实，配置不等于运行证据。
+
+
+SiliconFlow 请求默认使用 SSE 流式传输并请求 usage，复用现有完整结束校验；只保存完整正文，不将 reasoning_content 拼入答案。所有供应商 HTTP 请求显式关闭 Bun 自带空闲计时，仍由业务 AbortSignal 总时限和取消控制。Bun 已知连接关闭、空闲超时保留安全原因码；不自动重试收费请求。

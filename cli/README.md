@@ -49,7 +49,7 @@ CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、�
 | 派发本机工作流步骤 | `step dispatch STEP_KEY` | CLI → 本机 API → 本机 worker | 单步派发；不自动继续，不替用户判断是否重新执行 |
 | 固定一个批次和恢复范围 | `batch create/show/skip` | CLI → 本机 JSON 文件，创建时只读本机 API | 固定 workflow ID、分组、目标步骤和跳过原因；清单不是业务状态 |
 | 等待已派发任务 | `attempt wait` | CLI → 本机 API | 默认只读状态元信息；到期/中断不取消后台任务 |
-| 查询/下载成果和 Excel | `result`、`export list/create/download`、`artifact download` | CLI → 本机 API | 读取或显式生成/下载；下载仅写新文件，不覆盖 |
+| 查询/下载成果和 Excel | `result`、`export list/create/download`、`artifact download`、`siriser download` | CLI → 本机 API | 读取或显式生成/下载；下载仅写新文件，不覆盖 |
 | 导出未达标题包或指定题目的复核包 | `export failed/review` | CLI → 本机 API并写仓库固定目录 | 依当前题目、作答、评分绑定导出文件；不改变工作流状态 |
 | 让服务器执行入库、PDF提取、脱敏 | `remote material start/run/status/sync` | CLI → SSH 隧道 → 服务器 API/worker | 固定 request-key 幂等提交；成功后按哈希同步本机管理副本 |
 | 让服务器执行模型作答 | `remote answer start/run/status` | CLI → SSH 隧道 → 服务器 API/worker | 创建/查找服务器归属的作答尝试；不返回答案正文 |
@@ -81,6 +81,7 @@ CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、�
 | `batch show/skip` | `--file`；skip另需 `--ids`、`--reason` | 读取清单或记录本轮跳过；不取消服务端任务 | `batches.ts` |
 | `export list/create` | `--project`；create可选 `--batch` | 查询导出或显式生成项目 Excel | `commands.ts` / server reporting |
 | `artifact download` / `export download` | 各自 ID、`--out` | 下载到不存在的新文件，父目录须已存在 | `client.ts` |
+| `siriser download` | `--workflow UUID --out 路径` | 下载该题当前有效归档的 Siriser 五件套 ZIP；需已成功归档，目标文件不得存在 | `commands.ts` → `GET /api/workflows/:id/siriser-zip` |
 | `export failed/review` | `--project` + `--ids` 或 `--all`（review仅ids） | 固定目录导出未达标包/指定复核包，不写数据库状态 | `failed-export.ts` |
 | `remote material start/run` | `--workflow`、`--mode`、`--request-key` | 提交服务器材料操作；run等待并自动sync | `remote-materials.ts` |
 | `remote material status/sync` | `--operation` 或 `--workflow`+`--request-key` | 状态查询；sync在成功后校验并取回文件 | `remote-materials.ts` |
@@ -127,6 +128,8 @@ bun run ai-distill result show --workflow <题目UUID> --json
 `material text` 需要题目 ID、材料 ID 和 `--redacted-only`，始终读取当前数据库脱敏产物。`question show`/`result show` 返回现有工作流详情，含当前题目、作答、评分、判定与产物清单；`attempt show` 按精确任务 ID 读取完整尝试，可能含敏感业务正文，仅按需使用。默认不输出原件正文或私有文件。
 
 第七步在评分全部结束后自动计算达标状态；未达标题目由用户决定是否按普通步骤重新出题、作答和评分。`publish_export` 是归档步骤，`export create` 是单独的 Excel 操作。下载命令必须给 `--out`，父目录须存在，文件权限600且禁止覆盖已有文件。创建、修改、删除项目及应用设置均为显式写操作，按当前 API 的校验、事务和失效规则执行。
+
+Work 五件套的 CLI 流程：先用 `step dispatch publish_export --project UUID --ids 题目UUID` 派发第八步；按返回的 `attempt_ids` 用 `attempt wait` 等待终态；再用 `result show --workflow 题目UUID` 核对服务端达标与归档状态，最后执行 `siriser download --workflow 题目UUID --out 新路径.zip`。下载 API 会重新核对当前 accepted 版本、归档输入摘要和包内文件哈希；题目或 Rubric 已变化、归档失效或包被篡改时拒绝下载。该命令只下载本机 ZIP，不上传到 Siriser，也不执行“提交出题”。Harbor 六件套由独立转换流程处理，不包含在该命令中。
 
 人工复核未达标题目时使用 `bun cli/index.ts export failed --project UUID --all --json`，或用 `--ids UUID,...` 限定题目。它只导出当前系统判定为 `repair` 且题目、作答、有效评分绑定齐全的记录，固定写入 [`assets/未达标题目/`](../assets/未达标题目/README.md)，不使用 `--out`，也不写入 `assets/out/`。每题保存出题文本、每个模型的作答与评分文本／JSON，以及带尝试 ID、版本和哈希的清单；同一判定重复调用只核对、不覆盖。未达标是业务判定，执行失败而缺少三项完整记录会在结果中报错。此命令不调用模型、不更改工作流状态。
 

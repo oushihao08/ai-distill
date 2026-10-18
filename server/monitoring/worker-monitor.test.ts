@@ -6,7 +6,7 @@ import type {Pool} from 'pg';
 import {mkdtemp,readFile,writeFile,rm,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createWorkerMonitor,readWorkerMonitor} from './worker-monitor';
+import {createWorkerMonitor,readMaterialLibraryQueue,readWorkerMonitor} from './worker-monitor';
 import {sampleResources,type MonitorInput} from './resources';
 import{configureLogger}from'../logging';
 const db=(rows:any[]=[])=>{
@@ -15,6 +15,25 @@ const db=(rows:any[]=[])=>{
 };
 const sampler=(percent:number|null)=>async(input:MonitorInput)=>sampleResources(input,{platform:'darwin',read:async(file,args)=>file.endsWith('memory_pressure')?percent===null?'':`The system has 1000000 (100 pages).\nSystem-wide memory free percentage: ${percent}%\n`:`${args[1]} 100`});
 async function directory(run:(root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'distill-monitor-'));try{await run(root);}finally{await rm(root,{recursive:true,force:true});}}
+test('projects material library queue counts and safe active job fields',async()=>{
+ const pool={query:async(sql:string)=>{
+  if(sql.includes('to_regclass'))return{rows:[{available:true}]};
+  if(sql.includes('count(*) FILTER'))return{rows:[{queued:'2',running:'1',succeeded:'4',failed:'1',cancelled:'0'}]};
+  return{rows:[{id:'job-1',package_id:'package-1',revision_id:'revision-1',package_name:'测试材料',kind:'extract',status:'running',executor_kind:'api',execution_target:'server',progress:{phase:'extract',completed_files:1,total_files:3,secret:'must drop'},error_code:null,created_at:new Date('2026-10-17T00:00:00Z'),started_at:new Date('2026-10-17T00:01:00Z')}]};
+ }} as unknown as Pool;
+ const result=await readMaterialLibraryQueue(pool);
+ expect(result.status).toBe('known');
+ if(result.status==='known'){
+  expect(result.totals).toEqual({queued:2,running:1,succeeded:4,failed:1,cancelled:0});
+  expect(result.items[0]).toMatchObject({job_id:'job-1',package_id:'package-1',kind:'extract',progress:{phase:'extract',completed_files:1,total_files:3}});
+  expect(JSON.stringify(result)).not.toContain('must drop');
+ }
+});
+test('reports library queue unavailable before its migration exists',async()=>{
+ let queryCount=0;const pool={query:async()=>{queryCount++;return{rows:[{available:false}]};}} as unknown as Pool;
+ const result=await readMaterialLibraryQueue(pool);
+ expect(result.status).toBe('unavailable');expect(queryCount).toBe(1);
+});
 test('low memory pauses and recovery resumes using shared cached sample',async()=>directory(async root=>{
  let percent=5,calls=0;
  const monitor=createWorkerMonitor(db(),root,{min_available_percent:10,sample_interval_ms:5,sample:async input=>{calls++;return sampler(percent)(input);}});

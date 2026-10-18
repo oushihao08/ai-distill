@@ -1,0 +1,42 @@
+{
+  "id": "835d9539-87b4-4765-9e24-f55681f59db2",
+  "item_id": "3bf6bc26-6410-494c-9137-cd1d7399e55d",
+  "stage_id": "6",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-17T09:08:48.661Z",
+  "finished_at": "2026-10-17T09:12:07.674Z",
+  "inputs": [
+    {
+      "ref": "workflow:3bf6bc26-6410-494c-9137-cd1d7399e55d",
+      "version": "dispatch-time current version",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "step_ordinal": 6,
+    "endpoint": "POST /api/projects/:id/steps/:ordinal/run-batch"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "attempt_id": "835d9539-87b4-4765-9e24-f55681f59db2",
+    "workflow_id": "3bf6bc26-6410-494c-9137-cd1d7399e55d"
+  },
+  "environment": {
+    "target": "local API"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "api_status",
+      "result": "running",
+      "evidence": "GET /api/attempts/835d9539-87b4-4765-9e24-f55681f59db2?view=status"
+    },
+    {
+      "kind": "api_status",
+      "result": "succeeded",
+      "evidence": "GET /api/attempts/835d9539-87b4-4765-9e24-f55681f59db2?view=status"
+    }
+  ],
+  "error": null
+}

@@ -1,0 +1,33 @@
+{
+  "id": "submit-4xw0GRaVkO9IHRxWquoJYf",
+  "item_id": "37a527e1-aadb-4892-a84d-d75ee1b75c54",
+  "stage_id": "submit",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": null,
+  "finished_at": "2026-10-17T13:27:21+08:00",
+  "inputs": [],
+  "configuration": {
+    "local_trace_id": true
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "platform_question_id": "4xw0GRaVkO9IHRxWquoJYf"
+  },
+  "environment": {
+    "target": "Siriser",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "platform_readback",
+      "result": "验收中",
+      "evidence": [
+        "上传成功-L4运输-37a527e1.md",
+        ".storage/goal-runs/work-l4-submissions-20261017.json"
+      ]
+    }
+  ],
+  "error": null
+}

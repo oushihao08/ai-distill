@@ -5,8 +5,9 @@
  */
 import {createHash} from 'node:crypto';
 import {canonicalJson} from '../../shared/workflow-config';
+import type {QuestionMaterialOrigin} from '../../shared/material-library';
 export interface AnswerPresentation {mode:'text_deliverables_v1';deliverables:{name:string;description:string;required:boolean}[];instructions:string}
-export interface AnswerPackage {question_version:string;question:string;materials:{name:string;text:string}[];attachments:{id:string;sha256:string}[];system_prompt?:string;presentation?:AnswerPresentation}
+export interface AnswerPackage {question_version:string;question:string;materials:{name:string;text:string}[];attachments:{id:string;sha256:string}[];system_prompt?:string;presentation?:AnswerPresentation;material_origin?:QuestionMaterialOrigin}
 export interface AnswerAttachment {id:string;kind:string;sha256:string;text:string}
 export class AnswerInputError extends Error {constructor(message='题目或附件版本无效，不能作答'){super(message);}}
 /** 与就绪列表共用实际执行限制；只读取轻量能力字段，不检查或暴露答案。 */
@@ -56,6 +57,7 @@ export function buildAnswerInput(raw:unknown,artifacts:AnswerAttachment[]):Answe
 }
 export function inputDigest(input:AnswerPackage):string {
  // 文字成果快照整体规范化；旧无presentation尝试保持原摘要算法。
+ if(input.material_origin)return createHash('sha256').update(canonicalJson(input)).digest('hex');
  return createHash('sha256').update(input.presentation?canonicalJson(input):JSON.stringify(input)).digest('hex');
 }
 /** 兼容最初文字呈现尝试的固定字段摘要；只接受相同内容，不放宽业务绑定。 */

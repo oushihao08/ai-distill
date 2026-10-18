@@ -1,0 +1,48 @@
+{
+  "id": "b59b41df-0978-47ad-abec-aa2053e40b23",
+  "item_id": "603eb6cd-8ad2-46ee-8582-19d25f252e15",
+  "stage_id": "4",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-17T07:49:47.735Z",
+  "finished_at": "2026-10-17T07:58:39.536Z",
+  "inputs": [
+    {
+      "ref": "current authoring direction and frozen redacted snapshot",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "requested_level": "L4",
+    "scenario": "LS04",
+    "model": "gpt-6-luna",
+    "reasoning_effort": "medium",
+    "source": "project step config; runtime config not independently re-read"
+  },
+  "changes_from_previous": [
+    "按前一版实际评分未满足项调整任务设计"
+  ],
+  "external_ids": {
+    "workflow_id": "603eb6cd-8ad2-46ee-8582-19d25f252e15",
+    "attempt_id": "b59b41df-0978-47ad-abec-aa2053e40b23"
+  },
+  "environment": {
+    "target": "local API worker",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "API attempt status",
+      "result": "running",
+      "evidence": "GET /api/attempts/b59b41df-0978-47ad-abec-aa2053e40b23?view=status"
+    },
+    {
+      "kind": "api_status",
+      "result": "succeeded",
+      "evidence": "GET /api/attempts/b59b41df-0978-47ad-abec-aa2053e40b23?view=status (refreshed 2026-10-17T17:09+08:00)"
+    }
+  ],
+  "error": null
+}

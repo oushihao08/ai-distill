@@ -1,19 +1,26 @@
 <!--
-职责：按关键词和出题标签筛选并平铺展示项目全部题目、所属材料包、各步骤状态和单题操作，供项目详情页面复用。
-关键方法与用法：接收 `workflows`、`packages`、`projectId`；批量读取当前页状态，`actionsFor()` 生成单题步骤菜单，`runAction()` 与 `runBatch()` 调用工作流接口。
+职责：按关键词、标签和出题／作答／评分状态筛选项目全部题目，展示步骤状态、逐模型评分与单题操作。
+关键方法与用法：接收 `workflows`、`packages`、`projectId`；分批读取全部状态，旧列表接口缺少评分时补读状态详情；`runBatch()` 对全部筛选结果派发。
 -->
 
 <script setup lang="ts">
 import { api } from '../api/client';
 import { dateLabel } from '../utils/format';
-import { readAcceptanceResult, readAnswerStepResult, statusLabels, type Attempt, type Workflow, type WorkflowDetail } from '../types/api';
+import { readAcceptanceResult, readAnswerStepResult, readScoreStepResult, statusLabels, type Attempt, type ScoreStepModelSummary, type Workflow, type WorkflowDetail } from '../types/api';
 import {workflowStepDisplay} from '../utils/workflow-status';
 import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
+import ModelEvaluationSummary from './ModelEvaluationSummary.vue';
 
 const props=defineProps<{workflows:Workflow[];packages:Workflow[];projectId:string;materialPackagesEnabled?:boolean}>();
 const emit=defineEmits<{refresh:[]}>();
 const search=shallowRef<string|null>('');
 const selectedTag=shallowRef<string|null>(null);
+const authorStatus=shallowRef<string|null>(null),answerStatus=shallowRef<string|null>(null),scoreStatus=shallowRef<string|null>(null);
+const acceptanceStatus=shallowRef<string|null>(null);
+const acceptanceOptions=[{title:'达标',value:'达标'},{title:'不达标',value:'未达标'}];
+const statusOptions=['成功','等待','就绪','失败'];
+const statusLoading=shallowRef(false);
+const statusFilters=computed(()=>[{ordinal:4,value:authorStatus.value},{ordinal:5,value:answerStatus.value},{ordinal:6,value:scoreStatus.value},{ordinal:7,value:acceptanceStatus.value}]);
 const page=shallowRef(1);
 const pageSize=20;
 const details=shallowRef<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>({});
@@ -25,13 +32,17 @@ const actionMessages=shallowRef<Record<string,string>>({});
 const decisionDetailOpen=shallowRef(false);
 const selectedDecisionFlow=shallowRef<Workflow|null>(null);
 const history=shallowRef<{workflowId:string;title:string;ordinal:number;stepName:string}|null>(null);
+const scoreDetailOpen=shallowRef(false),scoreDetailLoading=shallowRef(false),scoreDetailError=shallowRef('');
+const scoreDetailFlow=shallowRef<Workflow|null>(null),scoreDetail=shallowRef<Pick<WorkflowDetail,'steps'|'attempts'>|null>(null);
+let scoreRequestVersion=0;
 const selectedDecisionAttempt=computed(()=>selectedDecisionFlow.value?latestDecisionAttempt(selectedDecisionFlow.value):null);
 const selectedAggregate=computed(()=>{const result=selectedDecisionAttempt.value?.result as {aggregate?:{mean_percentage:number;threshold:number;model_count:number}}|null;return result?.aggregate;});
 const packageNames=computed(()=>Object.fromEntries(props.packages.map(item=>[item.id,item.title])));
 const tagOptions=computed(()=>[...new Set(props.workflows.flatMap(displayTags))].sort((a,b)=>a.localeCompare(b,'zh-CN')));
 const filteredWorkflows=computed(()=>{
  const keyword=(search.value??'').trim().toLowerCase();
- return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&(flow.title.toLowerCase().includes(keyword)||Boolean(flow.source_workflow_id&&packageNames.value[flow.source_workflow_id]?.toLowerCase().includes(keyword))));
+ return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&(flow.title.toLowerCase().includes(keyword)||Boolean(flow.source_workflow_id&&packageNames.value[flow.source_workflow_id]?.toLowerCase().includes(keyword))))
+  .filter(flow=>statusFilters.value.every(filter=>!filter.value||stepState(flow,filter.ordinal).label===filter.value));
 });
 const pageCount=computed(()=>Math.max(1,Math.ceil(filteredWorkflows.value.length/pageSize)));
 const visibleWorkflows=computed(()=>filteredWorkflows.value.slice((page.value-1)*pageSize,page.value*pageSize));
@@ -57,21 +68,40 @@ let detailsRefresh:Promise<void>|null=null;
 let refreshRequestedAgain=false;
 function refreshDetails(){
  if(detailsRefresh){refreshRequestedAgain=true;return detailsRefresh;}
+ if(!props.workflows.length){details.value={};detailErrors.value={};return Promise.resolve();}
  detailsRefresh=(async()=>{
   try{
    do{
     refreshRequestedAgain=false;
-    const flows=visibleWorkflows.value;
-    if(!flows.length){details.value={};continue;}
+    const flows=[...props.workflows],projectId=props.projectId;
+    if(!flows.length){details.value={};detailErrors.value={};continue;}
+    statusLoading.value=true;
     detailLoadingByWorkflow.value=Object.fromEntries(flows.map(flow=>[flow.id,true]));
     try{
-     details.value=await api<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>(`/projects/${props.projectId}/workflow-status?ids=${flows.map(flow=>flow.id).join(',')}`);
-     detailErrors.value={};
-    }catch(cause){detailErrors.value=Object.fromEntries(flows.map(flow=>[flow.id,cause instanceof Error?cause.message:'读取步骤状态失败']));}
+     const loaded:Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>={},errors:Record<string,string>={};
+     for(let offset=0;offset<flows.length;offset+=100){
+      Object.assign(loaded,await api<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>(`/projects/${projectId}/workflow-status?ids=${flows.slice(offset,offset+100).map(flow=>flow.id).join(',')}`));
+     }
+     // 已部署的旧列表投影不含评分；仅对已执行评分的题目补读不含题面／答案正文的状态视图。
+     const missingScores=flows.filter(flow=>{
+      const step=loaded[flow.id]?.steps.find(step=>step.ordinal===6);
+      return step&&['running','succeeded','failed'].includes(step.status)&&!readScoreStepResult(step.result)?.models.length;
+     });
+     for(let offset=0;offset<missingScores.length;offset+=4){
+      await Promise.all(missingScores.slice(offset,offset+4).map(async flow=>{
+       try{
+        const full=await api<Pick<WorkflowDetail,'steps'|'attempts'>>(`/workflows/${flow.id}?view=status`);
+        const score=full.steps.find(step=>step.ordinal===6);
+        if(score)loaded[flow.id]!.steps=loaded[flow.id]!.steps.map(step=>step.ordinal===6?{...step,result:score.result}:step);
+       }catch(cause){errors[flow.id]=cause instanceof Error?cause.message:'读取评分明细失败';}
+      }));
+     }
+     details.value=loaded;detailErrors.value=errors;
+    }catch(cause){details.value={};detailErrors.value=Object.fromEntries(flows.map(flow=>[flow.id,cause instanceof Error?cause.message:'读取步骤状态失败']));}
     finally{detailLoadingByWorkflow.value={};}
    }while(refreshRequestedAgain);
   }catch(cause){actionMessages.value={...actionMessages.value,refresh:cause instanceof Error?cause.message:'读取题目步骤状态失败'};}
-  finally{detailsRefresh=null;}
+  finally{detailsRefresh=null;statusLoading.value=false;}
  })();
  return detailsRefresh;
 }
@@ -103,6 +133,23 @@ function decisionScores(attempt:Attempt|null){
  const result=readAcceptanceResult(attempt?.result);
  return Object.entries(result?.model_scores??{});
 }
+function scoreModels(flow:Workflow){return readScoreStepResult(details.value[flow.id]?.steps.find(step=>step.ordinal===6)?.result)?.models??[];}
+function modelScoreText(model:ScoreStepModelSummary){
+ const name=model.name||model.model_id||'未知模型';
+ const score=model.score_contract==='model_report_v1'?model.raw_score:model.score;
+ const maximum=model.score_contract==='model_report_v1'?model.full_score:model.max_score;
+ if(typeof score==='number'&&typeof maximum==='number')return `${name} ${model.score_contract==='model_report_v1'?'原始分 ':''}${score}/${maximum}${model.veto_triggered===true?' · 否决':''}`;
+ return `${name} ${model.score_status==='failed'?'评分失败':model.score_status==='running'?'评分中':model.score_status==='waiting'?'等待评分':'暂无分数'}`;
+}
+async function showScoreDetail(flow:Workflow){
+ const version=++scoreRequestVersion;
+ scoreDetailFlow.value=flow;scoreDetail.value=null;scoreDetailError.value='';scoreDetailOpen.value=true;scoreDetailLoading.value=true;
+ try{
+  const detail=await api<WorkflowDetail>(`/workflows/${flow.id}`);
+  if(version===scoreRequestVersion)scoreDetail.value={steps:detail.steps,attempts:detail.attempts};
+ }catch(cause){if(version===scoreRequestVersion)scoreDetailError.value=cause instanceof Error?cause.message:'读取评分详情失败';}
+ finally{if(version===scoreRequestVersion)scoreDetailLoading.value=false;}
+}
 function decisionModelName(flow:Workflow,modelId:string){
  const models=readAnswerStepResult(details.value[flow.id]?.steps.find(step=>step.ordinal===5)?.result)?.models;
  if(!models)return modelId;
@@ -126,7 +173,7 @@ async function runAction(flow:Workflow,action:RowAction){
  finally{runningAction.value=null;}
 }
 async function runBatch(ordinal:number){
- if(!filteredWorkflows.value.length||runningAction.value||batchOrdinal.value!==null)return;
+ if(statusLoading.value||!filteredWorkflows.value.length||runningAction.value||batchOrdinal.value!==null)return;
  const selected=[...filteredWorkflows.value],name=stageColumns.value.find(stage=>stage.ordinal===ordinal)?.name??'步骤';
  try{
   batchOrdinal.value=ordinal;batchMessage.value='';batchIssues.value=[];
@@ -139,8 +186,8 @@ async function runBatch(ordinal:number){
  finally{batchOrdinal.value=null;}
 }
 onMounted(refreshDetails);
-watch([()=>props.workflows,page,search,selectedTag],()=>{void refreshDetails();});
-watch([search,selectedTag],()=>{page.value=1;});
+watch([()=>props.workflows,()=>props.projectId],()=>{void refreshDetails();});
+watch([search,selectedTag,authorStatus,answerStatus,scoreStatus,acceptanceStatus],()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 </script>
 
@@ -149,28 +196,42 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
   <Row x="between" wrap :gap="12">
    <Column :gap="4"><h2 class="section-title">题目记录</h2><span class="text-xs text-muted">匹配 {{ filteredWorkflows.length }} 道题 · 每页 {{ pageSize }} 道</span></Column>
    <Row wrap y="center" :gap="8">
+    <v-select v-model="authorStatus" :items="statusOptions" label="出题状态" placeholder="全部" aria-label="按出题状态筛选" hide-details clearable class="filter-field-compact" />
+    <v-select v-model="answerStatus" :items="statusOptions" label="作答状态" placeholder="全部" aria-label="按作答状态筛选" hide-details clearable class="filter-field-compact" />
+    <v-select v-model="scoreStatus" :items="statusOptions" label="评分状态" placeholder="全部" aria-label="按评分状态筛选" hide-details clearable class="filter-field-compact" />
+    <v-select v-model="acceptanceStatus" :items="acceptanceOptions" label="达标判断" placeholder="全部" aria-label="按达标判断筛选" hide-details clearable class="filter-field-compact" />
     <v-select v-model="selectedTag" :items="tagOptions" placeholder="全部出题标签" aria-label="按出题标签筛选" hide-details clearable class="filter-field-compact" />
     <v-text-field v-model="search" placeholder="搜索题目" aria-label="搜索题目" hide-details clearable class="filter-field-compact" />
    </Row>
   </Row>
-  <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">搜索结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部搜索结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn></Row>
+  <p v-if="statusLoading" class="text-xs text-muted" role="status">正在读取全部题目状态及评分…</p>
+  <v-alert v-if="Object.keys(detailErrors).length" type="error" density="compact">部分题目状态或评分读取失败，请刷新后重试。</v-alert>
+  <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">筛选结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部筛选结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn></Row>
   <v-alert v-if="batchMessage" type="info" density="compact" role="status"><Column :gap="4"><span>{{ batchMessage }}</span><details v-if="batchIssues.length"><summary class="cursor-pointer">查看未执行题目</summary><ul class="my-0 pl-20"><li v-for="item in batchIssues" :key="item.id">{{ item.title }}：{{ item.reason }}</li></ul></details></Column></v-alert>
-  <p v-if="!visibleWorkflows.length" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。已脱敏材料包可通过上方“从材料包建题并出题”批量创建，或在材料包详情设置场景、角色、标签后单独创建。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
+  <p v-if="!visibleWorkflows.length&&!statusLoading" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。已脱敏材料包可通过上方“从材料包建题并出题”批量创建，或在材料包详情设置场景、角色、标签后单独创建。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-1080px">
     <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visibleWorkflows" :key="flow.id">
-      <td class="max-w-260px"><Column :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row><span class="text-xs text-muted break-words">出题角色／视角：{{ flow.role_perspective || '无' }}</span><span class="text-xs text-muted break-words">出题场景：{{ flow.scenario || '无' }}</span></Column></td>
+      <td class="max-w-260px"><Row :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Row></td>
       <td class="max-w-220px"><RouterLink v-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="packageNames[flow.source_workflow_id]??'查看材料包'">{{ packageNames[flow.source_workflow_id]??'查看材料包' }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap">{{ flow.material_count??0 }} 份</td>
-      <td v-for="stage in stageColumns" :key="stage.ordinal" class="whitespace-nowrap"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">详情</v-btn></td>
+      <td v-for="stage in stageColumns" :key="stage.ordinal" :class="stage.ordinal===6?'min-w-180px':'whitespace-nowrap'"><Column :gap="2"><Row wrap y="center" :gap="2"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><v-btn v-if="stage.ordinal===6&&scoreModels(flow).length" size="small" variant="text" color="primary" @click="showScoreDetail(flow)">查看评分</v-btn><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">详情</v-btn></Row><template v-if="stage.ordinal===6&&scoreModels(flow).length"><span v-for="(model,index) in scoreModels(flow)" :key="model.model_id??index" class="text-xs text-muted whitespace-nowrap">{{ modelScoreText(model) }}</span></template></Column></td>
       <td class="whitespace-nowrap"><Row :gap="4"><v-menu><template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" size="small" variant="text" color="primary" :disabled="!actionsFor(flow).length||detailLoadingByWorkflow[flow.id]">步骤操作</v-btn></template><v-list density="compact"><v-list-item v-for="action in actionsFor(flow)" :key="action.ordinal" :title="action.label" :disabled="action.disabled||runningAction!==null" @click="runAction(flow,action)" /></v-list></v-menu><span v-if="runningAction?.startsWith(flow.id+':')" class="text-xs text-muted">提交中…</span><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-xs text-muted">读取中…</span></Row><span v-if="detailErrors[flow.id]" class="text-xs text-danger" :title="detailErrors[flow.id]">读取失败</span><span v-else-if="actionMessages[flow.id]" class="text-xs text-muted" :title="actionMessages[flow.id]">{{ actionMessages[flow.id] }}</span><span v-else-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]" class="text-xs text-muted" :title="nextAction(flow)">{{ currentState(flow) }}</span></td>
      </tr>
     </tbody>
    </v-table>
   </Column>
   <WorkflowAttemptHistory v-if="history" :key="`${history.workflowId}-${history.ordinal}`" v-bind="history" @close="history=null" />
+  <v-dialog v-model="scoreDetailOpen" max-width="1120" scrollable>
+   <Column class="surface-card p-16" :gap="12">
+    <Row x="between" y="center" :gap="8"><h2 class="section-title">评分详情 · {{ scoreDetailFlow?.title }}</h2><v-btn icon="$close" aria-label="关闭评分详情" variant="text" @click="scoreDetailOpen=false" /></Row>
+    <p v-if="scoreDetailLoading" class="text-sm text-muted" role="status">正在读取模型评分…</p>
+    <v-alert v-else-if="scoreDetailError" type="error" density="compact">{{ scoreDetailError }}</v-alert>
+    <ModelEvaluationSummary v-else-if="scoreDetail" :steps="scoreDetail.steps" :attempts="scoreDetail.attempts" />
+   </Column>
+  </v-dialog>
   <v-dialog v-model="decisionDetailOpen" max-width="960" scrollable>
    <Column class="surface-card p-16" :gap="12">
     <Row x="between" y="center" :gap="12"><Column :gap="4"><h2 class="section-title">达标判断 · 执行详情</h2><span v-if="selectedDecisionAttempt" class="text-xs text-muted">{{ dateLabel(selectedDecisionAttempt.started_at) }}</span></Column><v-btn icon="$close" aria-label="关闭达标判定详情" variant="text" @click="decisionDetailOpen=false" /></Row>

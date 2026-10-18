@@ -13,8 +13,8 @@ test('派发锁争用回滚并退回轮询，不领取任务或永久占住消�
  expect(await runNextRedaction(pool,'unused')).toBe(false);
  expect(statements).toContain("SET LOCAL lock_timeout='5s'");expect(statements.at(-1)).toBe('ROLLBACK');expect(released).toBe(true);
 });
-function fixture(onReadSource=()=>{}){
- const sourceSha='a'.repeat(64),content=JSON.stringify({source_sha256:sourceSha,pages:[{page:1,text:'联系人张三',method:'text',structure:[{id:'b1',kind:'paragraph',text:'联系人张三'}]}]});
+function fixture(onReadSource=()=>{},blocks:any[]=[{id:'b1',kind:'paragraph',text:'联系人张三'}]){
+ const sourceSha='a'.repeat(64),content=JSON.stringify({source_sha256:sourceSha,pages:[{page:1,text:blocks.map(block=>block.text??block.items?.join(' ')).join('\n'),method:'text',structure:blocks}]});
  const source={material_id:crypto.randomUUID(),source_sha256:sourceSha,artifact_id:crypto.randomUUID(),artifact_sha256:hash(content)};
  const sourceContents=new Map([[source.material_id,content]]);
  const job={id:crypto.randomUUID(),workflow_id:crypto.randomUUID(),project_id:crypto.randomUUID(),ordinal:9,input:{materials:[source],digest:redactionInputDigest([source]),execution:{max_fields:1,concurrency:1}},config:{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'deepseek/deepseek-v4.1-flash'},prompt:'姓名脱敏',text_layout:REDACTION_PROTOCOL_VERSION}};
@@ -101,6 +101,19 @@ test('API队列保存完整进度和真实模型配置',async()=>{
  try{
   await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(r:any)=>({text:JSON.stringify({fields:JSON.parse(r.messages.at(-1).content).targets.map((t:any)=>({target_id:t.target_id,redactions:[{source_text:'张三',kind:'name'}]}))}),duration_ms:2,usage:null,completion_id:null,call_id:r.call_id} as any));
   expect(f.saved[0].status,JSON.stringify(f.queries)).toBe('succeeded');expect(f.saved[0].result.progress).toMatchObject({phase:'completed',completed_fields:1,total_fields:1,request_count:1});expect(f.saved[0].result.model).toBe('deepseek/deepseek-v4.1-flash');expect(f.artifacts()).toBe(2);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('低并发大包按结构化字段总量扩展任务预算',async()=>{
+ const blocks=Array.from({length:1_501},(_,index)=>({id:`b${index}`,kind:'paragraph',text:`正文字段${index}`}));
+ const f=fixture(()=>{},blocks),root=await mkdtemp(join(tmpdir(),'redaction-job-large-budget-'));
+ Object.assign(f.job.input.execution,{max_fields:256,concurrency:1});
+ try{
+  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(request:any)=>({text:JSON.stringify({fields:JSON.parse(request.messages.at(-1).content).targets.map((target:any)=>({target_id:target.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any));
+  expect(f.saved[0].status).toBe('succeeded');
+  const progress=f.saved[0].result.progress;
+  const budget=Date.parse(progress.deadline_at)-Date.parse(progress.started_at);
+  expect(budget).toBeGreaterThanOrEqual(2_390_000);expect(budget).toBeLessThanOrEqual(2_400_000);
+  expect(progress).toMatchObject({completed_fields:1_501,total_fields:1_501});
  }finally{await rm(root,{recursive:true,force:true});}
 });
 test('API超时失败保存原因和已完成进度，不发布附件',async()=>{

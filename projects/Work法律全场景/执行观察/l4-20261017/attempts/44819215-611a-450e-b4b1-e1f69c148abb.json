@@ -1,0 +1,57 @@
+{
+  "id": "44819215-611a-450e-b4b1-e1f69c148abb",
+  "item_id": "bc42beb1-ad56-4d22-ad25-af0229dd0403",
+  "stage_id": "5",
+  "status": "failed",
+  "started_at": "2026-10-17T06:24:20.696Z",
+  "finished_at": "2026-10-17T06:44:29.894Z",
+  "inputs": [
+    {
+      "ref": "e7f0742b-7d10-4646-ae88-6bf4bc2737f2",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "model": "Qwen/Qwen3.8-27B",
+    "provider": "SiliconFlow",
+    "threshold_changed": false
+  },
+  "external_ids": {
+    "attempt_id": "44819215-611a-450e-b4b1-e1f69c148abb",
+    "workflow_id": "bc42beb1-ad56-4d22-ad25-af0229dd0403"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "API status",
+      "result": "running",
+      "evidence": "/api/attempts/44819215-611a-450e-b4b1-e1f69c148abb?view=status"
+    },
+    {
+      "kind": "API workflow status",
+      "result": "failed; error=作答进程中断，可重试",
+      "evidence": "/api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=bc42beb1-ad56-4d22-ad25-af0229dd0403"
+    }
+  ],
+  "error": {
+    "kind": "worker",
+    "code": null,
+    "message": "作答进程中断，可重试",
+    "exit_code": null,
+    "http_status": null,
+    "chain": [],
+    "raw_error_ref": null,
+    "stderr_ref": null,
+    "stdout_ref": null,
+    "stack_ref": null,
+    "capture": "unavailable",
+    "redactions": [],
+    "impact": "旧作答attempt终止；已在既有授权范围内派发新的attempt 7266，旧结果不用于评分。",
+    "confirmed_cause": null,
+    "hypotheses": [],
+    "actions": [
+      "使用正常API发起新作答attempt 7266feea-a5de-4c0a-b32e-d5102dac7b6e"
+    ]
+  }
+}

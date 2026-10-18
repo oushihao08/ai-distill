@@ -1,0 +1,38 @@
+{
+  "id": "7c6644d3-5f0f-4505-8192-d2d792de0b66",
+  "item_id": "603eb6cd-8ad2-46ee-8582-19d25f252e15",
+  "stage_id": "7",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-17T16:50:15.290+08:00",
+  "finished_at": "2026-10-17T16:50:15.290+08:00",
+  "inputs": [
+    {
+      "ref": "current independent-score result",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "decision": "mean_at_most",
+    "threshold": 55,
+    "models": 1
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "api_attempt_id": "7c6644d3-5f0f-4505-8192-d2d792de0b66"
+  },
+  "environment": {
+    "target": "local API",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "acceptance_decision",
+      "result": "accepted; 44.5%; no veto",
+      "evidence": "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=603eb6cd-8ad2-46ee-8582-19d25f252e15"
+    }
+  ],
+  "error": null
+}

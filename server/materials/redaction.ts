@@ -16,7 +16,7 @@ import {AgentConcurrencyGate} from '../concurrency';
 import {resolveRedactionExecution,estimateRedactionTokens,type RedactionExecutionPolicy,type RedactionProgress} from './redaction-execution';
 
 export interface ExtractedMaterial { material_id:string;source_sha256:string;pages:Page[] }
-export interface RedactedPage { page:number;text:string;structure?:DocumentBlock[] }
+export interface RedactedPage { page:number;text:string;structure?:DocumentBlock[];issues?:string[] }
 export interface RedactedMaterial { material_id:string;pages:RedactedPage[] }
 export interface RedactionOutput { materials:RedactedMaterial[] }
 export const REDACTION_PROTOCOL_VERSION='attachment-field-redaction-v32';
@@ -132,7 +132,7 @@ function cleanFixedOcrPlaceholderBlock(block:DocumentBlock):DocumentBlock|undefi
  return{...block,text:filterRedactionFormatting(block.text)};
 }
 type StructuredRedaction={source_text:string;mask_text?:string;kind:string};
-type StructuredRedactedPage={page:number;text:string;structure:DocumentBlock[];redactions_by_target:Record<string,StructuredRedaction[]>};
+type StructuredRedactedPage={page:number;text:string;structure:DocumentBlock[];issues?:string[];redactions_by_target:Record<string,StructuredRedaction[]>};
 type StructuredRedactionOutput={materials:{material_id:string;pages:StructuredRedactedPage[]}[]};
 async function saveStructuredCheckpoint(path:string,identity:string,fields:Map<string,StructuredRedaction[]>,guard:()=>void=()=>{}){
  const payload=JSON.stringify({format:REDACTION_PROTOCOL_VERSION,identity,fields:Object.fromEntries(fields)}),temporary=`${path}.${crypto.randomUUID()}.tmp`;
@@ -161,7 +161,7 @@ interface RedactionOptions {
 }
 
 interface StructuredTarget { target_id:string;text:string;wire_id?:string;context?:{kind:string;position:number;block_count:number;row?:number;column?:number;cells?:string[];first_row?:string[];key?:string} }
-interface StructuredSourcePage { page:number;targets:StructuredTarget[];structure:DocumentBlock[] }
+interface StructuredSourcePage { page:number;targets:StructuredTarget[];structure:DocumentBlock[];issues?:string[] }
 interface StructuredSourceMaterial { material_id:string;source_sha256:string;pages:StructuredSourcePage[] }
 function collectStructuredTargets(blocks:DocumentBlock[],includeEmpty=false):StructuredTarget[]{
  const targets:StructuredTarget[]=[];
@@ -177,6 +177,14 @@ function collectStructuredTargets(blocks:DocumentBlock[],includeEmpty=false):Str
   }else add(block.id,block.text);
  }
  return targets;
+}
+
+/** Count only fields the structured redactor will send, so large jobs can receive a fitting task budget. */
+export function countStructuredRedactionFields(materials:ExtractedMaterial[]):number{
+ return materials.reduce((total,material)=>total+material.pages.reduce((pageTotal,page)=>{
+  const blocks=page.structure?.length?page.structure:[{id:`p${page.page}-text`,kind:'paragraph' as const,text:page.text}];
+  return pageTotal+collectStructuredTargets(blocks.flatMap(block=>{const cleaned=cleanFixedOcrPlaceholderBlock(block);return cleaned?[cleaned]:[];})).length;
+ },0),0);
 }
 
 function createTargetSetters(blocks:DocumentBlock[]){
@@ -396,7 +404,7 @@ function validateStructuredOutput(value:unknown,source:StructuredSourceMaterial[
    }
    return[block];
   });
-  return{page:page.page,text:documentBlocksToText(compactStructure),structure:compactStructure,redactions_by_target};
+  return{page:page.page,text:documentBlocksToText(compactStructure),structure:compactStructure,...(page.issues?.length?{issues:page.issues}:{}),redactions_by_target};
  })}))};
 }
 
@@ -430,7 +438,7 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
  let fieldNumber=0;
  const source:StructuredSourceMaterial[]=options.materials.map(material=>{
   const pageStructures=material.pages.map(page=>(page.structure?.length?page.structure:[{id:`p${page.page}-text`,kind:'paragraph' as const,text:page.text}]).flatMap(block=>{const cleaned=cleanFixedOcrPlaceholderBlock(block);return cleaned?[cleaned]:[];}));
-  return{material_id:material.material_id,source_sha256:material.source_sha256,pages:material.pages.map((page,index)=>({page:page.page,targets:collectStructuredTargets(pageStructures[index]!).map(target=>({...target,wire_id:`f${++fieldNumber}`})),structure:pageStructures[index]!}))};
+  return{material_id:material.material_id,source_sha256:material.source_sha256,pages:material.pages.map((page,index)=>({page:page.page,targets:collectStructuredTargets(pageStructures[index]!).map(target=>({...target,wire_id:`f${++fieldNumber}`})),structure:pageStructures[index]!,...(page.issues?.length?{issues:page.issues}:{})}))};
  });
  for(const material of source)for(const page of material.pages){
   const ids=page.targets.map(target=>target.target_id);
@@ -463,13 +471,13 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
   const cancel=()=>controller.abort(stopError('redaction_cancelled'));
   options.signal?.addEventListener('abort',cancel,{once:true});if(options.signal?.aborted)cancel();
   const taskTimer=setTimeout(()=>controller.abort(stopError('redaction_task_timeout')),policy.task_timeout_ms);
-  let lastProgress=performance.now(),lastProgressAt=startedAt;
+  let lastProgress=performance.now(),lastProgressAt=startedAt,lastActivity=performance.now(),lastActivityAt=startedAt;
   const elapsed=()=>Math.max(0,performance.now()-started,Date.now()-startedAt);
   const checkDeadlines=()=>{
    if(controller.signal.aborted)return;
    // Timers can be delayed by system sleep or a blocked event loop. Check elapsed time at every boundary.
    if(elapsed()>=policy.task_timeout_ms)controller.abort(stopError('redaction_task_timeout'));
-   else if(Math.max(performance.now()-lastProgress,Date.now()-lastProgressAt)>=policy.stall_timeout_ms)controller.abort(stopError('redaction_progress_stalled'));
+   else if(Math.max(performance.now()-lastActivity,Date.now()-lastActivityAt)>=policy.stall_timeout_ms)controller.abort(stopError('redaction_progress_stalled'));
   };
   const stallTimer=setInterval(checkDeadlines,Math.max(1,Math.min(1000,policy.stall_timeout_ms)));
   const guard=()=>{checkDeadlines();if(controller.signal.aborted)throw controller.signal.reason??stopError('redaction_cancelled');};
@@ -477,7 +485,7 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
   const checkpointPath=options.checkpointDirectory?join(options.checkpointDirectory,`${checkpointIdentity}.json`):undefined;
   const targetSources=new Map(source.flatMap(material=>material.pages.flatMap(page=>page.targets.map(target=>[structuredFieldKey(material.material_id,page.page,target.target_id),target] as const))));
   const progress:RedactionProgress={phase:'planning',total_fields:targetSources.size,completed_fields:0,total_batches:0,active_requests:0,request_count:0,retry_count:0,started_at:new Date(startedAt).toISOString(),last_progress_at:new Date(startedAt).toISOString(),deadline_at:new Date(startedAt+policy.task_timeout_ms).toISOString(),request_duration_ms:0,queue_wait_ms:0,validation_duration_ms:0,checkpoint_duration_ms:0,wall_elapsed_ms:0};
-  const notify=()=>{progress.wall_elapsed_ms=Math.max(0,Date.now()-startedAt);executionProgress={...progress};options.onProgress?.({...progress});};
+  const notify=()=>{lastActivity=performance.now();lastActivityAt=Date.now();progress.wall_elapsed_ms=Math.max(0,Date.now()-startedAt);executionProgress={...progress};options.onProgress?.({...progress});};
   const calls:{call_id:string;usage:unknown;duration_ms:number;completion_id:string|null}[]=[];
   let writeChain:Promise<void>=Promise.resolve(),releaseCheckpoint:(()=>Promise<void>)|undefined;
   // One writer owns both the checkpoint and its in-memory committed state. A failed write cannot advance completion.
@@ -542,9 +550,8 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
      if(outputLimit<1024&&outputEstimate([item])>outputLimit)throw outputError('redaction_output_budget_exceeded','单字段预计输出超过预算，未截断原文',{material_id:material.material_id,target_id:target.target_id});
      const single={material,pages:[{...page,targets:[target]}]};
      if(target.text.length>policy.max_characters||inputEstimate(single)>policy.max_input_tokens)throw outputError('redaction_input_budget_exceeded','单字段、上下文或提示词超过输入预算，未截断原文',{material_id:material.material_id,target_id:target.target_id});
-     const candidate=[...wireTargets({material,pages}),item];
      const candidatePages=pages.map(item=>({...item,targets:[...item.targets]}));const last=candidatePages.at(-1);if(last?.page===page.page)last.targets.push(target);else candidatePages.push({...page,targets:[target]});
-     if(count&&(count>=policy.max_fields||characters+target.text.length>policy.max_characters||outputEstimate(candidate)>outputLimit||inputEstimate({material,pages:candidatePages})>policy.max_input_tokens))flush();
+     if(count&&(count>=policy.max_fields||characters+target.text.length>policy.max_characters||inputEstimate({material,pages:candidatePages})>policy.max_input_tokens))flush();
      let batchPage=pages.at(-1);if(!batchPage||batchPage.page!==page.page){batchPage={...page,targets:[]};pages.push(batchPage);}
      batchPage.targets.push(target);count++;characters+=target.text.length;
     }
@@ -580,7 +587,7 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
        if(callController.signal.aborted){aborted();return;}
        // max_tokens is a ceiling, not requested output length. Packing estimates must not shorten it:
        // one source field can contain many sensitive fragments, each requiring its own mapping.
-       Promise.resolve().then(()=>executeApi({config:{...config.api,max_tokens:outputLimit},signal:callController.signal,timeout_ms:policy.request_timeout_ms,queue_timeout_ms:policy.queue_timeout_ms,response_format:{type:'json_schema',json_schema:{name:'redaction_fields',strict:true,schema}},call_id,messages},`redaction-structured-${key}${retry?`-retry-${retry}`:''}`)).then(resolve,reject).finally(()=>callController.signal.removeEventListener('abort',aborted));
+       Promise.resolve().then(()=>executeApi({config:{...config.api,max_tokens:outputLimit,...(config.api.provider==='siliconflow'?{enable_thinking:false}:{})},signal:callController.signal,timeout_ms:policy.request_timeout_ms,queue_timeout_ms:policy.queue_timeout_ms,response_format:{type:'json_schema',json_schema:{name:'redaction_fields',strict:true,schema}},call_id,messages},`redaction-structured-${key}${retry?`-retry-${retry}`:''}`)).then(resolve,reject).finally(()=>callController.signal.removeEventListener('abort',aborted));
       });
       guard();
       if(Math.max(performance.now()-at,Date.now()-requestStartedAt)>=policy.request_timeout_ms)throw stopError('redaction_request_timeout');
@@ -637,8 +644,8 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
       finally{progress.validation_duration_ms+=Math.max(0,Math.round(performance.now()-validationAt)-checkpointDuration);}
      }
      guard();const reason=errorReason(failure);
-     // A confirmed capacity stop will not improve by resending the same batch at the same ceiling.
-     if(reason==='incomplete_finish_reason'&&isRecord(failure)&&failure.finish_reason==='length'&&wireTargets(batch).length>1)break;
+     // Any incomplete multi-field response must shrink immediately; finish_reason may be absent when a stream ends early.
+     if(reason==='incomplete_finish_reason'&&wireTargets(batch).length>1)break;
      // Retrying an identical timed-out batch consumes another full deadline before the split below.
      if(reason==='redaction_request_timeout')break;
      if(retry===0&&(reason||isRetryableNetworkError(failure))){retryFeedback=reason?structuredRetryFeedback(failure,reason):undefined;continue;}
@@ -657,7 +664,7 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
      if(repairFailure!==undefined)throw repairFailure;
      return;
     }
-    const capacityStop=reason==='incomplete_finish_reason'&&isRecord(failure)&&failure.finish_reason==='length';
+    const capacityStop=reason==='incomplete_finish_reason';
     // A request timeout is local to this batch. Split instead of waiting another full deadline on
     // identical input; children share the original six-call budget and the remaining task deadline.
     if(reason&&all.length>(capacityStop||reason==='redaction_request_timeout'?1:4)&&root.calls+2<=6&&progress.request_count+2<=maxCalls){
@@ -718,7 +725,7 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
   const agentResult=await (options.execute??runAgent)<StructuredRedactionOutput>({task_type:'material_redaction',directory:options.directory,model:config.model,reasoning_effort:config.reasoning_effort,signal:options.signal,timeout_ms:30*60*1000,schema:structuredSchema,prompt:'请按要求处理 materials.json。\n'+prompt,validate:value=>validate(value)});
   output=agentResult.result;session_id=agentResult.session_id;usage=agentResult.usage;duration_ms=agentResult.duration_ms;
  }
- const materials:RedactedMaterial[]=output.materials.map(material=>({material_id:material.material_id,pages:material.pages.map(({page,text,structure})=>({page,text,structure}))}));
+ const materials:RedactedMaterial[]=output.materials.map(material=>({material_id:material.material_id,pages:material.pages.map(({page,text,structure,issues})=>({page,text,structure,...(issues?.length?{issues}:{})}))}));
  const rendered=renderRedactedMaterials(materials);
  return{...rendered,session_id,usage,duration_ms,completion_id,call_ids,...(executionProgress?{progress:executionProgress}:{}),...(config.provider==='api'&&options.checkpointDirectory?{checkpoint_path:join(options.checkpointDirectory,`${structuredCheckpointId(source,config)}.json`)}:{})};
 }
@@ -730,7 +737,7 @@ export function renderRedactedMaterials(materials:RedactedMaterial[]){
  const markdown=materials.map((material,index)=>`【附件 ${index+1}】\n\n${renderMaterialPages(material)}\n\n【附件 ${index+1} 结束】`).join('\n\n');
  const materialMarkdown=materials.map(material=>({material_id:material.material_id,markdown:material.pages.map(page=>page.text).join('\n\n')}));
  const indexedMaterials=materials.map(material=>{
-  const markdownText=material.pages.map(page=>page.text).join('\n\n'),document={format:'redacted-structure-v1',pages:material.pages.map(page=>({page:page.page,blocks:page.structure??[]}))};
+  const markdownText=material.pages.map(page=>page.text).join('\n\n'),document={format:'redacted-structure-v1',pages:material.pages.map(page=>({page:page.page,blocks:page.structure??[],...(page.issues?.length?{issues:page.issues}:{})}))};
   return{material_id:material.material_id,markdown:markdownText,document,structure_sha256:createHash('sha256').update(JSON.stringify(document)).digest('hex')};
  });
  const index=JSON.stringify({format:'redacted-index-v2',pages:pageIndex,materials:indexedMaterials,redacted_sha256:createHash('sha256').update(markdown).digest('hex'),material_count:materials.length,page_count:pageIndex.length});

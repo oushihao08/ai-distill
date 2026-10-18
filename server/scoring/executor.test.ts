@@ -1,10 +1,10 @@
-/** 验证评分仅接收同版题面、rubric、附件和匿名答案；覆盖独立会话、文本总分、绑定与取消，不调用真实模型。 */
+/** 验证评分的匿名输入、显式校准和冻结核对指令；覆盖独立会话、文本总分、绑定与取消，不调用真实模型。 */
 import {test,expect} from 'bun:test';
 import {mkdtemp,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {buildAnonymousInput,buildScoreFiles,buildScoreMessage,runIndependentApiScore,runIndependentScore} from './executor';
+import {buildAnonymousInput,buildScoreFiles,buildScoreMessage,runIndependentApiScore,runIndependentScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '@shared/step-prompts';
 import type {ScoreContext} from './validate';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
@@ -13,6 +13,43 @@ const baseProjectRules={version_id:'rules-v1',source_digest:hash('rules'),snapsh
 const context:ScoreContext={binding:{question_version:'v1',input_digest:'a'.repeat(64),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'private-id',answer_sha256:hash('100元')},question:'金额多少',materials:[{name:'原模型名称',text:'金额100元'}],answer:'100元',rubric,answer_approach:'私有作答思路',reference_answer:'私有标准答案',project_rules:baseProjectRules};
 const report='amount：1 / 1分。金额正确。答案原文证据：“100元”。\n最终总分：1 / 1 分';
 const reply=(call:any,text=report)=>({result:call.validate(text),session_id:'independent-session',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:'fixture'});
+test('新报告核对指令冻结到执行快照，旧协议摘要保持不变',()=>{
+ const instructions=scoreExecutionInstructions('codex','model_report_v1');
+ expect(instructions.model_report_reading_instructions).toContain('待评答案.txt');
+ expect(instructions.model_report_reading_instructions).toContain('分段');
+ expect(instructions.model_report_reading_instructions).toContain('未找到');
+ expect(scoreExecutionInstructions()).not.toHaveProperty('model_report_reading_instructions');
+ expect(scoreExecutionDigest()).toBe('2085db65b59b1bdfecbf36be573c0b6021a7a3093bb5abdb419be5936396be88');
+ expect(scoreExecutionDigest('api')).toBe('1150211183a8b48291c7080f6088d222e822ae21122133f68dda337919e07404');
+ expect(scoreExecutionDigest('codex',instructions)).not.toBe(scoreExecutionDigest());
+});
+test('Agent和API按冻结核对指令执行，原成绩及无标答隔离保持',async()=>{
+ const policy={contract:'model_report_v1' as const,rules_text:'按既有规则评分',reference_answer:'none' as const};
+ const rubric=[{id:'x',criterion:'判断结果',rule:'按冻结规则'}];
+ const {scoreRubricBindingText}=await import('./validate');
+ const task={...context,rubric,scoring_policy:policy,binding:{...context.binding,rubric_digest:hash(scoreRubricBindingText(rubric,policy))}};
+ const raw='<model_report>'+JSON.stringify({contract:'model_report_v1',items:[{id:'x',judgment:'未满足',score_delta:0,reason:'未找到'}],summary:{raw_score:0,full_score:10,evaluation_percent:0,veto_triggered:false}})+'</model_report>';
+ const guide='本次冻结核对指令fixture';
+ const root=await mkdtemp(join(tmpdir(),'grading-evidence-'));
+ try{
+  const result=await runIndependentScore(task,{root,model:'fixture',reasoning_effort:'low',model_report_reading_instructions:guide,execute:async(call:any)=>{
+   expect(call.prompt).toContain(guide);
+   expect(call.input_files.some((f:any)=>f.name==='校准参考答案.txt')).toBe(false);
+   return reply(call,raw);
+  }});
+  expect(result.raw_text).toBe(raw);expect(result.execution_request.model_report_reading_instructions).toBe(guide);
+  const api=await runIndependentApiScore(task,{config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture'},model_report_reading_instructions:guide,complete:async(call:any)=>{
+   expect(call.messages[0].content).toContain(guide);
+   expect(call.messages[0].content).not.toContain(context.reference_answer);
+   return{text:raw,provider:'openrouter',requested_model:'fixture',usage:null,duration_ms:1} as any;
+  }});
+  expect(api.raw_text).toBe(raw);expect(api.report).toMatchObject({summary:{raw_score:0,full_score:10,evaluation_percent:0,veto_triggered:false}});expect(result.report.summary).toEqual({raw_score:0,full_score:10,evaluation_percent:0,veto_triggered:false});
+  expect(api.execution_request.model_report_reading_instructions).toBe(guide);
+  expect(buildScoreMessage(buildAnonymousInput(task))).toContain('核对顺序与来源边界');
+  expect(buildScoreMessage(buildAnonymousInput(task),'')).not.toContain('核对顺序与来源边界');
+  expect(buildScoreMessage(buildAnonymousInput(context),guide)).not.toContain(guide);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
 test('新评分输入完整传递规则并按政策只提供校准标答',()=>{
  const rubric=[{id:'deduct',criterion:'错误',rule:'扣7分',metadata:{score:-7}}];
  const policy={contract:'model_report_v1',rules_text:'扣分和否决由模型判断；指标按规则给出',reference_answer:'calibration'};

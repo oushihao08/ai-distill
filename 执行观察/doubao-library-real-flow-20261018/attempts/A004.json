@@ -1,0 +1,10 @@
+{
+  "id":"A004","item_id":"real-flow","stage_id":"redact","previous_attempt_id":"A003","status":"failed",
+  "started_at":"2026-10-18T16:35:55+08:00","finished_at":"2026-10-18T16:36:43+08:00",
+  "inputs":[{"ref":"revision 6458c800-d17e-4132-a789-9821494546ae","version":"manifest f82e927b5bc2e6d9276e2f379a10f3b0bc8c144be2b5eed3fbbb0273f5b616fb","sha256":null}],
+  "configuration":{"provider":"siliconflow","model":"deepseek-ai/DeepSeek-V4.1-Flash","worker_pid":55217,"request_timeout_ms":180000,"task_timeout_ms":1200000},
+  "changes_from_previous":["仅使用当前源码worker重测；模型、提示词和共享并发不变"],
+  "external_ids":{"request_key":"ad42604b-2c46-4714-8e75-5a5e3251fea5","job_id":"f0cd3b65-583c-4787-b08f-022ca79d5bd8"},"environment":{"target":"local","runtime_version":"Bun 1.3.9"},"artifacts":[],
+  "verification":[{"kind":"api_status","result":"failed","evidence":".storage/verification/doubao-library-20261018/retry-4-status.json"},{"kind":"safe_log_review","result":"failed","evidence":".storage/logs/2026-10-18/worker-c865df66-4851-4cac-a2d0-29c0ae68b734-000.jsonl"}],
+  "error":{"kind":"process","code":"unknown","message":"材料任务执行失败，请检查处理记录和服务配置","exit_code":null,"http_status":null,"chain":["同一call_id出现3条redaction_source_not_found字段校验事件","db.query.failed: error_code=23514, query_name=commit","transaction.outcome_unknown: transaction_name=commit"],"raw_error_ref":".storage/logs/2026-10-18/worker-c865df66-4851-4cac-a2d0-29c0ae68b734-000.jsonl","stderr_ref":null,"stdout_ref":null,"stack_ref":null,"capture":"complete","redactions":[],"impact":"脱敏任务失败且未发布结果，加载、建题及后续步骤不可进行","confirmed_cause":"迁移042的成功任务约束要求发布一份usable_for_question=true的脱敏结果；当前提取文档有93条issues，runner按issues为空才判usable，提交被23514约束拒绝","hypotheses":["source_not_found是否最终通过补做消除，安全日志不足以确认"],"actions":[]}
+}

@@ -1,0 +1,153 @@
+{
+  "started_at": "2026-10-18T01:05:46.714Z",
+  "synthetic": true,
+  "real_model_calls": false,
+  "shared_workers_untouched": true,
+  "ids": {
+    "package_id": "47d5253c-d86d-4ae5-8e64-bea1345ece57",
+    "revision_id": "1e56a749-cc2a-4e43-9722-73282054e74d",
+    "cancel_job": "c358db1c-0f20-45f0-a5d9-220bbe4fe76c",
+    "cancel_retry_job": "034408e0-b39d-4d01-ad9c-cf698c05aec4",
+    "expired_job": "54d7aac1-e1f9-44c0-bb5b-273a40c19045",
+    "lease_retry_job": "06a3bfa5-6e66-4bbf-b23b-6d5689c8c2d9"
+  },
+  "checks": [
+    {
+      "path": "/api/material-library/revisions/1e56a749-cc2a-4e43-9722-73282054e74d/jobs",
+      "method": "POST",
+      "status": 202
+    },
+    {
+      "path": "/api/material-library/jobs/c358db1c-0f20-45f0-a5d9-220bbe4fe76c/cancel",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "job_id": "c358db1c-0f20-45f0-a5d9-220bbe4fe76c",
+      "status": "cancelled"
+    },
+    {
+      "path": "/api/material-library/revisions/1e56a749-cc2a-4e43-9722-73282054e74d/jobs",
+      "method": "POST",
+      "status": 200
+    },
+    {
+      "path": "/api/material-library/revisions/1e56a749-cc2a-4e43-9722-73282054e74d/jobs",
+      "method": "POST",
+      "status": 202
+    },
+    {
+      "job_id": "034408e0-b39d-4d01-ad9c-cf698c05aec4",
+      "status": "queued"
+    },
+    {
+      "job_id": "034408e0-b39d-4d01-ad9c-cf698c05aec4",
+      "status": "running"
+    },
+    {
+      "job_id": "034408e0-b39d-4d01-ad9c-cf698c05aec4",
+      "status": "succeeded"
+    },
+    {
+      "job_id": "54d7aac1-e1f9-44c0-bb5b-273a40c19045",
+      "status": "running"
+    },
+    {
+      "job_id": "54d7aac1-e1f9-44c0-bb5b-273a40c19045",
+      "status": "failed"
+    },
+    {
+      "path": "/api/material-library/revisions/1e56a749-cc2a-4e43-9722-73282054e74d/jobs",
+      "method": "POST",
+      "status": 202
+    },
+    {
+      "job_id": "06a3bfa5-6e66-4bbf-b23b-6d5689c8c2d9",
+      "status": "queued"
+    },
+    {
+      "job_id": "06a3bfa5-6e66-4bbf-b23b-6d5689c8c2d9",
+      "status": "running"
+    },
+    {
+      "job_id": "06a3bfa5-6e66-4bbf-b23b-6d5689c8c2d9",
+      "status": "cancelled"
+    }
+  ],
+  "cancelled": {
+    "id": "c358db1c-0f20-45f0-a5d9-220bbe4fe76c",
+    "package_id": "47d5253c-d86d-4ae5-8e64-bea1345ece57",
+    "revision_id": "1e56a749-cc2a-4e43-9722-73282054e74d",
+    "kind": "extract",
+    "status": "cancelled",
+    "executor_kind": "internal",
+    "execution_target": "local",
+    "progress": {},
+    "result_summary": {},
+    "error_code": null,
+    "error_message": null,
+    "created_at": "2026-10-18T01:05:50.100Z",
+    "started_at": null,
+    "finished_at": "2026-10-18T01:05:52.952Z"
+  },
+  "cancel_retry": {
+    "id": "034408e0-b39d-4d01-ad9c-cf698c05aec4",
+    "package_id": "47d5253c-d86d-4ae5-8e64-bea1345ece57",
+    "revision_id": "1e56a749-cc2a-4e43-9722-73282054e74d",
+    "kind": "extract",
+    "status": "succeeded",
+    "executor_kind": "internal",
+    "execution_target": "local",
+    "progress": {
+      "phase": "extract",
+      "issue_count": 0,
+      "total_files": 1,
+      "completed_files": 1
+    },
+    "result_summary": {
+      "file_count": 1,
+      "page_count": 1,
+      "issue_count": 0
+    },
+    "error_code": null,
+    "error_message": null,
+    "created_at": "2026-10-18T01:05:57.983Z",
+    "started_at": "2026-10-18T01:06:01.354Z",
+    "finished_at": "2026-10-18T01:06:15.274Z"
+  },
+  "late_finish_rejected": true,
+  "expired": {
+    "id": "54d7aac1-e1f9-44c0-bb5b-273a40c19045",
+    "package_id": "47d5253c-d86d-4ae5-8e64-bea1345ece57",
+    "revision_id": "1e56a749-cc2a-4e43-9722-73282054e74d",
+    "kind": "extract",
+    "status": "failed",
+    "executor_kind": "internal",
+    "execution_target": "local",
+    "progress": {},
+    "result_summary": {},
+    "error_code": "worker_interrupted",
+    "error_message": "执行进程租约过期，可创建新尝试",
+    "created_at": "2026-10-18T01:06:22.810Z",
+    "started_at": "2026-10-18T01:05:22.810Z",
+    "finished_at": "2026-10-18T01:06:24.248Z"
+  },
+  "lease_retry": {
+    "id": "06a3bfa5-6e66-4bbf-b23b-6d5689c8c2d9",
+    "package_id": "47d5253c-d86d-4ae5-8e64-bea1345ece57",
+    "revision_id": "1e56a749-cc2a-4e43-9722-73282054e74d",
+    "kind": "extract",
+    "status": "cancelled",
+    "executor_kind": "internal",
+    "execution_target": "local",
+    "progress": {},
+    "result_summary": {},
+    "error_code": null,
+    "error_message": "材料任务已取消或 worker 已停止",
+    "created_at": "2026-10-18T01:06:27.474Z",
+    "started_at": "2026-10-18T01:06:36.406Z",
+    "finished_at": "2026-10-18T01:06:39.215Z"
+  },
+  "status": "failed",
+  "error": "Error: expired lease retry failed"
+}

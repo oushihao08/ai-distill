@@ -1,0 +1,60 @@
+{
+  "id": "A012",
+  "item_id": "implementation",
+  "stage_id": "I3-processing-jobs",
+  "previous_attempt_id": "A007",
+  "status": "succeeded",
+  "started_at": "2026-10-17T23:54:30+08:00",
+  "finished_at": "2026-10-17T23:57:16+08:00",
+  "inputs": [
+    {
+      "ref": "server/material-library/runner.ts",
+      "version": "current-source-audit",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "scope": "修正运行中取消的终态并验证过期租约/晚到结果",
+    "database_migration_applied": false,
+    "remote_database": false,
+    "service_restart": false,
+    "real_model_calls": false,
+    "isolated_postgresql_available": false
+  },
+  "changes_from_previous": [
+    "运行中的取消现在持久化为 cancelled，error_code 为空以符合 042 状态约束；数据库存在 cancel_requested_at 时也能处理取消与失败终结之间的竞态",
+    "取消日志单独标记 cancelled，不再记为 failed"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local-worktree",
+    "runtime_version": "Bun 1.3.9"
+  },
+  "artifacts": [
+    {
+      "ref": "server/material-library/jobs.ts",
+      "sha256": null
+    },
+    {
+      "ref": "server/material-library/runner.ts",
+      "sha256": null
+    },
+    {
+      "ref": "server/material-library/jobs.test.ts",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "targeted_tests",
+      "result": "passed",
+      "evidence": "bun test server/material-library/jobs.test.ts：7 passed，28 expectations；覆盖取消终态、过期租约不回队列、取消/失租后不发布晚到结果。"
+    },
+    {
+      "kind": "isolated_database",
+      "result": "not_run",
+      "evidence": "未发现 PostgreSQL 二进制，Docker CLI 存在但本地 Docker daemon 不运行；未连接业务数据库或拉取/安装服务。"
+    }
+  ],
+  "error": null
+}

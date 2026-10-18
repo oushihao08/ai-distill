@@ -7,7 +7,7 @@ import {runExternalCall} from '../external-call';
 import {runAgent} from '../agent';
 import {createModelApiClient} from '../llm-api';
 import {mergeRedactionDefaults,sameRedactionConfig} from './redaction-config';
-import {resolveRedactionExecution,type RedactionProgress} from './redaction-execution';
+import {resolveRedactionExecution,taskTimeoutForRedactionFieldCount,type RedactionProgress} from './redaction-execution';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
@@ -17,7 +17,7 @@ import {watchTaskCancellation} from '../task-signal';
 import {validateStepConfig} from '../project-folders';
 import {readProjectAgentDefaults} from '../agent/config';
 import {DEFAULT_REDACTION_PROMPT} from '@shared/step-registry';
-import {REDACTION_PROTOCOL_VERSION,redactExtractedMaterials,renderRedactedMaterials,type ExtractedMaterial,type RedactedMaterial} from './redaction';
+import {REDACTION_PROTOCOL_VERSION,countStructuredRedactionFields,redactExtractedMaterials,renderRedactedMaterials,type ExtractedMaterial,type RedactedMaterial} from './redaction';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 function redactionFailureSummary(error:unknown){
@@ -80,8 +80,10 @@ export async function enqueueRedaction(pool:Pool,id:string,executionTarget:'loca
   // The workflow lock serializes dispatch. Never let changed inputs start a second writer while
   // the previous attempt is active; retry after it finishes or has been explicitly cancelled.
   if(active)throw new HTTPException(409,{message:'当前脱敏任务尚未结束，请先等待或取消，再派发新输入'});
+  // SiliconFlow 实测多批并发触发限流；仅新任务逐批请求，冻结策略不改历史任务或其他供应商。
+  const execution=resolveRedactionExecution(config.provider==='api'&&'api' in config&&config.api.provider==='siliconflow'?{concurrency:1}:{});
   const attempt=crypto.randomUUID();
-  await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,execution_target) SELECT $2,$1::uuid,9,COALESCE(max(attempt),0)+1,'waiting',$3,$4,$5 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=9",[id,attempt,JSON.stringify({...input,digest,execution:resolveRedactionExecution()}),JSON.stringify(config),executionTarget]);
+  await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,execution_target) SELECT $2,$1::uuid,9,COALESCE(max(attempt),0)+1,'waiting',$3,$4,$5 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=9",[id,attempt,JSON.stringify({...input,digest,execution}),JSON.stringify(config),executionTarget]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',implemented=true,result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=9",[id]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal IN (4,5,6,7,8,10)",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='脱敏输入或设置变化，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal IN (4,5,6,7,8,10) AND status IN ('waiting','running')",[id]);
@@ -152,6 +154,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
   remainingTask();
   const declared=new Set((input.materials as RedactionSource[]).filter(item=>item.redaction_mode==='declared_redacted').map(item=>item.material_id));
   const pending=materials.filter(material=>!declared.has(material.material_id));
+  taskPolicy=resolveRedactionExecution({...taskPolicy,task_timeout_ms:taskTimeoutForRedactionFieldCount(taskPolicy.task_timeout_ms,countStructuredRedactionFields(pending),taskPolicy.concurrency)});
   const manualOnly=pending.length===0;
   if(manualOnly!==Boolean(job.config?.provider==='manual'))throw new Error('脱敏任务模式与附件声明不一致');
   // text_layout 是任务产物格式标记，不是用户可编辑的模型设置。

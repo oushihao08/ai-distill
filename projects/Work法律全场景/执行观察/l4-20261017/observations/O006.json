@@ -1,0 +1,45 @@
+{
+  "id": "O006",
+  "kind": "result",
+  "status": "open",
+  "title": "按L4优先、空槽补L2继续推进",
+  "item_ids": [
+    "603eb6cd-8ad2-46ee-8582-19d25f252e15",
+    "1b2a94b2-0f97-4c23-9f62-13a01fb68066",
+    "d1af0602-5b84-4fd0-ad3c-dd0a1c742c05",
+    "62dcb64a-8b64-42b9-8e50-0d920c9b304c",
+    "23bd0d15-868c-4eab-8b89-e59594dc7139",
+    "3bf6bc26-6410-494c-9137-cd1d7399e55d"
+  ],
+  "attempt_ids": [
+    "fd0109dc-96a3-47a2-a6a7-3c8a23ca5262",
+    "0d442665-689b-4992-a2c1-6d1a4168254e",
+    "7acb7fa6-434d-4d7c-bfb4-281ebf79d8a6",
+    "2f632ee4-aeda-453e-8f33-ab0829349a43",
+    "98ccd1fc-0abe-4c05-b00f-d2adf81cca59"
+  ],
+  "facts": [
+    "2026-10-17T08:41:26Z monitor显示3项运行：L4工伤作答、L2运输回归作答、L2劳务出题；L2运输加压评分已从活动列表结束。",
+    "API状态确认L2合伙工作流23bd0d15-868c-4eab-8b89-e59594dc7139的ordinal 6 ready=true；已派发attempt 98ccd1fc-0abe-4c05-b00f-d2adf81cca59，API返回queued。",
+    "当前L4工伤新版本作答attempt fd0109dc-96a3-47a2-a6a7-3c8a23ca5262仍running；L4民间借贷结果draft，下游不ready。",
+    "L3继续排除。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "GET /api/monitor",
+    "GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/workflow-status?ids=...",
+    "POST /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/steps/6/run-batch"
+  ],
+  "impact": "当前没有可立即上传的新增L4；释放的容量由就绪L2评分占用。等待L4工伤作答终态后优先评分。",
+  "updates": [
+    {
+      "at": "2026-10-17T16:42:00+08:00",
+      "action": "API发现L2运输加压评分终态后，确认L2合伙评分ready并派发",
+      "result": "L2合伙评分attempt已queued；不重复派发。",
+      "evidence": "本机API状态和派发响应"
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-17T16:42:00+08:00",
+  "updated_at": "2026-10-17T16:42:00+08:00"
+}

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "submissions-audit-20261017",
+  "title": "已提交任务逐条统计和标记",
+  "goal_ref": "用户本轮要求及场景领取码记录.md",
+  "scope": "我的项目全部16条及对应本地提交回执；只统计登记，不重新提交",
+  "completion_criteria": [
+    "读取全部平台记录并按题目ID去重",
+    "标明题目名称/等级/姓名/提交与当前状态/时间/本地映射",
+    "在指定MD顶部汇总并保留历史，异常单列"
+  ],
+  "items": [
+    {
+      "id": "inventory",
+      "title": "提交总表",
+      "plan_ref": "场景领取码记录.md",
+      "stages": [
+        {
+          "id": "audit",
+          "title": "平台与本地逐条核对",
+          "state": "succeeded",
+          "outcome": "15历史提交；14验收中1已驳回；1未提交",
+          "attempt_id": "A001",
+          "observed_at": "2026-10-17T13:37:26+08:00",
+          "evidence": [
+            "../../场景领取码记录.md",
+            "evidence/submission-index.json"
+          ]
+        }
+      ]
+    }
+  ],
+  "next_actions": [
+    "驳回任务原因另行核实，本次未重提；不影响统计已完成"
+  ],
+  "updated_at": "2026-10-17T13:37:26+08:00"
+}

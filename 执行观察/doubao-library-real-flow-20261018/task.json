@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "id": "doubao-library-real-flow-20261018",
+  "title": "豆包隔离副本材料库到归档真实链路",
+  "goal_ref": "当前会话：继续执行已中断的真实材料库流程测试",
+  "scope": "仅使用隔离项目 d26d2953-0f32-440a-a328-377eee9e9182、材料包 d4353085-0921-4293-9ea4-f1f808ae91c4、版本 6458c800-d17e-4132-a789-9821494546ae；源项目及PDF不变，不连接远程/生产数据库，不改全局并发。；用户本轮追加授权本链路后续必要模型/API调用及空闲时本地API/worker重启，不重复询问",
+  "completion_criteria": [
+    "同一隔离版本成功产生可用脱敏结果并加载到隔离项目；正常遮盖不算差异，比较提取原文与脱敏正文的实质内容，OCR警告保留但不要求零警告或逐字一致",
+    "继续完成题目生成、作答、独立评分、达标判断、归档与导出；分别记录业务状态和证据",
+    "必需步骤未完成时明确记录阻断，不宣称完整通过"
+  ],
+  "items": [
+    {
+      "id": "real-flow",
+      "title": "材料库到归档真实链路",
+      "plan_ref": "docs/evidence/2026-10-18-doubao-library-real-flow.md",
+      "stages": [
+        {
+          "id": "intake",
+          "title": "材料入库",
+          "state": "succeeded",
+          "outcome": "单PDF清单和原件摘要校验成功",
+          "attempt_id": "A000",
+          "observed_at": "2026-10-18T16:34:54+08:00",
+          "evidence": [
+            ".storage/verification/doubao-library-20261018/state.json"
+          ]
+        },
+        {
+          "id": "extract",
+          "title": "PDF提取",
+          "state": "succeeded",
+          "outcome": "57页识别执行成功；37项识别问题仍待核，不能作为下游质量通过",
+          "attempt_id": "A007",
+          "observed_at": "2026-10-18T08:57:16.659013+00:00",
+          "evidence": [
+            ".storage/verification/doubao-library-20261018/extract-v3-response.json"
+          ]
+        },
+        {
+          "id": "redact",
+          "title": "脱敏与发布",
+          "state": "succeeded",
+          "outcome": "57页脱敏发布成功；核心借贷内容对照未见实质损失，正常遮盖忽略；漏遮盖等现象已单列限制",
+          "attempt_id": "A009",
+          "observed_at": "2026-10-18T09:12:09.453515+00:00",
+          "evidence": [
+            ".storage/verification/doubao-library-20261018/retry-4-status.json",
+            ".storage/logs/2026-10-18/worker-c865df66-4851-4cac-a2d0-29c0ae68b734-000.jsonl"
+          ]
+        },
+        {
+          "id": "load",
+          "title": "加载到隔离项目",
+          "state": "succeeded",
+          "outcome": "全局真实材料加载至隔离项目成功，选定脱敏结果99846ce1-5fea-4f1f-98b7-151ea6e372b6",
+          "attempt_id": null,
+          "observed_at": "2026-10-18T09:12:09.453515+00:00",
+          "evidence": [
+            "GET /api/material-library/packages/d4353085-0921-4293-9ea4-f1f808ae91c4/revisions",
+            ".storage/verification/doubao-library-20261018/retry-4-status.json"
+          ]
+        },
+        {
+          "id": "author-answer-score-decision-archive-export",
+          "title": "出题至归档和导出",
+          "state": "running",
+          "outcome": "相对来源路径校验根因已复现并修复；修复后同题第二次出题尝试已入队，等待真实出题完成",
+          "attempt_id": "A011",
+          "observed_at": "2026-10-18T09:17:07.423Z",
+          "evidence": [
+            "执行观察/doubao-library-real-flow-20261018/attempts/A010.json",
+            "server/authoring/executor.test.ts",
+            "执行观察/doubao-library-real-flow-20261018/attempts/A011.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "focused-tests",
+      "title": "脱敏与材料库任务定向测试",
+      "plan_ref": "当前会话：问题修复后的定向验证",
+      "stages": [
+        {
+          "id": "unit",
+          "title": "脱敏执行、预算、材料库任务测试",
+          "state": "succeeded",
+          "outcome": "65项通过、0项失败；不代表真实模型质量或完整业务流程通过",
+          "attempt_id": "A005",
+          "observed_at": "2026-10-18T16:37:18+08:00",
+          "evidence": [
+            "执行观察/doubao-library-real-flow-20261018/attempts/A005.json"
+          ]
+        },
+        {
+          "id": "quality-guards",
+          "title": "提取误报与脱敏前置校验修复",
+          "state": "succeeded",
+          "attempt_id": "A008",
+          "outcome": "按用户实质内容验收规则取消OCR提示即拒绝；178项回归通过，等待服务空闲加载",
+          "observed_at": "2026-10-18T09:00:44.916527+00:00",
+          "evidence": [
+            "evidence/A006-parser-replay.json",
+            "evidence/A006-verification.md"
+          ]
+        }
+      ]
+    }
+  ],
+  "next_actions": [
+    "验证提取警告不阻断且原文/遮盖/页覆盖校验保留",
+    "服务空闲时加载修复，使用新提取结果执行脱敏并进行实质内容核对",
+    "加载到隔离项目并滚动推进真实4–8与导出"
+  ],
+  "updated_at": "2026-10-18T09:12:09.453515+00:00"
+}

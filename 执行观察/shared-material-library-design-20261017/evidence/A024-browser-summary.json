@@ -1,0 +1,18 @@
+{
+  "project_id": "37090ec0-440a-44da-a8af-9e51c0d369c9",
+  "browser_run_id": "dd6bf9c5cf8e9",
+  "post_status": 201,
+  "created_backend": "library_v1",
+  "visible_step_buttons": [
+    "出题",
+    "模型作答",
+    "独立评分",
+    "达标判断",
+    "归档达标题目"
+  ],
+  "no_intake_or_redaction_buttons": true,
+  "console_errors": [],
+  "limitations": [
+    "未自动验证原生材料文件夹选择及提交"
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "scope": "文档静态核对，非DDL或业务测试",
+  "tables": {
+    "library_blobs": 9,
+    "library_packages": 10,
+    "library_revisions": 11,
+    "library_files": 7,
+    "library_jobs": 25,
+    "library_documents": 10,
+    "library_redactions": 11,
+    "project_library_packages": 10,
+    "question_library_sources": 14
+  },
+  "new_field_count": 107,
+  "composite_relation_shapes_checked": 17,
+  "local_references_checked": 17,
+  "missing_references": [],
+  "implementation_phases": [
+    "I1",
+    "I2",
+    "I3",
+    "I4",
+    "I5",
+    "I6",
+    "I7",
+    "I8"
+  ],
+  "acceptance_scenario_count": 22,
+  "limits": [
+    "未执行DDL",
+    "未查询运行数据库约束",
+    "未运行后端测试或前端构建",
+    "未调用模型/OCR",
+    "未验证实际浏览器新流程"
+  ],
+  "review_findings_resolved": [
+    "建集合与建题使用独立幂等字段",
+    "规则工作区不再依赖案件material_root",
+    "库job不伪造step_attempt身份",
+    "共享后半段表不能整表退役",
+    "不恢复已撤除的费用统计"
+  ],
+  "reviewed_at": "2026-10-17T22:34:29+08:00",
+  "design_sha256": "672be10ace1d30d9e645b9ad293473006bb4b4b248d7959b7cb125f6cec1a838"
+}

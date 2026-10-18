@@ -138,8 +138,9 @@ function buildPrompt(input:WorkSimulationInput){
  const harbor=harborTask(input.question);
  const attachmentNames=input.attachments.map(item=>item.name).join('、');
  return [
-  '<role>你是为内部法律评测制作 AI 模拟专家成果的研究代理。你不是现实律师或真人专家。</role>',
+  '<role>你是内部法律评测的 AI 法律研究代理，负责依据题目、Rubric 和脱敏材料起草业务成果；你不是现实律师或真人专家。</role>',
   '<task>根据冻结题面、评分标准、全部脱敏材料和随附交付规范，完成题目要求的一个真实可用主成果，并记录本次确实完成的法律检索。</task>',
+  '<body_style>主成果正文采用自然、完整的业务文书体例，不写“模拟专家”“AI模拟”“模型生成”等过程说明；不得伪称真人身份、亲自办理、签署、核定或执行未发生的检索操作。生成来源保留在独立生成记录和平台要求的来源字段中，不得删除或伪造。</body_style>',
   '<files>必须逐个生成 project_context.harbor.metadata.deliverables 中列出的全部交付文件，harbor_files 的 path 与清单逐字一致。DOCX/MD/TXT/CSV/JSON 正文放在 markdown 字段，XLSX 按工作表返回 name、columns 和等长 rows。每个文件分别完成其用途，不得复制同一内容仅更名。若无法生成某一指定文件或资料不足，停止并在 unresolved 中说明。</files>',
   '读取并遵守 input_files/模拟专家生成提示词.md、交付规范.md 和模拟专家交付物与检索轨迹模板.md；逐一阅读全部 input_files/材料-*.md。',
   '<quality>不得读取或使用参考答案、作答思路、历史题目或评分结果。</quality>',
@@ -182,7 +183,7 @@ export async function getOrGenerateWorkSimulation(pool:Pick<Pool,'query'>,input:
   if(records.some(r=>r.supports.length>0&&(r.verification_status!=='verified'||!r.source_url)))throw new Error('用于成果或判据的出题检索记录尚有未核验项，不在归档阶段重新创作补齐');
   const type=String(input.question.task_type).match(/^F[1-5]/)?.[0] as WorkSimulation['deliverable_type'];
   if(!type)throw new Error('Work主任务类型缺失');
-  return {deliverable_type:type,deliverable_title:String(input.question.task_name),deliverable_markdown:projectReference(q),harbor_files:q.reference_outputs.map(output=>{const file=q.deliverables.find(d=>d.id===output.deliverable_id);if(!file)throw new Error('标准成果引用缺失');return{path:file.path,markdown:output.content,sheets:output.sheets};}),research_entries:records.map(r=>({id:r.id,query:r.query,title:r.source_title,url:r.source_url??'',finding:`${r.verification_status==='verified'?'已核验':'未核验'}：${r.findings}`,version_or_date:r.version,used_in:r.supports.join('、')||'未采用为成果或判据依据'})),unresolved:[],generated_at:new Date().toISOString(),model:'author_snapshot',reasoning_effort:'not_applicable',actual_search_queries:[],actually_opened_urls:[]};
+  return {deliverable_type:type,deliverable_title:String(input.question.task_name),deliverable_markdown:projectReference(q),harbor_files:q.reference_outputs.map(output=>{const file=q.deliverables.find(d=>d.id===output.deliverable_id);if(!file)throw new Error('标准成果引用缺失');return{path:file.path,markdown:output.content,sheets:output.sheets};}),research_entries:records.map(r=>({id:r.id,query:r.query,title:r.source_title,url:r.source_url??'',finding:`${r.verification_status==='verified'?'已核验':'未核验'}：${r.findings}`,version_or_date:r.version,used_in:r.supports.join('、')||'未采用为成果或判据依据'})),unresolved:[],generated_at:'未记录（采用冻结作者成果，归档未重新生成）',model:'author_snapshot',reasoning_effort:'not_applicable',actual_search_queries:[],actually_opened_urls:[]};
  }
  if(!/^[a-f0-9]{64}$/i.test(sourceDigest))throw new Error('模拟成果来源摘要无效');
  const config=await readProjectAgentDefaults(pool,input.project_id);

@@ -28,9 +28,19 @@ test('达标归档交付入口生成五件套、六件套和内部快照',async(
   expect((await readdir(harborRoot)).sort()).toEqual(['environment','instruction.md','rubrics.json','solution','task.toml','tests']);
   expect((await readdir(join(harborRoot,'solution/golden_output'))).sort()).toEqual(['成果.docx']);
   expect((await readdir(join(fiveRoot,(await readdir(fiveRoot))[0]!))).sort()).toEqual(['golden_output','input_files','任务说明.docx','评分要点.xlsx','题目信息表.docx']);
-  expect((await readdir(join(fiveRoot,(await readdir(fiveRoot))[0]!,'golden_output'))).sort()).toEqual(['成果.docx','模拟专家主成果.docx','模拟生成记录.md','法规案例检索轨迹.md']);
+  expect((await readdir(join(fiveRoot,(await readdir(fiveRoot))[0]!,'golden_output'))).sort()).toEqual(['成果.docx','主成果.docx','模拟生成记录.md','法规案例检索轨迹.md'].sort());
   const status=JSON.parse(await readFile(join(output,'Harbor六件套','状态','LAW-007.json'),'utf8')) as {submission_ready:boolean};
   expect(status.submission_ready).toBe(false);
   for(const path of ['题目快照.json','交付缺口.md'])expect(await stat(join(output,path))).toBeTruthy();
+  const previous=await readFile(join(output,'题目快照.json'),'utf8');
+  const next={...input,source_digest:'d'.repeat(64),delivery_digest:'e'.repeat(64)};
+  const again=Bun.spawn([process.execPath,join(import.meta.dir,'delivery.ts')],{stdin:'pipe',stdout:'pipe',stderr:'pipe',env:{PATH:process.env.PATH??'',HOME:process.env.HOME??'/tmp',TMPDIR:process.env.TMPDIR??'/tmp',AI_DISTILL_DELIVERY_PARENT_DIR:output}});
+  again.stdin.write(JSON.stringify(next));again.stdin.end();
+  expect(await again.exited).toBe(0);
+  expect(JSON.parse(await readFile(join(output,'题目快照.json'),'utf8')).source_digest).toBe(next.source_digest);
+  const history=await readdir(join(output,'快照历史'));
+  expect(history.length).toBeGreaterThanOrEqual(2);
+  expect(await Promise.all(history.map(name=>readFile(join(output,'快照历史',name),'utf8')))).toContain(previous);
+
  }finally{await rm(root,{recursive:true,force:true});}
 });
