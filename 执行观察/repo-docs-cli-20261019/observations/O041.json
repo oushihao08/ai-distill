@@ -1,0 +1,50 @@
+{
+  "id": "O041",
+  "kind": "result",
+  "status": "resolved",
+  "title": "Web目录页面与组件语义核对及说明修订",
+  "item_ids": [
+    "inventory",
+    "docs"
+  ],
+  "attempt_ids": [
+    "A014",
+    "A015"
+  ],
+  "facts": [
+    "静态审阅web/src/components目录37个未完成组件源码、web/src/views下6个未完成页面源码、web/src/utils/material-folder.test.ts、前端入口/配置及组件和页面README；未运行浏览器、API、测试或类型检查。",
+    "修正web/src/views/README.md把项目/单题页描述成活动任务定时轮询的说法；当前源码由useResource在打开时读取，操作后或手动刷新更新，WorkerMonitor独立每10秒刷新。",
+    "明确旧材料包批量建题仅属于兼容流程，library_v1按期次原文/脱敏来源关系加载；web/README.md和组件说明同步此边界。",
+    "发现两个未修正的前端文案差异：ActiveWorkflowTasks.vue称每5秒刷新但父组件周期为10秒；LibraryUsageSummary.vue对原文来源仍固定显示脱敏附件。本轮限于工程说明，不修改运行交互。",
+    "修复台账遗漏的O036-O040索引引用；在当前路径清单补入web/src/views/ProjectGroups.vue。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "web/src/components/README.md",
+    "web/src/views/README.md",
+    "web/README.md",
+    "web/src/components/ActiveWorkflowTasks.vue",
+    "web/src/components/WorkerMonitor.vue",
+    "web/src/components/LibraryUsageSummary.vue",
+    "web/src/views/ProjectDetail.vue",
+    "web/src/views/WorkflowDetail.vue",
+    "web/src/views/MaterialLibraryView.vue",
+    "web/src/views/ProjectGroups.vue",
+    "web/src/router/index.ts",
+    "web/vite.config.ts",
+    "web/src/utils/material-folder.test.ts"
+  ],
+  "impact": "更新后逐行统计：语义核实 446/1334；partial 2、pending 1；含排除项 885。Web静态审阅已登记，运行层未验证。",
+  "updates": [
+    "web/README.md",
+    "web/src/components/README.md",
+    "web/src/views/README.md",
+    "web/src/views/MaterialLibraryView.vue",
+    "web/src/views/SettingsView.vue",
+    "audit-v2.json",
+    "task.json"
+  ],
+  "lesson": "用useResource手动刷新不能描述为任务轮询；同一旧兼容流程与library_v1新路径必须在页面说明中限定适用范围。",
+  "created_at": "2026-10-19T11:52:08Z",
+  "updated_at": "2026-10-19T11:52:08Z"
+}

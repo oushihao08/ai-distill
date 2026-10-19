@@ -1,0 +1,17 @@
+{
+  "id": "A018",
+  "item_id": "existing-work-compat",
+  "stage_id": "load",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T10:09:02.524Z",
+  "finished_at": "2026-10-18T10:09:23.992Z",
+  "inputs": [{"ref":"library package d4353085-0921-4293-9ea4-f1f808ae91c4","version":"revision 6458c800-d17e-4132-a789-9821494546ae; redaction 99846ce1-5fea-4f1f-98b7-151ea6e372b6","sha256":"98ff8bfd4817aa63c3c951be3fff1a1d03b197b829bbe9dd079cad2dad0b6c59"}],
+  "configuration": {"project_backend":"legacy","material_mode":"material_packages","existing_project":true},
+  "changes_from_previous": ["加载到此前已存在的Work法律全场景项目；未改项目模型配置"],
+  "external_ids": {"project_id":"db617d63-cdc5-4c0a-a791-ec530e2fe625","project_material_id":"ef1c4898-2f9e-493b-a719-19bc0849b9df","workflow_id":"5d9b4868-2623-4dd8-a1e2-fa59cb0a7727","request_key":"6ac3642b-94bf-4c96-92ed-06ee4200b752","api":"http://127.0.0.1:3700"},
+  "environment": {"target":"local API","project_skill":"projects/Work法律全场景/skill"},
+  "artifacts": [{"ref":"question private source_manifest","sha256":"98ff8bfd4817aa63c3c951be3fff1a1d03b197b829bbe9dd079cad2dad0b6c59"}],
+  "verification": [{"kind":"load_and_snapshot","result":"legacy/material_packages项目成功加载同一材料版本并创建私有题目快照；source_manifest摘要与新项目相同","evidence":"GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625/loaded-materials; GET /api/workflows/5d9b4868-2623-4dd8-a1e2-fa59cb0a7727"}],
+  "error": null
+}

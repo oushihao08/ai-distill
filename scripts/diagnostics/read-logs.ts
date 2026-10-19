@@ -38,8 +38,8 @@ for(const day of days){
  }
 }
 const files=candidates.sort((a,b)=>b.modified-a.modified||a.path.localeCompare(b.path)).slice(0,50).map(item=>item.path);
-let scanned=0,malformed=0,incompleteTailLines=0,shown=0;const matches:any[]=[];
-for(const path of files){if(shown>=500||scanned>=20*1024*1024)break;const info=await stat(path);if(info.size>20*1024*1024-scanned)continue;const text=await readFile(path,'utf8');scanned+=info.size;
+let scanned=0,filesScanned=0,malformed=0,incompleteTailLines=0,shown=0,skippedForBudget=false;const matches:any[]=[];
+for(const path of files){if(shown>=500||scanned>=20*1024*1024)break;const info=await stat(path);if(info.size>20*1024*1024-scanned){skippedForBudget=true;continue;}const text=await readFile(path,'utf8');scanned+=info.size;filesScanned++;
  const lines=text.split('\n');if(text.length>0&&!text.endsWith('\n'))incompleteTailLines++;
  for(const line of lines){
   if(!line)continue;let parsed:any;try{parsed=JSON.parse(line);}catch{malformed++;continue;}const record=sanitizeLogRecord(parsed);if(!record){malformed++;continue;}
@@ -52,4 +52,4 @@ for(const path of files){if(shown>=500||scanned>=20*1024*1024)break;const info=a
 }
 matches.sort((a,b)=>String(a.occurred_at).localeCompare(String(b.occurred_at))||Number(a.seq)-Number(b.seq));
 for(const record of matches)console.log(JSON.stringify(record));
-console.error(JSON.stringify({matched:matches.length,files_scanned:files.length,bytes_scanned:scanned,malformed_lines:malformed,incomplete_tail_lines:incompleteTailLines,truncated:candidates.length>50||matches.length>=500||scanned>=20*1024*1024}));
+console.error(JSON.stringify({matched:matches.length,files_scanned:filesScanned,bytes_scanned:scanned,malformed_lines:malformed,incomplete_tail_lines:incompleteTailLines,truncated:candidates.length>files.length||filesScanned<files.length||skippedForBudget||matches.length>=500||scanned>=20*1024*1024}));

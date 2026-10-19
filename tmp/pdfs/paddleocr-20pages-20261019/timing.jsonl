@@ -1,0 +1,22 @@
+{"event": "ready", "seconds": 1.699, "device": "cpu", "cpu_threads": 4, "model": "PP-OCRv5"}
+{"event": "page_done", "page": 1, "seconds": 21.284}
+{"event": "page_done", "page": 2, "seconds": 18.136}
+{"event": "page_done", "page": 3, "seconds": 16.287}
+{"event": "page_done", "page": 4, "seconds": 17.697}
+{"event": "page_done", "page": 5, "seconds": 16.798}
+{"event": "page_done", "page": 6, "seconds": 17.688}
+{"event": "page_done", "page": 7, "seconds": 17.849}
+{"event": "page_done", "page": 8, "seconds": 14.648}
+{"event": "page_done", "page": 9, "seconds": 14.512}
+{"event": "page_done", "page": 10, "seconds": 16.325}
+{"event": "page_done", "page": 11, "seconds": 14.791}
+{"event": "page_done", "page": 12, "seconds": 14.37}
+{"event": "page_done", "page": 13, "seconds": 15.199}
+{"event": "page_done", "page": 14, "seconds": 23.808}
+{"event": "page_done", "page": 15, "seconds": 28.297}
+{"event": "page_done", "page": 16, "seconds": 15.685}
+{"event": "page_done", "page": 17, "seconds": 15.537}
+{"event": "page_done", "page": 18, "seconds": 18.589}
+{"event": "page_done", "page": 19, "seconds": 16.236}
+{"event": "page_done", "page": 20, "seconds": 15.81}
+{"event": "completed", "total_seconds": 351.248, "ocr_seconds": 349.549}

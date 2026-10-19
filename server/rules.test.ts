@@ -19,6 +19,7 @@ async function fixture(){
 test('相同当前文件清单读取得到相同摘要，不创建编号版本或运行记录',async()=>{
  const f=await fixture(),first=await readProjectRules(f.pool,f.project.id),again=await readProjectRules(f.pool,f.project.id);
  expect(first.workspace.source_digest).toBe(again.workspace.source_digest);expect(first.workspace.files.map(file=>file.path)).toContain('skill/SKILL.md');
+ expect(first.skill).toEqual({path:f.project.local_skill_path,source:'project',project_path:f.project.local_skill_path,phase_path:null});
  expect(first).not.toHaveProperty('versions');expect(f.calls.some(sql=>/INSERT|UPDATE|rule_versions|step_attempts/.test(sql))).toBe(false);
 });
 test('当前文件编辑改变新任务摘要，但不改写已经冻结的历史副本',async()=>{

@@ -1,0 +1,20 @@
+{
+  "observed_at": "2026-10-19T09:41:28.736241+00:00",
+  "scope": "源码静态发现，说明已纠正；本轮不擅自扩大为生产行为重构",
+  "items": [
+    {
+      "id": "api-stream-validation-parity",
+      "source": "server/llm-api/client.ts parseStreamingCompletion vs parseCompletion",
+      "fact": "SSE未检查delta.tool_calls/function_call/refusal，非流式检查这些字段",
+      "effect": "不能声称两种模式均已等价拒绝所有工具/拒答字段；当前仍是无工具循环纯文字调用",
+      "state": "documented implementation limitation"
+    },
+    {
+      "id": "api-catalog-mixed-provider",
+      "source": "server/llm-api/models.ts readModelApiCatalog",
+      "fact": "对全部enabled系统模型调用resolveModelApiConfig，无Codex过滤/逐条catch",
+      "effect": "系统目录有Codex/非法条目时通用API目录可能整体失败",
+      "state": "documented implementation limitation"
+    }
+  ]
+}

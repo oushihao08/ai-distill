@@ -1,7 +1,7 @@
 /**
  * 职责：项目 skill 候选生成：复制固定资料和模板，应用受限文本修改并检查候选入口与引用。
  * 关键方法与用途：`generateProjectSkill()` 复制固定模板与资料，在受限工作区生成候选并检查入口、引用和未决事项。
- * 使用场景：由 skill 生成队列调用；候选须经检查和人工采用后才能成为草稿。
+ * 使用场景：由 skill 生成队列调用；候选须经检查并显式采用后才成为有效Skill；生成成功不等于publishable或已采用。
  */
 import {mkdir,writeFile,readFile,rm,realpath,lstat} from 'node:fs/promises';
 import {join,resolve,dirname} from 'node:path';

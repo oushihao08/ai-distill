@@ -1,13 +1,11 @@
-/** 项目目录与步骤配置：覆盖目录校验、题目清单稳定性、批量注册唯一性、步骤就绪与达标后发布门槛、供应商参数及 Codex 设置继承。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
- */
+/** 验证目录扫描/批量登记、步骤设置与就绪规则；使用临时目录和 Pool 替身，合法 PDF 样本会调用本机 pdfinfo，不访问业务数据库或模型服务。 */
 import {validateCodexModel} from './codex/models';
 import type { Pool,PoolClient } from 'pg';
 import { test, expect, afterEach } from 'bun:test';
 import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanProjectFolder, validateFolder, validateStepConfig, validateStepConfigForExecution, registerQuestionFolders,projectStepSummary,isWorkflowStepReady,splitIntoBatches,readBatchChunkSize } from './project-folders';
+import { scanProjectFolder, validateFolder, validateStepConfig, validateStepConfigForExecution, registerQuestionFolders,projectStepSummary,readProjectWorkflowStepRows,isWorkflowStepReady,splitIntoBatches,readBatchChunkSize } from './project-folders';
 
 test('ordinal 7 accepts a project-configured aggregation policy',()=>{
  expect(validateStepConfig(7,{aggregation:{mode:'mean_at_most',model_count:2,threshold:55}})).toEqual({aggregation:{mode:'mean_at_most',model_count:2,threshold:55}});
@@ -101,6 +99,18 @@ test('材料包模式登记目录为材料包，派生题目不能派发入库�
  expect(isWorkflowStepReady(9,questionSteps)).toBe(false);
  expect(isWorkflowStepReady(4,questionSteps)).toBe(true);
 });
+test('legacy project shared-package questions skip legacy ingest and redaction steps',()=>{
+ const steps=new Map<number,any>([
+  [1,{ordinal:1,status:'waiting',enabled:true,active:false,library_source:true}],
+  [2,{ordinal:2,status:'waiting',enabled:true,active:false,library_source:true}],
+  [4,{ordinal:4,status:'waiting',enabled:true,active:false,library_source:true}],
+  [9,{ordinal:9,status:'waiting',enabled:true,active:false,library_source:true}],
+ ]);
+ expect(isWorkflowStepReady(1,steps)).toBe(false);
+ expect(isWorkflowStepReady(2,steps)).toBe(false);
+ expect(isWorkflowStepReady(9,steps)).toBe(false);
+ expect(isWorkflowStepReady(4,steps)).toBe(true);
+});
 test('Qwen step config validates endpoint-specific model and rejects secrets',()=>{
  expect(validateStepConfig(5,{provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',max_tokens:100})).toMatchObject({provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus',max_tokens:100});
  expect(()=>validateStepConfig(5,{base_url:'https://openrouter.ai/api/v1',model:'other/model'})).toThrow();
@@ -118,7 +128,7 @@ test('Codex settings preserve database choices independently of the local catalo
 });
 test('unsaved Codex project steps inherit the system model and reasoning defaults',async()=>{
  const pool={query:async(sql:string)=>{
-  if(sql.startsWith('SELECT w.id AS workflow_id'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-system',reasoning_effort:'high'}],rowCount:1};
@@ -131,7 +141,7 @@ test('unsaved Codex project steps inherit the system model and reasoning default
 });
 test('project Codex defaults feed steps while an explicit step config remains highest priority',async()=>{
  const pool={query:async(sql:string)=>{
-  if(sql.startsWith('SELECT w.id AS workflow_id'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[{ordinal:4,config:{provider:'codex',model:'gpt-6-astra',reasoning_effort:'ultra'}}],rowCount:1};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:'gpt-6-astra',codex_reasoning_effort:'ultra'}],rowCount:1};
   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-system',reasoning_effort:'medium'}],rowCount:1};
@@ -200,10 +210,21 @@ test('项目根目录的材料不被忽略，损坏PDF不能作为可解析材�
 
 test('library project summary exposes only authoring through publishing even before its first question',async()=>{
  const pool={query:async(sql:string)=>{
-  if(sql.startsWith('SELECT w.id AS workflow_id')||sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))')||sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-6-luna',reasoning_effort:'medium'}],rowCount:1};
   throw new Error(`Unexpected query: ${sql}`);
  }} as unknown as Pool;
  expect((await projectStepSummary(pool,'project','library_v1')).map(step=>step.ordinal)).toEqual([4,5,6,7,8]);
+});
+
+
+test('步骤状态聚合传输后还原原rows结构并保留筛选参数',async()=>{
+ const rows=[{workflow_id:'fixture',ordinal:5,status:'succeeded',enabled:true,active:false,result:{models:[{status:'succeeded',attempt_id:'answer'}]}}];
+ let received:any[]=[];
+ const pool={query:async(sql:string,args:unknown[])=>{expect(sql).toContain('jsonb_agg(to_jsonb(state_rows))');received=args;return{rows:[{items:rows}],rowCount:1};}} as unknown as Pool;
+ const result=await readProjectWorkflowStepRows(pool,'phase',['fixture']);
+ expect(result.rows).toEqual(rows);expect(result.rowCount).toBe(1);expect(received).toEqual(['phase',['fixture']]);
+ const empty=await readProjectWorkflowStepRows({query:async()=>({rows:[{items:[]}],rowCount:1})} as unknown as Pool,'empty');
+ expect(empty.rows).toEqual([]);expect(empty.rowCount).toBe(0);
 });

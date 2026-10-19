@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "O002",
+  "kind": "result",
+  "status": "open",
+  "title": "PyMuPDF同框处理更快；视觉效果接近且PDF体积较大",
+  "item_ids": [
+    "pdf-baseline"
+  ],
+  "attempt_ids": [
+    "A003"
+  ],
+  "facts": [
+    "对同一份53页源PDF的第1至3页，两个方法共用现成PP-OCRv5框和人工补框，分别应用37、6、7个区域，共50个。",
+    "仅遮罩/保存阶段：Paddle/PIL 1.269秒；PyMuPDF 1.28.2为0.389秒，约快3.26倍。",
+    "把同一份前三页PP-OCRv5实测识别时间55.707秒加入后，当前输入路径的合计估算为Paddle/PIL 56.976秒、PyMuPDF 56.096秒；这里只相差0.880秒，约1.5%。",
+    "目视查看最终同框输出，模糊程度和文字保留效果整体接近；PyMuPDF输出文件2,260,386字节，Paddle/PIL为759,077字节。",
+    "PyMuPDF底层像素替换验证：对50个区域重放原生图像像素脱敏而不加模糊层，50个框中心点均为黑色，后续模糊叠层只是视觉处理。",
+    "源PDF SHA-256保持不变，本次只在本机处理，未上传外部服务；PyMuPDF包位于临时目录，项目依赖未更改。",
+    "逐页提取最终PyMuPDF PDF的主图像，与源PDF对应主图像SHA-256均不同；结合只加原生红action、未加模糊层时50个框中心像素全黑，验证最终输出确实替换底层图像像素，而不是仅盖一层可移除的显示对象。"
+  ],
+  "hypotheses": [
+    "完整53页的速度比例可能与本次前三页不同；目前没有全页同条件对照数据。",
+    "PyMuPDF产物体积增加可能来自保留原PDF页面图像并为每个遮罩框叠加独立图块；可通过合并图块进一步减小，但本次不做额外优化。"
+  ],
+  "evidence": [
+    "attempts/A003.json",
+    "tmp/pdfs/pymupdf-compare-20261019/comparison-report.json",
+    "tmp/pdfs/pymupdf-compare-20261019/comparison-contact-sheet.jpg",
+    "output/pdf/PP-OCRv5-前三页局部马赛克-同框复比.pdf",
+    "output/pdf/PyMuPDF-前三页局部模糊打码-同框复比.pdf"
+  ],
+  "impact": "若主要追求遮罩阶段吞吐，PyMuPDF更快；但当前整条链路耗时主要由PP-OCRv5识别决定，整体省时约1.5%。视觉质量相近；PyMuPDF当前文件更大约2.98倍。",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-19T17:03:48+08:00",
+  "updated_at": "2026-10-19T17:03:48+08:00"
+}

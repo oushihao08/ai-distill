@@ -1,7 +1,7 @@
 /**
  * 职责：智谱视觉客户端：调用页级识别及实体提取，保留 usage 并处理超时、取消和服务错误。
  * 关键方法与用途：`createVisionClient()` 创建智谱识别客户端，提供页级 OCR 和实体检查并归一化 usage、取消与错误。
- * 使用场景：PDF 处理和提取任务注入该客户端；真实请求仅发生在 worker 执行时。
+ * 使用场景：旧extractPdf及独立调查/验证可注入该客户端；当前MinerU队列不使用它，不将其30分钟时限套给MinerU。
  */
 import { loadExtractionConfig, type ExtractionConfig } from './config';
 import {currentTaskSignal} from '../task-signal';

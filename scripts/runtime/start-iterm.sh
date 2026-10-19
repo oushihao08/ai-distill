@@ -1,5 +1,6 @@
 #!/bin/bash
-# 文件职责：在 macOS iTerm2 中启动或复用本项目 API、前端和 worker；源码更新后安全重启过期服务，不迁移数据库。
+# 职责：从 macOS iTerm2 启动或复用本项目 API、worker 和前端。
+# 入口与影响：`npm run start:iterm`；仅在确认无运行任务时 TERM 重启代码过期的本项目 API/worker，前端只复用匹配进程；不安装依赖或迁移数据库。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

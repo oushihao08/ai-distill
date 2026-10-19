@@ -1,0 +1,17 @@
+{
+  "id": "A019",
+  "item_id": "existing-work-compat",
+  "stage_id": "author",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T10:10:55.321Z",
+  "finished_at": "2026-10-18T10:19:45.346Z",
+  "inputs": [{"ref":"workflow 5d9b4868-2623-4dd8-a1e2-fa59cb0a7727","version":"question input frozen to the selected shared redaction"}],
+  "configuration": {"project_backend":"legacy","project_skill":"projects/Work法律全场景/skill","authoring":"existing project step configuration"},
+  "changes_from_previous": [],
+  "external_ids": {"workflow_id":"5d9b4868-2623-4dd8-a1e2-fa59cb0a7727","attempt_id":"1e75c051-62c0-4eac-85b2-d60c07d8848b"},
+  "environment": {"api":"http://127.0.0.1:3700","worker_pid":8278},
+  "artifacts": [{"ref":"authored_question artifact"}],
+  "verification": [{"kind":"authoring","result":"succeeded; Work content contract passed; 15 rubric items and three required deliverables recorded","evidence":"GET /api/attempts/1e75c051-62c0-4eac-85b2-d60c07d8848b?view=full"}],
+  "error": null
+}

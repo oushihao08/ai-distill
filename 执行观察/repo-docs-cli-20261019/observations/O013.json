@@ -1,0 +1,39 @@
+{
+  "id": "O013",
+  "kind": "result",
+  "status": "resolved",
+  "title": "完成作答模型模块逐文件语义复核并纠正输入来源说明",
+  "item_ids": [
+    "inventory",
+    "docs"
+  ],
+  "attempt_ids": [
+    "A005",
+    "A006"
+  ],
+  "facts": [
+    "作答输入按题目冻结来源选择共享材料库的原文或脱敏附件；旧目录题仍读取 ordinal 9 脱敏附件。",
+    "作答请求由 API provider 或隔离 Codex 分支执行；当前作答隔离配置不传 rubric、标准答案、作答思路、评分结果、目标分数或项目 Skill。",
+    "文字成果呈现适配只把 deliverables 的路径/描述/必交属性作为提示上下文，不代表系统已实际生成文件；当前持久化答案仍为文本。",
+    "本模块 README 之前没有完整索引所有测试/实现文件，本轮补齐。9个测试文件逐个阅读；其外部依赖均为替身或本机HTTP夹具，没有真实供应商、Codex或数据库验收。",
+    "本轮未运行测试、类型检查、服务、迁移或真实任务。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "server/answer-models/input.ts、jobs.ts、dispatch.ts、model-set.ts、generation-policy.ts",
+    "server/answer-models/*.{test.ts}（逐个核对断言与依赖替身）",
+    "server/agent/runner.ts:46；server/codex/client.ts:16-22,117-118；server/worker.ts",
+    "server/decisions/acceptance.ts；server/answer-models/README.md"
+  ],
+  "impact": "作答模块文档现在按当前题目来源快照说明输入，逐文件列出测试职责与验证边界；更正 dispatch.ts 职责注释，防止把 API 分支或成果呈现快照漏掉。此项不代表全仓审计完成。",
+  "updates": [
+    {
+      "at": "2026-10-19T19:13:51+08:00",
+      "action": "更新审计状态与作答模块说明/注释，并复核模块内全部测试文件。",
+      "result": "audit-v2.json覆盖更新为 256/449 已核实，14 partial，179 pending；无需真实运行验证。"
+    }
+  ],
+  "lesson": "测试源码阅读可确认断言覆盖与替身边界，但不能证明真实服务/模型运行通过。",
+  "created_at": "2026-10-19T19:13:51+08:00",
+  "updated_at": "2026-10-19T19:13:51+08:00"
+}

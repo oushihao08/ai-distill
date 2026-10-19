@@ -26,16 +26,17 @@ async function exportFixture(options:{workflowId?:string;materialCount?:number;a
  const skill=join(root,'skill');await mkdir(skill,{recursive:true});await writeFile(join(skill,'SKILL.md'),'---\nname: export-skill\ndescription: export fixture\n---\n当前出题skill');const projectPrompt=await scanProjectPrompt(root,skill);
  const docx=Buffer.from('verified redacted docx fixture'),sha=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
  const source={material_id:materialId,source_sha256:'source-hash',artifact_id:'extraction',artifact_sha256:'extraction-hash'},sources=[source,...((options.materialCount??1)>1?[{material_id:secondMaterialId,source_sha256:'source-hash-2',artifact_id:'extraction-2',artifact_sha256:'extraction-hash-2'}]:[])],markdown='脱敏内容',redactedSha=sha(markdown),index=JSON.stringify({redacted_sha256:redactedSha,materials:sources.map((item,index)=>({material_id:item.material_id,markdown:`脱敏附件内容${index+1}`}))});
- const input={digest:redactionInputDigest(sources),materials:sources},rows=options.attachmentCount===0?[]:[{question_attempt_id:questionId,docx_id:'docx-artifact',material_count:options.materialCount??1,material_id:materialId,storage_path:storagePath,source_key:'question',material_root:join(root,'project','questions')}];
+ const input={digest:redactionInputDigest(sources),materials:sources},rows=options.attachmentCount===0?[]:[{id:'docx-artifact',workflow_id:workflowId,attempt_id:'redaction',kind:'redacted_docx',question_attempt_id:questionId,docx_id:'docx-artifact',material_count:options.materialCount??1,material_id:materialId,storage_path:storagePath,sha256:sha(docx),source_key:'question',material_root:join(root,'project','questions')}];
  await mkdir(join(attachmentRoot,'附件库','project','第五期','question','成果'),{recursive:true});await writeFile(join(attachmentRoot,storagePath),docx);
  const pool:any={query:async(sql:string)=>{
+  if(sql.startsWith('SELECT ar.id,ar.workflow_id')&&sql.includes("ar.kind IN ('redacted_docx','original_docx')"))return{rows:rows.map((row:any)=>({...row,kind:'redacted_docx'}))};
   if(sql.startsWith('SELECT material_root,local_skill_path'))return{rows:[{material_root:join(root,'questions'),local_skill_path:skill}]};
   if(sql.includes('FROM ai_distill.projects'))return{rows:[{id:'project',name:'项目',material_root:join(root,'questions'),local_skill_path:skill}]};
   if(sql.startsWith('SELECT DISTINCT ON (workflow_id)'))return{rows:[{workflow_id:workflowId,id:questionId,status:'succeeded',input:{project_prompt:options.withoutPrompt?undefined:projectPrompt}}]};
   if(sql.includes('FROM ai_distill.workflows w LEFT JOIN'))return{rows:[{id:workflowId,source_key:'题目1',title:'项目名-题目1',acceptance_status:options.accepted===false?'waiting':'succeeded'}]};
   if(sql.includes('ordinal IN (4,7)'))return{rows:[{...question,id:questionId,workflow_id:workflowId,input:{redaction_attempt_id:'redaction',...(!options.withoutPrompt?{project_prompt:projectPrompt}:{})}},{...accepted,workflow_id:workflowId,result:{...accepted.result}}]};
   if(sql.includes("COALESCE(result->>'model_name',input->>'model_name')"))return{rows:[{id:'answer-id',model_name:'Qwen 3.8'}]};
-  if(sql.includes("docx.kind='redacted_docx'"))return{rows};
+  if(sql.includes("docx.kind IN ('redacted_docx','original_docx')"))return{rows:rows.map((row:any)=>({...row,kind:'redacted_docx'}))};
   if(sql.startsWith('SELECT ar.id,ar.workflow_id'))return{rows:[{id:'docx-artifact',workflow_id:workflowId,attempt_id:'redaction',storage_path:storagePath,sha256:sha(docx),material_id:materialId,source_key:'题目1',material_root:join(root,'project','questions')}]};
   if(sql.includes('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=9'))return{rows:[{status:'succeeded'}]};
   if(sql.includes("ar.kind='redacted_markdown'"))return{rows:[{id:'redaction',status:'succeeded',input,result:{redacted_sha256:redactedSha},content:markdown,sha256:redactedSha}]};
@@ -90,7 +91,7 @@ test('maps the selected redaction to its generated DOCX instead of original atta
 });
 
 test('missing current redacted DOCX blocks export instead of falling back to source files',async()=>{
- const f=await exportFixture({attachmentCount:0});await expect(buildProjectExport(f.pool,'project',undefined,f.attachmentRoot)).rejects.toThrow('尚未生成全部附件的当前脱敏 DOCX');
+ const f=await exportFixture({attachmentCount:0});await expect(buildProjectExport(f.pool,'project',undefined,f.attachmentRoot)).rejects.toThrow('尚未生成全部附件的当前来源 DOCX');
 });
 
 test('partial per-material DOCX set blocks export',async()=>{

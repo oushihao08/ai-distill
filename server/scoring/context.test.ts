@@ -1,5 +1,6 @@
-/** 验证当前项目评分身份及历史规则输入兼容。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+/**
+ * 验证评分上下文的项目身份、历史规则兼容、答案绑定和来源快照读取。
+ * 使用 SQL 替身及临时文件；源码审阅或运行本测试均不代表真实数据库或模型验收。
  */
 import {test,expect} from 'bun:test';
 import {mkdtemp,mkdir,rm,writeFile} from 'node:fs/promises';
@@ -92,7 +93,7 @@ test('评分上下文使用题目冻结的完整规则并将业务字段纳入�
 });
 
 test('评分回读文字成果快照并拒绝清单与当前题目不一致',async()=>{
- const author_overrides={content_contract:'work_legal_v1',content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'file',tools:['计算']},deliverables:[{id:'D1',path:'意见.md',description:'完整法律意见',required:true}]};
+ const author_overrides={content_contract:'work_legal_v1',content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'file',tools:[]},deliverables:[{id:'D1',path:'意见.md',description:'完整法律意见',required:true}]};
  const presentation=answerPresentation(author_overrides)!;
  const ctx=await readScoreContext(failedAggregateContext({presentation,author_overrides}).db,'workflow','answer');
  expect(ctx.answer_presentation).toEqual(presentation);expect(ctx.question).toBe('题目');

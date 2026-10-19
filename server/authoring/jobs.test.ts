@@ -13,6 +13,12 @@ import {scanProjectPrompt} from '../rule-files';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const empty={rows:[],rowCount:0};
 
+test('JSONB重排library material_origin字段后出题输入指纹保持一致',()=>{
+ const base={title:'题目',materials:[{id:'material',sha256:hash('材料')}],material_origin:{kind:'library_v1' as const,material_mode:'original' as const,package_id:'package',revision_id:'revision',redaction_id:null,snapshot_digest:hash('snapshot')}};
+ const reordered={...base,material_origin:{snapshot_digest:base.material_origin.snapshot_digest,redaction_id:null,revision_id:'revision',package_id:'package',material_mode:'original' as const,kind:'library_v1' as const}};
+ expect(inputDigest(base as any)).toBe(inputDigest(reordered as any));
+});
+
 async function projectFixture(){
  const root=await mkdtemp(join(tmpdir(),'fresh-author-jobs-')),skill=join(root,'skill');await mkdir(skill);
  await writeFile(join(skill,'SKILL.md'),'---\nname: fixture\ndescription: author\n---\n当前方法');

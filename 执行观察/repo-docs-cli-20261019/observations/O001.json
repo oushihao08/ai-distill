@@ -1,0 +1,33 @@
+{
+  "id": "O001",
+  "kind": "issue",
+  "status": "open",
+  "title": "上轮覆盖表不能证明全仓语义核实完成",
+  "item_ids": [
+    "inventory",
+    "docs",
+    "verify"
+  ],
+  "attempt_ids": [
+    "A001",
+    "A002",
+    "A004",
+    "A005"
+  ],
+  "facts": [
+    "coverage.tsv包含385条路径记录，386含表头；其README状态为inventory-present，不能证明逐段对照实现。",
+    "270个源码条目复用了相同说明，缺少逐文件证据；无法据此验收语义。",
+    "projects/README.md仍包含评分读取项目skill和所有下游只读脱敏附件的过时表述。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "coverage.tsv",
+    "projects/README.md",
+    "audit-v2.json"
+  ],
+  "impact": "撤回上轮全仓完成判断，目标重新执行。",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-19T09:23:31.806979+00:00",
+  "updated_at": "2026-10-19T09:23:31.806979+00:00"
+}

@@ -13,8 +13,8 @@ test('digest changes with question or attachment content, preserves exact text',
 test.each([undefined,{input_mode:'image',output_mode:'text',tools:[]},{input_mode:'text',output_mode:'files',tools:[]},{input_mode:'text',output_mode:'text',tools:['browser']}])('unsupported or unstated answer capabilities block dispatch',requirements=>{expect(()=>buildAnswerInput({...question,answer_requirements:requirements},[artifact])).toThrow('文字');});
 
 const deliverables=[{id:'D1',path:'意见.md',description:'完整法律意见',required:true}];
-const fileTask={...question,content_contract:'work_legal_v1',content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'file',tools:['检索','计算']},deliverables};
-test('完整Work题保留文件及工具业务要求，按成果清单生成文字呈现快照',()=>{
+const fileTask={...question,content_contract:'work_legal_v1',content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'file',tools:[]},deliverables};
+test('完整Work题按成果清单生成文字呈现快照',()=>{
  const input=buildAnswerInput(fileTask,[artifact]) as any;
  expect(input.question).toBe(question.question);
  expect(input.presentation).toMatchObject({mode:'text_deliverables_v1',deliverables:[{name:'意见.md',description:'完整法律意见',required:true}]});

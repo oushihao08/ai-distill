@@ -1,0 +1,10 @@
+{
+  "observed_at": "2026-10-19T09:36:49.782952+00:00",
+  "command": "bun test server/authoring/executor.test.ts server/authoring/validate.test.ts server/authoring/work-contract.test.ts server/authoring/jobs.test.ts",
+  "result": {
+    "passed": 65,
+    "failed": 0,
+    "expectations": 266
+  },
+  "scope": "本地替身队列/作者及实际渲染子进程；未运行真实数据库、模型、服务或平台"
+}

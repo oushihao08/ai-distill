@@ -1,0 +1,37 @@
+{
+  "id": "O015",
+  "kind": "result",
+  "status": "resolved",
+  "title": "复核出题模块四个测试文件及本地渲染验证边界",
+  "item_ids": [
+    "inventory"
+  ],
+  "attempt_ids": [
+    "A005"
+  ],
+  "facts": [
+    "authoring模块现有4个测试文件均已逐项阅读，README文件表覆盖4个实现和4个测试文件。",
+    "任务/队列测试使用SQL与执行器替身，字段契约测试调用纯校验器；作者和Work契约测试会在临时目录启动本地渲染子进程，但模型/Agent由替身提供。",
+    "本轮没有运行这些测试、真实Agent、数据库、API或模型；读取测试源码只证明其断言范围，不代表用例通过。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "server/authoring/README.md",
+    "server/authoring/executor.test.ts",
+    "server/authoring/jobs.test.ts",
+    "server/authoring/validate.test.ts",
+    "server/authoring/work-contract.test.ts",
+    "server/authoring/{executor,jobs,validate,work-contract}.ts"
+  ],
+  "impact": "补足出题模块测试文件的语义审核记录；当前README与测试边界没有发现需要改写的旧行为描述。",
+  "updates": [
+    {
+      "at": "2026-10-19T19:17:04+08:00",
+      "action": "完成4个出题测试文件逐项审阅并核对摘要。",
+      "result": "审计覆盖更新至265/449；13 partial，171 pending。"
+    }
+  ],
+  "lesson": "本地脚本子进程不等于真实模型或业务服务；必须按实际测试依赖标注验证边界。",
+  "created_at": "2026-10-19T19:17:04+08:00",
+  "updated_at": "2026-10-19T19:17:04+08:00"
+}

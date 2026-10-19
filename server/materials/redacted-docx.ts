@@ -1,7 +1,7 @@
 /**
- * 职责：将数据库中的当前脱敏 Markdown 转为标准 DOCX 文档结构。
+ * 职责：将调用方已核验的文字/结构渲染为DOCX；兼容名称保留，来源可为脱敏或明确选择的原文。
  * 主要入口：`buildRedactedDocx()` 异步生成包含标题、段落、分页和表格的 DOCX 字节。
- * 使用场景：由手动脱敏 DOCX 导出流程调用；不读取原件或修改数据库。
+ * 使用场景：由材料DOCX导出和项目五件套工具调用；不读取原件或修改数据库。
  */
 import {Document,HeadingLevel,Packer,Paragraph,Table,TableCell,TableRow,TextRun,WidthType} from 'docx';
 import type {DocumentBlock} from './pdf';
@@ -57,7 +57,7 @@ function structuredPageChildren(blocks:DocumentBlock[]):(Paragraph|Table)[]{
  return children;
 }
 
-/** Convert the redacted source text or its redacted structure; never opens original material. */
+/** Render supplied text/structure only; caller owns source-mode verification, this function never opens original material. */
 export async function buildRedactedDocx(source:string|RedactedDocumentStructure):Promise<Uint8Array>{
  if(typeof source==='string')return buildMarkdownRedactedDocx(source);
  if(!source||source.format!=='redacted-structure-v1'||!Array.isArray(source.pages)||!source.pages.length||source.pages.some(page=>!Number.isSafeInteger(page.page)||!Array.isArray(page.blocks)))throw new Error('脱敏文档结构无效');

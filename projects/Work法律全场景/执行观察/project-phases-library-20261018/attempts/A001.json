@@ -1,0 +1,68 @@
+{
+  "id": "A001",
+  "item_id": "T1",
+  "stage_id": "implementation",
+  "previous_attempt_id": null,
+  "status": "unknown",
+  "started_at": "2026-10-18T22:14:08.974278+08:00",
+  "finished_at": null,
+  "inputs": [
+    {
+      "ref": "docs/plans/2026-10-17-shared-material-library-design.md#16-主项目多期防重与work历史衔接三任务计划",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {},
+  "changes_from_previous": [
+    "增加主项目、期次、独立材料使用账及历史入库同步；已应用045，仅重启本机API，保留worker"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local source",
+    "runtime_version": null
+  },
+  "artifacts": [
+    {
+      "ref": "server/material-library/uses.ts",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "targeted_unit",
+      "result": "60 pass, 0 fail",
+      "evidence": "本轮前续执行输出"
+    },
+    {
+      "kind": "isolated_database_http",
+      "result": "26 checks passed",
+      "evidence": "scripts/verification/verify-project-material-usage.ts"
+    },
+    {
+      "kind": "live_api",
+      "result": "health schema ready；project-groups可读；原脱敏attempt d821254f仍running",
+      "evidence": "2026-10-18T14:31Z GET health/project-groups/monitor"
+    }
+  ],
+  "error": {
+    "kind": "process",
+    "code": "attempt_terminal_not_captured",
+    "message": "接手收尾记录时历史attempt仍为running；未能恢复该次执行进程的终态。后续A002隔离验收重新覆盖并验证完整计划范围。",
+    "exit_code": null,
+    "http_status": null,
+    "chain": [],
+    "raw_error_ref": null,
+    "stderr_ref": null,
+    "stdout_ref": null,
+    "stack_ref": null,
+    "capture": "unavailable",
+    "redactions": [],
+    "impact": "不影响A002-A004的最终验收证据；A001仅保留为未能确认终态的历史尝试。",
+    "confirmed_cause": null,
+    "hypotheses": [],
+    "actions": [
+      "以A002-A004和O001记录最终结果，不将A001算作失败或成功"
+    ]
+  }
+}

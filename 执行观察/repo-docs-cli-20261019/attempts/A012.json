@@ -1,0 +1,100 @@
+{
+  "id": "A012",
+  "item_id": "inventory",
+  "stage_id": "audit",
+  "previous_attempt_id": "A010",
+  "status": "succeeded",
+  "started_at": "2026-10-19T11:43:43Z",
+  "finished_at": "2026-10-19T11:43:43Z",
+  "inputs": [
+    {
+      "ref": "projects/豆包高经济价值/scripts/README.md",
+      "sha256": "53a187937b2399fe86cb51a51e186bc14dcd1d7b67f0495c85a43a654f936cbf"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/delivery.ts",
+      "sha256": "e9ed95e029d492a6cb6f46212e25ee6a88ca2ab756b57800d9bc3386b497854a"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/delivery.test.ts",
+      "sha256": "04da823dbd3c6c380cc643c750af1083ab00583e00983e631109689979555191"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/README.md",
+      "sha256": "e3d8544a5c838880dc5231039783cf27c473d0f2d5738726f07cd8365145f15d"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/audit-current-ocr.ts",
+      "sha256": "c110ca98f005e0c0fcd6848fa08ec9d8e8b674878055b0a757fc8452d9931fd7"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/compare-glm-ocr-page-cache.ts",
+      "sha256": "949ce66cf8cb4a43005f9e602bc523119c343d7f6bef83778a03e93d13ed83e7"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/review-glm-ocr-folder-samples.ts",
+      "sha256": "3213d202de658ecf3fed420f4823d13ff4884d68c6a6c6971010c9bc76fef88e"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/review-glm-ocr-quality.ts",
+      "sha256": "f109f060e9dc2be37b03ad4fa00ed2efc9f18ed8768656ceed53da02be2e4e31"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/run-flash-max-question-pdfs.ts",
+      "sha256": "409117a9e5128dae487ca964189524db6feb8b0970571d0a6be9cdd5f465f217"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/try-glm-ocr-question-folder.ts",
+      "sha256": "f2db60942da3937cba5bc2158b38ff765f52dac7c5c429ce6c69f95938508668"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/try-glm-ocr-sample.ts",
+      "sha256": "09e28e9b40f3ab0be8185d792b08aa716eea9bd2f9eff97452b0a3cff7f74bcc"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/verify-ocr-speed-quality.ts",
+      "sha256": "36ec0c9f6b47440d331e24698bb666e4f48878e453e381aefe78625ff70e1abe"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/ocr/verify-real-question-folders.ts",
+      "sha256": "452e3ea120fbdaef4ddd1f18b6fbb4bd560f6b8e7c5c191bbea33561852340e8"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/skill/README.md",
+      "sha256": "6d442cbac33aa8152ab369e7efba760db2e78e26917d83b3c4735baff9198fb9"
+    },
+    {
+      "ref": "projects/豆包高经济价值/scripts/skill/verify-project-skill.ts",
+      "sha256": "1ac380c28df9c0978ea2c254cf87f00f389473916c33eb4867916ebf46eae95f"
+    }
+  ],
+  "configuration": {
+    "scope": "豆包项目scripts自有工具，逐文件静态核对实现、调用关系及副作用；不执行固定历史脚本、数据库/API/模型调用"
+  },
+  "changes_from_previous": [
+    "逐项完成豆包高经济价值 scripts/ 下15个纳入项的实现/调用边界核对。"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local working tree"
+  },
+  "artifacts": [
+    {
+      "ref": "audit-v2.json"
+    },
+    {
+      "ref": "observations/O040.json"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "source_review",
+      "result": "15个文件逐项读取；工具输入、输出、外部调用、业务写入和限制与README交叉核验。"
+    },
+    {
+      "kind": "runtime",
+      "result": "未运行测试、OCR、真实Codex、API或数据库。"
+    }
+  ],
+  "error": null
+}

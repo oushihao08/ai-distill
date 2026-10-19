@@ -1,5 +1,7 @@
-/** 验证逐答案评分任务的上下文冻结、去重、执行、产物发布及取消隔离。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+/**
+ * 验证逐答案评分队列的上下文冻结、领取恢复、状态汇总、产物发布及取消隔离。
+ * 使用内存 SQL 替身、注入评分器及临时目录内的本地脚本，不连接真实数据库或模型服务。
+ * 源码审阅和测试用例范围均不等于运行验收。
  */
 import {test,expect,beforeAll,afterAll} from 'bun:test';
 import {enqueueScore,runNextScore,scoreContextDigest} from './jobs';

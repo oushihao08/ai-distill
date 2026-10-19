@@ -10,7 +10,7 @@
 | [layout](layout/README.md) | Row/Column 布局 |
 | [api](api/README.md) | JSON 请求与错误转换 |
 | [composables](composables/README.md) | 资源加载与生命周期 |
-| [router](router/README.md) | 三个页面路由 |
+| [router](router/README.md) | 主项目、期次、材料库、监控、成果库、设置、期次详情与工作流详情路由 |
 | [plugins](plugins/README.md) | Vuetify 初始化 |
 | [types](types/README.md) | 共享业务契约出口 |
 | [utils](utils/README.md) | 展示格式工具 |

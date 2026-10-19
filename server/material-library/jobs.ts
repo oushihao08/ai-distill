@@ -117,7 +117,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
 }
 
 export async function readLibraryJob(pool:Pool,id:string){
- const row=(await pool.query(`SELECT id,package_id,revision_id,kind,status,executor_kind,execution_target,progress,result_summary,error_code,error_message,previous_job_id,cancel_requested_at,
+ const row=(await pool.query(`SELECT id,package_id,revision_id,kind,status,origin,executor_kind,execution_target,progress,result_summary,error_code,error_message,previous_job_id,cancel_requested_at,
   input_snapshot->>'extraction_job_id' AS extraction_job_id,created_at,started_at,finished_at
   FROM ai_distill.library_jobs WHERE id=$1`,[id])).rows[0];
  if(!row)throw new HTTPException(404,{message:'材料处理任务不存在'});

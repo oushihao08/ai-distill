@@ -1,7 +1,4 @@
-/**
- * 职责：验证外部调用封装可关联并返回不携带用量字段的结构化提取结果。
- * 主要边界：提取调用也使用同一 call_id/日志包装，但结果类型不必伪装成模型响应。
- */
+/** 验证外部调用包装的 call_id、结构化返回及 workflow/library_job 身份互斥；执行函数由测试回调提供，不请求真实外部服务。 */
 import {expect,test} from 'bun:test';
 import {runExternalCall} from './external-call';
 

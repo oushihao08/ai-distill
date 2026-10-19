@@ -1,13 +1,14 @@
 /**
  * 职责：达标题目归档事务：重新验证当前达标依据与产物指纹，执行项目交付脚本并记录归档状态。
- * 关键方法与用途：`publishWorkflow()` 在事务中复核当前达标版本和产物指纹，执行交付入口并记录数据库归档标记。
- * 使用场景：由 `app.ts` 发布接口调用；重复发布复用已有结果。
+ * 关键方法与用途：`publishWorkflow()` 分段事务复核当前版本并执行项目交付；`readSiriserArchive()` 校验并下载五件套，`withdrawPublication()` 保留事件并撤回当前归档。
+ * 使用场景：由 HTTP 工作流入口调用；同摘要重用归档记录，但仍执行项目交付脚本。
  */
 import type {Pool} from 'pg';
+import {canonicalJson} from '../../shared/workflow-config';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
 import {readFile,realpath,stat} from 'node:fs/promises';
-import {isAbsolute,join,resolve} from 'node:path';
+import {dirname,isAbsolute,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {questionResultDirectory,readCurrentRedactionForDocx} from '../materials/redacted-docx-export';
 import {acceptanceSourceDigest,readAcceptanceSnapshot,buildAcceptanceInput,buildConfiguredAcceptanceConfig} from '../decisions/jobs';
@@ -53,7 +54,16 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  const digest=acceptanceSourceDigest(snapshot);
  if(row.result?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw new HTTPException(409,{message:'归档已不对应当前达标版本，请重新归档'});
  await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
- const directory=await questionResultDirectory(assetRoot,row.parent_name,row.phase_name??'',row.phase_name?(row.source_key||row.title):row.title);
+ // 展示期名可变，已归档成果仍由保存的输出路径定位，不能因首批筹备→第一期而搬动或重建。
+ const archivedWorkbook=row.result?.archive_workbook?.archive_path;
+ let directory:string;
+ if(typeof archivedWorkbook==='string'){
+  const parts=archivedWorkbook.split('/');
+  if(isAbsolute(archivedWorkbook)||parts.some(part=>!part||part==='.'||part==='..'||part.includes('\\'))||parts[0]!=='附件库'||parts.at(-1)!=='题目归档数据.xlsx')throw new HTTPException(409,{message:'归档目录索引无效'});
+  directory=dirname(resolve(assetRoot,archivedWorkbook));
+  const root=await realpath(assetRoot),actual=await realpath(directory).catch(()=>null);
+  if(!actual||!actual.startsWith(`${root}/`))throw new HTTPException(409,{message:'归档目录缺失或越界'});
+ }else directory=await questionResultDirectory(assetRoot,row.parent_name,row.phase_name??'',row.phase_name?(row.source_key||row.title):row.title);
  try{
   const state=JSON.parse(await readFile(join(directory,'Siriser五件套.json'),'utf8'));
   if(state.workflow_id!==workflowId||state.source_digest!==digest||state.delivery_digest!==row.result?.delivery?.digest||state.question_version!==row.result.question_version||state.rubric_version!==row.result.rubric_version||typeof state.zip_relative_path!=='string'||state.zip_relative_path.split('/').some((part:string)=>!part||part==='.'||part==='..')||!state.zip_relative_path.startsWith('Siriser五件套/'))throw new Error('invalid package binding');
@@ -80,13 +90,13 @@ async function readVerifiedTextArtifact(root:string,artifact:Artifact){
  let bytes:Uint8Array;
  if(typeof artifact.content==='string')bytes=Buffer.from(artifact.content,'utf8');
  else{
-  if(!artifact||isAbsolute(artifact.storage_path))throw new HTTPException(409,{message:'脱敏材料文件索引无效'});
+  if(!artifact||isAbsolute(artifact.storage_path))throw new HTTPException(409,{message:'材料文件索引无效'});
   try{const base=await realpath(resolve(root)),path=await realpath(join(base,artifact.storage_path));if(!path.startsWith(`${base}/`))throw new Error('unsafe artifact');bytes=await readFile(path);}
-  catch{throw new HTTPException(409,{message:'脱敏材料正文无法读取'});}
+  catch{throw new HTTPException(409,{message:'材料正文无法读取'});}
  }
- if(hash(bytes)!==artifact.sha256)throw new HTTPException(409,{message:'脱敏材料内容指纹变化'});
+ if(hash(bytes)!==artifact.sha256)throw new HTTPException(409,{message:'材料内容指纹变化'});
  try{const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);if(!text.trim())throw new Error('empty');return text;}
- catch{throw new HTTPException(409,{message:'脱敏材料不是有效的 UTF-8 文本'});}
+ catch{throw new HTTPException(409,{message:'材料不是有效的 UTF-8 文本'});}
 }
 
 /**
@@ -131,26 +141,28 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   let attachments:Artifact[];
   if(frozen.material_origin?.kind==='library_v1'){
    const source=await readQuestionMaterials(db,workflowId);
-   if(JSON.stringify(source.origin)!==JSON.stringify(frozen.material_origin)||JSON.stringify(q.attachment_ids)!==JSON.stringify(source.attachments.map(item=>item.id)))throw new HTTPException(409,{message:'材料库冻结附件与题目版本不一致'});
-   attachments=source.attachments.map(item=>({id:item.id,attempt_id:null,kind:'redacted_markdown',storage_path:'',sha256:item.sha256,content:item.content}));
+   if(canonicalJson(source.origin)!==canonicalJson(frozen.material_origin)||JSON.stringify(q.attachment_ids)!==JSON.stringify(source.attachments.map(item=>item.id)))throw new HTTPException(409,{message:'材料库冻结附件与题目版本不一致'});
+   attachments=source.attachments.map(item=>({id:item.id,attempt_id:null,kind:source.origin.kind==='library_v1'&&source.origin.material_mode==='original'?'source_markdown':'redacted_markdown',storage_path:'',sha256:item.sha256,content:item.content}));
   }else{
    attachments=(await db.query("SELECT ar.id,ar.attempt_id,ar.kind,ar.storage_path,ar.sha256,ar.content FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id JOIN ai_distill.steps s ON s.workflow_id=ar.workflow_id AND s.ordinal=9 WHERE ar.workflow_id=$1 AND ar.id=ANY($2::uuid[]) AND ar.kind='redacted_markdown' AND a.ordinal=9 AND a.status='succeeded' AND s.status='succeeded'",[workflowId,q.attachment_ids])).rows as Artifact[];
   }
-  for(const id of q.attachment_ids){const matching=attachments.filter(file=>file.id===id);if(matching.length!==1||!frozen.materials.some((item:any)=>item.id===id&&item.sha256===matching[0]!.sha256)||(frozen.material_origin?.kind!=='library_v1'&&matching[0]!.attempt_id!==frozen.redaction_attempt_id))throw new HTTPException(409,{message:'当前脱敏附件与出题快照不一致'});await verifyArtifact(root,matching[0]!);}
+  for(const id of q.attachment_ids){const matching=attachments.filter(file=>file.id===id);if(matching.length!==1||!frozen.materials.some((item:any)=>item.id===id&&item.sha256===matching[0]!.sha256)||(frozen.material_origin?.kind!=='library_v1'&&matching[0]!.attempt_id!==frozen.redaction_attempt_id))throw new HTTPException(409,{message:'当前附件与出题快照不一致'});await verifyArtifact(root,matching[0]!);}
   const delivery=await resolveProjectDelivery(workflow.parent_name);
   const deliveryDir=delivery.mode==='noop'?root:await questionResultDirectory(fileURLToPath(new URL('../../assets/out/',import.meta.url)),workflow.parent_name||workflow.project_name,workflow.phase_name??'',workflow.phase_name?(workflow.source_key||workflow.title):workflow.title);
   const structuredRedaction=workflow.parent_name==='Work法律全场景'?await readCurrentRedactionForDocx(db,workflowId):undefined;
-  const redactedAttachments=await Promise.all(q.attachment_ids.map(async(id:string,index:number)=>{
+  const deliveryAttachments=await Promise.all(q.attachment_ids.map(async(id:string,index:number)=>{
    const artifact=attachments.find(file=>file.id===id);
-   if(!artifact)throw new HTTPException(409,{message:'归档脱敏附件缺失'});
-   return{id:artifact.id,sha256:artifact.sha256,name:`材料-${String(index+1).padStart(3,'0')}.md`,text:await readVerifiedTextArtifact(root,artifact),...(structuredRedaction&&structuredRedaction.redacted_sha256===artifact.sha256?{documents:[...structuredRedaction.materialDocuments.values()].map(item=>item.document)}:{})};
+   if(!artifact)throw new HTTPException(409,{message:'归档冻结材料缺失'});
+   const materialMode=frozen.material_origin?.kind==='library_v1'?frozen.material_origin.material_mode:'redacted';
+   const documents=structuredRedaction&&structuredRedaction.redacted_sha256===artifact.sha256?[...structuredRedaction.materialDocuments.values()].map(item=>item.document):undefined;
+   return{id:artifact.id,sha256:artifact.sha256,name:`材料-${String(index+1).padStart(3,'0')}.md`,text:await readVerifiedTextArtifact(root,artifact),material_mode:materialMode,...(documents?{documents}:{})};
   }));
   const deliveryIdentityDigest=hash(JSON.stringify(deliveryIdentity??null));
-  const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:redactedAttachments};
+  const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:deliveryAttachments};
   if(workflow.parent_name==='Work法律全场景'){
    await db.query('COMMIT');inTransaction=false;
    const gate=getAgentConcurrencyGate(root,readConcurrencySettings(process.env,root).agent);
-   const permit=await gate.run(()=>getOrGenerateWorkSimulation(pool,{project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,rubric:q.rubric},attachments:redactedAttachments.map(({name,text})=>({name,text}))},root,hash(`${digest}:${delivery.digest}`)));
+   const permit=await gate.run(()=>getOrGenerateWorkSimulation(pool,{project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,rubric:q.rubric},attachments:deliveryAttachments.map(({name,text,material_mode})=>({name,text,material_mode}))},root,hash(`${digest}:${delivery.digest}`)));
    if(!permit.acquired)throw new HTTPException(409,{message:'Agent 并发任务未取得执行槽位'});
    deliveryInput.simulation=permit.value;
    await db.query('BEGIN');inTransaction=true;

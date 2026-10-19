@@ -1,0 +1,64 @@
+{
+  "id": "A005",
+  "item_id": "T4",
+  "stage_id": "implementation_and_browser_walkthrough",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-19T07:57:38+08:00",
+  "finished_at": "2026-10-19T08:03:39+08:00",
+  "inputs": [
+    {
+      "ref": "docs/plans/2026-10-19-project-phase-ui-interactions.md#收尾清单与验收",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "model_calls": false,
+    "external_platform_writes": false,
+    "business_data_writes": false,
+    "service_restart": false,
+    "browser": "BrowserSkill Agent Window, no user tab borrowed"
+  },
+  "changes_from_previous": [
+    "修复server/project-folders.test.ts聚合fixture缺少enabled和active的类型错误",
+    "grouped legacy期次不再显示旧目录同步入口，历史目录只读；期次编辑payload省略材料后端和目录字段",
+    "作答模型集合按钮明确标为保存本期模型集合"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local source and already-running API/frontend",
+    "runtime_version": null
+  },
+  "artifacts": [
+    {
+      "ref": "web/src/views/ProjectDetail.vue",
+      "sha256": null
+    },
+    {
+      "ref": "web/src/components/ProjectForm.vue",
+      "sha256": null
+    },
+    {
+      "ref": "web/src/components/AnswerModelSet.vue",
+      "sha256": null
+    },
+    {
+      "ref": "server/project-folders.test.ts",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "typecheck_and_diff",
+      "result": "bun run check通过（web vue-tsc + root tsc）；git diff --check通过",
+      "evidence": "本次命令退出码0"
+    },
+    {
+      "kind": "browser_ui",
+      "result": "只读打开Work第一期期次页、编辑表单、材料包详情和作答模型设置；旧目录只读显示，编辑表单无目录字段，材料详情三个页签可达；模型设置按钮显示本期范围。浏览器console仅有Vite连接debug信息，无error或warning；未点击写操作。",
+      "evidence": "BrowserSkill Agent Window本次本地实走；本地页面接口响应成功"
+    }
+  ],
+  "error": null
+}

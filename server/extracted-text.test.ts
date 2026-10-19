@@ -1,4 +1,4 @@
-/** 提取文本 API：验证路由只从当前材料的脱敏索引返回文本，并保持响应字段与访问边界；不允许原文替代脱敏结果。
+/** 提取文本 API：验证extracted-text完整视图中redacted_text按当前material_id读取对应脱敏索引；完整视图同时可返回原文页，本测试不证明redacted_only模式的隔离。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import { test, expect } from 'bun:test';

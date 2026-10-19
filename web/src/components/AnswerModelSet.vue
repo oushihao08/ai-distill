@@ -36,7 +36,7 @@ onMounted(refresh);
 
 <template>
  <Column :gap="16">
-  <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">作答模型</h2><p class="text-xs text-muted">项目会对所选模型分别作答、评分；每个模型的百分制得分低于各自分数上限，题目才算达标，达到或超过则题目未达标。</p></Column><v-btn :loading="loading" @click="refresh">刷新</v-btn></Row>
+  <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">本期作答模型</h2><p class="text-xs text-muted">模型集合和各模型分数上限只用于当前期次；达标判断沿用现有规则。修改不影响同主项目其他期次或历史评分。</p></Column><v-btn :loading="loading" @click="refresh">刷新</v-btn></Row>
   <v-alert v-if="error" type="error" density="compact">{{ error }}</v-alert><v-alert v-if="message" type="success" density="compact">{{ message }}</v-alert>
   <Column :gap="8"><h3 class="text-sm font-semibold">系统模型目录</h3><p v-if="!catalog.length" class="text-sm text-muted">还没有登记模型。</p>
    <Row v-for="item in catalog" :key="item.id" wrap x="between" :gap="8" class="border-t border-line-subtle pt-8">
@@ -44,7 +44,7 @@ onMounted(refresh);
    </Row>
   </Column>
   <Column v-for="item in selected" :key="item.model_id" :gap="4" class="border-t border-line-subtle pt-8"><span class="text-sm font-medium">{{ item.name }} · 分数上限（百分制）</span><v-text-field :model-value="item.minimum_score??''" type="number" min="0" max="100" step="0.5" label="低于此分通过，等于或超过则未达标（可留空）" hide-details @update:model-value="updateMinimumScore(item.model_id,$event)" /></Column>
-  <Row x="end"><v-btn color="primary" variant="flat" :loading="saving" :disabled="saving||!selected.length" @click="save">保存项目模型集合</v-btn></Row>
+  <Row x="end"><v-btn color="primary" variant="flat" :loading="saving" :disabled="saving||!selected.length" @click="save">保存本期模型集合</v-btn></Row>
   <v-divider />
   <Column :gap="8"><h3 class="text-sm font-semibold">登记系统模型</h3><v-select v-model="provider" :items="[{title:'SiliconFlow API（默认）',value:'siliconflow'},{title:'OpenRouter API',value:'openrouter'},{title:'本机 Codex Agent',value:'codex'}]" label="执行方式" hide-details />
    <template v-if="provider==='codex'"><v-select v-model="model" :items="agentModels.map(item=>({title:item.slug,value:item.slug}))" label="Codex 模型" hide-details /><v-select v-model="reasoningEffort" :items="(agentModels.find(item=>item.slug===model)?.supported_reasoning_levels??[]).map(item=>({title:item.effort,value:item.effort}))" label="推理强度" hide-details /></template>

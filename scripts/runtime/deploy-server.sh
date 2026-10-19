@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 文件职责：在目标服务器构建指定源码快照，并原位更新 ai-distill 的固定 Swarm 服务；接收本次发布的本机 .env。
-# 入口：仅由 scripts/runtime/deploy.sh 通过 SSH 调用；不运行数据库迁移或清理持久业务数据。
+# 职责：在目标服务器校验发布快照、构建镜像并更新固定的 ai-distill Swarm 服务。
+# 调用方与影响：仅由 deploy.sh 经 SSH 调用；要求 root 和 worker 空闲，会替换服务器 `.env` 并设置持久存储目录权限；不运行数据库迁移或删除业务数据。
 set -euo pipefail
 
 tag="${1:?缺少发布标签}"

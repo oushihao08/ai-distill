@@ -1,5 +1,5 @@
-/** 文件职责：将指定真实题目文件夹 PDF 发送至智谱 layout_parsing，私有保存页级结果及试跑记录。
- * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/try-glm-ocr-question-folder.ts`；逐个上传指定题目目录 PDF 到 layout_parsing，保存页级响应及试跑清单。
+/** 文件职责：将固定题目文件夹 PDF 发送至智谱 layout_parsing，保存页级响应和试跑指标。
+ * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/try-glm-ocr-question-folder.ts`；读取题目1、题目3原件并外发 GLM-OCR；原始未脱敏响应写 `.storage/`，含文件名与计数的汇总写 `docs/evidence/`。
  */
 import{mkdir,writeFile,stat}from'node:fs/promises';import{join,resolve,basename}from'node:path';import{createHash}from'node:crypto';
 const base=resolve('projects/豆包高经济价值/第五期/questions'),out=resolve('.storage/.glm-ocr-question-folder'),report:any={started_at:new Date().toISOString(),model:'glm-ocr',source_directory:'projects/豆包高经济价值/第五期/questions',files:[],complete:false};

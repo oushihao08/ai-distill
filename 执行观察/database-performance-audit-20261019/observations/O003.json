@@ -1,0 +1,31 @@
+{
+  "id": "O003",
+  "kind": "issue",
+  "status": "open",
+  "title": "API优化尚未加载，运行态查询仍待安全复测",
+  "item_ids": [
+    "database-performance"
+  ],
+  "attempt_ids": [
+    "A003",
+    "A005"
+  ],
+  "facts": [
+    "2026-10-19T11:04+08:00再次读取GET /api/monitor为HTTP 200、0.708秒/1050字节；持久worker心跳仍为2026-10-19T00:01:16.490Z，状态stale，snapshot.tasks.status=known、running=0。",
+    "项目详情GET仍耗时2.916秒/170029字节，health为0.360秒/51字节；请求均由旧API进程响应，不能用于验收新查询代码。",
+    "API PID 71008于2026-10-19 09:58:41启动，命令为bun server/index.ts；相关源码mtime晚于进程启动。worker PID 51432不在进程表中。",
+    "用户已授权仅重启API，但scripts/runtime/start-iterm.sh要求status为running/paused且worker心跳不超过30秒后才能停止源码过期服务；当前心跳stale，不满足门禁。该脚本还会管理前端及worker，没有API-only启动入口。未绕过门禁、未重启任何进程、未启动worker。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "A003",
+    "GET /api/monitor",
+    "scripts/runtime/start-iterm.sh",
+    "O004"
+  ],
+  "impact": "最新源码和项目详情查询合并改动尚未在运行API验证，不能报告实际提速。",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-19T10:44:51+08:00",
+  "updated_at": "2026-10-19T11:04:31+08:00"
+}

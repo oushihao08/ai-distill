@@ -1,0 +1,40 @@
+{
+  "id": "A003",
+  "item_id": "cli",
+  "stage_id": "implement",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-19T17:24:00+08:00",
+  "finished_at": "2026-10-19T17:24:00+08:00",
+  "inputs": [
+    {
+      "ref": "working tree",
+      "version": "2026-10-19"
+    }
+  ],
+  "configuration": {
+    "scope_excludes": [
+      "docs/**",
+      "protected business inputs",
+      "generated files"
+    ]
+  },
+  "changes_from_previous": [],
+  "external_ids": {},
+  "environment": {
+    "target": "local repository",
+    "runtime_version": "Bun (local)"
+  },
+  "artifacts": [
+    "cli/commands.ts",
+    "cli/client.ts",
+    "cli/commands.test.ts"
+  ],
+  "verification": [
+    {
+      "check": "CLI focused tests",
+      "result": "41 passed, 0 failed, 177 expectations"
+    }
+  ],
+  "error": null
+}

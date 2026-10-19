@@ -1,0 +1,51 @@
+{
+  "id": "O038",
+  "kind": "result",
+  "status": "resolved",
+  "title": "Work交付工具与归档契约语义核对",
+  "item_ids": [
+    "inventory",
+    "docs"
+  ],
+  "attempt_ids": [
+    "A010",
+    "A011"
+  ],
+  "facts": [
+    "逐份审阅Work项目AGENTS、脚本目录说明、delivery入口、Harbor/Siriser生成器、批量打包器、固定模板说明及对应测试源码，共15项台账文件。",
+    "实际入口先按题目契约选择生成方式：旧契约通过work-simulation.ts使用项目Agent；work_legal_v1从作者冻结成果/检索记录投影，不在归档阶段再次生成。",
+    "Siriser五件套先生成；Harbor转换由独立try/catch处理，映射或无损转换失败记录pending而非阻断Siriser/内部归档。",
+    "现有delivery.test.ts的集成路径使用旧题目契约；新work_legal_v1覆盖了映射与局部投影测试源码，但没有该契约的端到端集成测试。测试未执行。",
+    "Harbor固定test.sh和finalize.py当前本地SHA-256分别为6f5ae2143066893f5f3270023b82b4126a8ec65699f4397606e85a1290349119和33f01df3f44dad8a1f986185e9426a0758802313d100d25cf4fe53c771bccc67，与目录说明记录相符；固定副本未改、未执行。",
+    "修正Work scripts README、Harbor README中“Harbor错误导致整体归档失败”的描述；区分旧/新成果路径；移除Siriser README中把某份冻结清单的192份数量泛化的语句；修正生成器头注释。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "projects/Work法律全场景/AGENTS.md",
+    "projects/Work法律全场景/scripts/README.md",
+    "projects/Work法律全场景/scripts/delivery.ts",
+    "projects/Work法律全场景/scripts/delivery.test.ts",
+    "projects/Work法律全场景/scripts/harbor/README.md",
+    "projects/Work法律全场景/scripts/harbor/batch-package.ts",
+    "projects/Work法律全场景/scripts/harbor/batch-package.test.ts",
+    "projects/Work法律全场景/scripts/harbor/export-accepted-task.ts",
+    "projects/Work法律全场景/scripts/harbor/export-accepted-task.test.ts",
+    "projects/Work法律全场景/scripts/harbor/official/README.md",
+    "projects/Work法律全场景/scripts/harbor/official/tests/README.md",
+    "projects/Work法律全场景/scripts/harbor/official/tests/finalize.py",
+    "projects/Work法律全场景/scripts/harbor/official/tests/test.sh",
+    "projects/Work法律全场景/scripts/siriser/README.md",
+    "projects/Work法律全场景/scripts/siriser/generate-five-piece.ts",
+    "projects/Work法律全场景/scripts/siriser/generate-five-piece.test.ts",
+    "server/publishing/project-delivery.ts:1-90",
+    "server/publishing/work-simulation.ts:179-211",
+    "server/authoring/work-contract.ts",
+    "server/materials/redacted-docx.ts",
+    "server/reporting/xlsx.ts"
+  ],
+  "impact": "Work目录15项语义审阅收口；逐行台账累计范围内核实378/449（84.2%）；partial 5，pending 66。新契约缺少端到端测试是静态覆盖缺口，实际流程未验证。",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-19T19:39:10+08:00",
+  "updated_at": "2026-10-19T11:41:09Z"
+}

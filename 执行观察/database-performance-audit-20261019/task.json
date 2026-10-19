@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "id": "database-performance-audit-20261019",
+  "title": "数据库与代码真实问题排查：查询性能优先",
+  "goal_ref": "当前会话 Goal；目标为查明 ai-distill 查询慢和其他真实代码/数据层问题，实施有证据的最小修复并验证",
+  "scope": "本地 ai-distill API/代码/日志；数据库通过现有 HTTP API 只读核查。未经授权不迁移、不直连数据库、不重启 worker；API 重启已获用户授权，但启动脚本的陈旧监控门禁仍需遵守。",
+  "completion_criteria": [
+    "用当前 API/日志证据说明慢查询主因和边界，不把旧日志解析标签误认作根因",
+    "只实施证据支持的最小查询/代码修复，保留现有流程",
+    "针对性测试及静态检查通过，完整测试失败逐项分类",
+    "在安全启动条件满足后重启 API，对同一批只读 GET 复测并记录前后差异；如条件持续不满足，明确列为未验收"
+  ],
+  "items": [
+    {
+      "id": "database-performance",
+      "title": "查询慢根因、最小优化与运行复测",
+      "plan_ref": "当前会话目标：先处理查询数据慢，再审查其他真实问题",
+      "stages": [
+        {
+          "id": "baseline-and-source-review",
+          "title": "当前耗时、日志及查询链路核查",
+          "state": "succeeded",
+          "outcome": "旧API项目详情此前约1.03–1.40秒（首次3.98秒），材料端点0.40–0.98秒；新证据显示旧/api/monitor曾耗时5.86秒，同一请求日志出现3次连接等待2.52–2.61秒；11:04+08:00旧API复测 /api/monitor=0.708秒、/api/health=0.360秒、项目详情=2.916秒。结合Pool max=4，连接池竞争是已证实的重要耗时组成；请求耗时波动明显，具体竞争请求来源和单条SQL执行耗时比例仍未完全拆分。",
+          "attempt_id": "A001",
+          "observed_at": "2026-10-19T11:04:31+08:00",
+          "evidence": [
+            "GET /api/monitor",
+            "本地 API 同批只读 GET 基线与重复复测",
+            "O004：旧API实际响应大小与延迟波动",
+            "scripts/diagnostics/read-logs.ts 输出",
+            "server/db.ts",
+            "server/app.ts",
+            "server/project-folders.ts",
+            "GET /api/monitor 10:57+08:00：5.859秒；同时间窗三个db.connection.waited事件",
+            "GET /api/health 11:00+08:00：数据库connected、schema ready，耗时2.941秒；附近db.connection.waited约2.591秒",
+            "GET /api/monitor、/api/health、项目详情 11:04+08:00：0.708秒、0.360秒、2.916秒；均为旧API PID 71008响应",
+            "O004"
+          ]
+        },
+        {
+          "id": "minimal-query-change",
+          "title": "项目详情与监控端点减少数据库连接占用",
+          "state": "succeeded",
+          "outcome": "项目详情在现有项目读取中带回步骤配置，独立并行查询由4次降为3次；材料库监控将总数与活动任务合并，库状态可用时该helper由3次查询降为2次，/api/monitor总查询由4次降为3次。单请求连接占用下降，不调整max=4。新代码实际提速仍待安全加载后同批GET验证。",
+          "attempt_id": "A004",
+          "observed_at": "2026-10-19T11:01:18+08:00",
+          "evidence": [
+            "server/app.ts",
+            "server/project-folders.ts",
+            "server/monitoring/worker-monitor.ts",
+            "server/monitoring/worker-monitor.test.ts",
+            "server/db.ts Pool max=4"
+          ]
+        },
+        {
+          "id": "targeted-tests-and-static-check",
+          "title": "相关测试和类型检查",
+          "state": "succeeded",
+          "outcome": "项目详情配置合并和材料库监控计数/活动项合并均有红绿回归；路由与步骤摘要56项通过。最新全后端套件1150项通过、0失败、3662断言；bun run check及git diff --check通过。",
+          "attempt_id": "A007",
+          "observed_at": "2026-10-19T11:01:18+08:00",
+          "evidence": [
+            "bun test server/app.test.ts server/project-folders.test.ts：56 pass（项目详情契约）",
+            "bun test server/monitoring/worker-monitor.test.ts -t ...：1 pass，队列数据与安全字段不变且只需两次调用",
+            "bun run test:backend：1150 pass，0 fail，3662 assertions",
+            "bun run check：通过",
+            "git diff --check：通过",
+            "两项查询减少均先红后绿"
+          ]
+        },
+        {
+          "id": "live-api-restart-and-compare",
+          "title": "API加载新代码并对相同 GET 复测",
+          "state": "succeeded",
+          "outcome": "按已有授权仅恢复API。项目详情623/249/163毫秒，本期材料68/55/55毫秒，监控434/112/115毫秒；前后环境及响应体不同不能将提速全部归因于改动。health503：1项迁移待应用，已单独询问授权。",
+          "attempt_id": "A008",
+          "observed_at": "2026-10-19T16:14:31.867290+08:00",
+          "evidence": [
+            "attempts/A008.json",
+            "evidence/current-api-timings.json"
+          ]
+        },
+        {
+          "id": "authorized-046-migration",
+          "title": "授权单项046迁移及健康恢复",
+          "state": "succeeded",
+          "outcome": "核对唯一待迁移项046，单项提交成功；health恢复ready。",
+          "attempt_id": "A009",
+          "observed_at": "2026-10-19T16:45:01.885179+08:00",
+          "evidence": [
+            "attempts/A009.json",
+            "evidence/after-046-api.json"
+          ]
+        }
+      ]
+    }
+  ],
+  "next_actions": [],
+  "updated_at": "2026-10-19T16:45:01.885179+08:00",
+  "completion_audit": {
+    "observed_at": "2026-10-19T16:45:25.800162+08:00",
+    "result": "数据库和代码排查目标已完成；不等于真实模型内容质量验收",
+    "checks": [
+      {
+        "requirement": "查询慢根因与修复验证",
+        "evidence": [
+          "attempts/A001.json",
+          "attempts/A008.json",
+          "evidence/current-api-timings.json",
+          "evidence/concurrent-api-timings.json"
+        ],
+        "result": "秒级连接获取及接口多查询已定位；减少查询后串行/并发GET实测通过，网络与环境差异保留说明"
+      },
+      {
+        "requirement": "修复有证据的其他流程缺陷",
+        "evidence": [
+          "../../projects/Work法律全场景/执行观察/project-phases-library-20261018/attempts/A009.json"
+        ],
+        "result": "出题来源指纹、归档来源比较、DOCX索引兼容已修复；双模式77项隔离集成通过"
+      },
+      {
+        "requirement": "测试与类型检查",
+        "evidence": [
+          "../../projects/Work法律全场景/执行观察/project-phases-library-20261018/evidence/A009-backend-tests.log",
+          "../../projects/Work法律全场景/执行观察/project-phases-library-20261018/evidence/A009-typecheck.log"
+        ],
+        "result": "1155项后端测试通过；类型及差异检查通过"
+      },
+      {
+        "requirement": "运行API与数据库就绪",
+        "evidence": [
+          "attempts/A009.json",
+          "evidence/after-046-api.json"
+        ],
+        "result": "046按单项授权提交；当前health200且schema ready"
+      }
+    ],
+    "limitations": [
+      "完整链路采用合成模型响应验证真实队列/数据库/文件生成代码，未执行真实模型推理",
+      "未运行浏览器完整交互，不声称页面视觉或实际供应商调用已验收"
+    ]
+  }
+}

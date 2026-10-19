@@ -1,6 +1,6 @@
 /**
  * 职责：达标纯决策：将必需模型分数换算为百分制并按项目策略判断。
- * 关键方法与用途：`decideAcceptance()` 保留通用逐模型策略，Work使用两个模型的百分制均分门槛。
+ * 关键方法与用途：`decideAcceptance()` 按显式配置选择逐模型严格上限或mean_at_most均分；不按项目名固定模型数或阈值。
  * 使用场景：由 `jobs.ts` 组装当前快照后调用；不访问数据库或模型。
  */
 import {scorePercentage} from '../../shared/score';

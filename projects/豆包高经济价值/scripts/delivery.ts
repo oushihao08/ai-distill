@@ -1,7 +1,7 @@
 /**
  * 职责：豆包高经济价值各期共用的归档入口。
  * 关键入口：`deliver()` 在“归档达标题目”时由服务端独立进程调用。
- * 使用场景：只在成果目录写明当前没有正式题包；不生成 Harbor 文件，不写入题面、思路或标答。
+ * 使用场景：只在成果目录写明当前没有正式题包；不生成 Harbor 文件，不写入题面、思路或标答。仅当 `交付成果.json` 是已知的身份摘要形状时才删除它，遇到其他内容即拒绝。
  */
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdir,readFile,rename,rm,writeFile} from 'node:fs/promises';

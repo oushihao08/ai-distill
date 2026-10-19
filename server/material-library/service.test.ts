@@ -1,9 +1,26 @@
+/**
+ * 文件职责：验证全局材料包、版本列表、使用摘要和共用处理设置的数据服务。
+ * 主要边界：使用内存夹具断言查询投影、过滤和输入校验，不连接数据库实例。
+ */
 import {test,expect} from 'bun:test';
-import {validateLibraryPackageInput,buildLibraryManifest,readLibraryPackage,readLibraryPackageUsage,readLibraryRevisions,restoreLibraryPackage,validateProcessingSettings} from './service';
+import {validateLibraryPackageInput,buildLibraryManifest,readLibraryPackage,readLibraryPackageUsage,readLibraryPackages,readLibraryRevisions,restoreLibraryPackage,validateProcessingSettings} from './service';
 
 test('package detail returns revision rows instead of driver result metadata',async()=>{
  const pool={query:async(sql:string)=>sql.startsWith('SELECT p.id')?{rows:[{id:'package'}],rowCount:1}:{rows:[{id:'revision',files:[]}],rowCount:1,fields:[{name:'private-driver-metadata'}]}} as any;
  expect(await readLibraryPackage(pool,'package')).toEqual({id:'package',revisions:[{id:'revision',files:[]}]});
+});
+
+test('library package filters do not leave untyped gaps for the optional usage phase',async()=>{
+ const calls:{sql:string;values:unknown[]}[]=[];
+ const pool={query:async(sql:string,values:unknown[])=>{calls.push({sql,values});return{rows:[],rowCount:0};}} as any;
+ await readLibraryPackages(pool);
+ expect(calls[0]?.values).toHaveLength(8);
+ expect(calls[0]?.sql).toContain("$8::text='any'");
+ expect(calls[0]?.sql).not.toContain('$9');
+ await readLibraryPackages(pool,{usage_project_id:'11111111-1111-4111-8111-111111111111'});
+ expect(calls[1]?.values).toHaveLength(9);
+ expect(calls[1]?.sql).toContain('requested_phase.id=$8::uuid');
+ expect(calls[1]?.sql).toContain("$9::text='any'");
 });
 
 test('validates package metadata and preserves stable unique tags',()=>{

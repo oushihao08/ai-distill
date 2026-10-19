@@ -1,5 +1,5 @@
 /** 文件职责：调用智谱模型对指定文件夹的 GLM-OCR 首、中、末页作源图抽查，保存差异证据。
- * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/review-glm-ocr-folder-samples.ts`；渲染真实 PDF 首／中／末页，调用模型对照 OCR 并写入私有抽查记录；会产生模型调用和临时页图。
+ * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/review-glm-ocr-folder-samples.ts`；渲染固定四份真实 PDF 的首／中／末页，调用模型对照 OCR；逐页 JSON 写 `.storage/`、汇总写 `docs/evidence/`，结果可能含文书短摘。
  */
 import{readFile,mkdir,writeFile,rm}from'node:fs/promises';import{join,resolve}from'node:path';import{createVisionClient}from'../../../../server/materials/vision';import{loadExtractionConfig}from'../../../../server/materials/config';import{command}from'../../../../server/materials/pdf';
 const root=resolve('.storage'),out=join(root,'.glm-ocr-question-folder'),audit=join(root,'.glm-ocr-question-folder-review'),api=resolve('docs/evidence/2026-10-08-glm-ocr-folder-review.json'),trial:any=JSON.parse(await readFile(join(out,'result.json'),'utf8')),report:any={reviewer:'glm-5.3-flash high',method:'source image compared with GLM-OCR page layout content',scope:'first, middle and last PDF pages for each of four source files',samples:[],complete:false};

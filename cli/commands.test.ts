@@ -1,6 +1,6 @@
 /** CLI 命令契约测试：题目1为合成夹具，验证范围、稳定步骤身份、多模型派发、轻量／完整等待和只读结果边界。 */
 import {describe, expect, test} from 'bun:test';
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {ApiClient} from './client';
@@ -253,5 +253,114 @@ describe('命令范围和结果', () => {
     expect(result.business).toMatchObject({decision:'repair'});
     expect(calls).toHaveLength(1);
     expect(calls[0].init?.method).toBe('GET');
+  });
+
+  test('主项目期次、材料候选、本期加载及建题映射当前共享材料 API', async () => {
+    const link = '00000000-0000-4000-8000-000000000005';
+    const packageId = '00000000-0000-4000-8000-000000000006';
+    const redactionId = '00000000-0000-4000-8000-000000000007';
+    const {client,calls}=fixture((url,init)=>{
+      if(init?.method==='POST')return{id:question,reused:false};
+      if(url.pathname==='/api/project-groups')return{items:[{id:project,name:'Work'}]};
+      if(url.pathname.endsWith('/phases'))return{group:{id:project,name:'Work'},items:[]};
+      if(url.pathname.endsWith('/material-candidates'))return{items:[{id:packageId,usage_status:'in_use'}],page:1};
+      if(url.pathname.endsWith('/loaded-materials'))return{items:[{id:link,lock_version:4,selected_redaction_id:redactionId}]};
+      return{};
+    });
+    await runCommand(['project-group','list'],client);
+    await runCommand(['project-group','phases','--group',project],client);
+    await runCommand(['project','material','candidates','--project',project,'--source-mode','redacted'],client);
+    await runCommand(['project','materials','list','--project',project],client);
+    await runCommand(['project','materials','load','--project',project,'--package',packageId,'--redaction',redactionId],client);
+    await runCommand(['project','materials','question','--project',project,'--link',link,'--version','4','--redaction',redactionId,'--title','样例题','--request-key',attempt,'--role','代理律师','--scenario','证据审查','--direction','先核对文件'],client);
+    expect(calls.map(call=>call.url.pathname)).toEqual([
+      '/api/project-groups',`/api/project-groups/${project}/phases`,
+      `/api/projects/${project}/material-candidates`,`/api/projects/${project}/loaded-materials`,
+      `/api/projects/${project}/loaded-materials`,`/api/projects/${project}/loaded-materials/${link}/questions`,
+    ]);
+    expect(calls[2].url.searchParams.get('source_mode')).toBe('redacted');
+    expect(JSON.parse(String(calls[4].init?.body))).toEqual({package_id:packageId,redaction_id:redactionId});
+    expect(JSON.parse(String(calls[5].init?.body))).toMatchObject({request_key:attempt,expected_link_version:4,redaction_id:redactionId,title:'样例题',role_perspective:'代理律师',scenario:'证据审查',authoring_direction:'先核对文件'});
+  });
+
+  test('材料库版本上传保留文件集合、脱敏声明、幂等键和版本锁', async () => {
+    const root=await mkdtemp(join(tmpdir(),'ai-distill-library-cli-'));
+    try {
+      const source=join(root,'附件.docx'),manifest=join(root,'manifest.json');
+      await writeFile(source,'test material');
+      await writeFile(manifest,JSON.stringify({files:[{path:source,redaction_mode:'declared_redacted'}]}));
+      const {client,calls}=fixture(()=>({id:second,reused:false}));
+      await runCommand(['library','revision','create','--package',question,'--version','3','--request-key',attempt,'--manifest',manifest],client);
+      const call=calls[0];
+      expect(call.url.pathname).toBe(`/api/material-library/packages/${question}/revisions`);
+      expect(call.init?.headers).toMatchObject({'If-Match':'3'});
+      expect(call.init?.body).toBeInstanceOf(FormData);
+      const form=call.init?.body as FormData;
+      expect(form.get('request_key')).toBe(attempt);
+      expect(form.get('redaction_modes')).toBe('["declared_redacted"]');
+      expect((form.get('files') as File).name).toBe('附件.docx');
+    } finally { await rm(root,{recursive:true,force:true}); }
+  });
+
+  test('新材料任务保留执行目标和 request key，读取与取消复用任务 ID', async () => {
+    const revision='00000000-0000-4000-8000-000000000008';
+    const job='00000000-0000-4000-8000-000000000009';
+    const {client,calls}=fixture((url,init)=>init?.method==='POST'?{id:job,status:'queued',reused:false}:{id:job,status:'running'});
+    await runCommand(['library','job','start','--revision',revision,'--kind','extract','--target','server','--request-key',attempt],client);
+    await runCommand(['library','job','show','--job',job],client);
+    await runCommand(['library','job','cancel','--job',job],client);
+    expect(calls.map(call=>call.url.pathname)).toEqual([`/api/material-library/revisions/${revision}/jobs`,`/api/material-library/jobs/${job}`,`/api/material-library/jobs/${job}/cancel`]);
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({kind:'extract',request_key:attempt,execution_target:'server'});
+  });
+
+  test('新材料项目创建可明确绑定稳定主项目和期号', async () => {
+    const group='00000000-0000-4000-8000-000000000010';
+    const {client,calls}=fixture(url=>url.pathname==='/api/projects'?{id:project}:{project:{id:project,skill_exists:true},steps:[]});
+    await runCommand(['project','create','--name','Work - 第二期','--parent-name','Work','--project-group',group,'--phase-no','2','--phase-name','第二期','--material-backend','library_v1','--workspace-path','/tmp/work'],client);
+    expect(calls[0].url.pathname).toBe('/api/projects');
+    expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({name:'Work - 第二期',parent_name:'Work',project_group_id:group,phase_no:2,phase_name:'第二期',material_backend:'library_v1',workspace_path:'/tmp/work'});
+  });
+
+  test('材料库管理、加载、返修状态和旧材料导入都使用现有API及版本锁', async () => {
+    const root=await mkdtemp(join(tmpdir(),'ai-distill-library-update-'));
+    const metadata=join(root,'metadata.json');await writeFile(metadata,JSON.stringify({name:'新名称',tags:['更新']}));
+    const link='00000000-0000-4000-8000-000000000011';
+    const use='00000000-0000-4000-8000-000000000012';
+    const legacy='00000000-0000-4000-8000-000000000013';
+    const {client,calls}=fixture(()=>({id:second,reused:false,lock_version:5}));
+    await runCommand(['library','package','create','--name','合同材料','--tags','合同,借款'],client);
+    await runCommand(['library','package','update','--package',question,'--version','2','--file',metadata],new ApiClient(undefined,async (_url,init)=>{
+      calls.push({url:new URL(String(_url)),init});return Response.json({id:question});
+    }));
+    await runCommand(['project','materials','update','--project',project,'--link',link,'--version','4','--position','2'],client);
+    await runCommand(['project','materials','remove','--project',project,'--link',link,'--version','4'],client);
+    await runCommand(['project','materials','restore','--project',project,'--link',link,'--version','4'],client);
+    await runCommand(['project','material','use','update','--project',project,'--use',use,'--version','3','--status','in_use','--reason','返修'],client);
+    await runCommand(['project','legacy-materials','import','--project',project,'--workflow',question,'--request-key',attempt],client);
+    await runCommand(['project','legacy-materials','import','--project',project,'--workflow',question,'--request-key',second,'--apply','--digest','a'.repeat(64)],client);
+    await runCommand(['project','legacy-materials','activate','--project',project,'--import',legacy],client);
+    expect(calls.map(call=>call.url.pathname)).toEqual([
+      '/api/material-library/packages',`/api/material-library/packages/${question}`,
+      `/api/projects/${project}/loaded-materials/${link}`,`/api/projects/${project}/loaded-materials/${link}`,
+      `/api/projects/${project}/loaded-materials/${link}/restore`,`/api/projects/${project}/material-uses/${use}`,
+      `/api/projects/${project}/legacy-material-imports`,`/api/projects/${project}/legacy-material-imports`,`/api/projects/${project}/legacy-material-imports/${legacy}/activate`,
+    ]);
+    expect(calls[2].init?.headers).toMatchObject({'If-Match':'4'});
+    expect(calls[3].init?.headers).toMatchObject({'If-Match':'4'});
+    expect(calls[5].init?.headers).toMatchObject({'If-Match':'3'});
+    expect(JSON.parse(String(calls[6].init?.body))).toMatchObject({source_workflow_id:question,request_key:attempt,dry_run:true});
+    expect(JSON.parse(String(calls[7].init?.body))).toMatchObject({source_workflow_id:question,request_key:second,dry_run:false,expected_source_digest:'a'.repeat(64)});
+    await rm(root,{recursive:true,force:true});
+  });
+
+  test('原件下载只写入新文件，来源需要明确指定文件ID',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'ai-distill-library-download-'));
+    try{
+      const out=join(root,'original.docx');
+      const client=new ApiClient(undefined,async url=>new URL(url).pathname.endsWith('/content')?new Response('original bytes'):Response.json({}));
+      const result=await runCommand(['library','file','download','--file',question,'--out',out],client);
+      expect(await readFile(out,'utf8')).toBe('original bytes');expect(result.data.source).toBe('library_original');
+      await expect(runCommand(['library','file','download','--file',question,'--out',out],client)).rejects.toThrow('无法写入');
+    }finally{await rm(root,{recursive:true,force:true});}
   });
 });

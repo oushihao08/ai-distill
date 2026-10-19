@@ -1,0 +1,34 @@
+{
+  "project": {
+    "id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "name": "Work法律全场景 - 第一期",
+    "description": "本地首批筹备材料；正式期数与外部认领状态未由此文件确认。",
+    "created_at": "2026-10-14T08:28:34.148Z",
+    "material_root": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions",
+    "local_skill_path": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/skill",
+    "deleted_at": null,
+    "codex_model": null,
+    "codex_reasoning_effort": null,
+    "parent_name": "Work法律全场景",
+    "phase_name": "第一期",
+    "material_mode": "material_packages",
+    "question_tags": [
+      "L2",
+      "L3",
+      "L4",
+      "L5"
+    ],
+    "material_backend": "legacy",
+    "workspace_path": null,
+    "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+    "phase_no": 1
+  },
+  "business_before": {
+    "sha256": "44cbf3a4c3e091588860df6880aaf65315f38c85c70fbbd1e0e3c2b2ae157d3d",
+    "record_count": 3386
+  },
+  "business_after": {
+    "sha256": "44cbf3a4c3e091588860df6880aaf65315f38c85c70fbbd1e0e3c2b2ae157d3d",
+    "record_count": 3386
+  }
+}

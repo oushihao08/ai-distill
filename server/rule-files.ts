@@ -1,7 +1,7 @@
 /**
- * 职责：本地项目资料边界：扫描当前资料／skill、校验任务输入文件指纹及受限读写。
+ * 职责：本地项目资料边界：扫描主项目共享资料和当前生效 Skill（本期覆盖或主项目回退）、校验任务输入指纹及受限读写。
  * 关键方法与用途：`scanRuleWorkspace()` 建立当前目录清单；`readProjectPrompt()` 校验任务输入；`freezeRuleWorkspace()` 仅为skill生成任务建立私有输入副本。
- * 使用场景：项目资料 API、出题／审查／评分和 skill 生成；不创建编号项目规则版本。
+ * 使用场景：项目资料 API、出题与 Skill 生成；评分仅为旧任务做绑定兼容，归档验证历史指纹，不向评分者提供项目 Skill。
  */
 import {readdir,lstat,readFile,mkdir,writeFile,rename,rm} from 'node:fs/promises';
 import {join,dirname,resolve,posix,isAbsolute,relative,sep} from 'node:path';
@@ -40,6 +40,19 @@ export async function resolveRuleWorkspacePaths(project:{material_root?:string|n
  const relativeWorkspace=relative(shared,workspace),sharedIsAncestor=relativeWorkspace===''||(!isAbsolute(relativeWorkspace)&&relativeWorkspace!=='..'&&!relativeWorkspace.startsWith(`..${sep}`));
  return{workspace_path:workspace,materials_path:join(sharedIsAncestor?shared:workspace,'materials')};
 }
+/** 本期 skill 优先；分期未建立本期 skill 时回退到主项目配置路径。 */
+export async function resolveEffectiveProjectSkill(project:{workspace_path?:string|null;material_root?:string|null;local_skill_path?:string|null;parent_name?:string|null}){
+ if(typeof project.local_skill_path!=='string'||!project.local_skill_path)throw new HTTPException(409,{message:'请先设置主项目 skill 目录'});
+ const projectSkill=resolve(project.local_skill_path),workspace=project.workspace_path?resolve(project.workspace_path):dirname(project.material_root??projectSkill),phaseSkill=join(workspace,'skill');
+ if(project.parent_name&&phaseSkill!==projectSkill){
+  const directory=await info(phaseSkill),entry=await info(join(phaseSkill,'SKILL.md'));
+  if(directory?.isSymbolicLink()||entry?.isSymbolicLink())throw new HTTPException(409,{message:'本期 skill 不支持符号链接'});
+  if(directory&&!directory.isDirectory())throw new HTTPException(409,{message:'本期 skill 路径不是目录'});
+  if(entry&&!entry.isFile())throw new HTTPException(409,{message:'本期 skill 入口不是普通文件'});
+  if(entry)return{path:phaseSkill,source:'phase' as const,project_path:projectSkill,phase_path:phaseSkill};
+ }
+ return{path:projectSkill,source:'project' as const,project_path:projectSkill,phase_path:project.parent_name&&phaseSkill!==projectSkill?phaseSkill:null};
+}
 export async function scanRuleWorkspace(root:string,skill:string,scope:'workspace'|'skill'='workspace',materialsRoot=join(root,'materials')):Promise<RuleWorkspace>{
  try{
   root=await validateFolder(root,'项目工作区');skill=await validateFolder(skill,'本地skill目录');
@@ -55,7 +68,7 @@ export async function scanRuleWorkspace(root:string,skill:string,scope:'workspac
   files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
   if(files.reduce((total,file)=>total+file.size_bytes,0)>100*1024*1024)throw new HTTPException(400,{message:'规则包超过100MB限制'});
   const known=new Set(files.map(file=>file.path));const issues:string[]=[];
-  if(scope==='workspace'&&!files.some(file=>file.path.startsWith('materials/')))issues.push('缺少本期规则资料');
+  if(scope==='workspace'&&!files.some(file=>file.path.startsWith('materials/')))issues.push('缺少主项目共享规则资料');
   if(!known.has('skill/SKILL.md'))issues.push('缺少skill/SKILL.md入口');
   const view:RuleWorkspace={workspace_path:root,materials_path:materialsRoot,skill_path:skill,files,issues,source_digest:hash(JSON.stringify([root,materialsRoot,skill,fileSignature(files)])),assessment:metadata.assessment&&typeof metadata.assessment==='object'&&!Array.isArray(metadata.assessment)?metadata.assessment as Record<string,unknown>:{},unresolved:Array.isArray(metadata.unresolved)?metadata.unresolved.filter(item=>item&&typeof item==='object'&&typeof item.id==='string'):[]};
   for(const file of files.filter(file=>file.path.startsWith('skill/')&&file.path.endsWith('.md'))){
@@ -74,9 +87,9 @@ export async function scanRuleWorkspace(root:string,skill:string,scope:'workspac
 /** 新任务读取当前项目目录；这份清单只绑定本次输入，不创建或递增规则版本。 */
 export async function scanProjectPrompt(root:string,skill:string):Promise<ProjectPromptSnapshot>{
  const workspace=await scanRuleWorkspace(root,skill,'skill');
- const blocking=workspace.issues.filter(issue=>issue!=='缺少本期规则资料');
+ const blocking=workspace.issues.filter(issue=>issue!=='缺少主项目共享规则资料');
  if(blocking.length)throw new HTTPException(409,{message:`项目提示文件不完整：${blocking.join('；')}`});
- // 出题、审查和评分只扫描 skill；资料管理和 skill 生成仍使用完整工作区。
+ // 作者任务只扫描有效 skill；资料管理和 Skill 生成扫描完整工作区。旧评分绑定可复用本函数，但不向评分者传入 Skill 正文。
  const files=workspace.files;
  return{workspace_path:workspace.workspace_path,skill_path:workspace.skill_path,source_digest:hash(JSON.stringify([workspace.workspace_path,workspace.skill_path,fileSignature(files)])),files};
 }

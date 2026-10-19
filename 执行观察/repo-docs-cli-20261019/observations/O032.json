@@ -1,0 +1,43 @@
+{
+  "id": "O032",
+  "kind": "result",
+  "status": "resolved",
+  "title": "审阅八项期次、材料来源、规则和调度测试",
+  "item_ids": [
+    "inventory",
+    "docs"
+  ],
+  "attempt_ids": [
+    "A005",
+    "A006"
+  ],
+  "facts": [
+    "逐项阅读 material-package-questions、project-groups、question-materials、rule-loading、rules、task-signal、worker-pool、workflow-view 八个测试源码及断言。",
+    "核对的主要边界包括：材料快照来源/永久使用账/期号身份、original与redacted快照拒绝回退、旧编号规则入口410、规则冻结和编辑指纹、取消信号隔离、worker公平轮转、轻量答案白名单和阶段快照复用。",
+    "测试使用Pool/SQL替身、内存 fixture、临时文件或注入回调；本轮未执行测试，不据此宣称API、数据库或worker运行验收。",
+    "修改五个测试文件头以明确验证对象与真实资源边界。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "server/material-package-questions.test.ts",
+    "server/project-groups.test.ts",
+    "server/question-materials.test.ts",
+    "server/rule-loading.test.ts",
+    "server/rules.test.ts",
+    "server/task-signal.test.ts",
+    "server/worker-pool.test.ts",
+    "server/workflow-view.test.ts",
+    "server/{material-package-questions,project-groups,question-materials,rule-loading,rules,task-signal,worker-pool,workflow-view}.ts"
+  ],
+  "impact": "八个服务端测试文件从pending转为reviewed/reviewed-updated；服务端剩余大测试与路由/钩子测试继续待审。",
+  "updates": [
+    {
+      "at": "2026-10-19T19:25:43+08:00",
+      "action": "逐项阅读八个测试及对应模块契约，补充五个测试头边界注释。",
+      "result": "覆盖核验301/449；partial 10，pending 138。"
+    }
+  ],
+  "lesson": "材料来源和期次隔离测试只覆盖被断言的快照语义；替身SQL不能作为生产数据库约束已执行的证明。",
+  "created_at": "2026-10-19T19:25:43+08:00",
+  "updated_at": "2026-10-19T19:25:43+08:00"
+}

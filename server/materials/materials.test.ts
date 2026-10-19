@@ -1,5 +1,6 @@
-/** 验证 OCR 与实体检查配置、脱敏替换、供应商错误和页码契约。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+/**
+ * 验证旧 OCR/实体路径、格式脱敏辅助、页码和私有提取产物契约。
+ * HTTP、PDF 命令和提取器均由替身或临时文件提供，不访问真实识别服务/业务数据库。
  */
 import { test, expect, spyOn } from 'bun:test';
 import { redactTexts } from './redact';

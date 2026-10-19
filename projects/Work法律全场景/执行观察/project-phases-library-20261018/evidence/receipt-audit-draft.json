@@ -1,0 +1,495 @@
+[
+  {
+    "workflow_id": "e3ea054b-ce93-464a-aa7a-030b1ae216e9",
+    "workflow_title": "Work法律全场景 - 首批筹备-L2-劳务合同-题目1",
+    "source_workflow_id": "ef520915-a276-438e-92cb-699a2531398f",
+    "material_signature": "09649702265bffbbbd05aab7e2bc1dca899b2793119588efaa04c42e2329c5ee",
+    "receipt": "projects/Work法律全场景/上传成功-L2劳务合同-e3ea054b.md",
+    "receipt_sha256": "c1fa4bafc808554bd4632c4df7b04fcb2e3834c620b44092af2a24c80abeabdc",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "af2be621bf93c48248af1d3b51cb458191b4eceb08582d18560c5000efca134d"
+    ],
+    "identity_lines": [
+      "- Siriser项目：`mW6DIG85TdXrLgNb7LEYN`",
+      "- Siriser题目ID：`7hZuTyjLea2tmH5RhyRReK`",
+      "- 提交页subtask：`6f3feACf7GjugZFdkKv01V`",
+      "- 提交时间：2026-10-17 21:45:42（Asia/Shanghai）",
+      "- ZIP SHA256：`af2be621bf93c48248af1d3b51cb458191b4eceb08582d18560c5000efca134d`"
+    ]
+  },
+  {
+    "workflow_id": "23bd0d15-868c-4eab-8b89-e59594dc7139",
+    "workflow_title": "Work法律全场景 - 首批筹备-L2-合伙协议-题目1",
+    "source_workflow_id": "91d5d6d4-b5eb-4120-96b0-435122a8095d",
+    "material_signature": "d38cf756eb3c49b58cbfc0b56bd3ae0e224d1a5c65b056182cfe33bd673737aa",
+    "receipt": "projects/Work法律全场景/上传成功-L2合伙协议-23bd0d15.md",
+    "receipt_sha256": "0fa599157fa4475effdf1b7b1e2f5bc2f9a6d7cfa94f8c2cd616d9a7c8950158",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "c68f9a1620883664adfd787a43a80485164e8c4898ef1bd6ea8dc4ce85502964"
+    ],
+    "identity_lines": [
+      "- Siriser项目：`mW6DIG85TdXrLgNb7LEYN`",
+      "- Siriser题目ID：`6vX7Jz6ui3Obi5x6OwciIJ`",
+      "- 提交页subtask：`77XPlcvcBSo3tu6ORVzaGF`",
+      "- 提交时间：2026-10-17 21:57:03（Asia/Shanghai）",
+      "- ZIP SHA256：`c68f9a1620883664adfd787a43a80485164e8c4898ef1bd6ea8dc4ce85502964`"
+    ]
+  },
+  {
+    "workflow_id": "eb812b75-fd20-48bc-9ed5-4950b4ec08c5",
+    "workflow_title": "Work法律全场景 - 首批筹备-L2-建设工程合同纠纷-题目1",
+    "source_workflow_id": "868772be-5905-40f3-ad24-fa2b1180d9ef",
+    "material_signature": "ecd5024796e442eca406236338e7f739b4d365f8610f4858f32db45428ac1c27",
+    "receipt": "projects/Work法律全场景/上传成功-L2建工-eb812b75.md",
+    "receipt_sha256": "f944c476fd5c7a0d10fccd0f42c0531a6f33f5498f02cca73f94e902df548090",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "742c80e45e84a35fa636ec06d8f4e4df36a90385b9d9aa3f237b9b1e6b3f09bb"
+    ],
+    "identity_lines": [
+      "- Siriser项目：`mW6DIG85TdXrLgNb7LEYN`",
+      "- Siriser题目ID：`2ETyq2KrFYvTju11ctQV8D`",
+      "- 提交页subtask：`6GMhjaemYOL9cMLHMUUwgG`",
+      "- 提交时间：2026-10-17 21:49:04（Asia/Shanghai）",
+      "- ZIP SHA256：`742c80e45e84a35fa636ec06d8f4e4df36a90385b9d9aa3f237b9b1e6b3f09bb`"
+    ]
+  },
+  {
+    "workflow_id": "f7403b39-0b8f-4f98-8854-346ad207c875",
+    "workflow_title": "Work法律全场景 - 首批筹备-L2-房屋买卖合同-题目1",
+    "source_workflow_id": "15538c3b-e805-46e0-aa3a-d6aa3c43d4b9",
+    "material_signature": "0d3124bf199f2d2db404cf4bc843f8c7e34b2cf966737ce801f0aa45fcd5e812",
+    "receipt": "projects/Work法律全场景/上传成功-L2房屋买卖-f7403b39.md",
+    "receipt_sha256": "51cc32d34efa5e97808ea95771b67d166d76b7bafd323abb55c7c07581acba02",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "220eacc792b2ebb1c903409d49e2b468ccfdc2be73bb6a5f7518b69e71a39bc5"
+    ],
+    "identity_lines": [
+      "- Siriser项目：`mW6DIG85TdXrLgNb7LEYN`",
+      "- Siriser题目ID：`1nEMd8krk9Ikc3L5yMNtny`",
+      "- 提交页subtask：`1g7tdssO3fuNYO8qXEuJUG`",
+      "- 提交时间：2026-10-17 21:54:29（Asia/Shanghai）",
+      "- ZIP SHA256：`220eacc792b2ebb1c903409d49e2b468ccfdc2be73bb6a5f7518b69e71a39bc5`"
+    ]
+  },
+  {
+    "workflow_id": "7d89d296-d273-4f17-9b61-b2f365594914",
+    "workflow_title": "Work法律全场景 - 首批筹备-L2-民间借贷纠纷-题目1",
+    "source_workflow_id": "c1d22530-6794-40a6-83d1-6af0c4abc736",
+    "material_signature": "9e3cfb329556697ec0487a0ec98d25e6d670a8cd2701586b7b8033bcba5f8942",
+    "receipt": "projects/Work法律全场景/上传成功-L2民间借贷-7d89d296.md",
+    "receipt_sha256": "240d553344bd6280dab86b9b80a44a5ed008a463a7b1ef5b6e2e267da2f01e0c",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "da16cc379d9e2d5c2a0deb2d7ac3c3e4895b991e4a6d58de9fcbc2649f51e5ed"
+    ],
+    "identity_lines": [
+      "- Siriser项目：`mW6DIG85TdXrLgNb7LEYN`",
+      "- Siriser题目ID：`3jPlFbg0UEEMlLvmbvwVeh`",
+      "- 提交页subtask：`1vigPR5uNsTsaEMGnMKPLi`",
+      "- 平台回读提交时间：2026-10-17 17:39:32（Asia/Shanghai）",
+      "- ZIP SHA256：`da16cc379d9e2d5c2a0deb2d7ac3c3e4895b991e4a6d58de9fcbc2649f51e5ed`；与已提交平台附件核对一致。"
+    ]
+  },
+  {
+    "workflow_id": "2c029cfc-3a50-403f-bf16-eed6849714f7",
+    "workflow_title": "Work法律全场景 - 首批筹备-L2-运输合同-题目1",
+    "source_workflow_id": "15407a82-d5b6-46a1-a559-096d2afa0197",
+    "material_signature": "4d976ccd3ea0644d3ea04de8de96847be749f6d78bd939c4521a012c63c4e60f",
+    "receipt": "projects/Work法律全场景/上传成功-L2运输-2c029cfc.md",
+    "receipt_sha256": "9be23572c727698fd1493734ff1d067d607c39b06afcd4f5f33f95751d2e903d",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "4d07b643e12402aee177e8506ce726bd7ec60f6f9b143a61dcfcecc9b3155f2e"
+    ],
+    "identity_lines": [
+      "- Siriser项目：`mW6DIG85TdXrLgNb7LEYN`",
+      "- Siriser题目ID：`1PYXSYBpd82mzivn8pIbVq`",
+      "- 提交页subtask：`mKPd1llKMDD3QOtvStaOl`",
+      "- 提交时间：2026-10-17 21:51:51（Asia/Shanghai）",
+      "- ZIP SHA256：`4d07b643e12402aee177e8506ce726bd7ec60f6f9b143a61dcfcecc9b3155f2e`"
+    ]
+  },
+  {
+    "workflow_id": "58c506d4-935b-4f4f-9b55-0b0608afd053",
+    "workflow_title": "Work法律全场景 - 首批筹备-L3-买卖合同纠纷-题目1",
+    "source_workflow_id": "b63c2de1-2d55-4668-a6a5-8c2957d6a415",
+    "material_signature": "2d3bd0c0be313126b6184af36f34b103b41bafb2a17da3450f43fb62d5a06f38",
+    "receipt": "projects/Work法律全场景/上传成功-L3买卖-58c506d4.md",
+    "receipt_sha256": "5a7d642e6c3373d22c3f6cbf18b18bacb91072f18f544493ecc1aea469c37316",
+    "platform_question_id": "1ZXMY5htqT1YrjjyFcjSWq",
+    "subtask_id": "4ZnMLiKGV6szwfgqxsf000",
+    "submitted_at_receipt": "2026-10-17 11:20:52",
+    "sha_candidates": [
+      "10bc2f398cb3e8287234e080e7d2382d3c65b846b2a9db8f23ad8385cbade648"
+    ],
+    "identity_lines": [
+      "## 2026-10-17T11:21:55.153438+08:00 L3买卖正式提交",
+      "- Siriser L3项目4gJGDg0bDpwoLPtf2YojOK；题目ID 1ZXMY5htqT1YrjjyFcjSWq；subtaskId 4ZnMLiKGV6szwfgqxsf000。原已有任务2026-10-17 08:08:45领取，未重复领取。",
+      "- 正式提交2026-10-17 11:20:52，已回读验收中，并在“我的项目”核对相同ID与时间。",
+      "- ZIP：.storage/goal-runs/work-submission-20261017/法律-LS03-买卖合同.zip；67425字节；SHA256 10bc2f398cb3e8287234e080e7d2382d3c65b846b2a9db8f23ad8385cbade648。input_files 1个DOCX、没有TXT，CRC通过。"
+    ]
+  },
+  {
+    "workflow_id": "b4424018-bcda-4cdd-9f34-f03473e7fbca",
+    "workflow_title": "Work法律全场景 - 首批筹备-L3-关联借款与财产线索-题目1",
+    "source_workflow_id": "e525eb15-7b5f-435e-a34e-10e42ebdce77",
+    "material_signature": "fdcd4d261bc2f448d54623ee8bf574f2eaed7dfdb01a3e2790e816f5200d29f9",
+    "receipt": "projects/Work法律全场景/上传成功-L3关联借款与财产线索-b4424018.md",
+    "receipt_sha256": "31e92038a57e32fa8e1882c1a2ecc1d3116d58b9892c9793e2d1252f23d63d72",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "cb19c26673919bf5247c345554e2fe9b91a4e57f77e7ba283404bdae11b0382f"
+    ],
+    "identity_lines": [
+      "**Siriser页面显示“提交成功”。这不是官方验收通过。** 页面在提交前提示浏览与质检Agent未运行；该状态可能影响验收。",
+      "| Siriser项目 / subtask | `4gJGDg0bDpwoLPtf2YojOK` / `275ZWs1hKfADilGPlZjXxV` |",
+      "| 任务页 | [打开L3任务](https://www.siriser.com/siriser/labeling/task?domainId=1010&id=4gJGDg0bDpwoLPtf2YojOK&missionType=label&subtaskId=275ZWs1hKfADilGPlZjXxV) |",
+      "| 提交时间 | 约2026-10-18 17:52（Asia/Shanghai）；页面显示“提交成功” |",
+      "| ZIP SHA-256 | `cb19c26673919bf5247c345554e2fe9b91a4e57f77e7ba283404bdae11b0382f` |",
+      "| Siriser最终状态 | 提交成功；未再次读取Mine列表确认后续验收状态。 |",
+      "ZIP本地文件：[法律-LS03-20261018-杨政.zip](</Users/jack/Documents/codes/lvgou/ai-distill/assets/out/附件库/Work法律全场景/首批筹备/Work法律全场景 - 首批筹备-L3-关联借款与财产线索-题目1/成果/Siriser五件套/d1be2c447742bdca-5f26a740df20d96d/法律-LS03-20261018-杨政.zip>)。"
+    ]
+  },
+  {
+    "workflow_id": "a751f513-79d7-467a-99e7-357ea600a2d2",
+    "workflow_title": "Work法律全场景 - 首批筹备-L3-承揽合同纠纷-题目1",
+    "source_workflow_id": "3397ceb0-1870-4922-bb8a-1516743dc2ea",
+    "material_signature": "589e88aa9e2bd9c1f0dcd1bc725c195f0efe65a6154ee311f9d835e60a289464",
+    "receipt": "projects/Work法律全场景/上传成功-L3承揽-a751f513.md",
+    "receipt_sha256": "7cee71c21f2fb03376ab60fd2d40353be29244b35939474e4e65c6b679655042",
+    "platform_question_id": "3dNgUM1kbeGJnQsVw543b7",
+    "subtask_id": "35OA2UszjNVKpuI0PrHPnG",
+    "submitted_at_receipt": "2026-10-17 00:10左右（秒数未确认）",
+    "sha_candidates": [
+      "8bb6726415d87c471a34aded35760d091ad95576b5d76553b0f2a99c7a01a300"
+    ],
+    "identity_lines": [
+      "**Siriser：提交成功，当前验收中。钉钉：已登记并回读确认。** 这不表示平台验收通过。",
+      "| Siriser分配项 | L3，My Projects题目ID `3dNgUM1kbeGJnQsVw543b7` |",
+      "| ZIP SHA-256 | `8bb6726415d87c471a34aded35760d091ad95576b5d76553b0f2a99c7a01a300` |",
+      "| Siriser状态 | `验收中`；没有平台最终验收结论 |",
+      "ZIP本地路径：[法律-LS03-20261016-杨政.zip](</Users/jack/Documents/codes/lvgou/ai-distill/assets/out/附件库/Work法律全场景/首批筹备/Work法律全场景 - 首批筹备-L3-承揽合同纠纷-题目1/成果/Siriser五件套/0ae2ec7af310984f-e584a4c490b34c07/法律-LS03-20261016-杨政.zip>)。",
+      "Siriser的质检检查Agent运行后报告“Agent模型配置有误”，其说明属于平台内部配置异常。提交确认页允许在此情况下继续提交；随后页面显示“提交成功”，任务进入“验收中”。因此本回执只记录上传、提交和进入验收队列，不把该内部报错解释成内容验收结论。"
+    ]
+  },
+  {
+    "workflow_id": "603eb6cd-8ad2-46ee-8582-19d25f252e15",
+    "workflow_title": "Work法律全场景 - 首批筹备-L4-工伤-题目1",
+    "source_workflow_id": "240aa2a4-e8a5-443d-b06d-3d042db4ed69",
+    "material_signature": "c0112f3de9bcfc8b1a533e125c220eb9e79db578b4f5b7a54b7dc79c8558a943",
+    "receipt": "projects/Work法律全场景/上传成功-L4工伤-603eb6cd.md",
+    "receipt_sha256": "99b0f65fea51f52c0fc2b5b52eb4bfd0ed1a9062d72e5e93c33524fc7a47a33e",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "35cd2f2f6ba035136b9bc25a8ead393d3aeb6ef4061c9bc4fb5cb47274e200d4"
+    ],
+    "identity_lines": [
+      "# L4工伤题 Siriser 提交回执",
+      "- Siriser项目：`988SGSsszyIYmInMkkzFg`（L4）",
+      "- Siriser任务页subtask：`1Jr84aWWcYgQZ2swBeaVqS`",
+      "- Siriser题目ID：`1Xk4gjPGRbgAlp9ZzerPob`",
+      "- 上传文件：`法律-LS04-工伤-603eb6cd.zip`；86,376字节；SHA-256：`35cd2f2f6ba035136b9bc25a8ead393d3aeb6ef4061c9bc4fb5cb47274e200d4`",
+      "- 平台提交：2026-10-17 16:54:05；Siriser“我的项目”于16:54回读同一题目ID为“验收中”。",
+      "回读证据：Siriser任务页显示“提交成功”“验收中”；L4项目“题目进度”显示题目ID `1Xk4gjPGRbgAlp9ZzerPob`、提交时间2026/10/17 16:54、状态“验收中”。"
+    ]
+  },
+  {
+    "workflow_id": "f1f8499a-da14-4884-bb8c-6886904072a6",
+    "workflow_title": "Work法律全场景 - 首批筹备-L4-建工-题目1",
+    "source_workflow_id": "6d01ee50-be44-4554-b126-42fe2bf95471",
+    "material_signature": "2f5bbd187d7ece1070072d84321a91d63cfefe9d3d76e5c718e6264647e1489b",
+    "receipt": "projects/Work法律全场景/上传成功-L4建工-f1f8499a.md",
+    "receipt_sha256": "940bf110b196c623b12270277e23b9d71b52ebba541e7aa1a2bb6f91d0293a5d",
+    "platform_question_id": "5zlMSu32z1OcUOi8Cf1OGf",
+    "subtask_id": "2sl4iVhMdnEVex4s0rlyzp",
+    "submitted_at_receipt": "2026-10-16 22:59:23",
+    "sha_candidates": [
+      "8dd3b4481a473423f92b412e2a2fcf29f4be3c2b78eb04269c75c95357c66bed",
+      "c4f917c8faa3e661fd17a39230864cbd9b947c6351432e219d266a632dd79430"
+    ],
+    "identity_lines": [
+      "**当前状态：文件上传成功，Siriser最终提交成功；尚未项目验收。**",
+      "| Siriser任务 | L4，`5zlMSu32z1OcUOi8Cf1OGf` |",
+      "| SHA256 | `c4f917c8faa3e661fd17a39230864cbd9b947c6351432e219d266a632dd79430` |",
+      "ZIP本地路径：[法律-LS04-20261016-杨政.zip](</Users/jack/Documents/codes/lvgou/ai-distill/assets/out/附件库/Work法律全场景/首批筹备/Work法律全场景 - 首批筹备-L4-建工-题目1/成果/Siriser五件套/c49e12aafe8f632a-9a83cb21385b673d/法律-LS04-20261016-杨政.zip>)。",
+      "本记录只证明文件已上传并被页面接收，不证明最终提交成功或项目验收通过。待平台返回结果后追加提交时间与回执。",
+      "- [L4任务页面](https://www.siriser.com/siriser/labeling/task?domainId=1010&id=988SGSsszyIYmInMkkzFg&missionType=label&subtaskId=2sl4iVhMdnEVex4s0rlyzp)。",
+      "- 上文“场景登记待确认”为历史记录，本节已补齐。Siriser提交成功标记保留；不冒称平台验收通过。",
+      "重新打开Siriser项目详情的“题目进度”，对应5zlMSu32z1OcUOi8Cf1OGf显示：提交时间2026/10/16 22:59，状态“验收中”，操作“去查看”。这证明已进入平台验收队列，不只是临时成功提示；尚未验收通过。",
+      "用户明确要求姓名杨政并保存领取码。实时页面的诉讼律师二级分类只有1.3；键盘搜索1.2显示No results，无法选择LS04，未点击其他场景认领。固定码尚未取得，详见[场景领取码记录](场景领取码记录.md)。此前钉钉I5登记及Siriser验收中状态仍为已核事实，但不等同取得Streamlit码。"
+    ]
+  },
+  {
+    "workflow_id": "bc42beb1-ad56-4d22-ad25-af0229dd0403",
+    "workflow_title": "Work法律全场景 - 首批筹备-L4-房屋买卖-题目1",
+    "source_workflow_id": "04a9ac60-2437-4db2-a911-2a5a7c7f776e",
+    "material_signature": "ba2d5c820f438c3f6688016d38a3a50c9ae8f2c69a106e54a95e736859bc26a8",
+    "receipt": "projects/Work法律全场景/上传成功-L4房屋买卖-bc42beb1.md",
+    "receipt_sha256": "eb3c7c4de3e8555f98d3ca3003f2440a4ee8578a9efe45be07b076f029b70baa",
+    "platform_question_id": null,
+    "subtask_id": null,
+    "submitted_at_receipt": null,
+    "sha_candidates": [
+      "24dbc8cd73991528e775f0ac6f69c31e2a2b8a05947bf2549065a1fff8860150",
+      "c3e14152b04eee2ffd23636945f1555dbc437611f709d52b341bbf4dc73357a7",
+      "4fc3266191c4afb04d715892fe84834c3ac9e206f5ec090c5d2f501dec6a5510"
+    ],
+    "identity_lines": [
+      "# L4房屋买卖题 Siriser 提交回执",
+      "- Siriser项目：`988SGSsszyIYmInMkkzFg`（L4）",
+      "- Siriser任务页 `subtaskId`：`1njgvP05buIIzHxpEnuIRR`",
+      "- Siriser题目ID：`1UP6v6oZ9DobpvejaZXFRN`",
+      "- 上传文件：`work-l4-house-check.zip`；ZIP测试无损通过，`input_files` 含DOCX；SHA-256：`4fc3266191c4afb04d715892fe84834c3ac9e206f5ec090c5d2f501dec6a5510`"
+    ]
+  },
+  {
+    "workflow_id": "bb3e9082-b160-4321-8f35-16ea0cd65e63",
+    "workflow_title": "Work法律全场景 - 首批筹备-L4-装修装饰-题目1",
+    "source_workflow_id": "ba1956de-0095-4b20-a1d2-4def88eb2d70",
+    "material_signature": "7f2d7cb356a789e3861b758f1479af8fa4b3ce97b9b635d69140d0020ecaf4a1",
+    "receipt": "projects/Work法律全场景/上传成功-L4装修-bb3e9082.md",
+    "receipt_sha256": "aaf3956a5316843aed28b95d0d70c0700c72a60f0727dc63db3ff190912981ee",
+    "platform_question_id": "2rsJ94QTyjR8FIKFsJ0EX5",
+    "subtask_id": "1lXphQV7g7NUpedR5MmfTh",
+    "submitted_at_receipt": "2026-10-17 13:21:19",
+    "sha_candidates": [
+      "8ab251e59ec90878cf1c35c75d01ca517cc2bccfb121c3c44c8e95525354ec53"
+    ],
+    "identity_lines": [
+      "# L4装修装饰正式提交",
+      "- Siriser项目988SGSsszyIYmInMkkzFg，题目ID2rsJ94QTyjR8FIKFsJ0EX5，subtask1lXphQV7g7NUpedR5MmfTh。领取2026-10-17 13:17:50，提交2026-10-17 13:21:19，任务页与我的项目均回读验收中。",
+      "- ZIP .storage/goal-runs/work-submission-20261017/法律-LS04-装修装饰.zip；SHA256 8ab251e59ec90878cf1c35c75d01ca517cc2bccfb121c3c44c8e95525354ec53；input_files 1DOCX、0TXT，CRC通过。"
+    ]
+  },
+  {
+    "workflow_id": "89dfa033-fffa-4fd4-a95e-2e2a07dd4d5f",
+    "workflow_title": "Work法律全场景 - 首批筹备-L5-买卖合同纠纷-题目1",
+    "source_workflow_id": "8d276cf2-f6e3-4dbc-9171-42d9c6d4ac54",
+    "material_signature": "272f580f3bf385e3793d3acb98d591819482831f86603309092fc72f734cec35",
+    "receipt": "projects/Work法律全场景/上传成功-L5买卖合同-89dfa033.md",
+    "receipt_sha256": "af7f5ec89108d8e196327c27334e351aefe0037677e205e53a37ea60949d7187",
+    "platform_question_id": "4sY2ul2VLELvUOjgJngEef",
+    "subtask_id": "1JVpp1nPhrGiHbDRSgCD2R",
+    "submitted_at_receipt": "2026-10-17 12:08:58",
+    "sha_candidates": [
+      "d931ca45858deb59aaeb9da1fdfebc367f320631e0c32234181f9ca40cfc7e4d"
+    ],
+    "identity_lines": [
+      "# L5买卖合同正式提交记录",
+      "- Siriser项目：`1tGjxDokQTIZoR6eS33V9m`；题目ID：`4sY2ul2VLELvUOjgJngEef`；subtaskId：`1JVpp1nPhrGiHbDRSgCD2R`。",
+      "- 领取：2026-10-17 12:06:21；正式提交：2026-10-17 12:08:58；任务页与我的项目均回读**验收中**，不是验收通过。",
+      "- 五件套：`.storage/goal-runs/work-submission-20261017/L5/法律-LS05-买卖合同.zip`；SHA256 `d931ca45858deb59aaeb9da1fdfebc367f320631e0c32234181f9ca40cfc7e4d`；input_files为1个DOCX、无TXT，ZIP CRC通过。"
+    ]
+  },
+  {
+    "workflow_id": "aee86a21-f2ca-4056-8a91-48f1434f3f15",
+    "workflow_title": "Work法律全场景-L5-交易借贷组合-题目1",
+    "source_workflow_id": "daa60512-760d-42d1-9906-3bfaacc3416f",
+    "material_signature": "79d3b4b166fa99a6d7b3e6a056da4abd7a56f341e1aef850790a29a7a40a77da",
+    "receipt": "projects/Work法律全场景/上传成功-L5交易借贷组合-aee86a21.md",
+    "receipt_sha256": "9aab6bc0c5a20974d9ffd8f845c0abec550938028a3cd439388870640e44feaf",
+    "platform_question_id": "79b7OERvXDvksT3ss0wnbg",
+    "subtask_id": "55dX15Nb0aZNFQ5RML6aI7",
+    "submitted_at_receipt": "2026-10-17 13:14:32",
+    "sha_candidates": [
+      "b630cd8cb9f9a649a49b738b3c8877b60167f46e9221c1ca4b202aafc34bc028"
+    ],
+    "identity_lines": [
+      "# L5交易借贷组合正式提交",
+      "- 平台题目ID：79b7OERvXDvksT3ss0wnbg；subtaskId：55dX15Nb0aZNFQ5RML6aI7；领取2026-10-17 12:17:18，正式提交2026-10-17 13:14:32，已回读验收中。原拟工程组合改用本题，工程仍草稿不提交。",
+      "- ZIP：.storage/goal-runs/work-submission-20261017/L5/法律-LS05-交易借贷组合.zip；SHA256 b630cd8cb9f9a649a49b738b3c8877b60167f46e9221c1ca4b202aafc34bc028。CRC与JSON解析通过，input_files 1个DOCX、无TXT。"
+    ]
+  },
+  {
+    "workflow_id": "33c9a7db-b88f-4302-813e-b644ee303321",
+    "workflow_title": "Work法律全场景 - 首批筹备-L5-合伙合同纠纷-题目1",
+    "source_workflow_id": "e59395ac-a617-474f-91a5-561e0144e950",
+    "material_signature": "d64c196fbde08361b822aece9bcd2628c1c51903bbc13f238d5ec7139ae56c89",
+    "receipt": "projects/Work法律全场景/上传成功-L5合伙-33c9a7db.md",
+    "receipt_sha256": "af587716e1b4cd328149253d00f0d019e401e46349f5352d40c2ee7e59538d39",
+    "platform_question_id": "4M8Uxl8Yt4vIDKq90G9I2Y",
+    "subtask_id": "7gARdazHvk0S5obDIR6J7c",
+    "submitted_at_receipt": "2026-10-16 23:24:38",
+    "sha_candidates": [
+      "f99e773c01d0451b2100a01be1e8ea0345b348eb6dc4d2546483850fd825a8e6"
+    ],
+    "identity_lines": [
+      "- Siriser项目：`1tGjxDokQTIZoR6eS33V9m`（L5）。",
+      "- 回答页：https://www.siriser.com/siriser/labeling/task?domainId=1010&id=1tGjxDokQTIZoR6eS33V9m&missionType=label&subtaskId=7gARdazHvk0S5obDIR6J7c",
+      "## 正式提交回执",
+      "2026-10-16 23:24:38，回答页持久显示“验收中”及提交时间，ZIP链接仍在。质检Agent11秒后报系统内部配置异常；普通提交确认框明确可提交，按正常“仍要提交”完成，没有修改校验或伪造通过。截图：`.storage/goal-runs/work-partnership-under-review-20261016.png`。LS05独立领取码缺口仍需另记，不能冒称已取得。",
+      "- Siriser项目进度题目ID：`4M8Uxl8Yt4vIDKq90G9I2Y`。2026-10-17 08:30+08:00从L5项目进度“去查看”入口复核附件与“验收中”状态（提交时间2026-10-16 23:24:38）。",
+      "本次通过独立后台浏览器会话从Siriser实际已提交记录下载附件，不以本地同名旧包推断平台内容。页面仍为验收中，提交时间2026-10-16 23:24:38；浏览Agent未执行、质检Agent模型配置报错，预览为空。下载ZIP SHA256：f99e773c01d0451b2100a01be1e8ea0345b348eb6dc4d2546483850fd825a8e6；CRC通过，input_files只有1个DOCX，没有TXT；golden_output为4个MD和1个XLSX。实际下载副本保存在.storage/goal-runs/work-submission-20261017/L5/法律-LS05-合伙.zip。现在已证明平台包附件符合DOCX要求，之前本地旧TXT文件不是此次平台下载版本；无需重复提交。浏览器会话vfgc已关闭，未编辑平台记录。"
+    ]
+  },
+  {
+    "workflow_id": "bb653595-87fe-42b5-94ee-26e17f3bc57c",
+    "workflow_title": "Work法律全场景-L5-合作财产组合-题目1",
+    "source_workflow_id": "ce389a55-8d40-49a4-9e04-b23230214c17",
+    "material_signature": "9d0f2404ccebbad9003549402f927133eebc878811ea91fed5165b52ae0cb971",
+    "receipt": "projects/Work法律全场景/上传成功-L5合作财产组合-bb653595.md",
+    "receipt_sha256": "58a6ae04ba1fff10336f3bda6c58f8392c0220edcdb6bbbafd28523f9e4761f2",
+    "platform_question_id": "4mm2RNez0x0mQtYMsxafN3",
+    "subtask_id": "4PnL2MK7SrNOLWzurdb75o",
+    "submitted_at_receipt": "2026-10-17 10:35:12",
+    "sha_candidates": [
+      "c47f4775945e44b1dfb2bce38ea37c58a2c2f913509447bb146075cb1387d706"
+    ],
+    "identity_lines": [
+      "- Siriser项目：`1tGjxDokQTIZoR6eS33V9m`（L5）。",
+      "- 提交页：https://www.siriser.com/siriser/labeling/task?domainId=1010&id=1tGjxDokQTIZoR6eS33V9m&missionType=label&subtaskId=4PnL2MK7SrNOLWzurdb75o",
+      "- 领取：2026-10-17 10:31:56；正式提交：2026-10-17 10:35:12（北京时间）。页面回读“验收中”，不代表验收通过。",
+      "- SHA256：`c47f4775945e44b1dfb2bce38ea37c58a2c2f913509447bb146075cb1387d706`。",
+      "- 平台浏览Agent已展开全部文件；质检Agent报“Agent模型配置有误”，正常确认框允许提交，已正式提交，不伪称质检通过。"
+    ]
+  },
+  {
+    "workflow_id": "56357b3f-0173-4de0-a9a3-132f4b55e7ff",
+    "workflow_title": "Work法律全场景 - 首批筹备-L5-合同纠纷-题目1",
+    "source_workflow_id": "c92a6da8-bddb-4904-ad01-1f2fdbbfa233",
+    "material_signature": "dfd5872f3b038bdf066943e36cad843c002fa3725a389e32e3ca9cd04fb8e8e5",
+    "receipt": "projects/Work法律全场景/上传成功-L5合同纠纷-56357b3f.md",
+    "receipt_sha256": "0aba114b21b350645053e67688c14e6e5a7a6408ec8435e38f072ed8a932f758",
+    "platform_question_id": "4qbvxUkTFl8Ueaz05RQpSG",
+    "subtask_id": "4mrziEhfZjK7ZHWacPOY4C",
+    "submitted_at_receipt": "2026-10-17 09:50:10",
+    "sha_candidates": [
+      "92b9b8b1dd480c6165bc0e09ac4a5e0205a445455943d62f743bb2e8507bccab"
+    ],
+    "identity_lines": [
+      "# L5合同纠纷：正式提交回执",
+      "- 提交页：https://www.siriser.com/siriser/labeling/task?domainId=1010&id=1tGjxDokQTIZoR6eS33V9m&missionType=label&subtaskId=4mrziEhfZjK7ZHWacPOY4C",
+      "- ZIP：法律-LS05-合同纠纷.zip，SHA256 `92b9b8b1dd480c6165bc0e09ac4a5e0205a445455943d62f743bb2e8507bccab`。",
+      "- 平台质检Agent13秒后报“Agent模型配置有误”；平台确认框允许仍要提交，已按普通入口正式提交；不表示质检通过。",
+      "页面回读确认：2026-10-17 09:50:10正式提交，当前“验收中”。",
+      "Sheet1 I6已追加`LS05-杨政-社保先行支付（庭审复盘、败诉风险评估与代理意见）`和`LS05-杨政-合同纠纷（庭审复盘、败诉风险评估与代理意见）`，全部原有条目保留。提交后重新选中I6回读全文，两条新增均存在，页面显示Saved。此前“待确认”状态由本次实测完成记录取代。对应workflow为6783a51d-54d0-4874-bffb-78226b0f791a、56357b3f-0173-4de0-a9a3-132f4b55e7ff；Siriser正式提交回执与ZIP指纹见各题上传成功文档。",
+      "2026-10-17 10:36平台进度补核：合同纠纷对应题目进度ID为`4qbvxUkTFl8Ueaz05RQpSG`，09:50提交，验收中，与原subtask4mrziEhfZjK7ZHWacPOY4C对应。"
+    ]
+  },
+  {
+    "workflow_id": "d43d850f-b8bc-44c1-a3ee-e6b8aad8fc8b",
+    "workflow_title": "Work法律全场景 - 首批筹备-L5-建设工程施工合同纠纷-题目1",
+    "source_workflow_id": "6f6a6558-bd86-4406-881d-ef9ce5741233",
+    "material_signature": "0aae4962cb81656fbcbe4aa220d1c7510b000982004e393a98e05f1e0c0f7b9e",
+    "receipt": "projects/Work法律全场景/上传成功-L5建设工程-d43d850f.md",
+    "receipt_sha256": "20f87a3ee238e6b4dcccf33a2e75aae9cab48409020ca1287fbd64136c97c0cf",
+    "platform_question_id": "7R4uMn0RQc2d9PkvzDiHVZ",
+    "subtask_id": "5AVaHj3D5ikcsykosdx8Dn",
+    "submitted_at_receipt": "2026-10-17 12:12:54",
+    "sha_candidates": [
+      "c3cfc7d14b305f1ffe3a8e6ebeeb3696ecff3e48cdc4739e96cfbfe54bebad40"
+    ],
+    "identity_lines": [
+      "# L5建设工程正式提交记录",
+      "- Siriser项目：`1tGjxDokQTIZoR6eS33V9m`；题目ID：`7R4uMn0RQc2d9PkvzDiHVZ`；subtaskId：`5AVaHj3D5ikcsykosdx8Dn`。",
+      "- 领取：2026-10-17 12:10:45；正式提交：2026-10-17 12:12:54；任务页与我的项目均回读**验收中**，不是验收通过。",
+      "- 五件套：`.storage/goal-runs/work-submission-20261017/L5/法律-LS05-建设工程.zip`；SHA256 `c3cfc7d14b305f1ffe3a8e6ebeeb3696ecff3e48cdc4739e96cfbfe54bebad40`；input_files为1个DOCX、无TXT，ZIP CRC通过。"
+    ]
+  },
+  {
+    "workflow_id": "032c4c7d-6f46-43ca-856a-2f412e7ab6cc",
+    "workflow_title": "Work法律全场景 - 首批筹备-L5-民间借贷-题目1",
+    "source_workflow_id": "5a32b7b2-7eac-44ac-b94c-50c01c041aad",
+    "material_signature": "5d48bd3c41b8bf45dbb1c721a8145a04a717db22d862aa3d0ab4248b66228573",
+    "receipt": "projects/Work法律全场景/上传成功-L5民间借贷-032c4c7d.md",
+    "receipt_sha256": "a8208adfca41e7eab07f83b1ca2b91b2e4b4b5c7c792aafa2ef02df59064c0f6",
+    "platform_question_id": "7JdRLKFraFVhQOvs4iIPkF",
+    "subtask_id": "6r7eb0m24bPs7PW5DdLNhX",
+    "submitted_at_receipt": "2026-10-17 12:16:05",
+    "sha_candidates": [
+      "d615ef57ec8e52a0ff52a648e459ce522dba43b7a77c92743f7f1bc9e1e3ff1f"
+    ],
+    "identity_lines": [
+      "# L5民间借贷正式提交记录",
+      "- Siriser项目：`1tGjxDokQTIZoR6eS33V9m`；题目ID：`7JdRLKFraFVhQOvs4iIPkF`；subtaskId：`6r7eb0m24bPs7PW5DdLNhX`。",
+      "- 领取：2026-10-17 12:13:03；正式提交：2026-10-17 12:16:05；任务页与我的项目均回读**验收中**，不是验收通过。",
+      "- 五件套：`.storage/goal-runs/work-submission-20261017/L5/法律-LS05-民间借贷.zip`；SHA256 `d615ef57ec8e52a0ff52a648e459ce522dba43b7a77c92743f7f1bc9e1e3ff1f`；input_files为1个DOCX、无TXT，ZIP CRC通过。"
+    ]
+  },
+  {
+    "workflow_id": "bac2b87f-9446-4dd4-95af-aa0e637c10c6",
+    "workflow_title": "Work法律全场景 - 首批筹备-L5-渣土运输合同纠纷庭审复盘与代理意见-题目1",
+    "source_workflow_id": "bae333df-4c14-44c7-975b-de5dbcefdf39",
+    "material_signature": "4d976ccd3ea0644d3ea04de8de96847be749f6d78bd939c4521a012c63c4e60f",
+    "receipt": "projects/Work法律全场景/上传成功-L5渣土运输-bac2b87f.md",
+    "receipt_sha256": "532b49feaca21c86bfb384bdbff3a442889712cb280757d7b604c10b0d973f16",
+    "platform_question_id": "T87Z087WtgaWLTVLoskqT",
+    "subtask_id": "1TWUDu89q1LRFYL5WyA2bb",
+    "submitted_at_receipt": "2026-10-17 08:21:00",
+    "sha_candidates": [
+      "79d5c56d712c39ea9fe9c492aebb993e8855de1e6909996d92e86fa41799d820"
+    ],
+    "identity_lines": [
+      "# L5 渣土运输题 Siriser 提交记录",
+      "- Siriser 项目：`【0920】Work法律全场景评测数据集构建-L5`",
+      "- Siriser subtask：`1TWUDu89q1LRFYL5WyA2bb`",
+      "- 五件套：`法律-LS05-渣土运输.zip`，79,539 bytes，SHA-256 `79d5c56d712c39ea9fe9c492aebb993e8855de1e6909996d92e86fa41799d820`",
+      "- Siriser 页面确认状态：`验收中`，附件为 `法律-LS05-渣土运输.zip`。提交不代表官方验收通过。",
+      "- Siriser项目进度题目ID：`T87Z087WtgaWLTVLoskqT`。2026-10-17 08:30+08:00从L5项目进度“去查看”入口复核附件与“验收中”状态（提交时间2026-10-17 08:21:00）。"
+    ]
+  },
+  {
+    "workflow_id": "6783a51d-54d0-4874-bffb-78226b0f791a",
+    "workflow_title": "Work法律全场景 - 首批筹备-L5-社保先行支付-题目1",
+    "source_workflow_id": "2baa8555-1a0f-4b96-83d3-97b0c132ab73",
+    "material_signature": "ebcdbd062a7b0cf0596a9d0caa6ecdd786d9b43a79d444c79e04c956c1e7bfa1",
+    "receipt": "projects/Work法律全场景/上传成功-L5社保先行支付-6783a51d.md",
+    "receipt_sha256": "05d517ec4c8bed4c5f0d412be9156c82356a3cf44f3e4e3df102de545b69326a",
+    "platform_question_id": "7OJPtSYrsxfOLuLxCx87Ac",
+    "subtask_id": "5lTOaafH9N1rGP9CL2GgW6",
+    "submitted_at_receipt": "2026-10-17 09:42:32",
+    "sha_candidates": [
+      "2bbff59e67e7c8f9e4d1f75a842d9a06329274dec7f4675ad7906f8f9bc8e97a"
+    ],
+    "identity_lines": [
+      "- Siriser 任务记录 ID：`7OJPtSYrsxfOLuLxCx87Ac`",
+      "- 提交页：https://www.siriser.com/siriser/labeling/task?domainId=1010&id=1tGjxDokQTIZoR6eS33V9m&missionType=label&subtaskId=5lTOaafH9N1rGP9CL2GgW6",
+      "- 正式提交时间：2026-10-17 09:42:32（北京时间）",
+      "- ZIP SHA-256：`2bbff59e67e7c8f9e4d1f75a842d9a06329274dec7f4675ad7906f8f9bc8e97a`",
+      "- 外部辅助 Agent 未运行；平台允许仍要提交，已正式提交，等待验收。",
+      "Sheet1 I6已追加`LS05-杨政-社保先行支付（庭审复盘、败诉风险评估与代理意见）`和`LS05-杨政-合同纠纷（庭审复盘、败诉风险评估与代理意见）`，全部原有条目保留。提交后重新选中I6回读全文，两条新增均存在，页面显示Saved。此前“待确认”状态由本次实测完成记录取代。对应workflow为6783a51d-54d0-4874-bffb-78226b0f791a、56357b3f-0173-4de0-a9a3-132f4b55e7ff；Siriser正式提交回执与ZIP指纹见各题上传成功文档。"
+    ]
+  },
+  {
+    "workflow_id": "12bd7201-9058-4642-b736-8bcc0c8301c7",
+    "workflow_title": "Work法律全场景 - 首批筹备-L5-租赁合同-题目1",
+    "source_workflow_id": "3c4afec9-d3f2-4cc2-a981-28a647f47648",
+    "material_signature": "4fbe41df7232c5a4edfcb7468600445daf45d07538449440acf871d89a7c9d8e",
+    "receipt": "projects/Work法律全场景/上传成功-L5租赁-12bd7201.md",
+    "receipt_sha256": "d2fb260782a5bf5d2907e1edcc88eaea582543dc7c494d4e719b363c680c717e",
+    "platform_question_id": "1eegCvr966F0pPhOcUhcIN",
+    "subtask_id": "7ATUVRyXYCFiLBjIQcJoM2",
+    "submitted_at_receipt": "2026-10-17 08:14:10",
+    "sha_candidates": [
+      "a0fb83a93887891dd6b41f5677a486dfbddb1eebeaebb40fd04d796d1f64d570"
+    ],
+    "identity_lines": [
+      "# L5 租赁题 Siriser 提交记录",
+      "- Siriser 项目：`【0920】Work法律全场景评测数据集构建-L5`",
+      "- Siriser subtask：`7ATUVRyXYCFiLBjIQcJoM2`",
+      "- SHA-256：`a0fb83a93887891dd6b41f5677a486dfbddb1eebeaebb40fd04d796d1f64d570`",
+      "- Siriser 页面结果：`2026-10-17 08:14:10` 显示“提交成功”，随后状态为“验收中”。这表示平台已接收提交，不代表验收通过。",
+      "- Siriser项目进度题目ID：`1eegCvr966F0pPhOcUhcIN`。2026-10-17 08:30+08:00从L5项目进度“去查看”入口复核附件与“验收中”状态（提交时间2026-10-17 08:14:10）。"
+    ]
+  }
+]

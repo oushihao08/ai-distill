@@ -8,8 +8,36 @@ import {classifyLogError,logEvent} from './logging';
 function queryName(value:unknown){
  const sql=typeof value==='string'?value:value&&typeof value==='object'&&'text'in value&&typeof value.text==='string'?value.text:'';
  const verb=sql.trim().match(/^(select|insert|update|delete|with|begin|commit|rollback|savepoint|release)\b/i)?.[1]?.toLowerCase()??'unknown';
- const table=sql.match(/\b(?:from|into|update|join)\s+([a-z][a-z0-9_.]*)/i)?.[1]?.toLowerCase();
+ const topLevel=topLevelSql(sql);
+ const table=(verb==='select'||verb==='with'
+  ?topLevel.match(/\bselect\b[\s\S]*?\bfrom\s+("?[a-z][a-z0-9_]*"?(?:\."?[a-z][a-z0-9_]*"?)?)/i)?.[1]
+  :sql.match(/\b(?:from|into|update|join)\s+("?[a-z][a-z0-9_]*"?(?:\."?[a-z][a-z0-9_]*"?)?)/i)?.[1]
+ )?.replaceAll('"','').toLowerCase();
  return `${verb}${table?`:${table}`:''}`.slice(0,120);
+}
+/** SQL日志标签只取顶层SELECT的来源表，忽略括号子查询、字符串和注释，避免误标。 */
+function topLevelSql(sql:string){
+ let output='',depth=0,single=false,double=false,lineComment=false,blockComment=0,dollarTag:string|undefined;
+ for(let index=0;index<sql.length;index++){
+  const char=sql[index]!,next=sql[index+1];
+  if(lineComment){output+=' ';if(char==='\n')lineComment=false;continue;}
+  if(blockComment){output+=' ';if(char==='/'&&next==='*'){blockComment++;output+=' ';index++;}else if(char==='*'&&next==='/'){blockComment--;output+=' ';index++;}continue;}
+  if(dollarTag){if(sql.startsWith(dollarTag,index)){output+=' '.repeat(dollarTag.length);index+=dollarTag.length-1;dollarTag=undefined;}else output+=' ';continue;}
+  if(single){output+=' ';if(char==="'"&&next==="'"){output+=' ';index++;}else if(char==="'")single=false;continue;}
+  if(double){output+=depth===0?char:' ';if(char==='"'&&next==='"'){output+=depth===0?'"':' ';index++;}else if(char==='"')double=false;continue;}
+  if(char==='-'&&next==='-'){lineComment=true;output+='  ';index++;continue;}
+  if(char==='/'&&next==='*'){blockComment=1;output+='  ';index++;continue;}
+  if(char==="'"){single=true;output+=' ';continue;}
+  if(char==='"'){double=true;output+=depth===0?char:' ';continue;}
+  if(char==='$'){
+   const tag=sql.slice(index).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/)?.[0];
+   if(tag){dollarTag=tag;output+=' '.repeat(tag.length);index+=tag.length-1;continue;}
+  }
+  if(char==='('){depth++;output+=' ';continue;}
+  if(char===')'){depth=Math.max(0,depth-1);output+=' ';continue;}
+  output+=depth===0?char:' ';
+ }
+ return output;
 }
 function safeDbCode(error:unknown){const code=error&&typeof error==='object'?(error as {code?:unknown}).code:undefined;return typeof code==='string'&&/^[A-Z0-9]{5}$/.test(code)?code:undefined;}
 function transactionEvent(name:string){const op=name.split(':',1)[0];return op==='begin'?'transaction.started':op==='commit'?'transaction.committed':op==='rollback'?'transaction.rolled_back':undefined;}

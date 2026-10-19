@@ -7,30 +7,38 @@ import type {Pool} from 'pg';
 import {readProjectWorkflowStepRows,workflowStepReadiness,type WorkflowStepState} from './project-folders';
 import {STEP_REGISTRY} from '../shared/step-registry';
 
-/** 当前页一次读取状态和有限尝试摘要，避免每道题重复读取项目、附件和全部历史。 */
-export async function readProjectWorkflowViews(pool:Pool,projectId:string,ids:string[]){
+type ProjectWorkflowView={steps:(WorkflowStepState&Record<string,any>)[];attempt_summary:{has_authored:boolean}};
+
+/** 列表只取步骤状态与活动/已出题标记；完整执行记录在用户打开详情时再读取。 */
+export async function readProjectWorkflowViews(pool:Pool,projectId:string,ids:string[],snapshot?:{states:Awaited<ReturnType<typeof readProjectWorkflowStepRows>>;hasAuthored:Map<string,boolean>}):Promise<Record<string,ProjectWorkflowView>>{
  try{
-  const [states,attempts]=await Promise.all([
+  if(snapshot)return projectWorkflowViewsFromSnapshot(snapshot,ids);
+  const [states,attemptSummary]=await Promise.all([
    readProjectWorkflowStepRows(pool,projectId,ids),
-   pool.query(`SELECT DISTINCT ON (a.workflow_id,a.ordinal,a.status) a.workflow_id,a.id,a.ordinal,a.status,a.error,a.started_at,a.finished_at,NULL AS input,NULL AS config,
-    CASE WHEN a.ordinal=9 THEN jsonb_build_object('progress',a.result->'progress') WHEN a.ordinal=2 THEN jsonb_build_object('issues',a.result->'issues') WHEN a.ordinal=5 AND a.result->>'outcome'='qualified_timeout_unscored' THEN jsonb_build_object('outcome',a.result->'outcome','reason_code',a.result->'reason_code','generation_activity',a.result->'generation_activity') WHEN a.ordinal=5 AND a.result#>>'{error,reason_code}' IS NOT NULL THEN jsonb_build_object('error',jsonb_build_object('reason_code',a.result#>'{error,reason_code}')) WHEN a.ordinal=7 THEN jsonb_build_object('decision',a.result->'decision','model_scores',a.result->'model_scores','aggregate',a.result->'aggregate','reasons',a.result->'reasons') ELSE NULL END AS result
+   pool.query(`SELECT a.workflow_id,
+     COALESCE(bool_or(a.ordinal=4 AND a.status='succeeded'),false) AS has_authored
     FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id
     WHERE w.project_id=$1 AND w.deleted_at IS NULL AND a.workflow_id=ANY($2::uuid[]) AND a.ordinal NOT IN (3,10)
-    ORDER BY a.workflow_id,a.ordinal,a.status,a.attempt DESC`,[projectId,ids]),
+    GROUP BY a.workflow_id`,[projectId,ids]),
   ]);
-  const views:Record<string,{steps:unknown[];attempts:unknown[]}>= {};
-  for(const id of ids){
-   const rows=states.rows.filter(row=>row.workflow_id===id);
-   if(!rows.length)continue;
-   const map=new Map<number,WorkflowStepState>(rows.map(row=>[row.ordinal,row]));
-   views[id]={steps:rows.map(row=>{
-    const eligibility=workflowStepReadiness(row.ordinal,map),stage=STEP_REGISTRY.find(item=>item.ordinal===row.ordinal)!;
-    const extraction=row.ordinal===1&&row.has_pdf&&row.extraction_status!=='skipped';
-    return{...row,status:extraction?row.extraction_status??row.status:row.status,error:extraction?row.extraction_error??row.error:row.error,started_at:extraction?row.extraction_started_at??row.started_at:row.started_at,finished_at:extraction?row.extraction_finished_at??row.finished_at:row.finished_at,name:stage.name,display_position:stage.position,ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};
-   }),attempts:attempts.rows.filter(row=>row.workflow_id===id)};
-  }
-  return views;
+  return projectWorkflowViewsFromSnapshot({states,hasAuthored:new Map(attemptSummary.rows.map((row:any)=>[String(row.workflow_id),Boolean(row.has_authored)]))},ids);
  }catch(error){throw error;}
+}
+
+/** 项目详情已经读取的步骤状态行和出题标记可直接复用，避免首屏再次扫描同一批工作流。 */
+export function projectWorkflowViewsFromSnapshot(snapshot:{states:Awaited<ReturnType<typeof readProjectWorkflowStepRows>>;hasAuthored:Map<string,boolean>},ids:string[]):Record<string,ProjectWorkflowView>{
+ const views:Record<string,ProjectWorkflowView>={};
+ for(const id of ids){
+  const rows=snapshot.states.rows.filter(row=>row.workflow_id===id);
+  if(!rows.length)continue;
+  const map=new Map<number,WorkflowStepState>(rows.map(row=>[row.ordinal,row]));
+  views[id]={steps:rows.map(row=>{
+   const eligibility=workflowStepReadiness(row.ordinal,map),stage=STEP_REGISTRY.find(item=>item.ordinal===row.ordinal)!;
+   const extraction=row.ordinal===1&&row.has_pdf&&row.extraction_status!=='skipped';
+   return{...row,status:extraction?row.extraction_status??row.status:row.status,error:extraction?row.extraction_error??row.error:row.error,started_at:extraction?row.extraction_started_at??row.started_at:row.started_at,finished_at:extraction?row.extraction_finished_at??row.finished_at:row.finished_at,name:stage.name,display_position:stage.position,ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};
+  }),attempt_summary:{has_authored:snapshot.hasAuthored.get(id)??false}};
+ }
+ return views;
 }
 
 /** 只返回步骤执行元信息；入库包含内部 PDF 提取尝试，不返回冻结输入或私有结果正文。 */
@@ -42,8 +50,12 @@ export async function readWorkflowStepHistory(pool:Pool,id:string,ordinal:number
  return{attempts:rows.rows,total:Number(total.rows[0]?.count??0),offset,limit:20};
 }
 
+/** 项目列表与轻量详情共用白名单；不得将models中的完整answer正文带入列表。 */
+export function answerModelSummaryProjection(alias:string){
+ return `(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id','minimum_score',m->'minimum_score','outcome',m->'outcome','reason_code',m->'reason_code','generation_activity',m->'generation_activity')), '[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${alias}.result->'models')='array' THEN ${alias}.result->'models' ELSE '[]'::jsonb END) m)`;
+}
 export function stepResultProjection(alias:string,content:boolean){
- const models=`(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id','minimum_score',m->'minimum_score','outcome',m->'outcome','reason_code',m->'reason_code','generation_activity',m->'generation_activity')), '[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(${alias}.result->'models')='array' THEN ${alias}.result->'models' ELSE '[]'::jsonb END) m)`;
+ const models=answerModelSummaryProjection(alias);
  return `CASE
   WHEN ${alias}.ordinal=9 THEN jsonb_build_object('progress',${alias}.result->'progress','error',jsonb_build_object('reason_code',${alias}.result#>'{error,reason_code}'))
   WHEN ${alias}.ordinal=4 THEN ${content?`(SELECT jsonb_object_agg(key,value) FROM jsonb_each(COALESCE(${alias}.result,'{}'::jsonb)) WHERE key IN ('content_contract','task_metadata','input_files','deliverables','reference_outputs','research_records','task_requirements','content_status','header','question_id','task_name','task_type','question','rubric','answer_approach','reference_answer','answer_requirements','question_version','rubric_version','scoring_policy'))`:`NULL`}

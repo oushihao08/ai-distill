@@ -1,0 +1,48 @@
+{
+  "id": "A017",
+  "item_id": "docs",
+  "stage_id": "update",
+  "previous_attempt_id": "A015",
+  "status": "succeeded",
+  "started_at": "2026-10-19T11:59:11Z",
+  "finished_at": "2026-10-19T11:59:11Z",
+  "inputs": [
+    {
+      "ref": "AGENTS.md",
+      "sha256": "01af2306c37c7d1ca9ba7770f1978790913b052153986e09e7261275d290c3bc"
+    },
+    {
+      "ref": "README.md",
+      "sha256": "168b425566a4aebd73acd2f3eaff30f6a6e2a0eb520732a06f34e74cc7c06a8d"
+    }
+  ],
+  "configuration": {
+    "scope": "当前工程文档/CLI与源码静态核对；docs内容不读，architecture只读背景；不执行业务/测试"
+  },
+  "changes_from_previous": [
+    "移除根规则中要求编辑docs/architecture.md的矛盾，统一为只更新当前维护范围内的说明。"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local working tree",
+    "runtime_version": null
+  },
+  "artifacts": [
+    {
+      "ref": "AGENTS.md"
+    },
+    {
+      "ref": "README.md"
+    },
+    {
+      "ref": "observations/O042.json"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "documentation_review",
+      "result": "根规则和入口说明与当前实现一致；README保留真实siriser download下载描述。"
+    }
+  ],
+  "error": null
+}

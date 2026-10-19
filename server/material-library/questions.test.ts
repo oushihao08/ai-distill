@@ -28,7 +28,7 @@ test('library questions create only visible workflow ordinals 4 through 8',()=>{
 });
 
 test('private redaction index remaps every file reference without changing source text',()=>{
- const source={index:JSON.stringify({format:'redacted-index-v2',pages:[{material_id:'file-a',page:1}],materials:[{material_id:'file-a',markdown:'脱敏正文',document:{format:'redacted-structure-v1'},structure_sha256:'a'.repeat(64)}],redacted_sha256:'b'.repeat(64)})};
+ const source={material_mode:'redacted' as const,index:JSON.stringify({format:'redacted-index-v2',pages:[{material_id:'file-a',page:1}],materials:[{material_id:'file-a',markdown:'脱敏正文',document:{format:'redacted-structure-v1'},structure_sha256:'a'.repeat(64)}],redacted_sha256:'b'.repeat(64)})};
  const result=JSON.parse(remapLibraryRedactedIndex(source,new Map([['file-a','private-material']]))) as {pages:{material_id:string}[];materials:{material_id:string;markdown:string}[]};
  expect(result.pages[0]?.material_id).toBe('private-material');
  expect(result.materials[0]).toMatchObject({material_id:'private-material',markdown:'脱敏正文'});
@@ -55,7 +55,7 @@ test('creates a private question from a usable redaction while retaining OCR war
    if(sql.startsWith('SELECT package_id FROM'))return{rows:[{package_id:'package-a'}]};
    if(sql.startsWith('SELECT question_tags'))return{rows:[{question_tags:['执行']}]};
    if(sql.startsWith('SELECT id,name,deleted_at FROM'))return{rows:[{id:'package-a',name:'共享材料',deleted_at:null}]};
-   if(sql.startsWith('SELECT id,name,material_backend'))return{rows:[{id:'project-a',name:'验证项目',material_backend:'library_v1',question_tags:['执行'],deleted_at:null}]};
+   if(sql.startsWith('SELECT id,name,material_backend'))return{rows:[{id:'project-a',name:'验证项目',material_backend:'legacy',question_tags:['执行'],deleted_at:null}]};
    if(sql.includes('FROM ai_distill.project_library_packages')&&sql.includes('FOR UPDATE'))return{rows:[{id:'link-a',package_id:'package-a',project_id:'project-a',selected_revision_id:'revision-a',selected_redaction_id:request.redaction_id,lock_version:3,removed_at:null}]};
    if(sql.startsWith('SELECT r.id,r.package_id'))return{rows:[{id:request.redaction_id,revision_id:'revision-a',extraction_job_id:'extract-a',output_digest:'source-digest',validation_report:{usable_for_question:true,extraction_issue_count:1},revision_state:'ready',redact_status:'succeeded',extract_status:'succeeded',markdown:text,markdown_sha256:sha(text),redacted_index:index,index_sha256:sha(index)}]};
    if(sql.startsWith('SELECT f.id,f.original_name'))return{rows:[file]};
@@ -70,6 +70,46 @@ test('creates a private question from a usable redaction while retaining OCR war
   expect(JSON.parse(frozen!.values[6]).pages[0].issues).toEqual(['image_without_text']);
   const source=inserts.find(item=>item.sql.includes("'source_document'"));
   expect(await readFile(join(root,source!.values[3]),'utf8')).toBe('原始案件材料');
+  expect(inserts.filter(item=>item.sql.includes('INSERT INTO ai_distill.steps')).map(item=>item.values[1])).toEqual([4,5,6,7,8]);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('creates a private question from extracted original without requiring redaction',async()=>{
+ const {createLibraryQuestion}=await import('./questions');
+ const {installLibraryBlob}=await import('./storage');
+ const {createHash}=await import('node:crypto');
+ const {mkdtemp,rm,readFile}=await import('node:fs/promises');
+ const {tmpdir}=await import('node:os');
+ const {join}=await import('node:path');
+ const root=await mkdtemp(join(tmpdir(),'library-question-original-'));
+ const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
+ try{
+  const blob=await installLibraryBlob(root,new TextEncoder().encode('原始案件材料'),'text/plain','local');
+  const text='借款10000元，2023年1月1日。';
+  const document=JSON.stringify({version:1,source_sha256:blob.sha256,pages:[{page:1,text,structure:[{id:'b1',kind:'paragraph',text}],method:'mineru',issues:[]}]});
+  const file={id:'file-a',original_name:'材料.txt',position:1,redaction_mode:'model',source_sha256:blob.sha256,source_size_bytes:blob.size_bytes,source_content_type:'text/plain',source_storage_path:blob.storage_path,source_storage_target:'local',document_content:document,document_blob_sha256:sha(document),document_sha256:sha(text),document_issues:[]};
+  const inserts:{sql:string;values:any[]}[]=[];
+  const query=async(sql:string,values:any[]=[])=>{
+   if(sql.startsWith('SELECT package_id FROM'))return{rows:[{package_id:'package-a'}]};
+   if(sql.startsWith('SELECT question_tags'))return{rows:[{question_tags:['执行']}]};
+   if(sql.startsWith('SELECT id,name,deleted_at FROM'))return{rows:[{id:'package-a',name:'共享材料',deleted_at:null}]};
+   if(sql.startsWith('SELECT id,name,material_backend'))return{rows:[{id:'project-a',name:'验证项目',material_backend:'legacy',question_tags:['执行'],deleted_at:null}]};
+   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{material_source_mode:'original'}}]};
+   if(sql.includes('FROM ai_distill.project_library_packages')&&sql.includes('FOR UPDATE'))return{rows:[{id:'link-a',package_id:'package-a',project_id:'project-a',selected_revision_id:'44444444-4444-4444-8444-444444444444',selected_redaction_id:null,lock_version:3,removed_at:null}]};
+   if(sql.startsWith('SELECT e.id,r.file_count'))return{rows:[{id:'extract-a',file_count:1}]};
+   if(sql.startsWith('SELECT f.id,f.original_name'))return{rows:[file]};
+   if(sql.startsWith('INSERT'))inserts.push({sql,values});
+   return{rows:[],rowCount:1};
+  };
+  const pool={query,connect:async()=>({query,release(){}})} as any;
+  const result=await createLibraryQuestion(pool,root,'project-a','link-a',{...request,request_key:'33333333-3333-4333-8333-333333333333',redaction_id:undefined,revision_id:'44444444-4444-4444-8444-444444444444'});
+  expect(result.reused).toBe(false);
+  const source=inserts.find(item=>item.sql.includes("'source_document'"));
+  expect(await readFile(join(root,source!.values[3]),'utf8')).toBe('原始案件材料');
+  expect(inserts.some(item=>item.values[2]==='source_markdown')).toBe(true);
+  expect(inserts.some(item=>item.values[2]==='source_index')).toBe(true);
+  expect(inserts.some(item=>item.values[2]==='redacted_markdown')).toBe(false);
+  expect(inserts.some(item=>item.sql.includes('INSERT INTO ai_distill.question_library_sources')&&item.values[13]==='original')).toBe(true);
   expect(inserts.filter(item=>item.sql.includes('INSERT INTO ai_distill.steps')).map(item=>item.values[1])).toEqual([4,5,6,7,8]);
  }finally{await rm(root,{recursive:true,force:true});}
 });

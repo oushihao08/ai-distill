@@ -1,0 +1,37 @@
+{
+  "id": "A00F",
+  "item_id": "real-flow",
+  "stage_id": "load",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T09:10:49.823Z",
+  "finished_at": "2026-10-18T09:10:49.823Z",
+  "inputs": [
+    {
+      "ref": "material package d4353085-0921-4293-9ea4-f1f808ae91c4",
+      "version": "6458c800-d17e-4132-a789-9821494546ae",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "project_id": "d26d2953-0f32-440a-a328-377eee9e9182",
+    "redaction_id": "99846ce1-5fea-4f1f-98b7-151ea6e372b6"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "project_library_package_id": "0d771062-a5ff-4c71-960a-0ac5ef26bbd9",
+    "package_id": "d4353085-0921-4293-9ea4-f1f808ae91c4"
+  },
+  "environment": {
+    "api": "http://127.0.0.1:3700"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "api_readback",
+      "result": "loaded link exists and points to selected revision and redaction",
+      "evidence": "GET /api/projects/d26d2953-0f32-440a-a328-377eee9e9182/loaded-materials"
+    }
+  ],
+  "error": null
+}

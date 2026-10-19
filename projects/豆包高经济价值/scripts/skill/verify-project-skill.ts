@@ -1,5 +1,5 @@
-/** 文件职责：使用首期真实规则和完整模板调用 Codex 生成 skill 候选；不自动采用或发布。
- * 执行入口与用途：`bun projects/豆包高经济价值/scripts/skill/verify-project-skill.ts`；读取指定真实规则和完整模板，调用 Codex 生成候选并保存冒烟摘要；不执行采用或发布。
+/** 文件职责：使用第五期规则和外部模板调用 Codex 生成 skill 候选；不自动采用或发布。
+ * 执行入口与用途：`bun projects/豆包高经济价值/scripts/skill/verify-project-skill.ts`；候选写入 `.storage/skill-generation-smoke/`，摘要写 `docs/evidence/`；固定模板路径、模型可由环境变量指定，执行会调用真实 Codex。
  */
 import {mkdir,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';

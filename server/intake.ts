@@ -1,7 +1,7 @@
 /**
  * 职责：材料接收事务：保存原件与指纹、解析本地文档并维护当前附件和下游失效状态。
  * 关键方法与用途：`receiveMaterials()` 校验并保存原件与指纹，解析本地文档并更新附件及下游失效状态。
- * 使用场景：由上传 API 或入库队列调用；新模式登记材料包，旧模式登记题目，派生题目禁止改动材料；结果写入管理存储和数据库。
+ * 使用场景：由上传 API 或入库队列调用；material_packages兼容模式登记材料包工作流，question_folders登记题目；全局库上传由material-library处理，派生题目的附件不能在此重写。
  */
 import type { Pool } from 'pg';
 import {invalidateMaterialResults} from './materials/state';

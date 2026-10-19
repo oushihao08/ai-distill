@@ -10,6 +10,17 @@ export type LibraryJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | '
 export type LibraryExecutorKind = 'internal' | 'api' | 'agent';
 export type LibraryExecutionTarget = 'local' | 'server';
 export type LibraryRedactionMode = 'model' | 'declared_redacted';
+export type QuestionMaterialMode = 'redacted' | 'original';
+
+/** 永久使用账不依赖题目；页面在本期材料行内展示，历史事件按原时间保留。 */
+export interface MaterialUseRecord {
+  id:string;package_id:string;package_name:string;status:'in_use'|'submitted';lock_version:number;
+}
+
+export interface MaterialUseEvent {
+  id:string;use_id:string;event_type:string;previous_status:'in_use'|'submitted'|null;status:'in_use'|'submitted';
+  reason:string;evidence:Record<string,unknown>;created_at:string;
+}
 
 export interface MaterialLibraryPackageSummary {
   id: string;
@@ -23,10 +34,25 @@ export interface MaterialLibraryPackageSummary {
   extraction_status: LibraryJobStatus | 'not_started';
   redaction_status: LibraryJobStatus | 'not_started';
   available_redaction_count: number;
+  available_extraction_count?: number;
   loaded_project_count: number;
+  /** 列表当前页的永久占用摘要；详情接口仍通过 /packages/:id/usage 读取完整事件。 */
+  material_uses?: MaterialLibraryPackageUseSummary[];
   lock_version: number;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface MaterialLibraryPackageUseSummary {
+  id:string;
+  project_group_id:string;
+  project_name:string;
+  owner_phase_id:string;
+  phase_name:string|null;
+  phase_no:number|null;
+  status:'in_use'|'submitted';
+  first_used_at:string;
 }
 
 export interface MaterialLibraryFile {
@@ -55,6 +81,7 @@ export interface MaterialLibraryRevision {
 }
 
 export interface MaterialLibraryJob {
+  origin?: 'execution'|'legacy_import';
   id: string;
   package_id: string;
   revision_id: string;
@@ -104,9 +131,10 @@ export type QuestionMaterialOrigin =
   | { kind: 'legacy'; redaction_attempt_id: string }
   | {
       kind: 'library_v1';
+      material_mode: QuestionMaterialMode;
       package_id: string;
       revision_id: string;
-      redaction_id: string;
+      redaction_id: string | null;
       snapshot_digest: string;
     };
 
@@ -116,7 +144,8 @@ export interface QuestionLibrarySource {
   project_material_id: string;
   package_id: string;
   revision_id: string;
-  redaction_id: string;
+  redaction_id: string | null;
+  material_mode: QuestionMaterialMode;
   source_digest: string;
   snapshot_digest: string;
   request_key: string;
@@ -133,11 +162,13 @@ export interface CreateLibraryJobRequest {
 
 export interface CreateLibraryQuestionRequest {
   request_key: string;
-  redaction_id: string;
+  redaction_id?: string;
+  revision_id?: string;
   expected_link_version: number;
   title: string;
   scenario?: string;
   role_perspective?: string;
   target_level?: 'L2' | 'L3' | 'L4' | 'L5';
   authoring_direction?: string;
+  question_tags?: string[];
 }

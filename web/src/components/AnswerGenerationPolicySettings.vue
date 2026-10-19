@@ -48,7 +48,7 @@ onMounted(refresh);
 
 <template>
  <Column :gap="12" class="border-t border-line-subtle pt-16">
-  <Row x="between" wrap :gap="8"><Column :gap="4"><h3 class="text-sm font-semibold">作答时长与免评分</h3><p class="text-xs text-muted">当前值来自{{ source==='project'?'项目设置':'安全默认值' }}；保存只影响之后新建的作答任务。</p></Column><v-btn :loading="loading" :disabled="saving" @click="refresh">刷新</v-btn></Row>
+  <Row x="between" wrap :gap="8"><Column :gap="4"><h3 class="text-sm font-semibold">本期作答时长与免评分</h3><p class="text-xs text-muted">当前值来自{{ source==='project'?'本期设置':'安全默认值' }}；保存只影响之后新建的作答任务。</p></Column><v-btn :loading="loading" :disabled="saving" @click="refresh">刷新</v-btn></Row>
   <v-alert v-if="error" type="error" density="compact">{{ error }}</v-alert>
   <v-alert v-if="message" type="success" density="compact">{{ message }}</v-alert>
   <Row stack-on-mobile :gap="12">

@@ -1,11 +1,11 @@
 <!-- 文件职责：说明作答模型集合、输入契约、供应商适配和持久化队列。 -->
 # 模型作答
 
-阶段扩展配置的 workflow 与供应商参数分开校验和冻结，不传给模型 API。队列已接入前后同步钩子与主操作检查点；钩子及作答模型的业务输入都只有题面和允许的脱敏附件，钩子结果不改写答案。后置异步登记与主结果同事务提交。带钩子的主任务只由 local/all worker 执行，api worker 领取及失联恢复均排除它们。续跑 API 恢复明确标记的钩子失败尝试，主操作检查点内容摘要不符时拒绝复用。无钩子默认路径不依赖新表；真实启用需要 033 迁移。
+阶段扩展配置的 workflow 与供应商参数分开校验和冻结，不传给模型 API。队列已接入前后同步钩子与主操作检查点；材料库题目按题目快照读取脱敏正文或 MinerU 提取原文，旧目录题仍仅读脱敏附件。派发后来源模式随作答输入冻结，作答模型不会自行切换版本。钩子结果不改写答案。后置异步登记与主结果同事务提交。带钩子的主任务只由 local/all worker 执行，api worker 领取及失联恢复均排除它们。续跑 API 恢复明确标记的钩子失败尝试，主操作检查点内容摘要不符时拒绝复用。无钩子默认路径不依赖新表；真实启用需要 033 迁移。
 
-接收当前 ordinal 4 出题成功的题面和允许的脱敏附件，按项目模型集合创建逐模型任务，保存完整答案、usage 和当前集合汇总。模型集合全部终结后，只要至少一个模型成功，评分步骤即可对成功答案继续评分；失败或跳过的模型不阻断其他答案。
+接收当前 ordinal 4 出题成功的题面和该题冻结来源模式对应的附件，按项目模型集合创建逐模型任务，保存完整答案、usage 和当前集合汇总。模型集合全部终结后，只要至少一个模型成功，评分步骤即可对成功答案继续评分；失败或跳过的模型不阻断其他答案。
 
-作答模型目录支持各 API provider 与本机 Codex Agent；登记新 API 模型时默认选 SiliconFlow，现有目录模型保持各自冻结渠道。SiliconFlow 使用官方 OpenAI 兼容端点和服务端 `SILICONFLOW_API_KEY`。Codex answer attempt 由 local/all worker 的 Agent 队列消费，API/server worker 排除该 provider；派发时冻结模型和推理强度。隔离会话仅提交题面、获准的脱敏附件、成果呈现约定及步骤作答指令；不提交答案思路、标准答案、Rubric、既有答案、评分结果或项目 Skill。Codex 会话关闭宿主 Skill、插件、MCP、浏览器、记忆和网络入口，文件系统限制在本次 attempt 工作区。保存执行模式、模型、推理强度和会话 ID 用于追溯，不把“可用工具”冒记为“实际调用工具”。Codex 仅支持本机执行，服务器归属作答拒绝 Codex provider。
+作答模型目录支持各 API provider 与本机 Codex Agent；登记新 API 模型时默认选 SiliconFlow，现有目录模型保持各自冻结渠道。SiliconFlow 使用官方 OpenAI 兼容端点和服务端 `SILICONFLOW_API_KEY`。Codex answer attempt 由 local/all worker 的 Agent 队列消费，API/server worker 排除该 provider；派发时冻结模型和推理强度。隔离会话仅提交题面、该题冻结来源允许的附件、成果呈现约定及步骤作答指令；不提交答案思路、标准答案、Rubric、既有答案、评分结果或项目 Skill。Codex 会话关闭宿主 Skill、插件、MCP、浏览器、记忆和网络入口，文件系统限制在本次 attempt 工作区。保存执行模式、模型、推理强度和会话 ID 用于追溯，不把“可用工具”冒记为“实际调用工具”。Codex 仅支持本机执行，服务器归属作答拒绝 Codex provider。
 
 远程作答复用同一队列：带固定请求标识的 `enqueueAnswer(..., 'server', requestKey)` 创建服务器归属 attempt；worker 按 `execution_target` 精确领取。服务器远程入口不接受项目步骤钩子；默认本机调用继续归属 `local`。CLI 只查看远程 attempt 状态，答案正文仍由现有工作流结果接口读取。
 
@@ -14,25 +14,33 @@
 | 文件 | 说明 |
 | --- | --- |
 | `dispatch.ts` | 作答输入门面：隔离题面/允许附件；API provider 调用 llm-api，Codex provider 调用隔离 Agent。 |
+| `dispatch.test.ts` | 验证冻结 provider 配置、API 凭证/端点路由、请求关联字段隔离及 Codex Agent 消息转换；适配器和 HTTP 为注入替身。 |
 | `domestic.ts` | 其他供应商作答兼容入口；配置、凭证和 HTTP 由 llm-api 管理。 |
-| `input.ts` | 作答输入契约：校验出题成功的题目和脱敏附件引用，组装无工具的文字输入并计算指纹。 |
+| `domestic.test.ts` | 验证原生 provider 与 OpenRouter 的配置校验、凭证隔离、完整响应和安全错误分类；HTTP 使用替身，含一个本机超时夹具。 |
+| `input.ts` | 作答输入契约：校验出题成功的题目和冻结来源附件引用，组装无工具的文字输入并计算指纹。 |
+| `input.test.ts` | 验证题面/附件白名单、能力边界、成果呈现快照和输入摘要兼容；不调用供应商。 |
 | `file-executor.ts` | Work文件作答的容器执行基础模块：固定Claude Code版本、保留OpenRouter模型、只挂载公开任务及脱敏附件并收集实际候选文件；尚未接入持久队列或改变现有就绪判断。 |
 | `file-executor.test.ts` | 注入进程验证文件执行参数、输入隔离、实际临时文件收集、空响应/缺件/版本/取消边界；不调用Docker或模型。 |
 | `readiness.test.ts` | 验证Work草稿／能力不匹配不会显示作答就绪，旧文字题就绪逻辑保持，以及状态查询的轻量投影。 |
-| `jobs.ts` | 模型作答队列：从数据库读取题面获准的脱敏附件并冻结输入，为模型集合派发任务并按当前题目和附件绑定聚合答案状态。 |
+| `jobs.ts` | 模型作答队列：从数据库读取题面获准的冻结来源附件并冻结输入，为模型集合派发任务并按当前题目和附件绑定聚合答案状态。 |
+| `jobs.test.ts` | 验证作答入队、输入/模型集合快照、worker分流、结果发布、迟到结果隔离、恢复和错误边界；数据库及供应商调用均使用替身。 |
 | `model-set.ts` | 项目模型集合：校验注册模型、读取启用配置并生成包含评分门槛的稳定指纹。 |
+| `model-set.test.ts` | 验证模型登记/集合校验、凭证不入库、顺序与阈值摘要，以及集合变化后的结果失效写入；数据库使用替身。 |
+| `generation-policy.ts` | 作答时长与推理活动策略：解析请求上限、阈值和免评分资格；当前未验证供应商连续输出时强制关闭自动免评分。 |
+| `generation-policy.test.ts` | 验证时长默认、配置边界、历史免评分选项降级及推理事件资格拒绝条件；不调用供应商。 |
 | `provider.ts` | 作答供应商公共契约：定义固定模型配置、纯文字请求、完整答案和 usage 元数据。 |
 | `qwen.ts` | Qwen 作答兼容入口；实际配置解析和 HTTP 由 llm-api 管理。 |
+| `qwen.test.ts` | 验证Qwen/DashScope与OpenRouter路由、请求和响应校验、用量、错误保密、取消及响应体超时；供应商请求使用替身，含一个本机HTTP夹具。 |
 
 ## 数据流与依赖
 
-input.ts → jobs.ts 从数据库取当前题面获准的脱敏附件并冻结输入／配置 → dispatch.ts 只发送题面、脱敏附件、成果呈现约定和作答步骤提示词 → API provider 走独立 llm-api，Codex provider 走隔离 Agent → 保存当前答案。系统提示词要求答案直接写在回复正文、只返回纯文本，不生成或附加 DOCX、PDF 等文件。model-set.ts 管理稳定模型身份、顺序及阈值摘要。
+input.ts → jobs.ts 从数据库取当前题面获准的冻结来源附件并冻结输入／配置 → dispatch.ts 只发送题面、该题选择的脱敏或 MinerU 提取原文附件、成果呈现约定和作答步骤提示词 → API provider 走独立 llm-api，Codex provider 走隔离 Agent → 保存当前答案。旧目录题仍读取其脱敏附件。系统提示词要求答案直接写在回复正文、只返回纯文本，不生成或附加 DOCX、PDF 等文件。model-set.ts 管理稳定模型身份、顺序及阈值摘要。
 
 ## 维护边界
 
 不发送作答思路、Rubric、标答、历史答案、评分结果、目标分数或项目 Skill 给作答者。API provider 是纯文字请求／响应；Codex provider 是本机隔离 Agent，可调用受限工作区内的 shell/unified_exec，但网络、记忆、宿主 Skill、插件、MCP 和浏览器均关闭。不同执行方式记录真实 provider/model/reasoning effort，不自动切换。修改模型集合后不能用旧集合答案冒充当前结果。
 
-`workAnswerCapabilityIssue()`供实际派发与项目就绪列表共用。Work草稿和非文字输入继续阻断；`task_requirements`中的文件输出及外部工具需求不由本机文字呈现路径伪装满足。对 Agent 派发仍保持题目声明的 `answer_requirements` 与正文成果能力边界。
+`workAnswerCapabilityIssue()`供实际派发与项目就绪列表共用。Work草稿、非文字输入及要求外部工具的任务会阻断派发；文件成果可按下文的文字呈现适配进入作答。对 Agent 派发仍保持题目声明的 `answer_requirements` 与正文成果能力边界。
 
 任何项目的题目具有合法`deliverables`清单（`path`、`description`或`desc`、`required`）时，`answerPresentation()`只提取名称、说明、必交标记，生成`text_deliverables_v1`呈现快照。`buildAnswerMessage()`将原题面、快照说明、成果清单组成实际用户消息，附件仍完整发送；不读取Rubric、标答、思路或Skill。模型在回复中逐项呈现成果，不能声称实际创建文件或完成外部操作。无成果清单的旧文字题维持原输入。
 
@@ -47,7 +55,7 @@ input.ts → jobs.ts 从数据库取当前题面获准的脱敏附件并冻结�
 
 OpenRouter 与 SiliconFlow 模型登记分别固定使用其官方 API 地址和对应服务端密钥；登记表单只要求供应商模型 ID，SiliconFlow 为新登记 API 模型的默认渠道。系统目录保存非敏感 provider、端点及模型配置，密钥只在服务端请求时读取。既有目录记录保留原冻结供应商配置；改变渠道须登记新 provider 的模型并更新项目模型集合，不能静默改写历史任务。
 
-项目模型的兼容字段 `minimum_score` 表示百分制分数上限（0—100，null表示未配置）；模型原始分数换算后严格低于上限，题目才通过该模型的难度要求。
+项目模型的兼容字段 `minimum_score` 表示百分制分数上限（0—100，null表示未配置）；达标模块按评分契约取得百分制比较值，再按项目配置判断；具体聚合与阈值关系以 `../decisions/` 为准，不把此字段名解释成“最低分”。
 
 修改项目模型集合或任一分数上限会使项目题目的作答、评分、达标和发布当前状态失效；历史尝试保留，须按新设置重新执行作答和评分。该处理保证模型集合摘要、答案来源和通过状态使用同一配置。
 
@@ -58,3 +66,13 @@ OpenRouter 与 SiliconFlow 模型登记分别固定使用其官方 API 地址和
 worker 恢复超时作答 attempt 时先记录该 attempt 失败；只有其冻结题目与当前题目、模型集合仍匹配，才用当前题目和模型集合重建步骤汇总。旧题或旧模型集合的迟到恢复不会覆盖当前汇总；恢复只整理状态，不自动重试。
 
 旧尝试缺少 answer_generation_policy 时，去重按既有默认策略（60分钟请求、45分钟阈值、关闭免评分）比较；不能将缺失字段视为匹配任意本次策略。历史记录不回填、不改写。
+
+## 配置与恢复的补充边界
+
+- 模型目录可登记入口不等于所有provider都能用同一登记表单：`registerAnswerModel()`当前显式接受Codex的model/reasoning_effort、SiliconFlow的provider/model，OpenRouter兼容请求只含model_id；既有其他provider记录仍由通用配置解析使用。新API登记默认渠道是界面选择，后端无provider的旧登记请求仍指OpenRouter，不能省略字段后假定SiliconFlow。
+- 项目集合为1—8个模型；为空时旧作答链退回步骤5供应商配置。集合顺序、名称、阈值与配置参与摘要，修改集合会使当前下游失效，历史尝试保留。
+- 本机普通派发按同题目/输入/模型/策略复用等待、运行或已成功尝试；评分的重新派发行为不同，不要套用同一重试策略。远程request_key重放返回原attempt集合，先查询后决定是否使用新key。
+- 单模型失败不使成功答案消失：集合全部终态后，可以继续给成功答案评分；作答步骤总状态仍可能为failed。任务成功、集合全成功、评分可执行是不同条件。
+- generation-policy当前始终关闭自动免评分和推理增量观察；历史opt-in读取也会归为关闭。超时不是有效零分，不根据等待时长自动达标。
+
+`dispatch.test.ts`核对API/Agent转换；`input.test.ts`核对白名单、来源与呈现指纹；`jobs.test.ts`核对队列/绑定/恢复；`model-set.test.ts`核对集合/阈值；`generation-policy.test.ts`核对时长与禁用免评分；`domestic.test.ts`和`qwen.test.ts`覆盖兼容客户端及供应商响应。各测试的替身/本地执行范围须看文件，存在测试不代表真实模型或供应商验收。

@@ -1,5 +1,5 @@
 /** 文件职责：调用模型对指定 GLM-OCR 历史样本与源页作质量抽查；保留不确定性而非人工验收结论。
- * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/review-glm-ocr-quality.ts`；读取历史样本和来源页，渲染前六页并调用模型统计识别问题；输出安全摘要，不构成人工验收。
+ * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/review-glm-ocr-quality.ts`；查询固定 attempt、渲染前六页并调用模型；将计数和材料 SHA 写到 `docs/evidence/`，不输出逐字引用，不构成人工验收。
  */
 import{readFile,writeFile,mkdir,rm}from'node:fs/promises';import{join,resolve}from'node:path';import{createPool}from'../../../../server/db';import{command}from'../../../../server/materials/pdf';import{createVisionClient}from'../../../../server/materials/vision';import{loadExtractionConfig}from'../../../../server/materials/config';
 const pool=createPool(),root=resolve('.storage'),dir=join(root,'.glm-ocr-sample'),rawPath=join(dir,'question3-29-pages.json'),attempt='73b10d51-717c-4e1f-bfcb-d323775db1f3',report:any={model:'glm-ocr',reviewer:'glm-5.3-flash low',scope:'first six pages compared visually against original source; model review, not human ground truth',samples:[]};

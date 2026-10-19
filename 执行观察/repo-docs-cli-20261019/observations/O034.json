@@ -1,0 +1,52 @@
+{
+  "id": "O034",
+  "kind": "result",
+  "status": "resolved",
+  "title": "完成服务端HTTP、日志与钩子测试审阅",
+  "item_ids": [
+    "inventory",
+    "docs"
+  ],
+  "attempt_ids": [
+    "A005",
+    "A006"
+  ],
+  "facts": [
+    "逐文件阅读server/app.test.ts、server/logging.test.ts、server/routes.test.ts及四个workflow-hook测试，并与对应已核验生产模块交叉核对。",
+    "Hono路由测试以内存请求、SQL/仓库/派发器替身和临时产物核验接口契约；日志worker测试使用连接池替身与注入执行器；钩子作业/路由/worker测试使用内存journal或SQL替身。",
+    "workflow-hooks.test.ts确实会在临时目录启动本地Bun子进程；这不代表调用真实数据库或模型。日志并发测试也会启动本地子进程，只验证临时日志文件行为。",
+    "补全server/logging.test.ts文件头的验证范围说明；app/routes测试此前已有精确边界注释；四个钩子测试头注释符合实际测试边界。没有运行测试、服务或真实外部调用。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "server/app.test.ts",
+    "server/app.ts",
+    "server/concurrency.ts",
+    "server/logging.test.ts",
+    "server/logging.ts",
+    "server/materials/redaction-jobs.ts",
+    "server/routes.test.ts",
+    "server/workflow-execution-routes.ts",
+    "server/attempts.ts",
+    "server/rule-files.ts",
+    "server/workflow-hook-jobs.test.ts",
+    "server/workflow-hook-jobs.ts",
+    "server/workflow-hook-routes.test.ts",
+    "server/workflow-hook-routes.ts",
+    "server/workflow-hook-worker.test.ts",
+    "server/workflow-hook-worker.ts",
+    "server/workflow-hooks.test.ts",
+    "server/workflow-hooks.ts"
+  ],
+  "impact": "服务端最后7个待核文件已完成语义审阅：3个测试头在本轮目标内有注释更新，4个钩子测试说明准确而保留；服务端该批pending归零。全仓审计仍未完成。",
+  "updates": [
+    {
+      "at": "2026-10-19T19:29:09+08:00",
+      "action": "审阅服务端最后7项HTTP/日志/钩子测试，并修正日志测试边界注释。",
+      "result": "覆盖核验312/449（69.5%）；partial 10，pending 127。"
+    }
+  ],
+  "lesson": "测试使用临时目录或SQL替身并不等于所有行为均为纯模拟：本机Bun子进程会真实执行，但其影响范围限定在测试临时目录。",
+  "created_at": "2026-10-19T19:29:09+08:00",
+  "updated_at": "2026-10-19T19:29:09+08:00"
+}

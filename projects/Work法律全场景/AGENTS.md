@@ -11,10 +11,10 @@
 
 ## 当前流程边界
 
-1. 入库与脱敏产物供后续出题使用；步骤显示成功只表示执行成功，不证明提取完整或脱敏无遗漏。
-2. 出题（步骤 4）读取本题脱敏材料、当前项目 Skill、冻结的步骤配置和已有角色／场景／方向设置。Work 契约字段见 `server/authoring/work-contract.ts`；完整题包写入现有 JSON 结果及产物。结构校验不等于法律内容、难度或等级已获专家认可。
-3. 作答（步骤 5）只收到题面、获准的脱敏附件、成果呈现约定和作答步骤提示词，不收到作答思路、标准答案、Rubric、既有答案、评分结果或项目 Skill。API provider 是纯文字请求／回复；Codex provider 走本机隔离 Agent，宿主 Skill、插件、MCP、浏览器、记忆和网络关闭，文件访问限本次 attempt 工作区。`deliverables` 只作为成果清单提示，不代表已创建实际文件或完成外部检索。
-4. 独立评分（步骤 6）读取同版题面、Rubric、脱敏附件和匿名答案；不读取作答思路，默认不提供标答。代码负责输入绑定、格式和算术校验；考点是否满足仍须依据 Rubric 与答案证据判断。算术正确不等于专业评分正确。
+1. 入库与脱敏产物供后续使用；新共享材料库还可选择已完成 MinerU 提取的原文版本。步骤显示成功只表示执行成功，不证明提取完整或脱敏无遗漏。
+2. 出题（步骤 4）读取本题冻结的材料来源：新共享材料库题目按创建时选择提供脱敏正文或 MinerU 提取原文，旧题继续读取自身快照；另读取当前项目 Skill、冻结的步骤配置和已有角色／场景／方向设置。Work 契约字段见 `server/authoring/work-contract.ts`；完整题包写入现有 JSON 结果及产物。结构校验不等于法律内容、难度或等级已获专家认可。
+3. 作答（步骤 5）只收到题面、题目快照允许的附件、成果呈现约定和作答步骤提示词，不收到作答思路、标准答案、Rubric、既有答案、评分结果或项目 Skill。新共享材料库题目沿同一冻结来源模式读取附件；API provider 是纯文字请求／回复，Codex provider 走本机隔离 Agent。`deliverables` 只作为成果清单提示，不代表已创建实际文件或完成外部检索。
+4. 独立评分（步骤 6）读取同版题面、Rubric、匿名答案及题目冻结来源对应的附件；不读取作答思路，默认不提供标答。代码负责输入绑定、格式和算术校验；考点是否满足仍须依据 Rubric 与答案证据判断。算术正确不等于专业评分正确。
 5. 达标判断（步骤 7）按当前项目模型集合、阈值和有效评分作机械判定；步骤成功表示判定执行完，须再看 `decision` 才知道是否达标。不要把通过数量当成评分准确率。
 6. 归档（步骤 8）只接受当前版本已达标的题目，复核版本和产物后调用 `projects/Work法律全场景/scripts/delivery.ts`。五件套内容稿、Harbor 六件套预备包、DOCX／Excel 与数据库归档状态是不同产物；生成或归档成功不代表已上传、真人专家确认或平台验收。
 
@@ -30,6 +30,7 @@
 
 - 出题契约：`server/authoring/work-contract.ts`；队列与冻结配置：`server/authoring/jobs.ts`。
 - 作答输入与成果呈现：`server/answer-models/input.ts`、`server/answer-models/dispatch.ts`。
+- 全局材料与期次来源：`server/material-library/README.md`、`server/material-library/projects-routes.ts`、`server/material-library/questions.ts`、`server/project-groups.ts`。期次出题来源模式默认脱敏；原文必须有成功提取版本，并由题目快照绑定。
 - 独立评分：`server/scoring/context.ts`、`server/scoring/executor.ts`；达标判定：`server/decisions/`。
 - 归档校验与执行：`server/publishing/jobs.ts`、`projects/Work法律全场景/scripts/delivery.ts`。
 - 模块细节分别见 `server/authoring/README.md`、`server/answer-models/README.md`、`server/scoring/README.md`、`server/decisions/README.md`、`server/publishing/README.md`。

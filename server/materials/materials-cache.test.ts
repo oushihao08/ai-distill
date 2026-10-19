@@ -1,5 +1,6 @@
-/** 验证材料处理复用健康提取、复查有问题缓存并绑定准确输入指纹。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+/**
+ * 验证材料处理复用健康提取、复查有问题缓存并绑定准确输入指纹。
+ * 使用临时附件/缓存及注入提取器，不访问数据库或真实 MinerU 服务。
  */
 import {test,expect} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';

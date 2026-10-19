@@ -1,5 +1,5 @@
-/** 文件职责：对指定真实题目目录执行已接入的业务步骤并保存过程记录；会改变对应工作流状态。
- * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/verify-real-question-folders.ts`；通过本地 API 轮询指定真实题目并推进已接入步骤，保存材料／步骤摘要；会改变工作流状态。
+/** 文件职责：轮询固定真实题目的既有工作流并尝试加载规则；这不是只读脚本，会改变工作流状态。
+ * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/verify-real-question-folders.ts`；访问本机 3700 API，遇到条件时 POST `/load-rules`，每15秒轮询题目1、题目3至无活动尝试后写 `docs/evidence/` 报告；不会调用所记录的清理端点。
  */
 import {readdir,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';

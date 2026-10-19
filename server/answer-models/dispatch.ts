@@ -1,7 +1,7 @@
 /**
- * 职责：把已隔离的作答输入转换为独立 llm-api 请求，按冻结供应商配置调用并返回答案。
+ * 职责：把已隔离的作答输入转换为独立 llm-api 请求，按冻结供应商配置调用API或隔离Codex并返回答案。
  * 关键入口：resolveAnswerConfig() 保留历史 Qwen 默认配置；createAnswerClient() 供作答队列使用。
- * 仅发送题面和允许附件，不把 rubric、标答、目标分数或其他输入透传给 API。
+ * 仅发送隔离后的作答指令、题面、白名单附件及允许的成果呈现清单；不透传 rubric、标答、目标分数或历史作答数据。
  */
 import {createModelApiClient,resolveModelApiConfig,resolveQwenConfig,ModelApiError,type ModelApiConfig} from '../llm-api';
 import type {AnswerClient,AnswerRequest} from './provider';

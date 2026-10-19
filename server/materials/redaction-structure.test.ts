@@ -1,6 +1,6 @@
 /**
  * 职责：验证结构化脱敏的映射协议、字段完整性、确定性替换与断点恢复。
- * 使用场景：修改 `redaction.ts` 的字段映射契约或原文合并时运行。
+ * 验证边界：模型/API/Agent调用以注入回调替身提供，断点只写临时目录，不连接数据库或真实模型。
  */
 import {expect,test} from 'bun:test';
 import {mkdtemp,readdir,rm,writeFile} from 'node:fs/promises';

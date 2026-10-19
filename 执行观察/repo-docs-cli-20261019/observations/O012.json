@@ -1,0 +1,36 @@
+{
+  "id": "O012",
+  "kind": "result",
+  "status": "resolved",
+  "title": "明确将停用 unused/ 历史资源排除出当前行为审计",
+  "item_ids": [
+    "inventory"
+  ],
+  "attempt_ids": [],
+  "facts": [
+    "根 README 将 unused/ 标为停用资源。",
+    "unused/README.md 说明其为不再作为当前工作流入口的历史文件；子 README 说明不进入当前任务队列/worker。",
+    "用户范围排除历史证据，因此该树不是现行工程说明或可执行工具。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "README.md 根目录/存储说明",
+    "unused/README.md",
+    "unused/workflow/README.md",
+    "unused/workflow/grade/README.md"
+  ],
+  "impact": "避免把历史评分样例当成现行评分约束或任务输入；文件保留不删除。",
+  "updates": [
+    {
+      "at": "2026-10-19T10:40:00Z",
+      "action": "将4条路径从语义审计范围改列 excluded，并在白名单策略中登记。",
+      "result": "纳入范围从452减为448；当前现行行为审计不读取 score.json 内容。",
+      "evidence": [
+        "audit-v2.json 覆盖统计"
+      ]
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-19T10:40:00Z",
+  "updated_at": "2026-10-19T10:40:00Z"
+}

@@ -1,0 +1,27 @@
+{
+  "id": "O002",
+  "kind": "issue",
+  "status": "open",
+  "title": "作答模型调用因上游配额拒绝",
+  "item_ids": [
+    "real-flow"
+  ],
+  "attempt_ids": [
+    "A011"
+  ],
+  "facts": [
+    "隔离题出题尝试2a268695-7b58-4ea5-89d7-af16d52452f3成功。",
+    "作答attempt 114b2650-8aaf-4dbe-bf30-09e813968ba1调用OpenRouter模型qwen/qwen3.8-max-0902，HTTP 402，error_kind=quota，retryable=false。",
+    "安全日志没有上游原始错误体，不能确认是具体欠费、订购过期还是其他配额状态。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "evidence/A012-answer-error.json",
+    "GET /api/attempts/114b2650-8aaf-4dbe-bf30-09e813968ba1?view=status"
+  ],
+  "impact": "作答结果未产生，无法继续评分、达标判断和归档导出。",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-18T09:25:07.853Z",
+  "updated_at": "2026-10-18T09:25:07.853Z"
+}

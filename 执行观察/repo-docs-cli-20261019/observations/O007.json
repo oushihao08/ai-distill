@@ -1,0 +1,33 @@
+{
+  "id": "O007",
+  "kind": "result",
+  "status": "resolved",
+  "title": "Corrected explicit path allowlist Markdown link check: 452 in-scope paths were allowlisted; 59 in-scope Markdown files w",
+  "item_ids": [
+    "inventory"
+  ],
+  "attempt_ids": [],
+  "facts": [
+    "Corrected explicit path allowlist Markdown link check: 452 in-scope paths were allowlisted; 59 in-scope Markdown files were opened; 100 local targets checked; 1 docs target and 1 protected project target skipped; 0 broken in-scope local links. This is link existence only, not semantic review.",
+    "原记录类型：bounded-structural-check。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "Allowlist assertions reject docs paths and protected project inputs.",
+    "Checker output: markdown_read=59, local_targets_checked=100, broken_links=0."
+  ],
+  "impact": "Limited structural result only. Does not establish full documentation correctness or source/API consistency.",
+  "updates": [
+    {
+      "at": "2026-10-19T12:01:06Z",
+      "action": "为当前 Trace 查看器补齐其要求的记录字段；保留原事实、证据和范围边界。当前只读/修改范围按本轮明确allowlist执行。历史事件本身不撤销。"
+    },
+    {
+      "at": "2026-10-19T10:30:37.403167+00:00",
+      "action": "Continue semantic review per file; re-run after edits with the same allowlist."
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-19T10:30:37.403167+00:00",
+  "updated_at": "2026-10-19T12:01:06Z"
+}

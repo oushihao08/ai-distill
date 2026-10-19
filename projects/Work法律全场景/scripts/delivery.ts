@@ -26,7 +26,7 @@ interface DeliveryInput{
  rubric_version:string;
  question:{task_name:unknown;task_type:unknown;header:unknown;question:unknown;attachment_ids:unknown;rubric:unknown;answer_approach:unknown;reference_answer:unknown;delivery_identity?:{task_id:string;org:string}}&Partial<WorkContent>;
  acceptance:unknown;
- attachments:{id:string;sha256:string;name:string;text:string;documents?:RedactedDocumentStructure[]}[];
+ attachments:{id:string;sha256:string;name:string;text:string;material_mode?:'redacted'|'original';documents?:RedactedDocumentStructure[]}[];
  simulation:{deliverable_type:'F1'|'F2'|'F3'|'F4'|'F5';deliverable_title:string;deliverable_markdown:string;harbor_files:{path:string;markdown:string;sheets:{name:string;columns:string[];rows:(string|number|boolean)[][]}[]}[];research_entries:{id:string;query:string;title:string;url:string;finding:string;version_or_date:string;used_in:string}[];unresolved:string[];generated_at:string;model:string;reasoning_effort:string;actual_search_queries:string[];actually_opened_urls:string[]};
 }
 
@@ -72,7 +72,7 @@ async function harborFileBytes(file:{path:string;markdown:string;sheets:{name:st
 
 async function generateHarborPackage(parent:string,input:DeliveryInput){
  const mapping=harborMapping(input.question),simulation=input.simulation;
- if(mapping.input_files.length!==input.attachments.length||mapping.input_files.some((file:{path:string;description:string},index:number)=>file.path!==input.attachments[index]?.name||typeof file.description!=='string'||!file.description.trim()))throw new Error('Harbor 输入材料清单必须按实际脱敏附件顺序逐一映射并提供说明');
+ if(mapping.input_files.length!==input.attachments.length||mapping.input_files.some((file:{path:string;description:string},index:number)=>file.path!==input.attachments[index]?.name||typeof file.description!=='string'||!file.description.trim()))throw new Error('Harbor 输入材料清单必须按本题冻结材料顺序逐一映射并提供说明');
  for(const item of mapping.input_files)assertHarborRelative(item.path);
  if(!Array.isArray(simulation.harbor_files)||!simulation.harbor_files.length)throw new Error('模拟专家成果没有 Harbor 文件映射');
  const workspace=await mkdtemp(join(tmpdir(),'ai-distill-harbor-'));
@@ -107,7 +107,7 @@ function parseInput(value:unknown):DeliveryInput{
  if(input.version!==1||!uuid.test(input.project_id)||!uuid.test(input.workflow_id)||!sha.test(input.source_digest)||!sha.test(input.delivery_digest)||typeof input.title!=='string'||!input.title.trim()||typeof input.question_version!=='string'||!input.question_version||typeof input.rubric_version!=='string'||!input.rubric_version)throw new Error('交付身份或版本无效');
  const question=input.question;
  if(!question||typeof question.question!=='string'||!question.question.trim()||typeof question.reference_answer!=='string'||!question.reference_answer.trim()||!Array.isArray(question.rubric)||!question.rubric.length||!Array.isArray(question.attachment_ids)||!question.attachment_ids.length||!Array.isArray(input.attachments)||!input.attachments.length)throw new Error('题目快照不完整');
- if(input.attachments.some(item=>!uuid.test(item.id)||!sha.test(item.sha256)||!/^材料-\d{3}\.md$/.test(item.name)||typeof item.text!=='string'||!item.text.trim())||question.attachment_ids.some(id=>typeof id!=='string'||!input.attachments.some(item=>item.id===id)))throw new Error('附件身份或脱敏正文不一致');
+ if(input.attachments.some(item=>!uuid.test(item.id)||!sha.test(item.sha256)||!/^材料-\d{3}\.md$/.test(item.name)||typeof item.text!=='string'||!item.text.trim()||!['redacted','original'].includes(item.material_mode??'redacted'))||question.attachment_ids.some(id=>typeof id!=='string'||!input.attachments.some(item=>item.id===id)))throw new Error('附件身份或题目冻结材料不一致');
  if(!input.simulation||!input.simulation.deliverable_markdown?.trim()||!Array.isArray(input.simulation.harbor_files)||!input.simulation.harbor_files.length||!Array.isArray(input.simulation.research_entries)||!input.simulation.research_entries.length||!Array.isArray(input.simulation.actual_search_queries)||!Array.isArray(input.simulation.actually_opened_urls))throw new Error('模拟专家成果或实际检索证据缺失');
  if(!input.acceptance||typeof input.acceptance!=='object'||(input.acceptance as {decision?:unknown}).decision!=='accepted')throw new Error('达标结果无效');
  return input;
@@ -116,6 +116,7 @@ function parseInput(value:unknown):DeliveryInput{
 /** 兼容尚未重载的本地API：仅用公开只读成果接口补齐同次脱敏结构，不访问数据库或原件。 */
 async function hydrateRedactedDocuments(input:DeliveryInput){
  if(input.question.content_contract!=='work_legal_v1'||input.attachments.every(item=>item.documents!==undefined))return;
+ if(input.attachments.some(item=>item.material_mode==='original'&&item.documents===undefined))throw new Error('未脱敏材料缺少题目快照中的MinerU结构，不能回退读取脱敏材料');
  const read=async(path:string)=>{
   const response=await fetch(`http://127.0.0.1:3700/api/${path}`,{signal:AbortSignal.timeout(10000)});
   if(!response.ok)throw new Error('无法读取冻结脱敏结构');

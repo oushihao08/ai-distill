@@ -1,0 +1,50 @@
+{
+  "id": "O036",
+  "kind": "result",
+  "status": "resolved",
+  "title": "CLI路由映射复核并补齐兼容迁移说明",
+  "item_ids": [
+    "inventory",
+    "docs",
+    "cli"
+  ],
+  "attempt_ids": [
+    "A005",
+    "A008",
+    "A009"
+  ],
+  "facts": [
+    "完整阅读 cli/commands.ts 1-536、cli/README.md 1-219、skill/MAP.md 1-153；按参数授权、HTTP路径/方法、版本锁、request-key、异步结果、恢复语义交叉核对相关服务端路由。",
+    "静态解析本机命令白名单共33个命令组，均存在对应处理入口；该静态证据不表示CLI已运行或API业务已验收。",
+    "发现 project material-mode --clear-existing 只在帮助中出现，CLI README和Skill地图未说明；服务端PATCH会软隐藏旧题、将既有导出标为失效，并在有活动任务时拒绝。已补文档边界。",
+    "将材料库使用历史的简写 usage 改为完整可执行命令 library package usage --package UUID。",
+    "没有修改CLI运行代码、没有运行CLI/API、没有运行测试或类型检查。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "cli/commands.ts",
+    "cli/README.md",
+    "skill/MAP.md",
+    "cli/index.ts",
+    "cli/client.ts",
+    "cli/remote-materials.ts",
+    "cli/remote-answers.ts",
+    "server/app.ts:391-411",
+    "server/project-groups.ts:79-119",
+    "server/workflow-execution-routes.ts:72-110",
+    "server/material-library/projects-routes.ts:24-75",
+    "server/material-library/routes.ts:25-75",
+    "server/remote-material-routes.ts:24-110"
+  ],
+  "impact": "CLI README、CLI命令映射和Skill地图的3个partial项转为reviewed-updated；全仓范围语义核实363/449（80.8%），partial 7，pending 79。",
+  "updates": [
+    {
+      "at": "2026-10-19T19:33:49+08:00",
+      "action": "核对命令到路由与恢复契约，补足兼容material-mode迁移说明和完整usage命令。",
+      "result": "命令/API静态映射无其他发现；不代表执行验证。覆盖核实363/449（80.8%），partial 7，pending 79。"
+    }
+  ],
+  "lesson": "兼容性写命令即使不属于新主流程，也应标明触发条件和真实数据副作用，避免被新项目流程误用。",
+  "created_at": "2026-10-19T19:33:49+08:00",
+  "updated_at": "2026-10-19T19:33:49+08:00"
+}

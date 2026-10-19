@@ -1,12 +1,13 @@
 /**
- * 文件职责：按项目材料后端读取并校验题目冻结的脱敏附件来源。
- * 关键入口：`readQuestionMaterials()` 返回类型化来源和摘要已核对的脱敏附件；library_v1 缺快照时拒绝旧步骤回退。
+ * 文件职责：按项目材料后端读取并校验题目冻结的材料来源。
+ * 关键入口：`readQuestionMaterials()` 返回类型化来源和摘要已核对的脱敏或原文附件；library_v1 缺快照时拒绝旧步骤回退。
  * 使用场景：出题、作答、评分、归档和导出共用；不执行 OCR、脱敏或文件写入。
  */
 import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../shared/workflow-config';
+import {documentBlocksToText} from './materials/pdf';
 import type {QuestionMaterialOrigin} from '../shared/material-library';
 
 type Db=Pool|PoolClient;
@@ -41,37 +42,52 @@ async function readLegacyMaterials(db:Db,workflowId:string):Promise<QuestionMate
 }
 
 async function readLibraryMaterials(db:Db,workflowId:string):Promise<QuestionMaterials>{
- const row=(await db.query(`SELECT project_id,package_id,revision_id,redaction_id,source_digest,snapshot_manifest,snapshot_digest,markdown_artifact_id,index_artifact_id
+ const row=(await db.query(`SELECT project_id,package_id,revision_id,redaction_id,material_mode,source_digest,snapshot_manifest,snapshot_digest,markdown_artifact_id,index_artifact_id
   FROM ai_distill.question_library_sources WHERE workflow_id=$1`,[workflowId])).rows[0];
  if(!row)throw conflict('library_v1 题目缺少来源快照');
  const manifest=row.snapshot_manifest;
+ const mode=row.material_mode==='original'?'original':'redacted';
+ const markdownEntry=manifest?.material_markdown??manifest?.redacted_markdown,indexEntry=manifest?.material_index??manifest?.redacted_index;
  if(!manifest||typeof manifest!=='object'||Array.isArray(manifest)||manifest.version!==2||!manifest.origin||manifest.origin.kind!=='library_v1'||
-   manifest.origin.package_id!==row.package_id||manifest.origin.revision_id!==row.revision_id||manifest.origin.redaction_id!==row.redaction_id||
-   manifest.origin.source_digest!==row.source_digest||manifest.redacted_markdown?.artifact_id!==row.markdown_artifact_id||manifest.redacted_index?.artifact_id!==row.index_artifact_id||
+   manifest.origin.package_id!==row.package_id||manifest.origin.revision_id!==row.revision_id||manifest.origin.redaction_id!==(row.redaction_id??null)||
+   (manifest.origin.material_mode??'redacted')!==mode||manifest.origin.source_digest!==row.source_digest||markdownEntry?.artifact_id!==row.markdown_artifact_id||indexEntry?.artifact_id!==row.index_artifact_id||
    !Array.isArray(manifest.files)||hash(canonicalJson(manifest))!==row.snapshot_digest){
-  throw conflict('library_v1 题目来源快照结构或摘要无效');
+  throw conflict('library_v1 题目材料来源快照结构或摘要无效');
  }
  const artifacts=(await db.query(`SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts
   WHERE workflow_id=$1 AND id=ANY($2::uuid[])`,[workflowId,[row.markdown_artifact_id,row.index_artifact_id]])).rows as MaterialArtifact[];
- if(artifacts.length!==2)throw conflict('library_v1 题目脱敏正文或索引缺失');
+ if(artifacts.length!==2)throw conflict('library_v1 题目正文或索引缺失');
  const markdown=artifacts.find(item=>item.id===row.markdown_artifact_id),index=artifacts.find(item=>item.id===row.index_artifact_id);
- if(markdown?.kind!=='redacted_markdown'||index?.kind!=='redacted_index'||markdown.attempt_id!==null||index.attempt_id!==null||
+ const expectedMarkdownKind=mode==='original'?'source_markdown':'redacted_markdown',expectedIndexKind=mode==='original'?'source_index':'redacted_index';
+ if(markdown?.kind!==expectedMarkdownKind||index?.kind!==expectedIndexKind||markdown.attempt_id!==null||index.attempt_id!==null||
    typeof markdown.content!=='string'||typeof index.content!=='string'||hash(markdown.content)!==markdown.sha256||hash(index.content)!==index.sha256||
-   markdown.sha256!==manifest.redacted_markdown.sha256||index.sha256!==manifest.redacted_index.sha256){
-  throw conflict('library_v1 题目脱敏正文或索引与来源快照不匹配');
+   markdown.sha256!==markdownEntry.sha256||index.sha256!==indexEntry.sha256){
+  throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  }
  let parsedIndex:any;
- try{parsedIndex=JSON.parse(index.content);}catch{throw conflict('library_v1 题目脱敏索引格式无效');}
- if(parsedIndex?.format!=='redacted-index-v2'||parsedIndex.redacted_sha256!==markdown.sha256||!Array.isArray(parsedIndex.materials))throw conflict('library_v1 题目脱敏索引与正文不匹配');
- const origin:QuestionMaterialOrigin={kind:'library_v1',package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:String(row.redaction_id),snapshot_digest:String(row.snapshot_digest)};
+ try{parsedIndex=JSON.parse(index.content);}catch{throw conflict('library_v1 题目材料索引格式无效');}
+ if(mode==='original'){
+  if(parsedIndex?.format!=='source-index-v1'||!Array.isArray(parsedIndex.materials)||parsedIndex.materials.length!==manifest.files.length||
+    parsedIndex.materials.some((item:any,index:number)=>{
+     const file=manifest.files[index],document=item?.document;
+     if(typeof item?.material_id!=='string'||item.material_id!==file?.material_id||typeof item.markdown!=='string'||!document||document.version!==1||document.source_sha256!==file.source_sha256||!Array.isArray(document.pages))return true;
+     const pageTexts:string[]=[];
+     for(const page of document.pages){if(!Number.isSafeInteger(page.page)||typeof page.text!=='string'||!Array.isArray(page.structure)||documentBlocksToText(page.structure)!==page.text)return true;pageTexts.push(page.text);}
+     const projected=pageTexts.filter(Boolean).join('\n\n'),textDigest=hash(pageTexts.join('\n'));
+     return projected!==item.markdown||textDigest!==file.document_sha256;
+    }))throw conflict('library_v1 题目原文索引与正文不匹配');
+  const projected=parsedIndex.materials.map((item:any,index:number)=>`# ${String(manifest.files[index]?.original_name??'')}\n\n${item.markdown}`).join('\n\n---\n\n');
+  if(projected!==markdown.content)throw conflict('library_v1 题目原文索引投影与正文不匹配');
+ }else if(parsedIndex?.format!=='redacted-index-v2'||parsedIndex.redacted_sha256!==markdown.sha256||!Array.isArray(parsedIndex.materials))throw conflict('library_v1 题目脱敏索引与正文不匹配');
+ const origin:QuestionMaterialOrigin={kind:'library_v1',material_mode:mode,package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id===null?null:String(row.redaction_id),snapshot_digest:String(row.snapshot_digest)};
  return{origin,attachments:[{id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null}],digest:String(row.snapshot_digest)};
 }
 
 export async function readQuestionMaterials(db:Db,workflowId:string):Promise<QuestionMaterials>{
- const row=(await db.query(`SELECT p.material_backend FROM ai_distill.workflows w
+ const row=(await db.query(`SELECT p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources s WHERE s.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w
   JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL`,[workflowId])).rows[0];
  if(!row)throw new HTTPException(404,{message:'工作流不存在'});
- if(row.material_backend==='library_v1')return readLibraryMaterials(db,workflowId);
+ if(row.material_backend==='library_v1'||row.has_library_snapshot)return readLibraryMaterials(db,workflowId);
  if(row.material_backend!=='legacy')throw conflict('题目材料后端无效');
  return readLegacyMaterials(db,workflowId);
 }

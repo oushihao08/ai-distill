@@ -1,0 +1,65 @@
+{
+  "id": "A016",
+  "item_id": "inventory",
+  "stage_id": "audit",
+  "previous_attempt_id": "A014",
+  "status": "succeeded",
+  "started_at": "2026-10-19T11:59:11Z",
+  "finished_at": "2026-10-19T11:59:11Z",
+  "inputs": [
+    {
+      "ref": "AGENTS.md",
+      "sha256": "01af2306c37c7d1ca9ba7770f1978790913b052153986e09e7261275d290c3bc"
+    },
+    {
+      "ref": "README.md",
+      "sha256": "168b425566a4aebd73acd2f3eaff30f6a6e2a0eb520732a06f34e74cc7c06a8d"
+    },
+    {
+      "ref": "bun.lock",
+      "sha256": "58d06501ab929a132cd0d21a2c08bf120d1346ffeb26be4f308fd867df51423e"
+    },
+    {
+      "ref": "package.json",
+      "sha256": "bcd6f533f9b20864d50cf7e69e9149a52946cbbae226e4fb9cd0f3883e7c7523"
+    },
+    {
+      "ref": "cli/commands.ts",
+      "sha256": "a7a41aa56c7f921ce5bd8d8a2d0316278ef48208924f1bcee984b3bb0eb260d6"
+    },
+    {
+      "ref": "cli/README.md",
+      "sha256": "5f2c51f87c6a9536b26bf96e44383d171eaa3d4864da74c081a00654c3f1d600"
+    },
+    {
+      "ref": "server/app.ts",
+      "sha256": "123ca3a302b54f7d9f62570ed17ed35f343043a51d1a51b5760d490dc9b3dc32"
+    }
+  ],
+  "configuration": {
+    "scope": "当前工程文档/CLI与源码静态核对；docs内容不读，architecture只读背景；不执行业务/测试"
+  },
+  "changes_from_previous": [
+    "复核根规则/README和锁文件；修复架构文档更新冲突；准确完成全量差集解释。"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local working tree",
+    "runtime_version": null
+  },
+  "artifacts": [
+    {
+      "ref": "audit-v2.json"
+    },
+    {
+      "ref": "observations/O042.json"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "source_review",
+      "result": "根入口、API下载路由、脚本名和运行配置交叉核对；无运行态验证。"
+    }
+  ],
+  "error": null
+}

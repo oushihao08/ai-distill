@@ -6,22 +6,27 @@
 | 文件 | 职责 |
 | --- | --- |
 | `score.ts` | 后端达标与前端评分展示共用百分制换算；无效分数或满分返回空值 |
-| `workflow-config.ts` | 项目阶段扩展配置及同步／异步钩子声明的结构校验；缺省不添加字段，不解释业务规则。钩子执行及阶段接入仍在实施 |
+| `workflow-config.ts` | 项目阶段扩展配置及同步／异步钩子声明的结构校验；缺省不添加字段，不解释业务规则。钩子执行在 server/workflow-hooks.ts 和各阶段队列中完成，启用所需表仍需按环境核实 |
 | `types.ts` | 项目材料模式、材料包／派生题目身份、材料、步骤、执行尝试与 API 返回类型，含跨项目成果库摘要 |
 | `material-library.ts` | 独立材料库、项目加载关系、材料任务状态和题目材料来源的 DTO；不替代旧材料类型 |
 | `workflow-results.ts` | 当前答案、评分、达标汇总的共享类型与 JSON 读取边界；不改变历史存储格式 |
 | `step-prompts.ts` | 脱敏、出题、作答和评分的系统级提示词默认；新建项目复制快照，项目提示词和冻结任务各自独立 |
 | `step-registry.ts` | 步骤 key、持久化 ordinal、可见 position、默认启用项和脱敏默认提示词 |
+| `score.test.ts` | 新评分指标与原始分、否决项之间的百分制转换边界 |
+| `step-registry.test.ts` | legacy、library_v1及旧材料包的可见步骤身份兼容 |
+| `workflow-results.test.ts` | 答案/评分摘要读取时的形状校验与非法字段拒绝 |
 
-`web/src/types/api.ts` 转出共享类型；后端材料接收、项目步骤汇总和执行器使用注册表。新增步骤应定义独立持久化身份，不重编号历史尝试。ordinal 2（PDF/DOCX 内部提取）、3（旧规则绑定）和 10（旧独立审查）仅用于历史兼容；ordinal 4 为出题，七个可见步骤的位置为 1 至 7。
+`web/src/types/api.ts` 转出共享类型；后端材料接收、项目步骤汇总和执行器使用注册表。新增步骤应定义独立持久化身份，不重编号历史尝试。ordinal 2 仍用于旧目录流程的 PDF/DOCX 内部提取；3（旧规则绑定）和 10（旧独立审查）保留历史兼容；ordinal 4 为出题，七个可见步骤的位置为 1 至 7。
 
 `workflow-results.ts` 定义当前作答、评分和达标摘要，并提供读取未知 JSON 的运行时边界函数；旧记录缺少可选字段时继续可读，不据此推断为成功。它只约束前后端对已有结果的读取，不添加数据库字段或改变 Agent 可见输入。
 
 类型声明不代替服务端运行时校验；修改字段须检查 Hono 返回值、前端消费者和已有任务快照。页面状态名、步骤顺序与数据库序号是不同概念。
 
-`types.ts` 共用 `ModelApiProvider` / `ModelApiConfig`（含 SiliconFlow），脱敏步骤配置支持嵌套 `api` 配置；`RedactionProgress` 只包含阶段、字段计数、批次与请求计数、期限和耗时统计，不含正文或模型配置；`Step.ready` 与 `Step.ready_reason` 由服务端统一计算并供逐题步骤表展示；`Project.workflow_count` 保留总数，`material_package_count` 与 `question_count` 分别供项目列表展示；`Project.question_tags` 是本期可选目录，`Workflow.question_tags` 是题目创建时的标签快照，旧 `target_level` 仍可读；项目 `Workflow` 的达标判定、逐模型分数及发布／导出状态用于达标题目表；`ResultLibraryItem` 包含跨项目达标题目的来源材料包 ID 与名称；`WorkflowDetail.material_package_questions` 仅在材料包详情列出未删除派生题目的轻量摘要，`source_material_package` 提供派生题目来源标题；新材料库项目显式携带 `material_backend/workspace_path`，新题私有 artifact 的 `attempt_id` 可空并由类型化 `question_material_origin` 绑定；密钥不得进入这些公开类型或配置。
+`types.ts` 共用 `ModelApiProvider` / `ModelApiConfig`（含 SiliconFlow），脱敏步骤配置支持嵌套 `api` 配置；`RedactionProgress` 只包含阶段、字段计数、批次与请求计数、期限和耗时统计，不含正文或模型配置；`Step.ready` 与 `Step.ready_reason` 由服务端统一计算并供逐题步骤表展示；`Project.workflow_count` 保留总数，`material_package_count` 与 `question_count` 分别供项目列表展示；`ProjectDetail.workflow_status` 是项目详情首屏共用的轻量步骤状态与已出题标记快照，供步骤摘要和题目表复用；`Project.question_tags` 是本期可选目录，`Workflow.question_tags` 是题目创建时的标签快照，旧 `target_level` 仍可读；项目 `Workflow` 的达标判定、逐模型分数及发布／导出状态用于达标题目表；`ResultLibraryItem` 包含跨项目达标题目的来源材料包 ID 与名称；`WorkflowDetail.material_package_questions` 仅在材料包详情列出未删除派生题目的轻量摘要，`source_material_package` 提供派生题目来源标题；新材料库项目显式携带 `material_backend/workspace_path`，新题私有 artifact 的 `attempt_id` 可空并由类型化 `question_material_origin` 绑定；密钥不得进入这些公开类型或配置。
 
-`material-library.ts` 的 job 状态只描述持久化材料任务；排队资源、worker 租约、取消和来源校验由服务端实现，不能仅凭 DTO 推断任务已执行或结果可用于建题。
+`material-library.ts` 的 job 状态只描述持久化材料任务；`MaterialLibraryPackageSummary.material_uses` 是列表页当前分页的轻量使用账摘要，含主项目、所属期和状态，不含历史事件。排队资源、worker 租约、取消和来源校验由服务端实现，不能仅凭 DTO 推断任务已执行或结果可用于建题。
+
+共享材料库 DTO 中，`MaterialUseRecord` 只承载单条使用关系的当前状态摘要；历史事件由 `MaterialUseEvent` 单独表示并按需读取。项目工作流列表可带 `library_package_id/name`，用于展示由共享材料包创建的题目来源；这不替代题目私有 `question_library_sources` 快照，也不改变旧 `source_workflow_id` 的兼容读取。
 
 WorkflowDetail 的 artifacts 可带 filename，供逐附件脱敏 DOCX 下载链接显示文件名；不返回存储绝对路径。
 
@@ -30,3 +35,5 @@ WorkflowDetail 的 artifacts 可带 filename，供逐附件脱敏 DOCX 下载链
 `Material.redaction_mode` 由服务端附件详情返回，`model` 为默认；DOCX 的 `declared_redacted` 是操作者声明，前端需按当前附件 SHA-256 提交变更。
 
 workflow-config.ts 的可选 content_contract=work_legal_v1 供出题阶段显式绑定内容结构，与评分 contract 分开；未提供时不增加默认键。
+
+结果读取函数只做关键形状检查，并保留传入对象的其他字段；它们不是敏感字段过滤器，也不证明模型数量、来源版本或业务达标。输入隔离和达标校验由后端执行器及判断模块负责。

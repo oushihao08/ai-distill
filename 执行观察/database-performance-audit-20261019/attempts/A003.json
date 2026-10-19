@@ -1,0 +1,20 @@
+{
+  "id": "A003",
+  "item_id": "database-performance",
+  "stage_id": "live-api-restart-and-compare",
+  "previous_attempt_id": null,
+  "status": "blocked",
+  "started_at": "2026-10-19T10:37:17+08:00",
+  "finished_at": null,
+  "inputs": [{"ref": "scripts/runtime/start-iterm.sh", "version": "current", "sha256": null}],
+  "configuration": {"user_authorization": "仅重启API并复测", "worker_restart": false, "migration": false},
+  "changes_from_previous": [],
+  "external_ids": {"api_pid": "71008"},
+  "environment": {"target": "local macOS", "runtime_version": "Bun 1.3.9"},
+  "artifacts": [],
+  "verification": [
+    {"kind": "restart_gate", "result": "blocked", "evidence": "After user authorized API-only restart, rechecked the repo startup script: it requires worker status running/paused and a heartbeat no older than 30 seconds before stopping a stale API. Current GET /api/monitor returns status=stale, heartbeat_at=2026-10-19T00:01:16.490Z; snapshot tasks status=known and running=0, but this does not satisfy the fresh-heartbeat gate. No API-only restart entry point exists; start-iterm.sh also launches/reuses the frontend and worker, so it is not an API-only option."},
+    {"kind": "same_api_retest", "result": "measured_old_process", "evidence": "API PID 71008 started 2026-10-19 09:58:41 and runs bun server/index.ts without watch; relevant source mtimes are newer. GET /api/monitor=0.708s/1050 bytes; GET /api/health=0.360s/51 bytes; GET /api/projects/db617d63-cdc5-4c0a-a791-ec530e2fe625=2.916s/170029 bytes. These are still old-process measurements, not validation of the source changes."}
+  ],
+  "error": null
+}

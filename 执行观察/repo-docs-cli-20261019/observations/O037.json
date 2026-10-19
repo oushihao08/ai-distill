@@ -1,0 +1,35 @@
+{
+  "id": "O037",
+  "kind": "issue",
+  "status": "resolved",
+  "title": "修正Trace尝试记录的跨阶段前次引用",
+  "item_ids": [
+    "cli"
+  ],
+  "attempt_ids": [
+    "A007",
+    "A009"
+  ],
+  "facts": [
+    "Trace总览脚本因A007.previous_attempt_id指向A006而拒绝生成。A007属cli/implement，A006属docs/update，引用跨了item/stage。",
+    "A003是同属cli/implement的前一次尝试；将A007前次引用更正为A003，并保留A007实际成功状态及内容。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "attempts/A003.json",
+    "attempts/A006.json",
+    "attempts/A007.json",
+    "/Users/jack/.codex/skills/trace/scripts/view.py"
+  ],
+  "impact": "恢复Trace记录校验一致性，允许生成当前总览；不涉及源码或业务数据。",
+  "updates": [
+    {
+      "at": "2026-10-19T19:33:49+08:00",
+      "action": "将A007.previous_attempt_id由跨阶段的A006改为同阶段的A003，并补录后续A009。",
+      "result": "前次引用现在与item_id/stage_id一致；view.py待重跑确认。"
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-19T19:33:49+08:00",
+  "updated_at": "2026-10-19T19:33:49+08:00"
+}

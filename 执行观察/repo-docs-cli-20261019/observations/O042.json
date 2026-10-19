@@ -1,0 +1,54 @@
+{
+  "id": "O042",
+  "kind": "result",
+  "status": "resolved",
+  "title": "根目录规则、说明和最终覆盖核对完成",
+  "item_ids": [
+    "inventory",
+    "docs",
+    "verify"
+  ],
+  "attempt_ids": [
+    "A016",
+    "A017",
+    "A018"
+  ],
+  "facts": [
+    "根AGENTS.md旧条款曾要求模块职责变化时同步修改架构文档，与同文件中的docs只读边界冲突；现已合并为仅更新本次维护范围内的权威说明及导航，docs/不因架构边界变化而编辑。",
+    "根README中的siriser download描述与cli/commands.ts及server/app.ts的真实GET下载路由一致：只下载已归档ZIP，不上传平台。运行命令、WORKER_MODE默认/模板值、Docker与根文件边界已与当前配置/包脚本交叉核实。",
+    "bun.lock是Bun lockfileVersion 1生成锁文件；不插入注释、不手工改写，根README已说明用途和编辑边界。",
+    "纳入语义审阅449/449；reviewed 379、reviewed-updated 70、partial 0、pending 0。原排除项885；本次追溯生成物另按路径分类排除。",
+    "开工基线与审计清单差异为单一操作Skill符号链接；当前工作树额外的42个既有路径及本次追加的A016/A017/A018/O042共46个路径均为本任务执行观察记录/审计账本，不是工程源文件，逐路径按追溯产物排除。",
+    "docs/当前5个状态路径的SHA-256摘要均与基线一致；仅比对摘要，不读取内容。本任务没有写入docs/。",
+    "此前进度汇报误用了O039的历史378/449快照，之后才更新到O040/O041；这造成额外等待感。准确原因是逐文件语义审阅耗时，加上进度快照未及时刷新，不是项目运行流程故障。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "AGENTS.md:94-95",
+    "README.md:5-77",
+    "cli/commands.ts:481-484",
+    "cli/README.md:115",
+    "server/app.ts:912",
+    "package.json:4-14",
+    ".env.example:3-4,48",
+    "Dockerfile",
+    "docker-stack.yml",
+    ".dockerignore",
+    ".gitignore",
+    "bun.lock",
+    "audit-v2.json",
+    "baseline-v2.json",
+    "docs/ status/hash summary"
+  ],
+  "impact": "静态文档与路径审阅完整结束；运行态和测试未验收。",
+  "updates": [
+    {
+      "at": "2026-10-19T12:01:51Z",
+      "action": "复算台账时发现生成追溯路径最初只写入scope列表，未同步加入逐路径文件行；现已补齐46条排除记录并重新计算计数。",
+      "result": "audit.files=1380; coverage={'total': 1380, 'reviewed': 379, 'reviewed-updated': 70, 'partial': 0, 'pending': 0, 'excluded': 931, 'semantic_reviewed': 449, 'semantic_target': 449, 'path_only_trace_exclusions': 46, 'complete': True}"
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-19T12:01:36Z",
+  "updated_at": "2026-10-19T12:01:51Z"
+}

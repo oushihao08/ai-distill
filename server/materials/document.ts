@@ -1,6 +1,6 @@
 /**
- * 职责：统一文档提取：本地解析 DOCX/TXT/MD，PDF 必须注入 MinerU provider。
- * 关键方法与用途：`extractLocalDocument()` 解析 DOCX／TXT／MD；`ProjectDocumentExtractor` 校验并调用 MinerU 页级提取。
+ * 职责：统一文档提取：TXT/MD本地解析；PDF须注入provider，DOCX有注入provider时使用它，否则保留本地OOXML兼容解析。
+ * 关键方法与用途：`extractLocalDocument()`提供本地兼容解析；`ProjectDocumentExtractor.extract()`按格式分流并核对供应商原件SHA。
  * 使用场景：`intake.ts` 和提取队列调用；PDF 文本、页码与识别问题统一返回。
  */
 import { readFile } from 'node:fs/promises';

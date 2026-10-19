@@ -1,5 +1,6 @@
-/** 验证分页提取的部分结果问题、单页失败隔离和 OCR 输出边界。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+/**
+ * 验证分页提取的部分结果问题、单页失败隔离和 OCR 输出边界。
+ * 使用替身 HTTP 响应与注入提取器，不调用真实 OCR/实体服务或数据库。
  */
 import {test,expect} from 'bun:test';
 import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
@@ -24,7 +25,7 @@ test('OCR-only processing persists its structured extraction and retains issues 
  const root=await mkdtemp(join(tmpdir(),'ocr-continue-'));
  try{const source='%PDF-fixture';await writeFile(join(root,'source.pdf'),source);
  const result=await processMaterials(root,'workflow','attempt',[{id:'material',storage_path:'source.pdf',sha256:createHash('sha256').update(source).digest('hex')}],{recognize:async()=>{throw new Error('unused');},entities:async()=>{throw new Error('must not call');}},{extract:async()=>({format:'pdf',provider:'mineru-cli',sha256:createHash('sha256').update(source).digest('hex'),pages:[{page:1,text:'partial text',method:'ocr',issues:['truncated_response']},{page:2,text:'next page',method:'ocr'}]})},loadExtractionConfig());
- expect(result.blocked).toBe(false);expect(result.result.issues).toEqual([{page_index:0,material_id:'material',page:1,kind:'truncated_response'}]);const extracted=result.artifacts.find(a=>a.kind==='private_extracted_pages')!;const value=JSON.parse(await readFile(join(root,extracted.storage_path),'utf8'));
+ expect(result.blocked).toBe(false);expect(result.result.issues).toEqual([{page_index:0,material_id:'material',page:1,kind:'truncated_response'},{page_index:0,material_id:'material',page:1,kind:'ocr_recheck_unresolved'}]);const extracted=result.artifacts.find(a=>a.kind==='private_extracted_pages')!;const value=JSON.parse(await readFile(join(root,extracted.storage_path),'utf8'));
  expect(value.pages.map((page:any)=>page.text)).toEqual(['partial text','next page']);expect(value.pages.map((page:any)=>page.structure[0].text)).toEqual(['partial text','next page']);
  }finally{await rm(root,{recursive:true,force:true});}
 });

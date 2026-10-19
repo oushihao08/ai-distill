@@ -6,11 +6,11 @@
 <script setup lang="ts">
 import { api } from '../api/client';
 import { dateLabel } from '../utils/format';
-import type { ProjectStage, Workflow, WorkflowDetail } from '../types/api';
+import type { ProjectStage, Step, Workflow } from '../types/api';
 
 const props = defineProps<{ step: ProjectStage; workflows: Workflow[] }>();
 const emit = defineEmits<{ close: [] }>();
-const records = shallowRef<Record<string, Pick<WorkflowDetail,'steps'|'attempts'>>>({});
+const records = shallowRef<Record<string, {steps:Step[]}>>({});
 const failures = shallowRef<Record<string, string>>({});
 const loading = shallowRef(false);
 const search = shallowRef('');
@@ -24,14 +24,14 @@ async function refresh() {
  controller = new AbortController();
  const signal = controller.signal;
  try {
-  const next: Record<string, Pick<WorkflowDetail,'steps'|'attempts'>> = {};
+  const next: Record<string, {steps:Step[]}> = {};
   const errors: Record<string, string> = {};
   const projectId=props.workflows[0]?.project_id;
   if(projectId){
    for(let start=0;start<props.workflows.length;start+=100){
     if(signal.aborted)return;
     const flows=props.workflows.slice(start,start+100);
-    const views=await api<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>(`/projects/${projectId}/workflow-status?ids=${flows.map(flow=>flow.id).join(',')}`,{signal});
+    const views=await api<Record<string,{steps:Step[]}>>(`/projects/${projectId}/workflow-status?ids=${flows.map(flow=>flow.id).join(',')}`,{signal});
     for(const flow of flows){const view=views[flow.id];if(view)next[flow.id]=view;else errors[flow.id]='记录状态不存在';}
    }
   }
@@ -44,9 +44,7 @@ async function refresh() {
 const rows = computed(() => props.workflows.map(flow => {
  const detail = records.value[flow.id];
  const step = detail?.steps.find(item => item.ordinal === props.step.ordinal);
- const ordinals = props.step.ordinal === 1 ? [1, 2] : [props.step.ordinal];
- const attempts = detail?.attempts.filter(item => ordinals.includes(item.ordinal)) ?? [];
- const active = attempts.find(item => ['waiting', 'running'].includes(item.status));
+ const active = step?.active === true;
  const ready = step?.ready === true;
  const decision = String(step?.result?.decision ?? '');
  const decisionLabels: Record<string, string> = { accepted: '达标', repair: '未达标', waiting: '等待判定条件', quarantine: '隔离' };
@@ -54,7 +52,7 @@ const rows = computed(() => props.workflows.map(flow => {
   : props.step.ordinal===7&&decision==='waiting'&&ready ? '就绪'
   : props.step.ordinal===7&&decision ? decisionLabels[decision]??decision
   : step.status === 'succeeded' ? '完成' : step.status === 'failed' ? '失败'
-  : step.status === 'skipped' ? '跳过' : step.status === 'running' || active?.status === 'running' ? '处理中'
+  : step.status === 'skipped' ? '跳过' : step.status === 'running' ? '处理中'
   : active ? '排队中' : ready ? '就绪' : '未进入';
  const issues = (Array.isArray(step?.result?.reasons) ? step.result.reasons.join('；') : '') || (Array.isArray(step?.result?.issues) && step.result.issues.length ? `${step.result.issues.length} 项处理问题，展开结果查看` : '');
  const summary = props.step.ordinal === 1 ? `${flow.material_count ?? 0} 份当前附件`

@@ -8,3 +8,5 @@
 | [shared-material-library-design-20261017](shared-material-library-design-20261017/总览.md) | 独立材料库设计及后续实施追溯；总览分别标识设计证据与代码/运行验收。 |
 | [redaction-output-20261018](redaction-output-20261018/总览.md) | 脱敏输出上限、切批和结束原因日志的修改与材料包实测。 |
 | [doubao-library-real-flow-20261018](doubao-library-real-flow-20261018/总览.md) | 豆包项目隔离副本的材料库真实链路恢复测试；原项目与原始PDF保持不变。 |
+| [database-performance-audit-20261019](database-performance-audit-20261019/总览.md) | 本地数据库/API查询慢根因、最小查询改动、测试与运行态复测；尚未加载新API代码。 |
+| [repo-docs-cli-20261019](repo-docs-cli-20261019/总览.md) | 排除 `docs/` 后核对工程文档、源码注释与 CLI 对当前材料库、期次和工作流契约的覆盖。 |

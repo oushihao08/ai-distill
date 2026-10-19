@@ -5,7 +5,7 @@
  */
 import type {Pool} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
-import {lstat,mkdir,readFile,rename,rm,writeFile} from 'node:fs/promises';
+import {lstat,mkdir,readFile,realpath,rename,rm,writeFile} from 'node:fs/promises';
 import {basename,join,relative,resolve,sep} from 'node:path';
 import {HTTPException} from 'hono/http-exception';
 import {questionResultDirectory} from '../materials/redacted-docx-export';
@@ -22,7 +22,7 @@ export async function writeArchivedWorkflowWorkbook(pool:Pool,workflowId:string,
  if(!row)throw new HTTPException(409,{message:'题目尚未归档，不能生成归档 Excel'});
  const exported=await buildProjectExport(pool,String(row.project_id),undefined,assetRoot,workflowId);
  if(exported.records.length!==1||exported.records[0]?.workflow_id!==workflowId)throw new HTTPException(409,{message:'当前达标题目数据不完整，不能生成归档 Excel'});
- const root=resolve(assetRoot),directory=await questionResultDirectory(root,String(row.parent_name??row.name),String(row.phase_name??''),String(row.phase_name?row.source_key||row.title:row.title));
+ const root=await realpath(resolve(assetRoot)),directory=await questionResultDirectory(root,String(row.parent_name??row.name),String(row.phase_name??''),String(row.phase_name?row.source_key||row.title:row.title));
  if(!inside(root,directory))throw new HTTPException(409,{message:'归档 Excel 输出目录越界'});
  await mkdir(directory,{recursive:true,mode:0o700});
  const path=join(directory,'题目归档数据.xlsx');
@@ -37,7 +37,7 @@ export async function readArchivedWorkflowWorkbook(pool:Pool,workflowId:string,a
  const row=(await pool.query(`SELECT result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded'`,[workflowId])).rows[0];
  const saved=row?.result?.archive_workbook;
  if(!saved||typeof saved.archive_path!=='string'||typeof saved.sha256!=='string')throw new HTTPException(404,{message:'该题尚无归档 Excel'});
- const root=resolve(assetRoot),path=resolve(root,saved.archive_path);
+ const root=await realpath(resolve(assetRoot)),path=resolve(root,saved.archive_path);
  if(!inside(root,path)||!saved.archive_path.split('/').every((part:string)=>part&&part!=='.'&&part!=='..'))throw new HTTPException(409,{message:'归档 Excel 路径无效'});
  try{
   const info=await lstat(path);if(info.isSymbolicLink()||!info.isFile()||info.size>30*1024*1024)throw new Error('invalid file');

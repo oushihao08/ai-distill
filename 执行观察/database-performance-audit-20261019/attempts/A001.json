@@ -1,0 +1,59 @@
+{
+  "id": "A001",
+  "item_id": "database-performance",
+  "stage_id": "baseline-and-source-review",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-19T10:15:00+08:00",
+  "finished_at": "2026-10-19T10:33:48+08:00",
+  "inputs": [
+    {
+      "ref": "AGENTS.md",
+      "version": "user-supplied 2026-10-19",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "api_base": "http://127.0.0.1:3700",
+    "database_access": "existing HTTP API only",
+    "restart": "not performed in this attempt"
+  },
+  "changes_from_previous": [],
+  "external_ids": {},
+  "environment": {
+    "target": "local macOS",
+    "runtime_version": "Bun 1.3.9"
+  },
+  "artifacts": [
+    {
+      "ref": "server/app.ts",
+      "sha256": null
+    },
+    {
+      "ref": "server/project-folders.ts",
+      "sha256": null
+    },
+    {
+      "ref": "server/db.ts",
+      "sha256": null
+    }
+  ],
+  "verification": [
+    {
+      "kind": "http_baseline",
+      "result": "measured",
+      "evidence": "GET project 2.828s; package list 2.800s; loaded materials 2.992s; material uses 2.903s"
+    },
+    {
+      "kind": "api_monitor",
+      "result": "checked",
+      "evidence": "live active workflow tasks empty; material library queued/running zero; persisted worker heartbeat stale"
+    },
+    {
+      "kind": "log_review",
+      "result": "checked",
+      "evidence": "54 connection waits median 2449ms and 22 slow queries median 1285.5ms in one time window; later 9 waits median 2430ms and 2 slow queries median 1466ms"
+    }
+  ],
+  "error": null
+}

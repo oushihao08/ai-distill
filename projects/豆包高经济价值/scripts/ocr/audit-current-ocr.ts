@@ -1,5 +1,5 @@
-/** 文件职责：核对指定真实项目的 OCR 检查点，并调用模型抽查源页；保存历史审计，不代表全文人工验收。
- * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/audit-current-ocr.ts`；遍历指定项目的检查点，调用抽样识别并将安全审计写入 docs/evidence；会访问真实材料和模型。
+/** 文件职责：核对指定真实项目的 OCR 检查点，并调用模型抽查源页；保存历史抽查记录，不代表全文人工验收。
+ * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/audit-current-ocr.ts`；读取固定 attempt 对应的真实材料，渲染源页并调用模型；报告写入 docs/evidence，问题记录可能包含源文书/OCR摘录，不是私有存储。
  */
 import{readdir,readFile,mkdir,writeFile,rm}from'node:fs/promises';
 import{join,resolve}from'node:path';

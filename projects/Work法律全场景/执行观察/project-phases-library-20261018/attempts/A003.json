@@ -1,0 +1,35 @@
+{
+  "id": "A003",
+  "item_id": "T2",
+  "stage_id": "implementation",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": null,
+  "finished_at": "2026-10-19T07:39:49+08:00",
+  "inputs": [
+    {
+      "ref": "docs/plans/2026-10-17-shared-material-library-design.md#16-主项目多期防重与work历史衔接三任务计划",
+      "version": null,
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "model_calls": false,
+    "external_platform_writes": false
+  },
+  "changes_from_previous": [],
+  "external_ids": {},
+  "environment": {
+    "target": "local API and source",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "live_import_reconciliation",
+      "result": "32 source workflows mapped to 27 canonical packages; 89 original files and 89 successful extraction files imported; 27 use rows (25 submitted, 2 in_use), with 28 submission events mapped to historical evidence.",
+      "evidence": "evidence/live-import-results.json; evidence/live-use-ledger-final.json; evidence/live-submission-status-import.json"
+    }
+  ],
+  "error": null
+}

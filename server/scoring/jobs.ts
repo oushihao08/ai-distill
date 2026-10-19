@@ -21,12 +21,13 @@ import {validateStepConfigForExecution} from '../project-folders';
 import {mergeCodexDefaults,readProjectAgentDefaults} from '../agent/config';
 import {canonicalJson} from '../../shared/workflow-config';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '@shared/step-prompts';
+import {resolveEffectiveProjectSkill} from '../rule-files';
 export function scoreContextDigest(context:ScoreContext){
  const b=context.binding;
  const frozen={binding:{question_version:b.question_version,input_digest:b.input_digest,rubric_version:b.rubric_version,rubric_digest:b.rubric_digest,answer_attempt_id:b.answer_attempt_id,answer_sha256:b.answer_sha256},input:buildAnonymousInput(context)};
  return createHash('sha256').update(context.scoring_policy?.contract==='model_report_v1'?canonicalJson(frozen):JSON.stringify(frozen)).digest('hex');
 }
-const workflowSql="SELECT w.project_id,(SELECT p.local_skill_path FROM ai_distill.projects p WHERE p.id=w.project_id) AS local_skill_path FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) FOR UPDATE OF w";
+const workflowSql="SELECT w.project_id,p.local_skill_path,p.workspace_path,p.parent_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
 /**
  * 从当前作答结果中选取成功答案，为每份答案读取并冻结匿名评分上下文后分别入队。
  * 上下文摘要与配置用于去重和防止跨题面、rubric、附件、答案或评分提示词混用评分结果。
@@ -56,8 +57,8 @@ export async function enqueueScore(pool:Pool,id:string){
   const config=validateStepConfigForExecution(6,mergedConfig),loggingConfig=config.provider==='api'?{model:config.api.model,provider:'api'}:{model:config.model,reasoning_effort:config.reasoning_effort,provider:'codex'},queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
   config.prompt=resolveScoreStepPrompt(config.prompt);
   const needsHooks=!!(config.workflow?.hooks.before.length||config.workflow?.hooks.after.length);
-  if(needsHooks&&typeof w.local_skill_path!=='string')throw new HTTPException(409,{message:'项目钩子缺少本地项目目录'});
-  const hooks=needsHooks?await freezeStageHooks(dirname(w.local_skill_path),config.workflow):undefined;
+  const skill=needsHooks?await resolveEffectiveProjectSkill(w):undefined;
+  const hooks=skill?await freezeStageHooks(dirname(skill.path),config.workflow):undefined;
   for(const answerId of answerIds){
    const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];buildAnonymousInput(context);
    const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider,context.scoring_policy?.contract),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
@@ -112,8 +113,8 @@ async function automaticallyJudgeAfterScoring(job:any,status:string,judge:(workf
  catch(error){logEvent('acceptance.auto_failed',{level:'error',workflow_id:job.workflow_id,...classifyLogError(error)});}
 }
 /**
- * 领取一份答案的评分任务，在隔离 Codex 会话中评分并校验上下文摘要和报告结构。
- * 结果写入前再次确认版本绑定；无效或争议报告保留为失败结果，不计入达标分数。
+ * 领取一份答案的评分任务，通过冻结的Codex/API配置评分并校验上下文摘要和报告结构。
+ * 结果写入前再次确认版本绑定；非空文本可记执行成功但validation无效；执行成功与成绩有效分开，无效成绩不参与达标。
  */
 export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndependentScore,signal?:AbortSignal,judgeAcceptance:(workflowId:string)=>Promise<unknown>=(workflowId)=>runAcceptance(pool,workflowId),provider:'codex'|'api'='codex',workerMode:StageWorkerMode='all'){
  if(signal?.aborted)return false;

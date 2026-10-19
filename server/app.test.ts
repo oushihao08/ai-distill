@@ -1,4 +1,4 @@
-/** HTTP 应用路由集成：覆盖 PDF 接收校验、原子清理与幂等复用、题目目录版本、Codex 设置、跨域变更拒绝及错误响应；用于核对 createApp 装配的真实 HTTP 契约。
+/** HTTP 应用路由集成：覆盖 PDF 接收校验、原子清理与幂等复用、题目目录版本、Codex 设置、跨域变更拒绝及错误响应；使用Hono内存请求与注入连接池核对createApp路由契约，不连接真实数据库或外部服务。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import { test, expect, afterEach, beforeEach } from 'bun:test';
@@ -45,6 +45,40 @@ async function setup(options?: Parameters<typeof fakePool>[0]) {
  try { const dir = await mkdtemp(join(tmpdir(), 'ai-distill-')); directories.push(dir); const fake = fakePool(options); return { ...fake, dir, app: createApp(fake.pool, dir) }; } catch (error) { throw error; }
 }
 const projectId = '11111111-1111-4111-8111-111111111111';
+test('project detail batches step configs into the existing project query',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'project-detail-configs-'));directories.push(dir);
+ const calls:string[]=[];
+ const pool={query:async(sql:string)=>{
+  calls.push(sql);
+  if(sql.startsWith('SELECT p.*,system_config.model'))return{rows:[{id:projectId,name:'项目',material_backend:'legacy',local_skill_path:dir,__system_codex_model:'gpt-test',__system_codex_reasoning_effort:'medium',__step_configs:[{ordinal:4,config:{prompt:'project-authored prompt'}}]}],rowCount:1};
+  if(sql.startsWith('SELECT w.id,w.project_id,w.title'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[{items:[]}],rowCount:1};
+  if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
+  throw new Error(`Unexpected query: ${sql}`);
+ }} as unknown as Pool;
+ const response=await createApp(pool,dir).request(`/api/projects/${projectId}`);
+ expect(response.status).toBe(200);
+ const body=await response.json() as {steps:{ordinal:number;config:Record<string,unknown>}[]};
+ expect(body.steps.find(step=>step.ordinal===4)?.config.prompt).toBe('project-authored prompt');
+ expect(calls.filter(sql=>sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))).toHaveLength(0);
+});
+test('workflow detail returns the frozen shared material source mode',async()=>{
+ const workflowId='88888888-8888-4888-8888-888888888888',packageId='99999999-9999-4999-8999-999999999999';
+ const pool={query:async(sql:string)=>{
+  if(sql.startsWith('SELECT w.*,to_jsonb(p)'))return{rows:[{id:workflowId,project_id:projectId,workflow_kind:'question',source_workflow_id:null,title:'原文题',created_at:new Date(),status:'waiting',project:{id:projectId,name:'项目',created_at:new Date(),deleted_at:null}}],rowCount:1};
+  if(sql.startsWith('SELECT id,original_name,sha256,size_bytes,content_type,processing_status,redaction_mode'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT ordinal,step_key,display_position,enabled,name,status,implemented'))return{rows:STEP_REGISTRY.map(step=>({ordinal:step.ordinal,step_key:step.key,display_position:step.position,enabled:true,name:step.name,status:'waiting',implemented:true,result:null,error:null,started_at:null,finished_at:null})),rowCount:STEP_REGISTRY.length};
+  if(sql.startsWith('WITH selected AS'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT ar.id,ar.kind,ar.attempt_id,ar.created_at'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT e.id,e.project_id'))return{rows:[],rowCount:0};
+  if(sql.startsWith("SELECT COALESCE(to_jsonb(s)->>'material_mode'"))return{rows:[{material_mode:'original',package_id:packageId,revision_id:'revision-1',redaction_id:null,snapshot_digest:'snapshot-digest'}],rowCount:1};
+  throw new Error(`Unexpected query: ${sql}`);
+ }} as unknown as Pool;
+ const response=await createApp(pool,'/tmp').request(`/api/workflows/${workflowId}`);
+ expect(response.status).toBe(200);
+ const body=await response.json() as {question_material_origin:{kind:string;material_mode:string;package_id:string;revision_id:string;redaction_id:string|null;snapshot_digest:string}|null};
+ expect(body.question_material_origin).toEqual({kind:'library_v1',material_mode:'original',package_id:packageId,revision_id:'revision-1',redaction_id:null,snapshot_digest:'snapshot-digest'});
+});
 function upload(files: File[], sourceKey?: string) {
  const form = new FormData(); form.append('title', '案件材料'); for (const file of files) form.append('files', file);
  if (sourceKey !== undefined) form.append('source_key', sourceKey);
@@ -101,7 +135,7 @@ test('redacted-only attachment text response never includes extracted source tex
  const dir=await mkdtemp(join(tmpdir(),'ai-distill-redacted-view-'));directories.push(dir);
  const app=createApp(pool,dir);
  const response=await app.fetch(new Request(`http://localhost/api/workflows/${workflowId}/materials/${materialId}/extracted-text?redacted_only=true`));
- expect(response.status).toBe(200);
+ if(response.status!==200)throw new Error(`project list failed: ${await response.text()}`);
  const body=await response.json() as Record<string,unknown>;
  expect(body).toMatchObject({redaction_status:'redacted',redacted_text:'已脱敏正文'});
  expect(JSON.stringify(body)).not.toContain('PRIVATE RAW TEXT');
@@ -194,8 +228,37 @@ test('project deletion removes library snapshot references before artifacts and 
  const detachSource=statements.findIndex(sql=>sql.startsWith('DELETE FROM ai_distill.question_library_sources'));
  const deleteArtifacts=statements.findIndex(sql=>sql.startsWith('DELETE FROM ai_distill.artifacts'));
  expect(detachSource).toBeGreaterThan(-1);expect(detachSource).toBeLessThan(deleteArtifacts);
- expect(statements.some(sql=>sql.startsWith('UPDATE ai_distill.project_library_packages SET removed_at'))).toBe(true);
+ const removeActiveLinks=statements.find(sql=>/^UPDATE ai_distill\.project_library_packages link SET removed_at/.test(sql));
+ const detachArchivedLinks=statements.find(sql=>/^DELETE FROM ai_distill\.project_library_packages link USING ai_distill\.library_packages package/.test(sql));
+ expect(removeActiveLinks).toContain('package.deleted_at IS NULL');
+ expect(detachArchivedLinks).toContain('package.deleted_at IS NOT NULL');
+ expect(statements.some(sql=>sql.startsWith('DELETE FROM ai_distill.library_packages'))).toBe(false);
+ expect(statements.some(sql=>/DELETE FROM ai_distill\.project_material_use/.test(sql))).toBe(false);
  expect(statements.some(sql=>sql.startsWith('DELETE FROM ai_distill.workflow_publication_events'))).toBe(false);
+});
+
+test('project list returns shared-library question source without private source manifest',async()=>{
+ const workflowId='77777777-7777-4777-8777-777777777777',packageId='88888888-8888-4888-8888-888888888888';
+ const statements:string[]=[];
+ const pool={query:async(sql:string,values?:unknown[])=>{
+  statements.push(sql);
+  if(sql.startsWith('SELECT p.*,system_config.model AS __system_codex_model'))return{rows:[{id:projectId,name:'本期',material_backend:'library_v1',material_mode:'material_packages',project_group_id:'99999999-9999-4999-8999-999999999999',local_skill_path:null,codex_model:null,codex_reasoning_effort:null,__system_codex_model:'model',__system_codex_reasoning_effort:'low',question_tags:[]}],rowCount:1};
+  if(sql.startsWith('SELECT w.id,w.project_id,w.title')&&sql.includes('FROM ai_distill.workflows w'))return{rows:[{id:workflowId,project_id:projectId,title:'共享库题目',workflow_kind:'question',library_package_id:packageId,library_package_name:'来源材料包'}],rowCount:1};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[{items:[]}],rowCount:1};
+  if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
+  if(sql.startsWith('SELECT credential_home,model,reasoning_effort FROM ai_distill.system_codex_config'))return{rows:[{credential_home:null,model:'model',reasoning_effort:'low'}],rowCount:1};
+  throw new Error(`Unexpected query: ${sql}`);
+ }} as unknown as Pool;
+ const response=await createApp(pool,'/tmp').request(`/api/projects/${projectId}`);
+ expect(response.status).toBe(200);
+ const body=await response.json() as any;
+ expect(body.workflows[0]).toMatchObject({library_package_id:packageId,library_package_name:'来源材料包'});
+ expect(body.workflows[0]).not.toHaveProperty('source_manifest');
+ const listQuery=statements.find(sql=>sql.includes('FROM ai_distill.workflows w')&&sql.includes('question_library_sources'))!;
+ expect(listQuery).toContain('question_library_sources');
+ expect(listQuery).not.toContain('w.*');
+ expect(listQuery).not.toContain('source_manifest');
 });
 
 test('project deletion remains compatible before the optional library schema is installed',async()=>{
@@ -361,7 +424,7 @@ test('project batch dispatch accepts the decision step and chunks all project wo
   const pool={query:async(sql:string,values?:unknown[])=>{
    if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
    if(sql.startsWith('SELECT id,project_id FROM ai_distill.workflows WHERE project_id=$1'))return{rows:workflowIds.map(id=>({id,project_id:projectId})),rowCount:workflowIds.length};
-   if(sql.startsWith('SELECT w.id AS workflow_id')){stateBatches.push(values?.[1] as string[]);return{rows:[],rowCount:0};}
+   if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))')){stateBatches.push(values?.[1] as string[]);return{rows:[],rowCount:0};}
    throw new Error(`Unexpected query: ${sql}`);
   },connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool;
   const app=createApp(pool,root);
@@ -383,6 +446,7 @@ test('answer generation policy GET is read-only and PUT preserves provider setti
   calls.push({sql,values});
   if(['BEGIN','COMMIT','ROLLBACK'].includes(sql))return{rows:[],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
+  if(sql.includes('LEFT JOIN ai_distill.project_step_configs c ON c.project_id=p.id AND c.ordinal=5'))return{rows:[{id:projectId,config}],rowCount:1};
   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.project_step_configs')){
    const incoming=JSON.parse(String(values?.[2])) as Record<string,unknown>;

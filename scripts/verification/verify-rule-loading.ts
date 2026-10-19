@@ -1,5 +1,6 @@
-/** 文件职责：在临时 PostgreSQL schema 核对规则快照绑定、重用和篡改拒绝，不调用模型。
- * 执行入口与用途：`bun scripts/verification/verify-rule-loading.ts`；经临时 schema 与 HTTP app 调用规则注册、发布、绑定和重用接口，验证快照篡改拒绝。
+/** 历史脚本：调用已撤除的规则注册/发布和独立“加载规则”路由，当前 API 已不支持这些步骤；不要执行。
+ * 当前状态依据：`server/routes.test.ts` 验证 `/api/workflows/:id/load-rules` 返回 404；当前项目规则通过规则文件接口读取，出题输入由当前项目/期次配置冻结。
+ * 保留原因：仅保存旧流程的验证源码供历史定位；不能作为当前规则管理或出题入口说明。
  */
 import {mkdtemp,mkdir,writeFile,rm,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';

@@ -63,7 +63,8 @@ export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>,r
 /** 新契约默认提示不继承旧二元分格式；自定义正文原样保留。 */
 function scoringPrompt(context:ScoreContext,prompt?:string){
  const resolved=resolveScoreStepPrompt(prompt??context.step_prompt??DEFAULT_STEP_PROMPTS[6]);
- return context.scoring_policy?.contract==='model_report_v1'&&resolved===DEFAULT_STEP_PROMPTS[6]?'依据题面、Rubric、脱敏附件和待评答案评分，逐项说明判断理由和答案原文证据；只评价候选实际表现。':resolved;
+ const source=context.material_mode==='original'?'原文提取附件':'脱敏附件';
+ return context.scoring_policy?.contract==='model_report_v1'&&resolved===DEFAULT_STEP_PROMPTS[6]?`依据题面、Rubric、${source}和待评答案评分，逐项说明判断理由和答案原文证据；只评价候选实际表现。`:resolved;
 }
 /** 原始分和比较指标分开保存，旧消费者不能误用新模式的原始分。 */
 function collectScore(text:string,context:ScoreContext,binding:ScoreContext['binding']){
@@ -107,7 +108,7 @@ export async function runIndependentScore(context:ScoreContext,options:{root:str
  }catch(error){throw error;}
 }
 
-/** API评分接收与Agent相同的脱敏文件正文和评分指令；不读取宿主资料或会话记忆。 */
+/** API评分接收与Agent相同的获准来源文件正文和评分指令；不读取宿主资料或会话记忆。 */
 export async function runIndependentApiScore(context:ScoreContext,options:{config:ModelApiConfig;step_prompt?:string;model_report_reading_instructions?:string;hook_additions?:HookAddition[];signal?:AbortSignal;timeout_ms?:number;call_id?:string;complete?:ReturnType<typeof createModelApiClient>['complete']}){
  const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:scoringPrompt(context,options.step_prompt)});
  if(options.signal?.aborted)throw new Error('评分执行已取消');

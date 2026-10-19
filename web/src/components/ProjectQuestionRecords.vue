@@ -1,17 +1,17 @@
 <!--
 职责：按关键词、标签和出题／作答／评分状态筛选项目全部题目，展示步骤状态、逐模型评分与单题操作。
-关键方法与用法：接收 `workflows`、`packages`、`projectId`；分批读取全部状态，旧列表接口缺少评分时补读状态详情；`runBatch()` 对全部筛选结果派发。
+关键方法与用法：接收 `workflows`、`packages`、`projectId`；分批读取轻量步骤状态，达标详情和缺少评分的旧列表记录按需补读；`runBatch()` 对全部筛选结果派发。
 -->
 
 <script setup lang="ts">
 import { api } from '../api/client';
 import { dateLabel } from '../utils/format';
-import { readAcceptanceResult, readAnswerStepResult, readScoreStepResult, statusLabels, type Attempt, type ScoreStepModelSummary, type Workflow, type WorkflowDetail } from '../types/api';
-import {workflowStepDisplay} from '../utils/workflow-status';
+import { readAcceptanceResult, readAnswerStepResult, readScoreStepResult, statusLabels, type Attempt, type ProjectWorkflowStatus, type ScoreStepModelSummary, type Workflow, type WorkflowDetail } from '../types/api';
+import {workflowStepDisplay,type WorkflowStatusView} from '../utils/workflow-status';
 import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
 import ModelEvaluationSummary from './ModelEvaluationSummary.vue';
 
-const props=defineProps<{workflows:Workflow[];packages:Workflow[];projectId:string;materialPackagesEnabled?:boolean}>();
+const props=defineProps<{workflows:Workflow[];packages:Workflow[];projectId:string;workflowStatus?:Record<string,ProjectWorkflowStatus>;materialPackagesEnabled?:boolean}>();
 const emit=defineEmits<{refresh:[]}>();
 const search=shallowRef<string|null>('');
 const selectedTag=shallowRef<string|null>(null);
@@ -23,7 +23,8 @@ const statusLoading=shallowRef(false);
 const statusFilters=computed(()=>[{ordinal:4,value:authorStatus.value},{ordinal:5,value:answerStatus.value},{ordinal:6,value:scoreStatus.value},{ordinal:7,value:acceptanceStatus.value}]);
 const page=shallowRef(1);
 const pageSize=20;
-const details=shallowRef<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>({});
+interface ProjectQuestionStatus extends WorkflowStatusView {attempt_summary?:{has_authored:boolean}}
+const details=shallowRef<Record<string,ProjectQuestionStatus>>({});
 const detailErrors=shallowRef<Record<string,string>>({});
 const detailLoadingByWorkflow=shallowRef<Record<string,boolean>>({});
 const runningAction=shallowRef<string|null>(null);
@@ -31,17 +32,20 @@ const batchOrdinal=shallowRef<number|null>(null),batchMessage=shallowRef(''),bat
 const actionMessages=shallowRef<Record<string,string>>({});
 const decisionDetailOpen=shallowRef(false);
 const selectedDecisionFlow=shallowRef<Workflow|null>(null);
+const selectedDecisionAttempt=shallowRef<Attempt|null>(null);
+const decisionDetailLoading=shallowRef(false),decisionDetailError=shallowRef('');
 const history=shallowRef<{workflowId:string;title:string;ordinal:number;stepName:string}|null>(null);
 const scoreDetailOpen=shallowRef(false),scoreDetailLoading=shallowRef(false),scoreDetailError=shallowRef('');
 const scoreDetailFlow=shallowRef<Workflow|null>(null),scoreDetail=shallowRef<Pick<WorkflowDetail,'steps'|'attempts'>|null>(null);
 let scoreRequestVersion=0;
-const selectedDecisionAttempt=computed(()=>selectedDecisionFlow.value?latestDecisionAttempt(selectedDecisionFlow.value):null);
+let decisionRequestVersion=0;
 const selectedAggregate=computed(()=>{const result=selectedDecisionAttempt.value?.result as {aggregate?:{mean_percentage:number;threshold:number;model_count:number}}|null;return result?.aggregate;});
 const packageNames=computed(()=>Object.fromEntries(props.packages.map(item=>[item.id,item.title])));
+function sourceName(flow:Workflow){return flow.library_package_name||(flow.source_workflow_id?packageNames.value[flow.source_workflow_id]:null)||'旧题目目录';}
 const tagOptions=computed(()=>[...new Set(props.workflows.flatMap(displayTags))].sort((a,b)=>a.localeCompare(b,'zh-CN')));
 const filteredWorkflows=computed(()=>{
  const keyword=(search.value??'').trim().toLowerCase();
- return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&(flow.title.toLowerCase().includes(keyword)||Boolean(flow.source_workflow_id&&packageNames.value[flow.source_workflow_id]?.toLowerCase().includes(keyword))))
+ return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&(flow.title.toLowerCase().includes(keyword)||sourceName(flow).toLowerCase().includes(keyword)))
   .filter(flow=>statusFilters.value.every(filter=>!filter.value||stepState(flow,filter.ordinal).label===filter.value));
 });
 const pageCount=computed(()=>Math.max(1,Math.ceil(filteredWorkflows.value.length/pageSize)));
@@ -78,9 +82,9 @@ function refreshDetails(){
     statusLoading.value=true;
     detailLoadingByWorkflow.value=Object.fromEntries(flows.map(flow=>[flow.id,true]));
     try{
-     const loaded:Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>={},errors:Record<string,string>={};
+     const loaded:Record<string,ProjectQuestionStatus>={},errors:Record<string,string>={};
      for(let offset=0;offset<flows.length;offset+=100){
-      Object.assign(loaded,await api<Record<string,Pick<WorkflowDetail,'steps'|'attempts'>>>(`/projects/${projectId}/workflow-status?ids=${flows.slice(offset,offset+100).map(flow=>flow.id).join(',')}`));
+      Object.assign(loaded,await api<Record<string,ProjectQuestionStatus>>(`/projects/${projectId}/workflow-status?ids=${flows.slice(offset,offset+100).map(flow=>flow.id).join(',')}`));
      }
      // 已部署的旧列表投影不含评分；仅对已执行评分的题目补读不含题面／答案正文的状态视图。
      const missingScores=flows.filter(flow=>{
@@ -105,30 +109,34 @@ function refreshDetails(){
  })();
  return detailsRefresh;
 }
+function syncDetailsFromProject(){
+ if(props.workflowStatus){details.value=props.workflowStatus;detailErrors.value={};statusLoading.value=false;detailLoadingByWorkflow.value={};return;}
+ void refreshDetails();
+}
 interface RowAction {ordinal:number;path:string;label:string;disabled:boolean}
 function actionsFor(flow:Workflow):RowAction[]{
  const detail=details.value[flow.id];
  if(!detail)return [];
  const status=(ordinal:number)=>detail.steps.find(step=>step.ordinal===ordinal)?.status;
  const ready=(ordinal:number)=>detail.steps.find(step=>step.ordinal===ordinal)?.ready===true;
- const active=(ordinals:number[])=>detail.attempts.some(attempt=>ordinals.includes(attempt.ordinal)&&['waiting','running'].includes(attempt.status));
- const hasAuthored=detail.attempts.some(attempt=>attempt.ordinal===4&&attempt.status==='succeeded');
+ const active=(ordinals:number[])=>ordinals.some(ordinal=>detail.steps.find(step=>step.ordinal===ordinal)?.active===true);
+ const hasAuthored=detail.attempt_summary?.has_authored??detail.attempts?.some(attempt=>attempt.ordinal===4&&attempt.status==='succeeded')??false;
  const answerStep=detail.steps.find(step=>step.ordinal===5);
  const models=readAnswerStepResult(answerStep?.result)?.models;
  const answerReady=answerStep?.status==='succeeded'||(!!models?.length&&models.every(model=>['succeeded','failed','skipped'].includes(model.status))&&models.some(model=>model.status==='succeeded'&&typeof model.attempt_id==='string'));
  const decision=detail.steps.find(step=>step.ordinal===7)?.result?.decision;
  const actions:RowAction[]=[];
- if(!flow.source_workflow_id){
+ const libraryQuestion=Boolean(flow.library_package_id);
+ if(!flow.source_workflow_id&&!libraryQuestion){
   if(status(1)!=='succeeded')actions.push({ordinal:1,path:'/intake',label:'入库',disabled:!ready(1)||active([1,2])});
   actions.push({ordinal:9,path:'/redact',label:'脱敏',disabled:!ready(9)||active([9])});
  }
- actions.push({ordinal:4,path:'/author',label:hasAuthored?'重新生成题目':'生成题目',disabled:!(ready(4)||(status(4)==='succeeded'&&(Boolean(flow.source_workflow_id)||status(9)==='succeeded')))||active([4])});
+ actions.push({ordinal:4,path:'/author',label:hasAuthored?'重新生成题目':'生成题目',disabled:!(ready(4)||(status(4)==='succeeded'&&(Boolean(flow.source_workflow_id)||libraryQuestion||status(9)==='succeeded')))||active([4])});
  actions.push({ordinal:5,path:'/answer',label:'模型作答',disabled:!(ready(5)||(status(5)==='succeeded'&&status(4)==='succeeded'))||active([5])});
  actions.push({ordinal:6,path:'/score',label:'独立评分',disabled:!answerReady||!(ready(6)||status(6)==='succeeded')||active([6])});
  actions.push({ordinal:8,path:'/publish',label:status(8)==='succeeded'?'重新执行项目交付':'归档题目',disabled:!(ready(8)||(status(8)==='succeeded'&&status(7)==='succeeded'&&decision==='accepted'))||active([8])});
  return actions;
 }
-function latestDecisionAttempt(flow:Workflow){const attempts=details.value[flow.id]?.attempts.filter(attempt=>attempt.ordinal===7)??[];return [...attempts].sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at))[0]??null;}
 function decisionScores(attempt:Attempt|null){
  const result=readAcceptanceResult(attempt?.result);
  return Object.entries(result?.model_scores??{});
@@ -157,7 +165,15 @@ function decisionModelName(flow:Workflow,modelId:string){
  return typeof model?.name==='string'&&model.name?model.name:modelId;
 }
 function decisionPercent(value:number|undefined){return typeof value==='number'?`${Number(value.toFixed(1))}%`:'—';}
-function showDecisionDetail(flow:Workflow){selectedDecisionFlow.value=flow;decisionDetailOpen.value=true;}
+async function showDecisionDetail(flow:Workflow){
+ const version=++decisionRequestVersion;
+ selectedDecisionFlow.value=flow;selectedDecisionAttempt.value=null;decisionDetailError.value='';decisionDetailOpen.value=true;decisionDetailLoading.value=true;
+ try{
+  const detail=await api<WorkflowDetail>(`/workflows/${flow.id}?view=status`);
+  if(version===decisionRequestVersion)selectedDecisionAttempt.value=[...detail.attempts.filter(attempt=>attempt.ordinal===7)].sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at))[0]??null;
+ }catch(cause){if(version===decisionRequestVersion)decisionDetailError.value=cause instanceof Error?cause.message:'读取达标判断记录失败';}
+ finally{if(version===decisionRequestVersion)decisionDetailLoading.value=false;}
+}
 function decisionAttemptStatus(attempt:Attempt){const result=readAcceptanceResult(attempt.result);if(attempt.ordinal===7&&result){return ({accepted:'达标',repair:'未达标',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[result.decision]??statusLabels[attempt.status];}return statusLabels[attempt.status];}
 async function runAction(flow:Workflow,action:RowAction){
  const key=`${flow.id}:${action.ordinal}`;
@@ -168,7 +184,6 @@ async function runAction(flow:Workflow,action:RowAction){
   await api(`/workflows/${flow.id}${action.path}`,{method:'POST'});
   actionMessages.value={...actionMessages.value,[flow.id]:`${action.label}已提交`};
   emit('refresh');
-  await refreshDetails();
  }catch(cause){actionMessages.value={...actionMessages.value,[flow.id]:cause instanceof Error?cause.message:`${action.label}提交失败`};}
  finally{runningAction.value=null;}
 }
@@ -181,12 +196,12 @@ async function runBatch(ordinal:number){
   const counts:Record<string,number>={};for(const item of result.results)counts[item.status]=(counts[item.status]??0)+1;
   batchIssues.value=result.results.filter(item=>['failed','not_found','not_ready'].includes(item.status)).map(item=>({id:item.workflow_id,title:selected.find(flow=>flow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看任务记录'}));
   batchMessage.value=`${name}：匹配 ${selected.length} 道，排队 ${counts.queued??0}，已完成 ${counts.succeeded??0}，未就绪 ${counts.not_ready??0}，失败 ${(counts.failed??0)+(counts.not_found??0)}。`;
-  emit('refresh');await refreshDetails();
+  emit('refresh');
  }catch(cause){batchMessage.value=cause instanceof Error?cause.message:`批量${name}失败`;await refreshDetails();}
  finally{batchOrdinal.value=null;}
 }
-onMounted(refreshDetails);
-watch([()=>props.workflows,()=>props.projectId],()=>{void refreshDetails();});
+onMounted(syncDetailsFromProject);
+watch([()=>props.workflows,()=>props.workflowStatus,()=>props.projectId],syncDetailsFromProject);
 watch([search,selectedTag,authorStatus,answerStatus,scoreStatus,acceptanceStatus],()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 </script>
@@ -208,14 +223,14 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
   <v-alert v-if="Object.keys(detailErrors).length" type="error" density="compact">部分题目状态或评分读取失败，请刷新后重试。</v-alert>
   <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">筛选结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部筛选结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn></Row>
   <v-alert v-if="batchMessage" type="info" density="compact" role="status"><Column :gap="4"><span>{{ batchMessage }}</span><details v-if="batchIssues.length"><summary class="cursor-pointer">查看未执行题目</summary><ul class="my-0 pl-20"><li v-for="item in batchIssues" :key="item.id">{{ item.title }}：{{ item.reason }}</li></ul></details></Column></v-alert>
-  <p v-if="!visibleWorkflows.length&&!statusLoading" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。已脱敏材料包可通过上方“从材料包建题并出题”批量创建，或在材料包详情设置场景、角色、标签后单独创建。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
+  <p v-if="!visibleWorkflows.length&&!statusLoading" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。请在“本期材料”中选择材料包并设置题目名称、场景、角色、等级、方向和标签。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-1080px">
     <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visibleWorkflows" :key="flow.id">
       <td class="max-w-260px"><Row :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Row></td>
-      <td class="max-w-220px"><RouterLink v-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="packageNames[flow.source_workflow_id]??'查看材料包'">{{ packageNames[flow.source_workflow_id]??'查看材料包' }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
+      <td class="max-w-220px"><RouterLink v-if="flow.library_package_id" :to="`/materials/${flow.library_package_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><RouterLink v-else-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap">{{ flow.material_count??0 }} 份</td>
       <td v-for="stage in stageColumns" :key="stage.ordinal" :class="stage.ordinal===6?'min-w-180px':'whitespace-nowrap'"><Column :gap="2"><Row wrap y="center" :gap="2"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><v-btn v-if="stage.ordinal===6&&scoreModels(flow).length" size="small" variant="text" color="primary" @click="showScoreDetail(flow)">查看评分</v-btn><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">详情</v-btn></Row><template v-if="stage.ordinal===6&&scoreModels(flow).length"><span v-for="(model,index) in scoreModels(flow)" :key="model.model_id??index" class="text-xs text-muted whitespace-nowrap">{{ modelScoreText(model) }}</span></template></Column></td>
       <td class="whitespace-nowrap"><Row :gap="4"><v-menu><template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" size="small" variant="text" color="primary" :disabled="!actionsFor(flow).length||detailLoadingByWorkflow[flow.id]">步骤操作</v-btn></template><v-list density="compact"><v-list-item v-for="action in actionsFor(flow)" :key="action.ordinal" :title="action.label" :disabled="action.disabled||runningAction!==null" @click="runAction(flow,action)" /></v-list></v-menu><span v-if="runningAction?.startsWith(flow.id+':')" class="text-xs text-muted">提交中…</span><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-xs text-muted">读取中…</span></Row><span v-if="detailErrors[flow.id]" class="text-xs text-danger" :title="detailErrors[flow.id]">读取失败</span><span v-else-if="actionMessages[flow.id]" class="text-xs text-muted" :title="actionMessages[flow.id]">{{ actionMessages[flow.id] }}</span><span v-else-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]" class="text-xs text-muted" :title="nextAction(flow)">{{ currentState(flow) }}</span></td>
@@ -237,8 +252,8 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
     <Row x="between" y="center" :gap="12"><Column :gap="4"><h2 class="section-title">达标判断 · 执行详情</h2><span v-if="selectedDecisionAttempt" class="text-xs text-muted">{{ dateLabel(selectedDecisionAttempt.started_at) }}</span></Column><v-btn icon="$close" aria-label="关闭达标判定详情" variant="text" @click="decisionDetailOpen=false" /></Row>
     <v-chip v-if="selectedDecisionAttempt" class="self-start" size="small" :color="selectedDecisionAttempt.status==='succeeded'?'success':selectedDecisionAttempt.status==='failed'?'error':selectedDecisionAttempt.status==='running'?'primary':'secondary'">{{ decisionAttemptStatus(selectedDecisionAttempt) }}</v-chip>
     <v-alert v-if="selectedDecisionAttempt?.error" type="error" density="compact">{{ selectedDecisionAttempt.error }}</v-alert>
-    <p v-if="!selectedDecisionAttempt&&selectedDecisionFlow&&detailLoadingByWorkflow[selectedDecisionFlow.id]&&!detailErrors[selectedDecisionFlow.id]" class="text-sm text-muted">正在读取判定执行记录…</p>
-    <p v-else-if="!selectedDecisionAttempt&&selectedDecisionFlow&&detailErrors[selectedDecisionFlow.id]" class="text-sm text-danger">读取失败：{{ detailErrors[selectedDecisionFlow.id] }}</p>
+    <p v-if="decisionDetailLoading" class="text-sm text-muted">正在读取判定执行记录…</p>
+    <p v-else-if="decisionDetailError" class="text-sm text-danger">读取失败：{{ decisionDetailError }}</p>
     <p v-else-if="!selectedDecisionAttempt" class="text-sm text-muted">暂无达标判断执行记录。</p>
     <Column v-else class="max-h-480px overflow-y-auto" :gap="4">
      <section v-if="selectedDecisionFlow&&decisionScores(selectedDecisionAttempt).length" class="surface-panel p-8"><h3 class="px-8 py-4 text-sm font-semibold">模型评分</h3><p v-if="selectedAggregate" class="px-8 pb-4 text-sm">两模型均分 {{ decisionPercent(selectedAggregate.mean_percentage) }}，门槛 ≤{{ selectedAggregate.threshold }}%（{{ selectedAggregate.model_count }} 个模型）</p><v-table density="compact"><thead><tr><th scope="col">模型</th><th scope="col">得分</th><th scope="col">百分制／模型指标</th><th scope="col">门槛</th><th scope="col">评分结果</th></tr></thead><tbody><tr v-for="[modelId,score] in decisionScores(selectedDecisionAttempt)" :key="modelId"><td>{{ decisionModelName(selectedDecisionFlow,modelId) }}</td><td>{{ score.score_contract==='model_report_v1'?'原始分 ':'' }}{{ (score.score_contract==='model_report_v1'?score.raw_score:score.score)??'—' }} / {{ (score.score_contract==='model_report_v1'?score.full_score:score.max_score)??'—' }}{{ score.veto_triggered===true?' · 否决':'' }}</td><td>{{ decisionPercent(score.percentage) }}</td><td>{{ selectedAggregate?`用于均分；≤ ${selectedAggregate.threshold}%`:(typeof score.threshold==='number'?`低于 ${score.threshold}%`:'—') }}</td><td><v-chip size="small" :color="score.status==='passed'?'success':score.status==='not_passed'?'warning':score.status==='invalid'?'error':'secondary'">{{ ({passed:'达标',not_passed:'未达标',pending:'待定',invalid:'无效',included:'计入均分'} as Record<string,string>)[score.status??'']??'未知' }}</v-chip></td></tr></tbody></v-table></section>

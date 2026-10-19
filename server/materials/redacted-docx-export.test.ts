@@ -40,12 +40,13 @@ async function fixture(options:{incomplete?:boolean;active?:boolean;stale?:boole
   if(sql.startsWith('SELECT count(*)::int'))return{rows:[{count:sources.length}],rowCount:1};
   if(sql.startsWith('SELECT id,original_name,storage_path,sha256,size_bytes FROM ai_distill.materials'))return{rows:sources.map(source=>({id:source.material_id,original_name:'source.pdf',storage_path:'sources/source.pdf',sha256:hash(original),size_bytes:original.byteLength})),rowCount:sources.length};
   if(sql.includes("kind='redacted_docx_manifest'"))return{rows:manifestArtifacts,rowCount:manifestArtifacts.length};
-  if(sql.includes("kind='redacted_docx'"))return{rows:docxArtifacts,rowCount:docxArtifacts.length};
-  if(sql.startsWith('INSERT INTO ai_distill.artifacts')){if(options.failInsert)throw new Error('artifact write failed');if(sql.includes("'redacted_docx_manifest'"))manifestArtifacts.push({id:String(values?.[0]),attempt_id:String(values?.[2]),storage_path:String(values?.[3]),sha256:String(values?.[4]),content:String(values?.[6])});else docxArtifacts.push({id:String(values?.[0]),attempt_id:String(values?.[2]),storage_path:String(values?.[3]),sha256:String(values?.[4]),material_id:String(values?.[6])});return{rows:[],rowCount:1};}
+  if(sql.includes("kind='redacted_docx'")||(sql.includes('kind=$2')&&values?.[1]==='redacted_docx'))return{rows:docxArtifacts,rowCount:docxArtifacts.length};
+  if(sql.startsWith('INSERT INTO ai_distill.artifacts')){if(options.failInsert)throw new Error('artifact write failed');if(sql.includes("'redacted_docx_manifest'"))manifestArtifacts.push({id:String(values?.[0]),attempt_id:String(values?.[2]),storage_path:String(values?.[3]),sha256:String(values?.[4]),content:String(values?.[6])});else docxArtifacts.push({id:String(values?.[0]),attempt_id:String(values?.[2]),storage_path:String(values?.[4]),sha256:String(values?.[5]),material_id:String(values?.[7])});return{rows:[],rowCount:1};}
   if(sql.startsWith('UPDATE ai_distill.artifacts SET attempt_id')){if(sql.includes('content=$6')){const artifact=manifestArtifacts.find(row=>row.id===values?.[0]);if(artifact)Object.assign(artifact,{attempt_id:values?.[1],storage_path:values?.[2],sha256:values?.[3],content:values?.[5]});}else{const artifact=docxArtifacts.find(row=>row.id===values?.[0]);if(artifact)Object.assign(artifact,{attempt_id:values?.[1],storage_path:values?.[2],sha256:values?.[3]});}return{rows:[],rowCount:1};}
   return{rows:[],rowCount:1};
  }};
- return{root,materialRoot,storageRoot,projectExportsRoot,calls,docxArtifacts,manifestArtifacts,pool:{connect:async()=>client} as unknown as Pool};
+ const pool={connect:async()=>client,query:async(sql:string,values?:unknown[])=>sql.startsWith('SELECT material_mode FROM ai_distill.question_library_sources')?{rows:[],rowCount:0}:client.query(sql,values)};
+ return{root,materialRoot,storageRoot,projectExportsRoot,calls,docxArtifacts,manifestArtifacts,pool:pool as unknown as Pool};
 }
 
 test('manual export writes one DOCX artifact without touching workflow state or attempts',async()=>{
@@ -53,7 +54,7 @@ test('manual export writes one DOCX artifact without touching workflow state or 
  const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot),file=join(f.projectExportsRoot,'附件库','豆包高经','问题1','成果',`source-脱敏-${materialId.slice(0,8)}.docx`),sourceCopy=join(f.projectExportsRoot,'附件库','豆包高经','问题1','原件',`${materialId.slice(0,8)}_source.pdf`),bytes=await readFile(file),again=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
  expect(result).toMatchObject({reused:false,sha256:hash(bytes)});expect(bytes.readUInt32LE(0)).toBe(0x04034b50);expect(again).toMatchObject({artifact_id:result.artifact_id,reused:true});
  expect(await readFile(sourceCopy)).toEqual(Buffer.from('original attachment'));
- expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.sql.includes("'redacted_docx'"))).toHaveLength(1);
+ expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toHaveLength(1);
  expect(f.manifestArtifacts).toHaveLength(1);expect(JSON.parse(f.manifestArtifacts[0]!.content).renderer_version).toBe('redacted-structure-docx-v1');
  expect(f.calls.some(call=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts)/.test(call.sql))).toBe(false);
 });
@@ -77,7 +78,7 @@ test('export accepts identical attachment fingerprints returned in a different d
  const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
  expect(result.reused).toBe(false);
  expect(result.artifacts).toHaveLength(2);
- expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.sql.includes("'redacted_docx'"))).toHaveLength(2);
+ expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toHaveLength(2);
  const contents=await Promise.all(result.artifacts.map(artifact=>readFile(join(f.projectExportsRoot,result.archive_path,'成果',artifact.filename))));
  expect(hash(contents[0]!)).not.toBe(hash(contents[1]!));
  for(const artifact of result.artifacts){
@@ -158,4 +159,20 @@ test.each([false,true])('library completion gate uses only applicable stages bef
  const pool={connect:async()=>client} as unknown as Pool;
  await expect(exportRedactedDocx(pool,workflowId,'unused','unused')).rejects.toThrow(incomplete?'请先完成当前工作流并归档达标题目':'已进入材料读取边界');
  expect(calls.at(-1)).toBe('ROLLBACK');
+});
+
+test('legacy project library-package question uses the library completion gate',async()=>{
+ const calls:string[]=[];
+ const client={release(){},async query(sql:string){
+  calls.push(sql);
+  if(['BEGIN','COMMIT','ROLLBACK'].includes(sql))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT w.id AS workflow_id'))return{rows:[{workflow_id:workflowId,project_id:workflowId,material_backend:'legacy',has_library_snapshot:true,project_name:'旧项目',title:'材料库题目'}],rowCount:1};
+  if(sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))return{rows:[4,5,6,7,8].map(ordinal=>({ordinal,status:'succeeded'})),rowCount:5};
+  if(sql.startsWith("SELECT id FROM ai_distill.step_attempts"))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT p.material_backend'))return{rows:[{material_backend:'legacy',has_library_snapshot:true}],rowCount:1};
+  throw new Error('library snapshot material read reached');
+ }};
+ const pool={connect:async()=>client} as unknown as Pool;
+ await expect(exportRedactedDocx(pool,workflowId,'unused','unused')).rejects.toThrow('library snapshot material read reached');
+ expect(calls.some(sql=>sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))).toBe(true);
 });

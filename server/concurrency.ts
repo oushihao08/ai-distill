@@ -1,5 +1,6 @@
 /**
  * 职责：读取／保存 worker 并发配置，并用 STORAGE_DIR 下的 SQLite 配置与槽位表协调跨进程 Agent 调用。
+ * 入口：readConcurrencySettings() 读取持久设置或环境回退；saveWorkerConcurrencySettings() 保存页面设置；AgentConcurrencyGate.run() 供worker与连通性检查共同占槽。
  * SQLite 只保存本机并发配置及临时进程／槽位元数据，不涉及业务数据库迁移。
  */
 import {Database} from 'bun:sqlite';

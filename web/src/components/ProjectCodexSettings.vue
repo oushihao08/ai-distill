@@ -1,6 +1,6 @@
 <!--
-职责：管理项目级 Codex 默认模型和推理强度，并可恢复继承全局设置。
-关键方法与用法：`load()` 读取项目设置与模型能力，`save()` 写入覆盖，`inherit()` 删除项目覆盖；项目详情页以 `projectId` 加载此面板。
+职责：管理当前期次的 Codex 默认模型和推理强度，并可恢复继承全局设置。
+关键方法与用法：`load()` 读取期次设置与模型能力，`save()` 写入当前期次覆盖，`inherit()` 删除覆盖；项目详情页以期次 `projectId` 加载此面板。
 -->
 
 <script setup lang="ts">
@@ -29,7 +29,7 @@ async function inherit(){
 onMounted(load);
 </script>
 <template><section class="surface-card p-16"><Column :gap="10">
- <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">项目 Codex 默认</h2><p class="text-xs text-muted">项目默认用于本项目的 Codex 步骤；步骤单独设置优先级更高。</p></Column><v-chip size="small" :color="source==='project'?'primary':'secondary'">{{ source==='project'?'项目默认':'跟随全局默认' }}</v-chip></Row>
- <Row wrap :gap="10"><v-combobox :return-object="false" v-model="model" label="默认模型" :items="modelItems" :loading="loading" :disabled="loading||busy" /><v-combobox :return-object="false" v-model="effort" label="默认推理强度" :items="effortItems" :disabled="loading||busy" /><v-btn color="primary" variant="flat" :loading="busy" :disabled="loading||busy||!canSave" @click="save">保存项目默认</v-btn><v-btn v-if="source==='project'" :disabled="busy" @click="inherit">恢复全局默认</v-btn></Row>
+ <Row x="between" wrap :gap="8"><Column :gap="4"><h2 class="section-title">本期 Codex 默认</h2><p class="text-xs text-muted">只用于当前期次的 Codex 步骤；步骤单独设置优先级更高，不影响同主项目的其他期次。</p></Column><v-chip size="small" :color="source==='project'?'primary':'secondary'">{{ source==='project'?'本期覆盖':'跟随全局默认' }}</v-chip></Row>
+ <Row wrap :gap="10"><v-combobox :return-object="false" v-model="model" label="默认模型" :items="modelItems" :loading="loading" :disabled="loading||busy" /><v-combobox :return-object="false" v-model="effort" label="默认推理强度" :items="effortItems" :disabled="loading||busy" /><v-btn color="primary" variant="flat" :loading="busy" :disabled="loading||busy||!canSave" @click="save">保存本期默认</v-btn><v-btn v-if="source==='project'" :disabled="busy" @click="inherit">恢复全局默认</v-btn></Row>
  <p v-if="!loading&&!modelItems.length" class="text-xs text-warning">本机模型建议暂不可用，可直接输入模型和推理强度；实际可用性由执行时反馈。</p><v-alert v-if="error" type="error">{{ error }}</v-alert>
 </Column></section></template>

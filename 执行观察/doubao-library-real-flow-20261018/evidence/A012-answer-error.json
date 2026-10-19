@@ -1,0 +1,31 @@
+{
+  "attempt_id": "114b2650-8aaf-4dbe-bf30-09e813968ba1",
+  "workflow_id": "91239d42-403b-4179-ace8-41c46b241506",
+  "call_id": "2ebeb464-ccaf-4876-ae48-a05507069ad5",
+  "provider": "openrouter",
+  "model": "qwen/qwen3.8-max-0902",
+  "events": [
+    {
+      "event": "model_api.call.failed",
+      "error_kind": "quota",
+      "http_status": 402,
+      "retryable": false,
+      "elapsed_ms": 1245
+    },
+    {
+      "event": "call.failed",
+      "error_kind": "quota",
+      "http_status": 402,
+      "retryable": false,
+      "elapsed_ms": 1251
+    },
+    {
+      "event": "attempt.failed",
+      "error_kind": "quota",
+      "http_status": 402,
+      "retryable": false
+    }
+  ],
+  "api_error": "大模型 API 账户欠费或订购状态阻断",
+  "scope_note": "Only safe diagnostic fields saved; provider raw body was not logged or available."
+}

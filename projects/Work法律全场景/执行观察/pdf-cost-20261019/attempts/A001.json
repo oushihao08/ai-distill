@@ -1,0 +1,52 @@
+{
+  "id": "A001",
+  "item_id": "pdf-baseline",
+  "stage_id": "local-benchmark",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-19T11:41:23+08:00",
+  "finished_at": "2026-10-19T11:48:20+08:00",
+  "inputs": [
+    {
+      "ref": "首批筹备/questions/L2-房屋买卖合同/(2020)渝0104民初4227号.pdf",
+      "version": "sha256:7dae29e6797aea7e95dec897a8fb3edbb11a4d5bf9d94e47cb5e8ff7ea11c0fa",
+      "sha256": "7dae29e6797aea7e95dec897a8fb3edbb11a4d5bf9d94e47cb5e8ff7ea11c0fa"
+    }
+  ],
+  "configuration": {
+    "provider": "local Poppler tools only",
+    "external_upload": false,
+    "operations": [
+      "pdfinfo",
+      "pdftotext -layout",
+      "pdftoppm -jpeg -r 150"
+    ],
+    "external_provider_call": "not run"
+  },
+  "changes_from_previous": [],
+  "external_ids": {},
+  "environment": {
+    "target": "local",
+    "runtime_version": null
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "metadata",
+      "result": "53 pages; 10,694,769 bytes; SHA-256 matched three stored MinerU API extraction artifacts"
+    },
+    {
+      "kind": "text_layer",
+      "result": "0 extractable characters; scanned/image-only PDF"
+    },
+    {
+      "kind": "timing",
+      "result": "pdftotext 0.016s; 53-page 150dpi render 1.735s; temporary render removed automatically"
+    },
+    {
+      "kind": "cost",
+      "result": "no external/API charge incurred by this attempt; local compute only"
+    }
+  ],
+  "error": null
+}

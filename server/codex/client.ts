@@ -1,6 +1,6 @@
 /**
  * 职责：Codex CLI 客户端：普通出题使用项目环境与文件交付，其余任务保持受限执行；校验登录并记录结果、事件与取消。
- * 关键方法与用途：`codexLoginStatus()` 检查套餐登录；`configureCodexCredentialsHome()` 校验凭证目录；`runCodex()` 按任务选择工作区与权限，并收集结果。
+ * 关键方法与用途：`codexLoginStatus()` 检查套餐登录；`configureCodexCredentialsHome()`注册凭证目录读取器；`runCodex()` 按任务选择工作区与权限，并收集结果。
  * 使用场景：出题、脱敏、skill 和评分执行器通过此客户端调用，不直接拼接子进程参数。
  */
 import {spawn} from 'node:child_process';

@@ -1,4 +1,5 @@
 /** HTTP 路由契约：覆盖项目与工作流读写、步骤派发前置、入库等待、产物下载、规则绑定隐藏、错误净化及服务健康状态。
+ * 边界：使用Hono内存请求、注入SQL/派发器及临时文件，不证明真实网络、数据库或模型流程。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import { test,expect,beforeEach,afterEach } from 'bun:test';
@@ -50,17 +51,78 @@ test('authored question public package can be downloaded through the artifact wh
 });
 test('health reports database availability and disables caching',async()=>{
  const names=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql'));
- const good=await setup(sql=>sql.startsWith('SELECT name FROM ai_distill.schema_migrations')?{rows:names.map(name=>({name})),rowCount:names.length}:empty).request('/api/health');expect(good.status).toBe(200);expect(await good.json()).toMatchObject({database:'connected',schema:'ready',phase:2});expect(good.headers.get('Cache-Control')).toBe('no-store');
+ const statements:string[]=[];
+ const good=await setup(sql=>{statements.push(sql);return sql.startsWith('SELECT name FROM ai_distill.schema_migrations')?{rows:names.map(name=>({name})),rowCount:names.length}:empty;}).request('/api/health');expect(good.status).toBe(200);expect(await good.json()).toMatchObject({database:'connected',schema:'ready',phase:2});expect(good.headers.get('Cache-Control')).toBe('no-store');expect(statements).toHaveLength(1);
  const bad=await setup(()=>{throw new Error('secret database URL');}).request('/api/health');expect(bad.status).toBe(503);expect(await bad.json()).toMatchObject({database:'unavailable',schema:'unavailable',phase:2});
+});
+test('monitor starts active workflow and material library reads concurrently',async()=>{
+ let started=0,releaseReads!:()=>void;
+ const readGate=new Promise<void>(resolve=>{releaseReads=resolve;});
+ const app=setup(sql=>{
+  if(sql.includes('FROM ai_distill.step_attempts a JOIN ai_distill.workflows')){started++;return readGate.then(()=>({rows:[],rowCount:0}));}
+  if(sql.includes("to_regclass('ai_distill.library_jobs')")){started++;return readGate.then(()=>({rows:[{available:false}],rowCount:1}));}
+  return empty;
+ });
+ const pending=app.request('/api/monitor');
+ await new Promise(resolve=>setTimeout(resolve,0));
+ const startedBeforeRelease=started;
+ releaseReads();
+ const response=await pending;
+ expect(startedBeforeRelease).toBe(2);
+ expect(response.status).toBe(200);
+});
+test('project group phase listing starts group and phase reads concurrently',async()=>{
+ let started=0,releaseReads!:()=>void;
+ const readGate=new Promise<void>(resolve=>{releaseReads=resolve;});
+ const app=setup(sql=>{
+  if(sql.startsWith('SELECT id,name,created_at FROM ai_distill.project_groups')){started++;return readGate.then(()=>({rows:[{id,name:'group'}],rowCount:1}));}
+  if(sql.startsWith('SELECT p.*,count(w.id)::int AS workflow_count')){started++;return readGate.then(()=>({rows:[],rowCount:0}));}
+  return empty;
+ });
+ const pending=app.request(`/api/project-groups/${id}/phases`);
+ await new Promise(resolve=>setTimeout(resolve,0));
+ const startedBeforeRelease=started;
+ releaseReads();
+ const response=await pending;
+ expect(startedBeforeRelease).toBe(2);
+ expect(response.status).toBe(200);
+});
+test('project export listing starts project and export reads concurrently',async()=>{
+ let started=0,releaseReads!:()=>void;
+ const readGate=new Promise<void>(resolve=>{releaseReads=resolve;});
+ const app=setup(sql=>{
+  if(sql.startsWith('SELECT id FROM ai_distill.projects')){started++;return readGate.then(()=>({rows:[{id}],rowCount:1}));}
+  if(sql.startsWith('SELECT id,batch,status,sha256,workflow_count,error,created_at,finished_at FROM ai_distill.project_exports')){started++;return readGate.then(()=>({rows:[],rowCount:0}));}
+  return empty;
+ });
+ const pending=app.request(`/api/projects/${id}/exports`);
+ await new Promise(resolve=>setTimeout(resolve,0));
+ const startedBeforeRelease=started;
+ releaseReads();
+ const response=await pending;
+ expect(startedBeforeRelease).toBe(2);
+ expect(response.status).toBe(200);
+ expect(await response.json()).toEqual([]);
+});
+test('answer generation policy reads project and config in one scoped query',async()=>{
+ const statements:string[]=[];
+ const app=setup(sql=>{statements.push(sql);if(sql.includes('LEFT JOIN ai_distill.project_step_configs'))return{rows:[{id,config:{}}],rowCount:1};return empty;});
+ const response=await app.request(`/api/projects/${id}/answer-generation-policy`);
+ expect(response.status).toBe(200);
+ expect(await response.json()).toMatchObject({source:'default'});
+ expect(statements).toHaveLength(1);
+ expect(statements[0]).toContain('ordinal=5');
+ const missing=await setup(()=>empty).request(`/api/projects/${id}/answer-generation-policy`);
+ expect(missing.status).toBe(404);
 });
 test('project creation validates JSON and trims input before persisting',async()=>{
  let saved:unknown[]|undefined;
  const root=await mkdtemp(join(tmpdir(),'create-project-'));dirs.push(root);
- const app=setup((sql,values)=>{if(sql.startsWith('INSERT INTO ai_distill.projects'))saved=values;return {rows:sql.startsWith('INSERT INTO ai_distill.projects')?[{id,name:values?.[1],description:values?.[2]}]:[],rowCount:1};});
+ const app=setup((sql,values)=>{if(sql.startsWith('INSERT INTO ai_distill.project_groups'))return{rows:[{id:'55555555-5555-4555-8555-555555555555',name:values?.[1],deleted_at:null}],rowCount:1};if(sql.startsWith('INSERT INTO ai_distill.projects'))saved=values;return {rows:sql.startsWith('INSERT INTO ai_distill.projects')?[{id,name:values?.[1],description:values?.[2]}]:[],rowCount:1};});
  for(const body of ['{',JSON.stringify({name:''}),JSON.stringify({name:'x'.repeat(121)}),JSON.stringify({name:123}),JSON.stringify({name:'test',description:123})]){
   expect((await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body})).status).toBe(400);
  }
- const good=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:' test ',description:' text ',material_root:root})});expect(good.status).toBe(201);expect(saved?.slice(1,3)).toEqual(['test','text']);expect((await good.json()as any).name).toBe('test');
+ const good=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:' test ',description:' text ',material_root:root})});expect(good.status).toBe(201);expect(saved?.slice(1,3)).toEqual(['test','text']);expect(saved?.[12]).toBeNull();expect((await good.json()as any).name).toBe('test');
 });
 test('project creation records the parent and phase and reuses that parent skill path',async()=>{
  const root=await mkdtemp(join(tmpdir(),'create-project-phase-'));dirs.push(root);
@@ -68,6 +130,7 @@ test('project creation records the parent and phase and reuses that parent skill
  let inserted:unknown[]|undefined;
  const app=setup((sql,values)=>{
   if(sql.startsWith('SELECT DISTINCT local_skill_path FROM ai_distill.projects'))return{rows:[{local_skill_path:skillPath}],rowCount:1};
+  if(sql.startsWith('INSERT INTO ai_distill.project_groups'))return{rows:[{id:'55555555-5555-4555-8555-555555555555',name:values?.[1],deleted_at:null}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.projects')){inserted=values;return{rows:[{id,name:values?.[1],parent_name:values?.[5],phase_name:values?.[6],local_skill_path:values?.[4]}],rowCount:1};}
   return empty;
  });
@@ -75,11 +138,50 @@ test('project creation records the parent and phase and reuses that parent skill
  expect(response.status).toBe(201);
  expect(inserted?.slice(5,7)).toEqual(['豆包高经济价值','第五期']);
  expect(inserted?.[4]).toBe(skillPath);
+ expect(inserted?.[12]).toBeNull();
 });
 test('project listing and project detail return persisted rows',async()=>{
  const app=setup(sql=>sql.includes('FROM ai_distill.projects')?{rows:[{id,name:'project',workflow_count:2}],rowCount:1}:{rows:[{id,title:'workflow',material_count:2}],rowCount:1});
  expect((await(await app.request('/api/projects')).json()as any[])[0].workflow_count).toBe(2);
  const detail=await(await app.request(`/api/projects/${id}`)).json()as any;expect(detail.project.id).toBe(id);expect(detail.workflows[0].material_count).toBe(2);
+});
+test('project detail shares one step-state read with the question table projection',async()=>{
+ const workflowId='22222222-2222-4222-8222-222222222222',calls:string[]=[];
+ const app=setup(sql=>{
+  calls.push(sql);
+  if(sql.includes('FROM ai_distill.projects p LEFT JOIN ai_distill.system_codex_config'))return{rows:[{id,name:'project',local_skill_path:'/nonexistent',material_backend:'legacy',codex_model:null,codex_reasoning_effort:null,__system_codex_model:'gpt-6-luna',__system_codex_reasoning_effort:'medium'}],rowCount:1};
+  if(sql.startsWith('SELECT w.id,w.project_id,w.title'))return{rows:[{id:workflowId,has_authored:true}],rowCount:1};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[{items:[
+   {workflow_id:workflowId,workflow_kind:'question',source_workflow_id:null,library_source:false,ordinal:4,status:'succeeded',error:null,started_at:null,finished_at:null,result:null,implemented:true,enabled:true,has_pdf:false,extraction_status:null,active:false},
+   {workflow_id:workflowId,workflow_kind:'question',source_workflow_id:null,library_source:false,ordinal:5,status:'waiting',error:null,started_at:null,finished_at:null,result:null,implemented:true,enabled:true,has_pdf:false,extraction_status:null,active:false},
+  ]}],rowCount:1};
+  if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
+  return empty;
+ });
+ const response=await app.request(`/api/projects/${id}`),body=await response.json()as any;
+ expect(response.status).toBe(200);
+ expect(body.workflow_status[workflowId].attempt_summary).toEqual({has_authored:true});
+ expect(body.workflow_status[workflowId].steps.map((step:any)=>step.ordinal)).toEqual([4,5]);
+ expect(calls.filter(sql=>sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))).toHaveLength(1);
+ expect(calls.filter(sql=>sql.includes('LEFT JOIN ai_distill.system_codex_config'))).toHaveLength(1);
+ expect(calls.some(sql=>sql.startsWith('SELECT credential_home,model,reasoning_effort'))).toBe(false);
+ expect(body.project).not.toHaveProperty('__system_codex_model');
+});
+test('project detail starts independent workflow and step reads before project lookup resolves',async()=>{
+ let releaseProject!:(value:unknown)=>void,workflowStarted=false,stepSummaryStarted=false;
+ const projectPending=new Promise(resolve=>{releaseProject=resolve;});
+ const app=setup(sql=>{
+  if(sql.includes('FROM ai_distill.projects p LEFT JOIN ai_distill.system_codex_config'))return projectPending;
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
+  if(sql.startsWith('SELECT w.id,w.project_id,w.title')){workflowStarted=true;return{rows:[],rowCount:0};}
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))')){stepSummaryStarted=true;return{rows:[{items:[]}],rowCount:1};}
+  return empty;
+ });
+ const responsePending=app.request(`/api/projects/${id}`);
+ await new Promise(resolve=>setTimeout(resolve,0));
+ expect(workflowStarted).toBe(true);expect(stepSummaryStarted).toBe(true);
+ releaseProject({rows:[{id,name:'project',local_skill_path:'/nonexistent',material_backend:'legacy'}],rowCount:1});
+ expect((await responsePending).status).toBe(200);
 });
 test('changing the project skill path invalidates current archive and exports',async()=>{
  const root=await mkdtemp(join(tmpdir(),'project-skill-binding-'));dirs.push(root);
@@ -151,10 +253,11 @@ test('optional redacted DOCX export is separate from workflow steps and safely d
   if(sql.includes("ar.kind='private_extracted_pages'"))return{rows:attachmentsChanged?[{...source[0],source_sha256:'changed-source-hash'}]:source,rowCount:1};
   if(sql.startsWith('SELECT count(*)::int'))return{rows:[{count:1}],rowCount:1};
   if(sql.startsWith('SELECT id,original_name,storage_path,sha256,size_bytes FROM ai_distill.materials'))return{rows:[{id:source[0]!.material_id,original_name:'source.pdf',storage_path:`${id}/source.pdf`,sha256:source[0]!.source_sha256,size_bytes:sourceBytes.byteLength}],rowCount:1};
+  if(sql.startsWith('SELECT ar.id,ar.workflow_id')&&sql.includes("ar.kind IN ('redacted_docx','original_docx')"))return{rows:exported?[{...exported,kind:'redacted_docx',source_key:'题目1',material_root:materialRoot}]:[],rowCount:exported?1:0};
   if(sql.startsWith('SELECT kind,storage_path,sha256,content')&&sql.includes('redacted_docx'))return{rows:exported?[{kind:'redacted_docx',...exported,source_key:'题目1',material_root:materialRoot}]:[],rowCount:exported?1:0};
   if(sql.includes("ar.kind='redacted_docx'"))return{rows:exported?[{...exported,source_key:'题目1',material_root:materialRoot}]:[],rowCount:exported?1:0};
   if(sql.includes("kind='redacted_docx'"))return{rows:exported?[exported]:[],rowCount:exported?1:0};
-  if(sql.startsWith('INSERT INTO ai_distill.artifacts')&&sql.includes("'redacted_docx',")){exported={id:String(values?.[0]),workflow_id:String(values?.[1]),attempt_id:String(values?.[2]),storage_path:String(values?.[3]),sha256:String(values?.[4])};return{rows:[],rowCount:1};}
+  if(sql.startsWith('INSERT INTO ai_distill.artifacts')&&values?.[3]==='redacted_docx'){exported={id:String(values?.[0]),workflow_id:String(values?.[1]),attempt_id:String(values?.[2]),storage_path:String(values?.[4]),sha256:String(values?.[5])};return{rows:[],rowCount:1};}
   return{rows:[],rowCount:1};
  };
  const client={query,release(){}};const assetRoot=join(root,'assets','out');const app=createApp({query,connect:async()=>client}as unknown as Pool,root,assetRoot);

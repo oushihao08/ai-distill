@@ -1,3 +1,7 @@
+/**
+ * 文件职责：验证 Agent 与模型 API 并发设置及跨 gate 槽位协调。
+ * 主要边界：使用临时 SQLite 目录，不读取真实设置，不启动 worker 或外部调用。
+ */
 import {describe,expect,it} from 'bun:test';
 import {Database} from 'bun:sqlite';
 import {mkdtemp,rm} from 'node:fs/promises';

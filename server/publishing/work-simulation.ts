@@ -1,6 +1,6 @@
 /**
- * 职责：归档时生成 Work 项目的 AI 模拟专家成果，并把模型引用绑定到本次 Codex 实际网页检索事件。
- * 关键入口：`generateWorkSimulation()` 使用项目 Agent 配置和当前脱敏材料生成成果；无实际检索证据时失败关闭。
+ * 职责：准备Work标准成果：新work_legal_v1投影作者冻结成果；旧契约才生成并核对本次检索事件。
+ * 关键入口：`getOrGenerateWorkSimulation()`选择快照/缓存/生成；旧路径私有generateWorkSimulation()使用项目Agent配置，缺实际检索事件则拒绝。
  * 使用场景：仅由 Work 项目归档流程调用；不声称真人办理、签署或平台验收。
  */
 import {projectReference,type WorkContent} from '../authoring/work-contract';
@@ -42,7 +42,7 @@ export interface WorkSimulationInput {
  question_version:string;
  rubric_version:string;
  question:Record<string,unknown>;
- attachments:{name:string;text:string}[];
+ attachments:{name:string;text:string;material_mode:'redacted'|'original'}[];
 }
 
 const researchSchema={type:'object',additionalProperties:false,required:['id','query','title','url','finding','version_or_date','used_in'],properties:{
@@ -136,15 +136,16 @@ function searchEvidence(events:string){
 function buildPrompt(input:WorkSimulationInput){
  const question=JSON.stringify({task_name:input.question.task_name,task_type:input.question.task_type,header:input.question.header,question:input.question.question,rubric:input.question.rubric});
  const harbor=harborTask(input.question);
- const attachmentNames=input.attachments.map(item=>item.name).join('、');
+ const attachmentNames=input.attachments.map(item=>`${item.name}（${item.material_mode==='original'?'未脱敏':'脱敏'}）`).join('、');
+ const materialMode=input.attachments.some(item=>item.material_mode==='original')?'未脱敏':'脱敏';
  return [
-  '<role>你是内部法律评测的 AI 法律研究代理，负责依据题目、Rubric 和脱敏材料起草业务成果；你不是现实律师或真人专家。</role>',
-  '<task>根据冻结题面、评分标准、全部脱敏材料和随附交付规范，完成题目要求的一个真实可用主成果，并记录本次确实完成的法律检索。</task>',
+  `<role>你是内部法律评测的 AI 法律研究代理，负责依据题目、Rubric 和${materialMode}材料起草业务成果；你不是现实律师或真人专家。</role>`,
+  `<task>根据冻结题面、评分标准、全部${materialMode}材料和随附交付规范，完成题目要求的一个真实可用主成果，并记录本次确实完成的法律检索。</task>`,
   '<body_style>主成果正文采用自然、完整的业务文书体例，不写“模拟专家”“AI模拟”“模型生成”等过程说明；不得伪称真人身份、亲自办理、签署、核定或执行未发生的检索操作。生成来源保留在独立生成记录和平台要求的来源字段中，不得删除或伪造。</body_style>',
   '<files>必须逐个生成 project_context.harbor.metadata.deliverables 中列出的全部交付文件，harbor_files 的 path 与清单逐字一致。DOCX/MD/TXT/CSV/JSON 正文放在 markdown 字段，XLSX 按工作表返回 name、columns 和等长 rows。每个文件分别完成其用途，不得复制同一内容仅更名。若无法生成某一指定文件或资料不足，停止并在 unresolved 中说明。</files>',
   '读取并遵守 input_files/模拟专家生成提示词.md、交付规范.md 和模拟专家交付物与检索轨迹模板.md；逐一阅读全部 input_files/材料-*.md。',
   '<quality>不得读取或使用参考答案、作答思路、历史题目或评分结果。</quality>',
-  '<input>',`项目题目：${input.title}`,`题面版本：${input.question_version}`,`Rubric 版本：${input.rubric_version}`,`题目包：${question}`,`Harbor 任务与文件契约：${JSON.stringify(harbor)}`,`脱敏材料：${attachmentNames}`,'</input>',
+  '<input>',`项目题目：${input.title}`,`题面版本：${input.question_version}`,`Rubric 版本：${input.rubric_version}`,`题目包：${question}`,`Harbor 任务与文件契约：${JSON.stringify(harbor)}`,`${materialMode}材料：${attachmentNames}`,'</input>',
   '只返回 JSON Schema 指定字段。research_entries 中 query 必须原样对应实际工具搜索词，url 必须是实际打开的页面。',
  ].join('\n');
 }

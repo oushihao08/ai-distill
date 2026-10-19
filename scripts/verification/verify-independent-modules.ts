@@ -1,5 +1,6 @@
-/** 文件职责：在隔离数据库与合成夹具中核对达标、发布、导出和模型设置的模块接线。
- * 执行入口与用途：`bun scripts/verification/verify-independent-modules.ts`；在隔离数据库与合成记录中调用达标、发布、导出和模型设置模块并核对结果。
+/** 文件职责：用合成夹具核对达标、发布、导出和模型设置的模块接线。
+ * 执行入口与副作用：`bun scripts/verification/verify-independent-modules.ts`；直接向 `createPool()` 配置连接的 `ai_distill` schema 写入合成行，结束时按随机 ID 删除；它不创建临时 schema，清理失败可能遗留数据。
+ * 使用边界：只能在已确认的专用测试数据库上运行；本脚本不是隔离数据库测试，也不应对未知或业务数据库执行。
  */
 import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -10,7 +11,7 @@ import {createHash} from 'node:crypto';
 const pool=createPool(),storage=await mkdtemp(join(tmpdir(),'independent-modules-'));
 const projectId=crypto.randomUUID(),workflowId=crypto.randomUUID(),requestId=crypto.randomUUID(),questionAttempt=crypto.randomUUID(),answerAttempt=crypto.randomUUID(),scoreAttempt=crypto.randomUUID(),extractAttempt=crypto.randomUUID(),materialArtifact=crypto.randomUUID();
 const provider='qwen',model='fixture-token-model';
-let report:Record<string,unknown>={checked_at:new Date().toISOString(),fixture:'synthetic data in temporary real PostgreSQL rows',real_database:true,migrations:['008_acceptance_reporting.sql','009_stale_exports.sql','011_publication_step.sql'],acceptance:false,export_failure_isolated:false,export_retry:false,export:false,repeated_export:false,download:false,nonaccepted_gate:false,stale_export:false};
+let report:Record<string,unknown>={checked_at:new Date().toISOString(),fixture:'synthetic rows in the configured ai_distill schema; no temporary schema',real_database:true,migrations_assumed:['008_acceptance_reporting.sql','009_stale_exports.sql','011_publication_step.sql'],acceptance:false,export_failure_isolated:false,export_retry:false,export:false,repeated_export:false,download:false,nonaccepted_gate:false,stale_export:false};
 try{
  await pool.query("INSERT INTO ai_distill.projects(id,name) VALUES($1,'independent-module-verification')",[projectId]);
  await pool.query("INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_key) VALUES($1,$2,$3,'verification question','verification-batch')",[workflowId,projectId,requestId]);

@@ -1,7 +1,7 @@
 /**
- * 职责：提取配置读取：从 config/extraction.json 合并并校验文本识别、实体检查和脱敏兼容参数。
- * 关键方法与用途：`loadExtractionConfig()` 读取默认或指定 JSON、合并环境覆盖并校验识别和脱敏参数。
- * 使用场景：PDF 处理器和视觉客户端在创建任务时加载；不在前端暴露密钥。
+ * 职责：读取并校验旧 Vision/OCR 配置快照，不负责配置当前 MinerU 提取器。
+ * 关键方法与用途：`loadExtractionConfig()` 从默认 JSON 或 `EXTRACTION_CONFIG_PATH` 读取完整对象；材料库仅将其作为 processing settings 快照保存。
+ * 使用场景：旧 `vision.ts` 客户端和材料库默认设置构建；MinerU runner 不读取其中的 provider_config，密钥不由本文件管理。
  */
 import { readFileSync } from 'node:fs';
 export interface ExtractionConfig {

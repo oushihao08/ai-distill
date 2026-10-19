@@ -1,0 +1,31 @@
+{
+  "id": "O010",
+  "kind": "result",
+  "status": "resolved",
+  "title": "完成材料库模块文档与对应源码/替身测试复核。README、9个测试均逐文件读取；已审实现的哈希与审计记录一致。未发现说明中的旧材料库约束与当前源码冲突。该核对是静态源码/测试文本审查，不是测试运行或真实数据库/模型验收。",
+  "item_ids": [
+    "inventory"
+  ],
+  "attempt_ids": [],
+  "facts": [
+    "完成材料库模块文档与对应源码/替身测试复核。README、9个测试均逐文件读取；已审实现的哈希与审计记录一致。未发现说明中的旧材料库约束与当前源码冲突。该核对是静态源码/测试文本审查，不是测试运行或真实数据库/模型验收。",
+    "原记录类型：result。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "server/material-library/README.md 全文",
+    "server/material-library/*.test.ts 9个文件全文",
+    "audit-v2.json 中对应实现审计记录及当前SHA复核",
+    "server/material-library/routes.ts、projects-routes.ts、service.ts、settings.ts、uses.ts 关键契约抽查"
+  ],
+  "impact": "静态文本与源码交叉核对；未执行测试、迁移、数据库或真实模型调用。",
+  "updates": [
+    {
+      "at": "2026-10-19T12:01:06Z",
+      "action": "为当前 Trace 查看器补齐其要求的记录字段；保留原事实、证据和范围边界。当前只读/修改范围按本轮明确allowlist执行。历史事件本身不撤销。"
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-19T10:35:14.801851+00:00",
+  "updated_at": "2026-10-19T12:01:06Z"
+}

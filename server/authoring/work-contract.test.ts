@@ -84,11 +84,17 @@ test('Work一次返回全部ID维度错配的位置，不泄露判据正文或�
  expect(raw.rubric[1].id).toBe('R3-P09');expect(raw.rubric[2].id).toBe('R4-P02');
 });
 
-test('文本作答器拒绝真实文件/工具任务和未完成草稿，保留任务原始要求',async()=>{
+test('文本作答器允许文件成果的文字呈现，但拒绝必需工具和未完成草稿',async()=>{
  const {authoringQuestion}=await import('../answer-models/input');
- for(const modify of [(v:any)=>v.task_requirements.output_mode='file',(v:any)=>v.task_requirements.tools.push('web_search'),(v:any)=>v.content_status={status:'draft',issues:['核心法源未核验']}]){
-  const value=workFixture();modify(value);const result=validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'});expect(()=>authoringQuestion({...result,question_version:'v1'})).toThrow();
- }
+ const fileTask=workFixture();fileTask.task_requirements.output_mode='file';
+ const fileResult=validateDraft(fileTask,materials,'model_report_v1',{contentContract:'work_legal_v1'});
+ expect(authoringQuestion({...fileResult,question_version:'v1'}).presentation?.mode).toBe('text_deliverables_v1');
+ const toolTask=workFixture();toolTask.task_requirements.tools=['web_search'];
+ const toolResult=validateDraft(toolTask,materials,'model_report_v1',{contentContract:'work_legal_v1'});
+ expect(()=>authoringQuestion({...toolResult,question_version:'v1'})).toThrow('当前作答器不支持题目要求的工具');
+ const draft=workFixture();draft.content_status={status:'draft',issues:['核心法源未核验']};
+ const draftResult=validateDraft(draft,materials,'model_report_v1',{contentContract:'work_legal_v1'});
+ expect(()=>authoringQuestion({...draftResult,question_version:'v1'})).toThrow('Work题目仍为草稿，不能作答');
 });
 
 test('评分输入排除Rubric夹带的整题研究信息',async()=>{

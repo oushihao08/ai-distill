@@ -1,7 +1,4 @@
-/**
- * 职责：验证材料包成功脱敏版本可反复建题，且每题拥有独立材料与脱敏产物。
- * 主要边界：来源校验、索引 ID 重映射、失败回滚和历史版本不触发再次脱敏。
- */
+/** 验证旧项目内材料包从成功脱敏版本独立建题、来源校验和索引重映射；使用内存 Pool 与临时文件，不访问真实数据库或重复调用脱敏。 */
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
 import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';

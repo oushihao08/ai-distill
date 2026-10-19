@@ -1,4 +1,4 @@
-/** 验证文档提取器不会在缺少 MinerU provider 时回退到智谱 API。 */
+/** 验证 PDF 缺少 MinerU provider 时拒绝执行，以及 TXT 原文空白投影；只使用临时文件，不请求 MinerU/智谱。 */
 import {test,expect} from 'bun:test';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';

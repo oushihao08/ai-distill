@@ -1,7 +1,7 @@
 /**
  * 职责：达标事务服务：读取当前题目和模型评分快照，计算依据指纹并保存第七阶段决策。
  * 关键方法与用途：`readAcceptanceSnapshot()` 读取当前版本证据；`buildAcceptanceInput()` 组装纯决策输入；`runAcceptance()` 锁定并保存第七阶段结果；指纹函数固定来源。
- * 使用场景：由 `app.ts` 在评分结束后执行一次达标判断。
+ * 使用场景：由HTTP单步/批量入口或评分队列终态后调用；每次判断保存新尝试，不调用模型。
  */
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -79,7 +79,7 @@ export function buildEvaluationRecordRefs(snapshot:AcceptanceSnapshot,modelScore
  });
 }
 /**
- * 读取当前题面、模型集合、答案与评分分数，按逐模型门槛计算达标、等待或未达标结果并持久化。
+ * 读取当前题面、模型集合、答案与评分分数，按当前逐模型或均分策略计算达标、等待、返修或隔离结果并持久化。
  * 输入摘要绑定本次判定依据；配置始终来自当前项目模型集合及步骤设置。
  */
 export async function runAcceptance(pool:Pool,workflowId:string){

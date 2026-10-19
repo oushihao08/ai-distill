@@ -1,4 +1,5 @@
-/** 结构化日志字段净化、写入、轮转与健康状态测试。
+/** 结构化日志行为验证：字段白名单净化、JSONL写入/轮转/保留、并发进程写入、降级恢复及脱敏任务错误摘要。
+ * 边界：日志文件与子进程写入限定在临时目录；脱敏worker使用SQL连接池替身和注入执行器，不连接真实数据库或模型/provider。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import {expect,test} from 'bun:test';
@@ -26,6 +27,24 @@ test('writes ordered, correlated JSONL events and drops unapproved private field
   expect(lines[0]).toMatchObject({event:'attempt.failed',service:'worker',instance_id:'instance-a',build_id:'build-2026-10-09',request_id:'request-a',attempt_id:'attempt-a',workflow_id:'workflow-a',operation:'redaction',model:'gpt-6-luna',failure_phase:'agent_execution'});
   expect(JSON.stringify(lines)).not.toContain('PRIVATE MATERIAL');
   expect(await logger.health()).toMatchObject({status:'healthy',dropped_count:0});
+ }finally{await logger.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('persists only database latency warnings with safe metadata',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ai-distill-db-latency-'));
+ const logger=createStructuredLogger({root,service:'api',instance_id:'instance-b'});
+ try{
+  logger.log('db.query.slow',{level:'warn',query_name:'select:ai_distill.workflows',duration_ms:1200,sql:'PRIVATE SQL',values:['PRIVATE VALUE']});
+  logger.log('db.connection.waited',{level:'warn',duration_ms:300});
+  logger.log('unrelated.warning',{level:'warn',duration_ms:900});
+  await logger.flush();
+  const files=await readdir(join(root,'logs',new Date().toISOString().slice(0,10)));
+  expect(files).toHaveLength(1);
+  const lines=(await readFile(join(root,'logs',new Date().toISOString().slice(0,10),files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+  expect(lines).toHaveLength(2);
+  expect(lines.map((line:any)=>line.event)).toEqual(['db.query.slow','db.connection.waited']);
+  expect(lines[0]).toMatchObject({level:'warn',query_name:'select:ai_distill.workflows',duration_ms:1200});
+  expect(JSON.stringify(lines)).not.toContain('PRIVATE');
  }finally{await logger.close();await rm(root,{recursive:true,force:true});}
 });
 
@@ -233,7 +252,8 @@ test('redaction failure stores a safe Codex summary while keeping the user-facin
   if(sql.startsWith("UPDATE ai_distill.steps SET status='failed'")){writes.push({sql,values});return{rows:[],rowCount:1};}
   return{rows:[],rowCount:1};
  }};
- const pool={connect:async()=>client,async query(sql:string){
+ const pool={connect:async()=>client,async query(query:string|{text:string}){
+  const sql=typeof query==='string'?query:query.text;
   if(sql.startsWith('SELECT DISTINCT ON(m.id)'))return{rows:[item],rowCount:1};
   if(sql.startsWith('SELECT count(*)::int AS count'))return{rows:[{count:1}],rowCount:1};
   if(sql.startsWith('SELECT ar.content,ar.storage_path'))return{rows:[{content:raw,storage_path:null,sha256:artifactSha,source_sha256:sourceSha}],rowCount:1};

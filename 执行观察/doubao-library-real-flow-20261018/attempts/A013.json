@@ -1,0 +1,17 @@
+{
+  "id": "A013",
+  "item_id": "new-project-compat",
+  "stage_id": "load",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T09:42:34.692Z",
+  "finished_at": "2026-10-18T09:43:13.449Z",
+  "inputs": [{"ref":"library package d4353085-0921-4293-9ea4-f1f808ae91c4","version":"revision 6458c800-d17e-4132-a789-9821494546ae; redaction 99846ce1-5fea-4f1f-98b7-151ea6e372b6","sha256":"98ff8bfd4817aa63c3c951be3fff1a1d03b197b829bbe9dd079cad2dad0b6c59"}],
+  "configuration": {"project_backend":"library_v1","material_mode":"material_packages","project_created_for_acceptance":true},
+  "changes_from_previous": ["验证真正新建的library_v1项目，不复用失败隔离项目的题目状态"],
+  "external_ids": {"project_id":"abd4cadb-3ed8-465a-899c-736f248f3cef","project_material_id":"34d4fc90-01ca-40e4-a9ed-1d3154e1a344","workflow_id":"9f311b3c-cab4-4848-ac42-35c2d9ccdad2","api":"http://127.0.0.1:3700"},
+  "environment": {"target":"local API","package_source":"same sealed revision and redaction"},
+  "artifacts": [{"ref":"question private source_manifest","sha256":"98ff8bfd4817aa63c3c951be3fff1a1d03b197b829bbe9dd079cad2dad0b6c59"}],
+  "verification": [{"kind":"load_and_snapshot","result":"同一材料包成功加载，创建题目私有快照；脱敏摘要与共享包输出一致","evidence":"GET /api/projects/abd4cadb-3ed8-465a-899c-736f248f3cef/loaded-materials; GET /api/workflows/9f311b3c-cab4-4848-ac42-35c2d9ccdad2"}],
+  "error": null
+}

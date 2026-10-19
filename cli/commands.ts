@@ -1,21 +1,32 @@
-/** CLI 命令层。runCommand 映射项目生命周期、材料包建题、配置和工作流到现有 HTTP 契约；不复制业务就绪、评分或达标规则。 */
+/**
+ * 文件职责：把 CLI 命令映射到项目、材料库和工作流 HTTP 契约，统一参数、请求 ID 与结果信封。
+ * 关键入口：`runCommand()` 供 `cli/index.ts` 分派；`waitAttempts()` 只读恢复 attempt；项目业务判定由服务端返回。
+ * 使用场景：Agent/维护者通过 CLI 读取并操作现有项目；旧目录/旧材料包接口继续兼容，不在本层连接数据库或运行模型。
+ */
 import {readFile,writeFile} from 'node:fs/promises';
+import {basename,dirname,resolve} from 'node:path';
 import {getStepDefinition, STEP_REGISTRY} from '../shared/step-registry';
 import {readAcceptanceResult} from '../shared/workflow-results';
 import {ApiClient, CliError} from './client';
 import {batchSize,batchView,createBatch,readBatch,skipBatch} from './batches';
 import {exportFailedQuestions} from './failed-export';
 
-export const HELP = `ai-distill：本机工作流工具（所有命令支持 --json、--api http://127.0.0.1:3700）
+export const HELP = `ai-distill：工作流工具（全部命令支持 --json；仅本机命令接受 --api http://127.0.0.1:3700）
 远程材料（经 SSH 隧道，凭证从 .env 读取）：
   remote material run|start --workflow UUID --mode intake|redact|intake-redact --request-key UUID
-  remote material status|sync --operation UUID
+  remote material status|sync (--operation UUID | --workflow UUID --request-key UUID)
 远程作答（经 SSH 隧道，凭证从 .env 读取）：
   remote answer run|start|status --workflow UUID --request-key UUID
 详细命令/远程边界/恢复方式：cli/README.md；Skill 工具地图：skill/MAP.md#cli-工具地图
 只读：
-  project list | project show --project UUID
+  project list | project show --project UUID | project-group list | project-group phases --group UUID
   material-package list --project UUID | material-package versions --workflow 材料包UUID
+  library package list [--q 关键词] [--page N] [--page-size N] [--ready-only] [--redaction-state all|ready|not_ready] [--archived-only] [--project UUID]
+  library package show|usage|revisions --package UUID
+  library job show --job UUID | library documents show --revision UUID --extraction-job UUID [--file UUID]
+  library redaction show --redaction UUID [--file UUID] | library file download --file UUID --out 新路径
+  project material candidates --project UUID [--q 关键词] [--page N] [--page-size N] [--source-mode any|redacted|original]
+  project materials list --project UUID [--include-removed] | project material uses --project UUID | project material use events --project UUID --use UUID
   project settings show --project UUID
   question list --project UUID | question show --workflow UUID
   workflow status --project UUID (--ids UUID,... | --all)
@@ -32,9 +43,24 @@ export const HELP = `ai-distill：本机工作流工具（所有命令支持 --j
 显式写入：
   batch create --project UUID (--ids UUID,... | --all) --size 数量 --to STEP_KEY --out 清单路径
   batch skip --file 清单路径 --ids UUID,... --reason 原因（仅记录本轮跳过，不取消任务）
-  project create --name 显示名称 --material-root 绝对路径 [--material-mode question_folders|material_packages] [--parent-name 主项目] [--phase-name 期数] [--skill-path 绝对路径] [--description 说明] [--settings-file JSON]
+  project create --name 显示名称 [--material-backend legacy --material-root 绝对路径 | --material-backend library_v1 --workspace-path 绝对路径] [--parent-name 主项目 --phase-name 期数 --phase-no N] [--project-group UUID] [--skill-path 绝对路径] [--settings-file JSON]
+  project phase-update --project UUID --phase-no N --phase-name 期名 --expected-name 当前完整名称
+  project-group rename|archive|restore --group UUID [--name 主项目名称]
+  library package create --name 名称 [--description 说明] [--tags a,b]
+  library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
+  library revision create --package UUID --version N --request-key UUID --manifest JSON
+  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID]
+  library job cancel --job UUID
+  project materials load --project UUID --package UUID (--redaction UUID | --revision UUID)
+  project materials update --project UUID --link UUID --version N [--redaction UUID | --revision UUID] [--position N]
+  project materials remove|restore --project UUID --link UUID --version N
+  project materials question --project UUID --link UUID --version N (--redaction UUID | --revision UUID) --title 名称 --request-key UUID [--role 角色] [--scenario 场景] [--level L2|L3|L4|L5] [--direction 方向] [--tags a,b]
+  project material use update --project UUID --use UUID --version N --status in_use|submitted --reason 原因 [--evidence-file JSON]
+  project legacy-materials list --project UUID | project legacy-materials import --project UUID --workflow UUID --request-key UUID [--apply --digest SHA256] | project legacy-materials activate --project UUID --import UUID
+  library processing show | library processing update --version N --file JSON
+  library package revisions|usage --package UUID
   project material-mode --project UUID --clear-existing（隐藏旧题并切换为材料包模式）
-  question create --material-package UUID --redaction-attempt UUID --title 名称 [--scenario 场景] [--role 角色] [--level L2|L3|L4|L5] [--direction 出题方向]
+  question create --material-package UUID --redaction-attempt UUID --title 名称 [--scenario 场景] [--role 角色] [--level L2|L3|L4|L5] [--direction 出题方向]（旧材料包兼容接口）
   project update --project UUID [--name 显示名称] [--parent-name 主项目] [--phase-name 期数] [--description 说明] [--material-root 绝对路径] [--skill-path 绝对路径]
   project delete --project UUID --confirm-name 项目完整名称
   project settings apply --project UUID --file JSON
@@ -56,7 +82,7 @@ function parse(args: string[]) {
     if (!value.startsWith('--')) { words.push(value); continue; }
     const key=value.slice(2);
     if (flags.has(key)) throw new CliError(`参数重复：--${key}`);
-    if (['all','redacted-only','json','help','full','clear-existing'].includes(key)) flags.set(key,true);
+    if (['all','redacted-only','json','help','full','clear-existing','ready-only','archived-only','include-removed','apply'].includes(key)) flags.set(key,true);
     else {
       const next=args[++i]; if(!next||next.startsWith('--')) throw new CliError(`参数缺值：--${key}`);
       flags.set(key,next);
@@ -78,6 +104,17 @@ function object(value: any, label: string) {
   if(!value||typeof value!=='object'||Array.isArray(value)) throw new CliError(`${label} 响应结构无效`,{kind:'invalid_response'});
   return value;
 }
+function positiveInteger(value:string,label:string){
+  const number=Number(value);
+  if(!Number.isSafeInteger(number)||number<1)throw new CliError(`${label}须为正整数`);
+  return number;
+}
+function versionHeader(value:string){return {'If-Match':String(positiveInteger(value,'版本'))};}
+function queryString(entries:Array<[string,string|undefined]>){
+  const params=new URLSearchParams();
+  for(const [key,value] of entries)if(value!==undefined&&value!=='')params.set(key,value);
+  const encoded=params.toString();return encoded?`?${encoded}`:'';
+}
 
 /** 通过现有项目同步API扫描来源目录；PDF切割由服务端扫描器统一执行。 */
 async function syncProjectFolder(post:(path:string,body?:unknown)=>Promise<any>,projectId:string) {
@@ -88,13 +125,30 @@ async function syncProjectFolder(post:(path:string,body?:unknown)=>Promise<any>,
 export async function runCommand(args: string[], client?: ApiClient, signal?: AbortSignal): Promise<any> {
   try {
     const {words,flags}=parse(args);
-    const command=words[0]==='project'&&words[1]==='settings'?words.slice(0,3).join(' '):words.slice(0,2).join(' ');
     if(flags.has('help')||!args.length) return {outcome:'complete',help:HELP};
     const allowed: Record<string,string[]>= {
-      'project list':[], 'project show':['project'], 'project create':['name','parent-name','phase-name','description','material-root','skill-path','settings-file','material-mode'],
+      'project list':[], 'project show':['project'], 'project create':['name','parent-name','phase-name','phase-no','project-group','description','material-root','workspace-path','skill-path','settings-file','material-mode','material-backend'],
+      'project phase-update':['project','phase-no','phase-name','expected-name'],
       'project material-mode':['project','clear-existing'],
       'project update':['project','name','parent-name','phase-name','description','material-root','skill-path'], 'project delete':['project','confirm-name'],
       'project settings show':['project'], 'project settings apply':['project','file'], 'project sync':['project'],
+      'project-group list':[],'project-group phases':['group'],'project-group rename':['group','name'],'project-group archive':['group'],'project-group restore':['group'],
+      'project material candidates':['project','q','page','page-size','source-mode'],'project material uses':['project'],
+      'project material use events':['project','use'],'project material use update':['project','use','version','status','reason','evidence-file'],
+      'project legacy-materials list':['project'],'project legacy-materials import':['project','workflow','request-key','apply','digest'],'project legacy-materials activate':['project','import'],
+      'project materials list':['project','include-removed'],'project materials load':['project','package','redaction','revision'],
+      'project materials update':['project','link','version','redaction','revision','position'],
+      'project materials remove':['project','link','version'],'project materials restore':['project','link','version'],
+      'project materials question':['project','link','version','redaction','revision','title','request-key','scenario','role','level','direction','tags'],
+      'library package list':['q','page','page-size','ready-only','redaction-state','archived-only','project'],'library package show':['package'],
+      'library package usage':['package'],'library package revisions':['package'],'library package create':['name','description','tags'],
+      'library package update':['package','version','file'],'library package archive':['package','version'],'library package restore':['package','version'],
+      'library revision create':['package','version','request-key','manifest'],
+      'library job start':['revision','kind','target','request-key','extraction-job','previous-job'],
+      'library job show':['job'],'library job cancel':['job'],
+      'library documents show':['revision','extraction-job','file'],'library redaction show':['redaction','file'],
+      'library file download':['file','out'],
+      'library processing show':[],'library processing update':['version','file'],
       'material-package list':['project'],'material-package versions':['workflow'],
       'question list':['project'],'question show':['workflow'],'question create':['material-package','redaction-attempt','title','scenario','role','level','direction'],'workflow status':['project','ids','all'],
       'material text':['workflow','material','redacted-only'],'rules list':['project'],'rules file':['project','path'],
@@ -107,7 +161,8 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'artifact download':['artifact','out'],'monitor show':[],
       'batch create':['project','ids','all','size','to','out'],'batch show':['file'],'batch skip':['file','ids','reason'],
     };
-    const expectedWords=command.startsWith('project settings ')?3:command==='step dispatch'?3:2;
+    const command=Object.keys(allowed).sort((a,b)=>b.split(' ').length-a.split(' ').length).find(key=>words.slice(0,key.split(' ').length).join(' ')===key)??'';
+    const expectedWords=command==='step dispatch'?3:command.split(' ').length;
     if(!allowed[command]||words.length!==expectedWords) throw new CliError('命令无效，请查看 --help');
     for(const key of flags.keys()) if(![...allowed[command],'json','api'].includes(key)) throw new CliError(`未知参数：--${key}`);
     const required=(key:string)=>{const value=flags.get(key);if(typeof value!=='string'||!value.trim())throw new CliError(`缺少 --${key}`);return value;};
@@ -118,11 +173,31 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
     const put=(path:string,body:unknown)=>api.json(path,'PUT',body,signal);
     const patch=(path:string,body:unknown)=>api.json(path,'PATCH',body,signal);
     const del=(path:string,body?:unknown)=>api.json(path,'DELETE',body,signal);
+    const versioned=async(path:string,method:'PATCH'|'DELETE'|'POST',version:string,body?:unknown)=>api.json(path,method,body,signal,versionHeader(version));
     const ids=()=>[...new Set(required('ids').split(',').map(value=>id(value,'ids')))];
     const readJsonFile=async(path:string,label:string)=>{
       let source:string;
       try{source=await readFile(path,'utf8');}catch{throw new CliError(`${label}文件无法读取`,{kind:'file_error'});}
       try{return object(JSON.parse(source),label);}catch(error){if(error instanceof CliError)throw error;throw new CliError(`${label}文件不是有效JSON`,{kind:'file_error'});}
+    };
+    const createLibraryRevision=async(packageId:string)=>{
+      const manifestPath=required('manifest');
+      const manifest=await readJsonFile(manifestPath,'材料清单');
+      if(!Array.isArray(manifest.files)||manifest.files.length<1||manifest.files.length>100)throw new CliError('材料清单须包含1至100个文件');
+      const form=new FormData();form.set('request_key',uuid('request-key'));
+      const modes:string[]=[];
+      for(const [index,item] of manifest.files.entries()){
+        if(!item||typeof item!=='object'||Array.isArray(item)||typeof item.path!=='string'||!item.path.trim())throw new CliError(`材料清单第${index+1}项缺少 path`);
+        const mode=item.redaction_mode??'model';
+        if(mode!=='model'&&mode!=='declared_redacted')throw new CliError(`材料清单第${index+1}项 redaction_mode 无效`);
+        const filePath=resolve(dirname(resolve(manifestPath)),item.path);
+        let bytes:Uint8Array;
+        try{bytes=await readFile(filePath);}catch{throw new CliError(`材料文件无法读取：${basename(filePath)}`,{kind:'file_error'});}
+        const uploadBytes=new Uint8Array(bytes.byteLength);uploadBytes.set(bytes);
+        form.append('files',new Blob([uploadBytes.buffer]),basename(filePath));modes.push(mode);
+      }
+      form.set('redaction_modes',JSON.stringify(modes));
+      return api.form(`/api/material-library/packages/${packageId}/revisions`,'POST',form,signal,versionHeader(required('version')));
     };
     const applySettings=async(projectId:string,settings:any)=>{
       const allowedFields=['codex','models','steps','answer_generation_policy'];
@@ -199,6 +274,89 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'step list': data=STEP_REGISTRY.filter(s=>s.visible); break;
       case 'project list': data=await get('/api/projects'); break;
       case 'project show': data=await get(`/api/projects/${uuid('project')}`); break;
+      case 'project-group list': data=await get('/api/project-groups');break;
+      case 'project-group phases': data=await get(`/api/project-groups/${uuid('group')}/phases`);break;
+      case 'project-group rename': data=await patch(`/api/project-groups/${uuid('group')}`,{name:required('name')});break;
+      case 'project-group archive': data=await del(`/api/project-groups/${uuid('group')}`);break;
+      case 'project-group restore': data=await post(`/api/project-groups/${uuid('group')}/restore`);break;
+      case 'project phase-update': data=await patch(`/api/projects/${uuid('project')}/phase-identity`,{phase_no:positiveInteger(required('phase-no'),'期数'),phase_name:required('phase-name'),expected_name:required('expected-name')});break;
+      case 'project material candidates': {
+        const source=flags.has('source-mode')?required('source-mode'):'any';
+        if(!['any','redacted','original'].includes(source))throw new CliError('source-mode 须为 any、redacted 或 original');
+        data=await get(`/api/projects/${uuid('project')}/material-candidates${queryString([['q',flags.has('q')?required('q'):undefined],['page',flags.has('page')?String(positiveInteger(required('page'),'页码')):undefined],['page_size',flags.has('page-size')?String(positiveInteger(required('page-size'),'每页数量')):undefined],['source_mode',source]])}`);break;
+      }
+      case 'project material uses': data=await get(`/api/projects/${uuid('project')}/material-uses`);break;
+      case 'project material use events': data=await get(`/api/projects/${uuid('project')}/material-uses/${uuid('use')}/events`);break;
+      case 'project material use update': {
+        const evidence=flags.has('evidence-file')?await readJsonFile(required('evidence-file'),'提交证据'):{};
+        const status=required('status');if(!['in_use','submitted'].includes(status))throw new CliError('status 须为 in_use 或 submitted');
+        data=await versioned(`/api/projects/${uuid('project')}/material-uses/${uuid('use')}`,'PATCH',required('version'),{status,reason:required('reason'),evidence});break;
+      }
+      case 'project legacy-materials list': data=await get(`/api/projects/${uuid('project')}/legacy-materials`);break;
+      case 'project legacy-materials import': {
+        const applying=flags.has('apply');
+        if(applying!==flags.has('digest'))throw new CliError('历史材料导入 --apply 时必须同时提供 --digest；预览时不要提供 digest');
+        data=await post(`/api/projects/${uuid('project')}/legacy-material-imports`,{source_workflow_id:uuid('workflow'),request_key:uuid('request-key'),dry_run:!applying,...(applying?{expected_source_digest:required('digest')}:{})});break;
+      }
+      case 'project legacy-materials activate': data=await post(`/api/projects/${uuid('project')}/legacy-material-imports/${uuid('import')}/activate`);break;
+      case 'project materials list': data=await get(`/api/projects/${uuid('project')}/loaded-materials${flags.has('include-removed')?'?include_removed=true':''}`);break;
+      case 'project materials load': {
+        if(flags.has('redaction')===flags.has('revision'))throw new CliError('必须且只能指定 --redaction 或 --revision');
+        data=await post(`/api/projects/${uuid('project')}/loaded-materials`,{package_id:uuid('package'),...(flags.has('redaction')?{redaction_id:uuid('redaction')}:{revision_id:uuid('revision')})});break;
+      }
+      case 'project materials update': {
+        if(flags.has('redaction')&&flags.has('revision'))throw new CliError('--redaction 与 --revision 不能同时使用');
+        const body={...(flags.has('redaction')?{redaction_id:uuid('redaction')}:{}) ,...(flags.has('revision')?{revision_id:uuid('revision')}:{}) ,...(flags.has('position')?{position:positiveInteger(required('position'),'排序位置')}:{})};
+        if(!Object.keys(body).length)throw new CliError('至少指定来源版本或排序位置');
+        data=await versioned(`/api/projects/${uuid('project')}/loaded-materials/${uuid('link')}`,'PATCH',required('version'),body);break;
+      }
+      case 'project materials remove': data=await versioned(`/api/projects/${uuid('project')}/loaded-materials/${uuid('link')}`,'DELETE',required('version'));break;
+      case 'project materials restore': data=await versioned(`/api/projects/${uuid('project')}/loaded-materials/${uuid('link')}/restore`,'POST',required('version'));break;
+      case 'project materials question': {
+        if(flags.has('redaction')===flags.has('revision'))throw new CliError('必须且只能指定 --redaction 或 --revision');
+        const level=flags.has('level')?required('level'):undefined;
+        if(level!==undefined&&!['L2','L3','L4','L5'].includes(level))throw new CliError('目标等级须为 L2 至 L5');
+        data=await post(`/api/projects/${uuid('project')}/loaded-materials/${uuid('link')}/questions`,{
+          request_key:uuid('request-key'),expected_link_version:positiveInteger(required('version'),'材料引用版本'),
+          ...(flags.has('redaction')?{redaction_id:uuid('redaction')}:{revision_id:uuid('revision')}),title:required('title'),
+          ...(flags.has('scenario')?{scenario:required('scenario')}:{}) ,...(flags.has('role')?{role_perspective:required('role')}:{}) ,
+          ...(level?{target_level:level}:{}),...(flags.has('direction')?{authoring_direction:required('direction')}:{}) ,
+          ...(flags.has('tags')?{question_tags:required('tags').split(',').map(tag=>tag.trim()).filter(Boolean)}:{}),
+        });break;
+      }
+      case 'library package list': {
+        const query=queryString([['q',flags.has('q')?required('q'):undefined],['page',flags.has('page')?String(positiveInteger(required('page'),'页码')):undefined],['page_size',flags.has('page-size')?String(positiveInteger(required('page-size'),'每页数量')):undefined],['ready_only',flags.has('ready-only')?'true':undefined],['redaction_state',flags.has('redaction-state')?required('redaction-state'):undefined],['archived_only',flags.has('archived-only')?'true':undefined],['project_id',flags.has('project')?uuid('project'):undefined]]);
+        data=await get(`/api/material-library/packages${query}`);break;
+      }
+      case 'library package show': data=await get(`/api/material-library/packages/${uuid('package')}`);break;
+      case 'library package usage': data=await get(`/api/material-library/packages/${uuid('package')}/usage`);break;
+      case 'library package revisions': data=await get(`/api/material-library/packages/${uuid('package')}/revisions`);break;
+      case 'library package create': data=await post('/api/material-library/packages',{name:required('name'),description:flags.has('description')?required('description'):'',tags:flags.has('tags')?required('tags').split(',').map(tag=>tag.trim()).filter(Boolean):[]});break;
+      case 'library package update': {
+        const body=await readJsonFile(required('file'),'材料包修改');data=await versioned(`/api/material-library/packages/${uuid('package')}`,'PATCH',required('version'),body);break;
+      }
+      case 'library package archive': data=await versioned(`/api/material-library/packages/${uuid('package')}`,'DELETE',required('version'));break;
+      case 'library package restore': data=await versioned(`/api/material-library/packages/${uuid('package')}/restore`,'POST',required('version'));break;
+      case 'library revision create': data=await createLibraryRevision(uuid('package'));break;
+      case 'library job start': {
+        const kind=required('kind'),target=required('target');
+        if(!['intake','extract','redact'].includes(kind)||!['local','server'].includes(target))throw new CliError('任务 kind 或 execution target 无效');
+        const body={kind,request_key:uuid('request-key'),execution_target:target,...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{})};
+        data=await post(`/api/material-library/revisions/${uuid('revision')}/jobs`,body);break;
+      }
+      case 'library job show': data=await get(`/api/material-library/jobs/${uuid('job')}`);break;
+      case 'library job cancel': data=await post(`/api/material-library/jobs/${uuid('job')}/cancel`);break;
+      case 'library documents show': data=await get(`/api/material-library/revisions/${uuid('revision')}/documents${queryString([['extraction_job_id',uuid('extraction-job')],['file_id',flags.has('file')?uuid('file'):undefined]])}`);break;
+      case 'library redaction show': data=await get(`/api/material-library/redactions/${uuid('redaction')}/preview${queryString([['file_id',flags.has('file')?uuid('file'):undefined]])}`);break;
+      case 'library file download': {
+        const out=required('out'),bytes=await api.download(`/api/material-library/files/${uuid('file')}/content`,signal);
+        try{await writeFile(out,bytes,{flag:'wx',mode:0o600});}catch{throw new CliError('无法写入下载文件；目标须不存在且父目录已创建',{kind:'file_error'});}
+        data={path:out,bytes:bytes.length,source:'library_original'};break;
+      }
+      case 'library processing show': data=await get('/api/material-library/processing-settings');break;
+      case 'library processing update': {
+        const body=await readJsonFile(required('file'),'材料处理设置');data=await api.json('/api/material-library/processing-settings','PUT',body,signal,versionHeader(required('version')));break;
+      }
       case 'material-package list': data=object(await get(`/api/projects/${uuid('project')}`),'项目').workflows?.filter((flow:any)=>flow.workflow_kind==='material_package')??[];break;
       case 'material-package versions': data=await get(`/api/material-packages/${uuid('workflow')}/versions`);break;
       case 'project material-mode': {
@@ -231,13 +389,24 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         return {outcome:'complete',data,business:{execution_status:decision?.status??null,...decisionResult}};
       }
       case 'project create': {
-        const root=required('material-root');const skill=flags.has('skill-path')?required('skill-path'):undefined;
-        if(!root.startsWith('/')||(skill&&!skill.startsWith('/')))throw new CliError('目录须为本机绝对路径');
+        const backend=flags.has('material-backend')?required('material-backend'):'legacy';
+        if(!['legacy','library_v1'].includes(backend))throw new CliError('material-backend 须为 legacy 或 library_v1');
+        const root=flags.has('material-root')?required('material-root'):undefined;
+        const workspace=flags.has('workspace-path')?required('workspace-path'):undefined;
+        const skill=flags.has('skill-path')?required('skill-path'):undefined;
+        if((backend==='legacy'&&(!root||!root.startsWith('/')))||(backend==='library_v1'&&(!workspace||!workspace.startsWith('/')))
+          ||(root&&!root.startsWith('/'))||(workspace&&!workspace.startsWith('/'))||(skill&&!skill.startsWith('/')))throw new CliError('目录须为本机绝对路径；legacy 需要 material-root，library_v1 需要 workspace-path');
         const settings=flags.has('settings-file')?await readJsonFile(required('settings-file'),'项目设置'):undefined;
-        // 项目创建API扫描题目目录时会复用服务端PDF切割逻辑。
         const materialMode=flags.has('material-mode')?required('material-mode'):'question_folders';
         if(!['question_folders','material_packages'].includes(materialMode))throw new CliError('material-mode 须为 question_folders 或 material_packages');
-        const created=object(await post('/api/projects',{name:required('name'),description:flags.get('description')??'',material_root:root,...(flags.has('material-mode')?{material_mode:materialMode}:{}),...(flags.has('parent-name')?{parent_name:required('parent-name')} : {}),...(flags.has('phase-name')?{phase_name:required('phase-name')} : {}),...(skill?{local_skill_path:skill}:{})}),'项目创建');
+        const body={name:required('name'),description:flags.get('description')??'',...(flags.has('material-backend')?{material_backend:backend}:{}),
+          ...(root?{material_root:root}:{}),...(workspace?{workspace_path:workspace}:{}),
+          ...(flags.has('material-mode')?{material_mode:materialMode}:{}),
+          ...(flags.has('parent-name')?{parent_name:required('parent-name')} : {}),
+          ...(flags.has('phase-name')?{phase_name:required('phase-name')} : {}),
+          ...(flags.has('phase-no')?{phase_no:positiveInteger(required('phase-no'),'期数')} : {}),
+          ...(flags.has('project-group')?{project_group_id:uuid('project-group')} : {}),...(skill?{local_skill_path:skill}:{})};
+        const created=object(await post('/api/projects',body),'项目创建');
         const projectId=id(created.project?.id??created.id,'project');
         if(settings){let setup;try{setup=await applySettings(projectId,settings);}catch(error){return{outcome:'partial',data:{project:created,setup:{outcome:'not_applied',error:error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'}},note:'项目已创建；设置校验失败，没有自动删除项目。'}};}let readiness;try{readiness=await projectSettings(projectId);}catch(error){return{outcome:'partial',data:{project:created,setup,readiness_error:error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'}}};}data={project:created,setup,readiness};if(setup.outcome==='partial')return{outcome:'partial',data};}
         else {try{const readiness=await projectSettings(projectId);data={project:created,readiness:{...readiness.readiness,notes:readiness.notes}};}catch(error){return{outcome:'partial',data:{project:created,setup:{outcome:'not_applied',reason:'未提供 --settings-file'},readiness_error:error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'}}};}}

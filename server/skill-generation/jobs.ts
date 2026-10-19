@@ -23,7 +23,9 @@ export async function enqueueProjectSkill(pool:Pool,id:string,raw:unknown,option
   validateAgentModel(validated.model,validated.reasoning_effort);
   const config={provider:'codex',model:validated.model,reasoning_effort:validated.reasoning_effort};
   const paths=await resolveRuleWorkspacePaths(project),workspace=paths.workspace_path;
-  const template=resolveRepositoryPath(options.template??process.env.SKILL_BASE_TEMPLATE_DIR??'templates/company-legal-task');
+  const template=typeof project.parent_name==='string'&&typeof project.local_skill_path==='string'
+   ?resolve(project.local_skill_path)
+   :resolveRepositoryPath(options.template??process.env.SKILL_BASE_TEMPLATE_DIR??'templates/company-legal-task');
   const source=await scanRuleWorkspace(workspace,template,'workspace',paths.materials_path);if(source.issues.length)throw new HTTPException(409,{message:'基础模板或本期资料不完整'});
   const existing=(await db.query("SELECT id,status,input,config FROM ai_distill.project_skill_attempts WHERE project_id=$1 AND status IN ('waiting','running','succeeded') ORDER BY created_at DESC",[id])).rows;
   const previous=existing.find(row=>row.input.source_digest===source.source_digest&&JSON.stringify(row.config)===JSON.stringify(config));

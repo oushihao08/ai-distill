@@ -1,0 +1,43 @@
+{
+  "id": "O033",
+  "kind": "result",
+  "status": "resolved",
+  "title": "审阅目录、发布、远程材料与规则文件测试",
+  "item_ids": [
+    "inventory",
+    "docs"
+  ],
+  "attempt_ids": [
+    "A005",
+    "A006"
+  ],
+  "facts": [
+    "逐项阅读 project-folders、publishing/jobs、rule-files、remote-material-operations 四个测试文件及相应生产模块的既有审计记录。",
+    "核实题目目录扫描测试用一个合法单页PDF；生产扫描调用本机pdfinfo读取页数，即使文件在临时目录，也不应把它描述为纯回调替身测试。",
+    "发布和远程材料测试以Pool替身检查SQL/状态契约，文件产物只在临时目录生成；不连接真实数据库、Siriser、Harbor或模型服务。",
+    "四个测试头注释已按真实验证边界修正；本轮未运行测试。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "server/project-folders.test.ts",
+    "server/project-folders.ts",
+    "server/publishing/jobs.test.ts",
+    "server/publishing/jobs.ts",
+    "server/rule-files.test.ts",
+    "server/rule-files.ts",
+    "server/remote-material-operations.test.ts",
+    "server/remote-material-operations.ts",
+    "server/remote-material-routes.ts"
+  ],
+  "impact": "四个服务端测试从pending转为reviewed-updated；服务端剩余大型HTTP/日志/钩子测试继续待核。",
+  "updates": [
+    {
+      "at": "2026-10-19T19:26:39+08:00",
+      "action": "完成四个测试与生产模块契约复核，补充精确的子进程、数据库和平台调用边界。",
+      "result": "覆盖核验305/449；partial 10，pending 134。"
+    }
+  ],
+  "lesson": "临时数据不代表所有依赖均为模拟；题目目录测试实际会调用pdfinfo，应明确标出本机工具依赖。",
+  "created_at": "2026-10-19T19:26:39+08:00",
+  "updated_at": "2026-10-19T19:26:39+08:00"
+}

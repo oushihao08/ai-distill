@@ -1,7 +1,7 @@
 /**
  * 职责：Codex 设置服务：管理系统与项目默认值、步骤覆盖合并，以及经路径校验的凭证目录。
- * 关键方法与用途：`readCodexSettings()` 合并步骤、项目、系统设置；`saveCodexSettings()` 与项目保存／清除方法写入覆盖；凭证目录方法单独校验路径。
- * 使用场景：API 保存设置，`worker.ts` 创建任务时读取冻结后的有效配置。
+ * 关键方法与用途：`readCodexSettings()`读取系统值，项目读取器及mergeCodexDefaults()供调用方合并覆盖；`saveCodexSettings()` 与项目保存／清除方法写入覆盖；凭证目录方法单独校验路径。
+ * 使用场景：API 保存设置，业务入队服务创建任务时读取有效配置并冻结，worker执行冻结配置。
  */
 import type {Pool} from 'pg';
 import {constants} from 'node:fs';

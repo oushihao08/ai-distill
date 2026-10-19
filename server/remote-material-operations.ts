@@ -1,5 +1,5 @@
 /**
- * 职责：持久编排服务器入库、PDF 提取和 API 脱敏；接口创建操作，materials worker 逐次推进。
+ * 职责：按旧材料workflow_id持久编排服务器入库、PDF/DOCX提取和API脱敏；不是全局library_jobs，材料worker逐次推进。
  * 关键入口：createRemoteMaterialOperation、readRemoteMaterialOperation、runNextRemoteMaterialOperation。
  * 使用场景：本机 CLI 经受限 API 发起一次组合操作，即使客户端断线仍由服务器继续处理。
  */

@@ -1,0 +1,60 @@
+{
+  "id": "A015",
+  "item_id": "docs",
+  "stage_id": "update",
+  "previous_attempt_id": "A013",
+  "status": "succeeded",
+  "started_at": "2026-10-19T11:52:08Z",
+  "finished_at": "2026-10-19T11:52:08Z",
+  "inputs": [
+    {
+      "ref": "web/README.md",
+      "sha256": "496f9b5e62b2001a023a8a9a3f734aa694ff60595296118161fd7c4fd9102e55"
+    },
+    {
+      "ref": "web/src/components/README.md",
+      "sha256": "dbe762fd6f9e4029d0560d6cc14860e7834586619e5a338ba276fb967b664e8e"
+    },
+    {
+      "ref": "web/src/views/README.md",
+      "sha256": "3390ac197c2bbcbf86faadb12e905999a68ffdcc61f04002774f007b7cbcdaae"
+    },
+    {
+      "ref": "web/src/views/MaterialLibraryView.vue",
+      "sha256": "ad7f6367821de803da4610845b1898c4babca337869863843235e2ff00b7dc2b"
+    },
+    {
+      "ref": "web/src/views/SettingsView.vue",
+      "sha256": "8f295fef168dd2755e23db50f8086f5685d88d18b0ebd5c6469c901a95e4d0fc"
+    }
+  ],
+  "configuration": {
+    "scope": "Web当前页面/组件/配置和模块说明静态审阅；不运行测试、浏览器、API或服务，不改业务逻辑"
+  },
+  "changes_from_previous": [
+    "更新Web说明：修正来源模式与legacy范围、页面刷新边界、HTML入口；记录未修改的前端显示问题。"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local working tree"
+  },
+  "artifacts": [
+    {
+      "ref": "audit-v2.json"
+    },
+    {
+      "ref": "observations/O041.json"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "source_review",
+      "result": "文档和注释与当前源码交叉核验；无运行态验证。"
+    },
+    {
+      "kind": "runtime",
+      "result": "文档和注释与当前源码交叉核验；无运行态验证。"
+    }
+  ],
+  "error": null
+}

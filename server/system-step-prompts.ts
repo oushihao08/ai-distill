@@ -1,4 +1,8 @@
-/** 文件职责：读取并保存系统级四类步骤提示词；项目创建时复制快照，既有项目不随系统修改联动。 */
+/**
+ * 文件职责：系统四类步骤提示词的读取、完整输入校验与保存。
+ * 入口：readSystemStepPrompts() 供项目创建与设置读取；saveSystemStepPrompts()/validateSystemStepPrompts() 供系统设置API使用。
+ * 新项目复制默认值，既有项目与已冻结尝试不随系统修改联动；本模块不派发任务。
+ */
 import type {Pool,PoolClient} from 'pg';
 import {SYSTEM_STEP_PROMPTS} from '../shared/step-prompts';
 

@@ -51,7 +51,7 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string,
   const candidates:{path:string;root:string}[]=[{path:workflowDirectory,root},{path:join(root,'.extraction-checkpoints',id),root}];
   for(const artifact of artifactPaths){
    if(isAbsolute(artifact.storage_path))throw new HTTPException(409,{message:'生成产物路径无效，停止重置'});
-   if(artifact.kind==='redacted_docx'&&artifact.storage_path.startsWith('附件库/')){
+   if(['redacted_docx','original_docx'].includes(artifact.kind)&&artifact.storage_path.startsWith('附件库/')){
     if(!isLibraryDocxPath(artifact.storage_path))throw new HTTPException(409,{message:'附件库产物路径无效，停止重置'});
     let exportRoot:string;try{exportRoot=await realpath(assetExportRoot);if((await lstat(assetExportRoot)).isSymbolicLink())throw new Error('symlink');}catch{throw new HTTPException(409,{message:'附件库根目录不可安全读取，停止重置'});}
     const libraryRoot=join(exportRoot,'附件库'),docxPath=resolve(exportRoot,artifact.storage_path),questionDir=dirname(dirname(docxPath)),pathWithinLibrary=relative(libraryRoot,questionDir);

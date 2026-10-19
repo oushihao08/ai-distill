@@ -1,13 +1,11 @@
-/** 验证归档前重查达标版本和文件指纹，并复用重复归档标记。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
- */
+/** 验证归档/撤回状态、快照指纹、材料溯源和重复归档复用；SQL 由 Pool 替身响应，产物使用临时文件，不调用 Siriser 或 Harbor。 */
 import {test,expect} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
-import {publishWorkflow,readPublicationHistory,withdrawPublication} from './jobs';
+import {publishWorkflow,readPublicationHistory,withdrawPublication,readSiriserArchive} from './jobs';
 import {acceptanceSourceDigest} from '../decisions/jobs';
 import {scanProjectPrompt} from '../rule-files';
 import {canonicalJson} from '../../shared/workflow-config';
@@ -35,7 +33,7 @@ async function fixture(options:{withoutPrompt?:boolean}={}){
  const query=async(sql:string,values:unknown[]=[]):Promise<any>=>{
   if(sql.startsWith('SELECT p.material_backend'))return{rows:[{material_backend:(snapshot.question.input as any).material_origin?'library_v1':'legacy'}],rowCount:1};
   if(sql.startsWith('SELECT s.snapshot_manifest'))return{rows:[{package_name:'标准材料包',snapshot_manifest:{version:2,files:libraryFiles,redacted_markdown:{artifact_id:'material',sha256:hash('脱敏材料')}}}],rowCount:1};
-  if(sql.startsWith('SELECT project_id,package_id,revision_id,redaction_id,source_digest,snapshot_manifest'))return{rows:[{project_id:'project',package_id:'pkg',revision_id:'rev',redaction_id:'redact',source_digest:'d'.repeat(64),snapshot_manifest:libraryManifest,snapshot_digest:librarySnapshotDigest,markdown_artifact_id:'material',index_artifact_id:'library-index'}],rowCount:1};
+  if(sql.startsWith('SELECT project_id,package_id,revision_id,redaction_id,material_mode,source_digest,snapshot_manifest'))return{rows:[{project_id:'project',package_id:'pkg',revision_id:'rev',redaction_id:'redact',material_mode:'redacted',source_digest:'d'.repeat(64),snapshot_manifest:libraryManifest,snapshot_digest:librarySnapshotDigest,markdown_artifact_id:'material',index_artifact_id:'library-index'}],rowCount:1};
   if(sql.startsWith('SELECT snapshot_manifest,redaction_id FROM ai_distill.question_library_sources'))return{rows:[{redaction_id:'redaction',snapshot_manifest:{files:libraryFiles,redacted_index:{artifact_id:'library-index'}}}],rowCount:1};
   if(sql.startsWith('SELECT p.material_backend FROM ai_distill.workflows'))return{rows:[{material_backend:'library_v1'}],rowCount:1};
   if(sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))return{rows:[{id:'material',kind:'redacted_markdown',attempt_id:null,sha256:hash('脱敏材料'),content:'脱敏材料'},{id:'library-index',kind:'redacted_index',attempt_id:null,sha256:hash(libraryIndex),content:libraryIndex}],rowCount:2};
@@ -59,6 +57,19 @@ async function fixture(options:{withoutPrompt?:boolean}={}){
  return {root,skill,snapshot,accepted,artifacts,writes,librarySnapshotDigest,pool:{query,connect:async()=>({query,release(){}})} as unknown as Pool,setPrevious:(value:any)=>{previous=value;},setLatestEvent:(value:'archived'|'withdrawn')=>{latestEventType=value;}};
 }
 async function publisher(){return publishWorkflow;}
+test('期次显示名变化后仍从已登记的归档目录读取原ZIP，不重建或改写旧成果',async()=>{
+ const f=await fixture();
+ try{
+  const dir=join(f.root,'附件库','Work法律全场景','首批筹备','原题','成果');await mkdir(join(dir,'Siriser五件套'),{recursive:true});
+  const zip='frozen zip bytes',digest=f.accepted.input.source_digest;
+  await writeFile(join(dir,'Siriser五件套','old.zip'),zip);
+  await writeFile(join(dir,'Siriser五件套.json'),JSON.stringify({workflow_id:'workflow',source_digest:digest,delivery_digest:'delivery',question_version:'qv1',rubric_version:'rv1',zip_relative_path:'Siriser五件套/old.zip',zip_sha256:hash(zip),zip_bytes:Buffer.byteLength(zip),filename:'old.zip'}));
+  const db=await f.pool.connect();
+  const pool={connect:async()=>({release(){},query:async(sql:string,values?:unknown[])=>sql.startsWith('SELECT w.project_id')?{rows:[{project_id:'project',title:'原题',parent_name:'Work法律全场景',phase_name:'第一期',result:{source_digest:digest,question_version:'qv1',rubric_version:'rv1',delivery:{digest:'delivery'},archive_workbook:{archive_path:'附件库/Work法律全场景/首批筹备/原题/成果/题目归档数据.xlsx'}}}]}:db.query(sql,values)})} as unknown as Pool;
+  const result=await readSiriserArchive(pool,'workflow',f.root);
+  expect(result.bytes.toString()).toBe(zip);expect(result.filename).toBe('old.zip');expect(f.writes).toHaveLength(0);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
 test('archive records the accepted version in the database without creating a published file',async()=>{
  const publish=await publisher(),f=await fixture();try{
   const result=await publish(f.pool,'workflow',f.root);expect(result.completed).toBe(true);expect(result.reused).toBe(false);
@@ -73,7 +84,7 @@ test('archive records the accepted version in the database without creating a pu
 });
 test('archive provenance freezes project, library source version and redacted attachment identity',async()=>{
  const f=await fixture();try{
-  (f.snapshot.question.input as any).material_origin={kind:'library_v1',package_id:'pkg',revision_id:'rev',redaction_id:'redact',snapshot_digest:f.librarySnapshotDigest};
+  (f.snapshot.question.input as any).material_origin={snapshot_digest:f.librarySnapshotDigest,redaction_id:'redact',revision_id:'rev',package_id:'pkg',material_mode:'redacted',kind:'library_v1'};
   f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);
   const result=await publishWorkflow(f.pool,'workflow',f.root);expect(result.completed).toBe(true);
   const attempt=f.writes.find(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;

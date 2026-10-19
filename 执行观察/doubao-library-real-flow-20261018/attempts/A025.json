@@ -1,0 +1,44 @@
+{
+  "id": "A025",
+  "item_id": "new-project-compat",
+  "stage_id": "author",
+  "previous_attempt_id": "A014",
+  "status": "succeeded",
+  "started_at": "2026-10-18T11:01:22.088Z",
+  "finished_at": "2026-10-18T11:08:09.490Z",
+  "inputs": [
+    {
+      "ref": "workflow 9f311b3c-cab4-4848-ac42-35c2d9ccdad2",
+      "version": "same loaded package redaction; question direction correction"
+    }
+  ],
+  "configuration": {
+    "project_backend": "library_v1",
+    "project_skill": "projects/豆包高经济价值/skill",
+    "authoring": "same existing project step configuration"
+  },
+  "changes_from_previous": [
+    "仅调整作者侧指引，要求题面只保留基础委托、真实诉求和必要成果格式；不泄露材料线索；不改材料、模型或阈值"
+  ],
+  "external_ids": {
+    "workflow_id": "9f311b3c-cab4-4848-ac42-35c2d9ccdad2",
+    "attempt_id": "6e692617-d838-4412-bbbb-f7ca675258e0"
+  },
+  "environment": {
+    "api": "http://127.0.0.1:3700"
+  },
+  "artifacts": [
+    {
+      "ref": "authored_question artifact",
+      "question_version": "7148748b579deff51a4f30c253f73378eba928a449785eaf2f6875a1b0fbd235"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "authoring",
+      "result": "API step succeeded; prompt reduced to core commission, simulated client conditions, and deliverables; detailed case facts and conclusions omitted; same package redaction snapshot retained",
+      "evidence": "GET /api/workflows/9f311b3c-cab4-4848-ac42-35c2d9ccdad2"
+    }
+  ],
+  "error": null
+}

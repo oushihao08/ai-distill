@@ -1,6 +1,4 @@
-/** 后台任务取消传播：验证数据库取消会中止当前任务且并发 signal 相互隔离，轮询故障写安全日志，不泄漏原始数据库错误。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
- */
+/** 验证取消轮询到 AbortSignal 的传递、并发隔离和安全故障日志；查询使用注入 Pool，日志只写临时目录，不访问真实数据库。 */
 import {test,expect} from 'bun:test';
 import {watchTaskCancellation,withTaskSignal,currentTaskSignal} from './task-signal';
 import{mkdtemp,readFile,readdir,rm}from'node:fs/promises';

@@ -1,6 +1,6 @@
 /**
- * 职责：模型作答队列：冻结题目与脱敏附件，为模型集合派发任务并按当前版本聚合答案状态。
- * 关键方法与用途：`readAnswerAttachment()` 校验并读取脱敏附件；`enqueueAnswer()` 冻结并创建尝试；`runNextAnswer()` 领取、调用供应商并保存结果。
+ * 职责：模型作答队列：冻结题目与获准来源附件，为模型集合派发任务并按当前版本聚合答案状态。
+ * 关键方法与用途：`readAnswerAttachment()` 兼容旧题数据库脱敏附件；`enqueueAnswer()` 冻结并创建尝试；`runNextAnswer()` 领取、调用供应商并保存结果。
  * 使用场景：`app.ts` 接收用户派发，`worker.ts` 持续调用消费入口。
  */
 import {canonicalJson,validateWorkflowConfig} from '../../shared/workflow-config';
@@ -23,13 +23,14 @@ import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../loggi
 import type {AnswerStepModelSummary,AnswerStepResult} from '../../shared/workflow-results';
 import {SYSTEM_STEP_PROMPTS} from '../../shared/step-prompts';
 import {readQuestionMaterials} from '../question-materials';
+import {resolveEffectiveProjectSkill} from '../rule-files';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
-const activeWorkflow="SELECT w.project_id,(SELECT p.local_skill_path FROM ai_distill.projects p WHERE p.id=w.project_id) AS local_skill_path,(SELECT p.material_backend FROM ai_distill.projects p WHERE p.id=w.project_id) AS material_backend FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) FOR UPDATE OF w";
+const activeWorkflow="SELECT w.project_id,p.local_skill_path,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
 async function currentQuestion(db:PoolClient,id:string){
  try {
-  const row=(await db.query("SELECT a.id,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[id])).rows[0];
+  const row=(await db.query("SELECT a.id,a.result,a.input FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[id])).rows[0];
   if(!row)throw new AnswerInputError('当前题目尚未出题成功');
-  return {...authoringQuestion(row.result),...(row.result.deliverables!==undefined?{deliverables:row.result.deliverables}:{}),question_attempt_id:row.id};
+  return {...authoringQuestion({...row.result,...(row.input?.material_origin?{material_origin:row.input.material_origin}:{})}),...(row.result.deliverables!==undefined?{deliverables:row.result.deliverables}:{}),question_attempt_id:row.id};
  }catch(error){throw error;}
 }
 export async function readAnswerAttachment(_root:string,artifact:{storage_path?:string;sha256:string;content?:string|null}){
@@ -40,7 +41,7 @@ export async function readAnswerAttachment(_root:string,artifact:{storage_path?:
  }catch(error){if(error instanceof AnswerInputError)throw error;throw new AnswerInputError('脱敏附件无法读取，不能作答');}
 }
 /**
- * 只为当前成功题面和获准脱敏附件创建作答尝试，并冻结题目、材料及模型集合配置。
+ * 只为当前成功题面和获准冻结附件创建作答尝试，并冻结题目、材料及模型集合配置。
  * 按模型分别去重和排队；作答输入不包含 rubric、标答或目标分数。
  */
 export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTarget:'local'|'server'='local',remoteRequestKey?:string){
@@ -60,11 +61,11 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   if(remoteRequestKey&&activeTarget.length)throw new HTTPException(409,{message:'当前已有作答任务；使用原请求标识查询，或等待完成后用新标识提交'});
   const question=await currentQuestion(db,id);
   let sources:any[]=[],materialOrigin:QuestionMaterialOrigin|undefined;
-  if(workflow.material_backend==='library_v1'){
+  if(workflow.material_backend==='library_v1'||workflow.has_library_snapshot){
    const source=await readQuestionMaterials(db,id);
-   if(source.origin.kind!=='library_v1'||JSON.stringify(question.attachment_ids)!==JSON.stringify(source.attachments.map(item=>item.id)))throw new AnswerInputError('题目附件与 library_v1 私有快照不一致');
+   if(JSON.stringify(question.attachment_ids)!==JSON.stringify(source.attachments.map(item=>item.id)))throw new AnswerInputError('题目附件与共享材料包私有快照不一致');
    materialOrigin=source.origin;
-   sources=source.attachments.map(item=>({id:item.id,kind:'redacted_markdown',sha256:item.sha256,text:item.content}));
+   sources=source.attachments.map(item=>({id:item.id,kind:source.origin.kind==='library_v1'&&source.origin.material_mode==='original'?'source_markdown':'redacted_markdown',sha256:item.sha256,text:item.content}));
   }else{
    const artifacts=await db.query("SELECT ar.id,ar.kind,ar.sha256,ar.storage_path,ar.content FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 WHERE ar.workflow_id=$1 AND ar.id=ANY($2::uuid[]) AND ar.kind='redacted_markdown' AND a.ordinal=9 AND a.status='succeeded' AND s.status='succeeded'",[id,question.attachment_ids]);
    for(const artifact of artifacts.rows)sources.push({...artifact,text:await readAnswerAttachment(root,artifact)});
@@ -77,8 +78,8 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   const workflowConfig=validateWorkflowConfig(rawStepConfig.workflow);
   const needsHooks=!!(workflowConfig?.hooks.before.length||workflowConfig?.hooks.after.length);
   if(needsHooks&&executionTarget==='server')throw new HTTPException(409,{message:'服务器作答暂不支持项目步骤钩子'});
-  if(needsHooks&&typeof workflow.local_skill_path!=='string')throw new HTTPException(409,{message:'项目钩子缺少本地项目目录'});
-  const hooks=needsHooks?await freezeStageHooks(dirname(workflow.local_skill_path),workflowConfig):undefined;
+  const skill=needsHooks?await resolveEffectiveProjectSkill(workflow):undefined;
+  const hooks=skill?await freezeStageHooks(dirname(skill.path),workflowConfig):undefined;
   const hookDigest=hooks?createHash('sha256').update(canonicalJson(hooks)).digest('hex'):undefined;
   const generationPolicy=readAnswerGenerationPolicyFromStepConfig(rawStepConfig),overrides=answerProviderConfigFromStepConfig(rawStepConfig);
   const selected=await readProjectModelSet(db,workflow.project_id);const hasModelSet=selected.length>0;

@@ -1,5 +1,5 @@
 /**
- * 职责：本机 CLI 经 SSH 隧道发起／查询远程材料操作，并按服务端清单取回管理副本。
+ * 职责：本机 CLI 经 SSH 隧道处理旧材料工作流的远程组合操作并取回管理副本；全局库package/revision/job不使用此接口。
  * 关键入口：runRemoteMaterialCommand；供 cli/index.ts 的 remote material 命令使用。
  */
 import {createHash,randomUUID} from 'node:crypto';

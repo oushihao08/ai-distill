@@ -1,4 +1,4 @@
-/** 验证入库 worker 在停止信号到达时不开始文件保存，并把已领取任务安全放回等待队列。 */
+/** 验证入库任务被领取后收到停止信号时会回到 waiting，且不开始材料插入/文件保存；使用注入 Pool，不访问真实数据库或文件。 */
 import{test,expect}from'bun:test';
 import type{Pool}from'pg';
 import{runNextIntake}from'./intake-jobs';

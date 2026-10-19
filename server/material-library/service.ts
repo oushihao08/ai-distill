@@ -65,7 +65,7 @@ export async function createLibraryPackage(pool:Pool,value:unknown){
  return{id,name:input.name,lock_version:1};
 }
 
-export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:number;page_size?:number;ready_only?:boolean;project_ids?:string[];redaction_state?:string}={}){
+export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:number;page_size?:number;ready_only?:boolean;project_ids?:string[];redaction_state?:string;archived_only?:boolean;usage_project_id?:string;source_mode?:'any'|'redacted'|'original'}={}){
  const page=options.page??1,pageSize=options.page_size??30;
  if(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)throw new HTTPException(400,{message:'材料包分页参数无效'});
  const q=options.q?.trim()??'';
@@ -73,14 +73,26 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
  const projectIds=[...new Set(options.project_ids??[])];
  if(projectIds.length>100)throw new HTTPException(400,{message:'最多选择100个项目'});
  projectIds.forEach(id=>uuid(id));
+ const usageProjectId=options.usage_project_id?uuid(options.usage_project_id):undefined;
  const state=options.redaction_state??'all';
  if(!['all','ready','not_ready'].includes(state))throw new HTTPException(400,{message:'脱敏状态无效'});
- const result=await pool.query(`SELECT p.id,p.name,p.description,p.tags,p.current_revision_id,p.lock_version,p.created_at,p.updated_at,
+ const sourceMode=options.source_mode??'any';if(!['any','redacted','original'].includes(sourceMode))throw new HTTPException(400,{message:'材料来源模式无效'});
+ const usageJoin=usageProjectId?`LEFT JOIN ai_distill.projects requested_phase ON requested_phase.id=$8::uuid AND requested_phase.deleted_at IS NULL
+  LEFT JOIN ai_distill.project_material_uses material_use ON material_use.project_group_id=requested_phase.project_group_id AND material_use.package_id=p.id
+  LEFT JOIN ai_distill.projects owner_phase ON owner_phase.id=material_use.owner_phase_id`:'';
+ const usageProjection=usageProjectId?'material_use.status AS usage_status,owner_phase.phase_name AS used_phase_name,':'NULL::text AS usage_status,NULL::text AS used_phase_name,';
+ const sourceModeParam=usageProjectId?'$9::text':'$8::text';
+ const params:unknown[]=[q,pageSize,(page-1)*pageSize,options.ready_only===true,state,projectIds,options.archived_only===true];
+ if(usageProjectId)params.push(usageProjectId);
+ params.push(sourceMode);
+ const result=await pool.query(`SELECT p.id,p.name,p.description,p.tags,p.current_revision_id,p.lock_version,p.deleted_at,p.created_at,p.updated_at,
   COALESCE(r.file_count,0)::int AS file_count,r.state AS revision_state,
   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='intake' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS intake_status,
   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='extract' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS extraction_status,
   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='redact' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS redaction_status,
   available.count AS available_redaction_count,
+  extracted.count AS available_extraction_count,
+  ${usageProjection}
   (SELECT count(*)::int FROM ai_distill.project_library_packages l JOIN ai_distill.projects project ON project.id=l.project_id AND project.deleted_at IS NULL WHERE l.package_id=p.id AND l.removed_at IS NULL) AS loaded_project_count,
   count(*) OVER()::int AS total_count
   FROM ai_distill.library_packages p LEFT JOIN ai_distill.library_revisions r ON r.package_id=p.id AND r.id=p.current_revision_id
@@ -89,13 +101,36 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
    JOIN ai_distill.library_jobs e ON e.id=x.extraction_job_id AND e.revision_id=x.revision_id AND e.kind='extract' AND e.status='succeeded'
    JOIN ai_distill.library_jobs j ON j.id=x.redaction_job_id AND j.revision_id=x.revision_id AND j.kind='redact' AND j.status='succeeded'
    WHERE x.package_id=p.id AND x.validation_report->>'usable_for_question'='true') available
-  WHERE p.deleted_at IS NULL AND ($4::boolean=false OR available.count>0)
-  AND ($5='all' OR ($5='ready' AND available.count>0) OR ($5='not_ready' AND available.count=0))
+  CROSS JOIN LATERAL (SELECT count(DISTINCT v.id)::int FROM ai_distill.library_revisions v
+   JOIN ai_distill.library_jobs e ON e.revision_id=v.id AND e.kind='extract' AND e.status='succeeded'
+   WHERE v.package_id=p.id AND v.state='ready'
+    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=v.id AND d.extraction_job_id=e.id) = v.file_count) extracted
+  ${usageJoin}
+  WHERE (($7::boolean=false AND p.deleted_at IS NULL) OR ($7::boolean=true AND p.deleted_at IS NOT NULL))
+  AND ($4::boolean=false OR available.count>0)
+  AND ($5::text='all' OR ($5::text='ready' AND available.count>0) OR ($5::text='not_ready' AND available.count=0))
+  AND (${sourceModeParam}='any' OR (${sourceModeParam}='redacted' AND available.count>0) OR (${sourceModeParam}='original' AND extracted.count>0))
   AND (cardinality($6::uuid[])=0 OR EXISTS(SELECT 1 FROM ai_distill.project_library_packages l JOIN ai_distill.projects project ON project.id=l.project_id AND project.deleted_at IS NULL WHERE l.package_id=p.id AND l.removed_at IS NULL AND l.project_id=ANY($6::uuid[])))
-  AND ($1='' OR p.name ILIKE '%'||$1||'%' OR p.description ILIKE '%'||$1||'%' OR $1=ANY(p.tags))
-  ORDER BY p.updated_at DESC,p.id LIMIT $2 OFFSET $3`,[q,pageSize,(page-1)*pageSize,options.ready_only===true,state,projectIds]);
+  AND ($1::text='' OR p.name ILIKE '%'||$1::text||'%' OR p.description ILIKE '%'||$1::text||'%' OR $1::text=ANY(p.tags))
+  ORDER BY p.updated_at DESC,p.id LIMIT $2 OFFSET $3`,params);
  const total=result.rows[0]?.total_count??0;
- return{items:result.rows.map(({total_count:_total_count,...row})=>row),page,page_size:pageSize,total_count:total};
+ const rows=result.rows.map(({total_count:_total_count,...row})=>row);
+ const packageIds=rows.map(row=>row.id);
+ const usesByPackage=new Map<string,unknown[]>();
+ if(packageIds.length){
+  // Only fetch use summaries for this page; the full event timeline remains in the detail endpoint.
+  const uses=await pool.query(`SELECT u.package_id,jsonb_agg(jsonb_build_object(
+    'id',u.id,'project_group_id',u.project_group_id,'project_name',g.name,'owner_phase_id',u.owner_phase_id,
+    'phase_name',phase.phase_name,'phase_no',phase.phase_no,'status',u.status,'first_used_at',u.first_used_at
+   ) ORDER BY g.name,phase.phase_no NULLS LAST,phase.phase_name,u.first_used_at) AS material_uses
+   FROM ai_distill.project_material_uses u
+   JOIN ai_distill.project_groups g ON g.id=u.project_group_id
+   JOIN ai_distill.projects phase ON phase.id=u.owner_phase_id
+   WHERE u.package_id=ANY($1::uuid[]) GROUP BY u.package_id`,[packageIds]);
+  for(const row of uses.rows)usesByPackage.set(row.package_id,row.material_uses);
+ }
+ const items=rows.map(row=>({...row,material_uses:usesByPackage.get(row.id)??[]}));
+ return{items,page,page_size:pageSize,total_count:total};
 }
 
 export async function readLibraryPackage(pool:Pool,id:string){
@@ -119,7 +154,7 @@ export async function readLibraryRevisions(pool:Pool,id:string){
      AND EXISTS(SELECT 1 FROM ai_distill.library_jobs e WHERE e.id=red.extraction_job_id AND e.revision_id=r.id AND e.kind='extract' AND e.status='succeeded')
      AND EXISTS(SELECT 1 FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id AND j.revision_id=r.id AND j.kind='redact' AND j.status='succeeded')),'created_at',red.created_at) ORDER BY red.created_at DESC,red.id)
     FROM ai_distill.library_redactions red WHERE red.revision_id=r.id),'[]'::jsonb) AS redactions,
-  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',j.id,'kind',j.kind,'status',j.status,'created_at',j.created_at,'finished_at',j.finished_at) ORDER BY j.created_at DESC) FROM ai_distill.library_jobs j WHERE j.revision_id=r.id),'[]'::jsonb) AS jobs
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',j.id,'kind',j.kind,'status',j.status,'origin',j.origin,'created_at',j.created_at,'finished_at',j.finished_at) ORDER BY j.created_at DESC) FROM ai_distill.library_jobs j WHERE j.revision_id=r.id),'[]'::jsonb) AS jobs
   FROM ai_distill.library_revisions r LEFT JOIN ai_distill.library_files f ON f.revision_id=r.id LEFT JOIN ai_distill.library_blobs b ON b.id=f.blob_id
   WHERE r.package_id=$1 GROUP BY r.id ORDER BY r.created_at DESC,r.id`,[id])).rows;
 }
@@ -167,7 +202,7 @@ export async function restoreLibraryPackage(pool:Pool,id:string,expectedVersion:
 export async function readLibraryPackageUsage(pool:Pool,id:string){
  const exists=await pool.query('SELECT id FROM ai_distill.library_packages WHERE id=$1',[id]);
  if(!exists.rowCount)throw new HTTPException(404,{message:'材料包不存在'});
- const [loads,archives]=await Promise.all([
+ const [loads,archives,uses]=await Promise.all([
   pool.query(`SELECT l.project_id,p.name AS project_name,l.selected_revision_id,l.selected_redaction_id,l.created_at,l.removed_at
    FROM ai_distill.project_library_packages l JOIN ai_distill.projects p ON p.id=l.project_id WHERE l.package_id=$1 ORDER BY l.created_at,l.id`,[id]),
   pool.query(`SELECT e.id,e.project_id,p.name AS project_name,e.workflow_id,w.title AS workflow_title,(w.id IS NOT NULL) AS workflow_exists,e.attempt_id,e.event_type,e.provenance,e.created_at,
@@ -181,8 +216,12 @@ export async function readLibraryPackageUsage(pool:Pool,id:string){
    LEFT JOIN LATERAL (SELECT event_type,provenance FROM ai_distill.workflow_publication_events WHERE workflow_id=e.workflow_id ORDER BY created_at DESC,id DESC LIMIT 1) latest ON true
    WHERE e.provenance->'material_origin'->>'kind'='library_v1' AND e.provenance->'material_origin'->>'package_id'=$1
    ORDER BY e.created_at,e.id`,[id]),
+  pool.query(`SELECT u.id,u.project_group_id,g.name AS project_name,u.owner_phase_id,p.phase_name,p.phase_no,u.status,u.first_used_at,u.updated_at
+   FROM ai_distill.project_material_uses u JOIN ai_distill.project_groups g ON g.id=u.project_group_id
+   JOIN ai_distill.projects p ON p.id=u.owner_phase_id WHERE u.package_id=$1 ORDER BY u.first_used_at,u.id`,[id]),
  ]);
- return{loaded_projects:loads.rows,publication_events:archives.rows};
+ const useEvents=uses.rows.length?await pool.query('SELECT e.id,e.use_id,e.event_type,e.previous_status,e.status,e.reason,e.evidence,e.created_at FROM ai_distill.project_material_use_events e WHERE e.use_id=ANY($1::uuid[]) ORDER BY e.created_at,e.id',[uses.rows.map(row=>row.id)]):{rows:[]};
+ return{loaded_projects:loads.rows,publication_events:archives.rows,material_uses:uses.rows.map(use=>({...use,events:useEvents.rows.filter(event=>event.use_id===use.id)}))};
 }
 
 export async function createLibraryRevision(pool:Pool,storageRoot:string,id:string,expectedVersion:number,requestKey:string,files:LibraryFileInput[]){

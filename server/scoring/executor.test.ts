@@ -1,4 +1,7 @@
-/** 验证评分的匿名输入、显式校准和冻结核对指令；覆盖独立会话、文本总分、绑定与取消，不调用真实模型。 */
+/**
+ * 验证评分输入白名单、匿名化、显式校准、冻结指令、输出协议和取消边界。
+ * API/Codex调用由注入的执行器替身承接，不发真实网络请求或模型调用。
+ */
 import {test,expect} from 'bun:test';
 import {mkdtemp,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -79,6 +82,15 @@ test('default scoring prompt asks for per-item reasoning and exact answer eviden
  for(const part of ['逐项','判断理由','答案原文证据','不得使用作答思路或标准答案'])expect(prompt).toContain(part);
  expect(resolveScoreStepPrompt('依据本题题面、rubric、作答思路和标准答案，对匿名完整答案逐项评分，并引用答案原文证据。')).toBe(prompt);
  expect(resolveScoreStepPrompt('自定义提示词')).toBe('自定义提示词');expect(DEFAULT_STEP_PROMPTS[6]).toBe(prompt);
+});
+test('model-report default names the frozen source mode without changing custom prompts',async()=>{
+ const rubric=[{id:'x',criterion:'判断结果',rule:'按冻结规则'}],policy={contract:'model_report_v1' as const,rules_text:'按既有规则评分',reference_answer:'none' as const};
+ const {scoreRubricBindingText}=await import('./validate');
+ const task={...context,rubric,scoring_policy:policy,material_mode:'original' as const,binding:{...context.binding,rubric_digest:hash(scoreRubricBindingText(rubric,policy))}};
+ const capture=async(material_mode:'original'|'redacted',step_prompt?:string)=>{let sent='';const result=await runIndependentApiScore({...task,material_mode,step_prompt},{config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture'},complete:async(call:any)=>{sent=call.messages.map((message:any)=>message.content).join('\n');return{text:'<model_report>'+JSON.stringify({contract:'model_report_v1',items:[{id:'x',judgment:'符合',score_delta:0,reason:'依据'}],summary:{raw_score:0,full_score:0,evaluation_percent:null,veto_triggered:false}})+'</model_report>',provider:'openrouter',requested_model:'fixture',duration_ms:1,usage:null} as any;}});return{result,sent};};
+ const original=await capture('original');expect(original.sent).toContain('原文提取附件');expect(original.sent).not.toContain('依据题面、Rubric、脱敏附件和待评答案评分');
+ const redacted=await capture('redacted');expect(redacted.sent).toContain('依据题面、Rubric、脱敏附件和待评答案评分');
+ const custom=await capture('original','项目自定义评分提示');expect(custom.sent).toContain('项目自定义评分提示');expect(custom.sent).not.toContain('原文提取附件');
 });
 test('scoring execution names and preserves the exact rubric IDs for this task',()=>{
  const numericRubric=[{id:'1',criterion:'第一项',max_score:1},{id:'2',criterion:'第二项',max_score:1}];

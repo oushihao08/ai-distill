@@ -1,5 +1,6 @@
-/** 验证提取队列并发、附件绑定、重试去重、迟到结果隔离及文件清理。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+/**
+ * 验证提取队列的 provider 回退、并发领取、附件绑定、重试去重、迟到结果隔离及文件清理。
+ * 使用 SQL/Provider/处理器替身与临时文件，不访问真实数据库或 MinerU 服务。
  */
 import { test,expect } from 'bun:test';
 import type {Pool} from 'pg';

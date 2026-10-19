@@ -1,6 +1,4 @@
-/** 材料接收状态：验证移除最后一份当前附件后入库步骤回到 waiting，且不会伪造失败尝试。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
- */
+/** 验证移除最后一份当前附件后入库步骤回到 waiting 且不新增失败尝试；使用注入 Pool，不访问真实数据库或写入材料文件。 */
 import {test,expect} from 'bun:test';
 import type {Pool} from 'pg';
 import {receiveMaterials} from './intake';

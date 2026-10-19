@@ -212,7 +212,7 @@ test('作答阶段冻结并运行前后钩子，模型只接收原题面和脱�
 }));
 
 test('成果清单从当前题目进入实际队列快照，不泄露标答',async()=>fixture(async root=>{
- const question={...q,content_contract:'work_legal_v1',content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'file',tools:['计算']},deliverables:[{id:'D1',path:'意见.md',description:'法律意见',required:true}],reference_answer:'禁止泄露标答'};
+ const question={...q,content_contract:'work_legal_v1',content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'file',tools:[]},deliverables:[{id:'D1',path:'意见.md',description:'法律意见',required:true}],reference_answer:'禁止泄露标答'};
  const {pool,calls}=fake({question});await enqueueAnswer(pool,'workflow',root);
  const inserted=calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;
  const serialized=inserted.values.find(v=>typeof v==='string'&&v.includes('question_attempt_id'));

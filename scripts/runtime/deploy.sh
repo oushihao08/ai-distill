@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 文件职责：从 GitHub main 的已提交快照构建发布包，并通过 SSH 更新固定的云端服务；每次发布同步本机 .env。
-# 入口：在仓库根目录运行 `./scripts/runtime/deploy.sh`；不包含未提交源码，不执行数据库迁移。
+# 职责：将与 `origin/main` 一致的干净 `main` 提交打包并经 SSH 更新指定服务器。
+# 入口与影响：`./scripts/runtime/deploy.sh`；每次把本机 `.env` 一并传输并替换远端配置，触发 Swarm 服务更新；需生产操作授权，不运行数据库迁移。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

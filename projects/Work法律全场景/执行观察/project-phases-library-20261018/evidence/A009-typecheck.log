@@ -1,0 +1,2 @@
+$ bun run --cwd web check && tsc --noEmit
+$ vue-tsc --noEmit

@@ -1,0 +1,41 @@
+{
+  "id": "O029",
+  "kind": "result",
+  "status": "resolved",
+  "title": "复核评分模块测试覆盖及真实调用边界",
+  "item_ids": [
+    "inventory",
+    "docs"
+  ],
+  "attempt_ids": [
+    "A005",
+    "A006"
+  ],
+  "facts": [
+    "context.test.ts使用SQL替身与临时文件，核对项目身份、旧规则兼容、答案绑定和来源快照。",
+    "executor.test.ts核对输入白名单、匿名/校准隔离、来源模式、绑定和协议；通过注入执行器替身，不发真实网络或模型请求。",
+    "jobs.test.ts通过内存SQL替身和注入评分器覆盖入队、去重、冻结、API/Codex队列隔离、恢复、状态汇总、产物发布、取消和自动判断接续；钩子及算术脚本限于临时目录。",
+    "validate.test.ts调用纯校验函数，覆盖model_report与文本报告、Rubric/证据/绑定/算术等边界。",
+    "README及四个测试文件的旧说明没有明示替身与真实服务边界，已补齐，避免把测试源码阅读当作运行验收。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "server/scoring/README.md",
+    "server/scoring/context.test.ts",
+    "server/scoring/executor.test.ts",
+    "server/scoring/jobs.test.ts",
+    "server/scoring/validate.test.ts",
+    "server/scoring/{context,executor,jobs,validate}.ts"
+  ],
+  "impact": "评分模块四项测试源码已从pending转为reviewed-updated；测试用例覆盖广度不代表模型评分专业准确率或运行环境验收。",
+  "updates": [
+    {
+      "at": "2026-10-19T19:18:26+08:00",
+      "action": "逐项审阅四个测试文件并修订测试边界说明。",
+      "result": "覆盖核验269/449；partial 13，pending 167。"
+    }
+  ],
+  "lesson": "只有把注入替身、内存数据库和临时子进程写清楚，才不会将代码路径测试误报为真实服务验证。",
+  "created_at": "2026-10-19T19:18:26+08:00",
+  "updated_at": "2026-10-19T19:18:26+08:00"
+}

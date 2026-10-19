@@ -1,6 +1,6 @@
 /**
  * 文件职责：提供系统级步骤提示词默认正文；新建项目复制这些默认值，项目级步骤设置可独立覆盖。
- * 作答模型不读取项目提示词、skill、评分标准或标答。
+ * 作答模型接收冻结的作答步骤提示词、题面及允许附件；不读取出题 Skill、rubric 或标答。
  */
 import {DEFAULT_REDACTION_PROMPT} from './step-registry';
 export const DEFAULT_STEP_PROMPTS:Record<4|6,string>={

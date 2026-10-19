@@ -1,10 +1,10 @@
 /**
- * 职责：读取当前题目包与脱敏 DOCX 地址，筛选达标题目并生成项目工作簿。
+ * 职责：读取当前题目包与冻结来源模式对应的材料 DOCX 地址，筛选达标题目并生成项目工作簿。
  * 关键方法与用途：`collectProjectResults()` 组装题目数据；`buildProjectExport()` 生成可下载 XLSX；`withProjectExportLock()` 互斥导出并恢复中断记录。
  * 使用场景：由 `app.ts` 导出接口调用；`workbookSha256()` 标记导出文件完整性。
  */
 import type {Pool,PoolClient} from 'pg';
-import {readCurrentRedactedDocx} from '../materials/redacted-docx-export';
+import {readCurrentMaterialDocx} from '../materials/redacted-docx-export';
 import {createHash} from 'node:crypto';
 import {dirname,isAbsolute,join,relative,resolve,sep} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -107,10 +107,11 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
    FROM ai_distill.step_attempts q
    JOIN ai_distill.workflows w ON w.id=q.workflow_id
    JOIN ai_distill.projects p ON p.id=w.project_id
-   JOIN ai_distill.artifacts docx ON docx.workflow_id=q.workflow_id AND docx.kind='redacted_docx'
+   JOIN ai_distill.artifacts docx ON docx.workflow_id=q.workflow_id AND docx.kind IN ('redacted_docx','original_docx')
    JOIN ai_distill.materials m ON m.id=docx.material_id AND m.workflow_id=q.workflow_id AND m.deleted_at IS NULL
-   WHERE q.id=ANY($1::uuid[]) AND ((q.input->'material_origin'->>'kind'='library_v1' AND docx.attempt_id IS NULL)
-    OR (COALESCE(q.input->'material_origin'->>'kind','legacy')<>'library_v1' AND docx.attempt_id::text=q.input->>'redaction_attempt_id'))
+   WHERE q.id=ANY($1::uuid[]) AND ((q.input->'material_origin'->>'kind'='library_v1' AND docx.attempt_id IS NULL
+      AND docx.kind=CASE WHEN q.input->'material_origin'->>'material_mode'='original' THEN 'original_docx' ELSE 'redacted_docx' END)
+    OR (COALESCE(q.input->'material_origin'->>'kind','legacy')<>'library_v1' AND docx.kind='redacted_docx' AND docx.attempt_id::text=q.input->>'redaction_attempt_id'))
    ORDER BY q.id,docx.storage_path
   `,[acceptedQuestionAttempts.map((row:any)=>row.id)]);
   const countsByQuestionAttempt=new Map<string,number>();
@@ -118,7 +119,7 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
   const pathsByQuestionAttempt=new Map<string,string[]>();
   for(const row of attachmentRows.rows){
    // 复用下载入口的当前版本、路径、普通文件和指纹校验，不只相信索引。
-   if(!await readCurrentRedactedDocx(pool,String(row.docx_id),attachmentRoot))throw new HTTPException(409,{message:'脱敏 DOCX 已缺失或失效，请重新生成'});
+   if(!await readCurrentMaterialDocx(pool,String(row.docx_id),attachmentRoot))throw new HTTPException(409,{message:'当前材料 DOCX 已缺失或失效，请重新生成'});
    countsByQuestionAttempt.set(row.question_attempt_id,Number(row.material_count));
    const materialIds=materialIdsByQuestionAttempt.get(row.question_attempt_id)??new Set<string>();
    materialIds.add(String(row.material_id));materialIdsByQuestionAttempt.set(row.question_attempt_id,materialIds);
@@ -133,7 +134,7 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
    const attempt=questionAttemptByWorkflow.get(workflowId),record=records.find(item=>item.workflow_id===workflowId);
    if(!attempt)throw new Error('input_attachment_missing');
    const paths=pathsByQuestionAttempt.get(attempt.id)??[];
-   if(!paths.length||paths.length!==countsByQuestionAttempt.get(attempt.id)||materialIdsByQuestionAttempt.get(attempt.id)?.size!==paths.length)throw new HTTPException(409,{message:`${record?.title??'题目'}尚未生成全部附件的当前脱敏 DOCX，请先归档并重新生成脱敏 DOCX`});
+   if(!paths.length||paths.length!==countsByQuestionAttempt.get(attempt.id)||materialIdsByQuestionAttempt.get(attempt.id)?.size!==paths.length)throw new HTTPException(409,{message:`${record?.title??'题目'}尚未生成全部附件的当前来源 DOCX，请先归档并重新生成材料 DOCX`});
    if(record)record.input_attachments=paths;
   }
  }

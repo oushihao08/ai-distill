@@ -1,5 +1,5 @@
 /** 文件职责：调用模型比较同页不同推理强度及已有 max 缓存，记录耗时和源图复核差异。
- * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/verify-ocr-speed-quality.ts`；对同一页调用不同推理强度并与缓存对比，记录耗时和模型源图复核结果。
+ * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/verify-ocr-speed-quality.ts [low|high]`；读取题目1、题目3固定样本、调用 OCR 和图像复核；完整文本写 `.storage/`，汇总写 `docs/evidence/`。
  */
 import{readFile,readdir,stat,mkdir,writeFile,rm}from'node:fs/promises';
 import{join,resolve}from'node:path';

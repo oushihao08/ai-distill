@@ -1,3 +1,7 @@
+/**
+ * 文件职责：验证全局材料库内容寻址文件的安装、复用和字节权限。
+ * 主要边界：所有文件仅写入临时目录，验证摘要一致性与新建文件权限。
+ */
 import {test,expect} from 'bun:test';
 import {mkdtemp,readFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';

@@ -1,11 +1,9 @@
-/** 规则文件安全边界：验证完整 skill 清单、引用和路径检查、冻结快照字节／指纹、JSONB 顺序稳定性，以及按预期指纹编辑材料并拒绝改写 skill。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
- */
+/** 验证规则清单/引用/路径、冻结快照摘要、指纹冲突和安全日志；所有工作区及日志均位于临时目录，不访问项目真实 Skill 或数据库。 */
 import {test,expect,afterEach} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,readFile,rm,symlink,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot,changeRuleFile,readRuleFile,resolveRuleWorkspacePaths} from './rule-files';
+import {scanRuleWorkspace,freezeRuleWorkspace,verifyRuleSnapshot,changeRuleFile,readRuleFile,resolveRuleWorkspacePaths,resolveEffectiveProjectSkill} from './rule-files';
 import {configureLogger} from './logging';
 const roots:string[]=[];
 afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
@@ -21,6 +19,20 @@ async function fixture(){
 test('library-backed projects use their explicit workspace instead of deriving it from a material directory',async()=>{
  const {root,skill}=await fixture();
  expect(await resolveRuleWorkspacePaths({workspace_path:root,local_skill_path:skill})).toMatchObject({workspace_path:root,materials_path:join(root,'materials')});
+});
+test('期次 Skill 优先；没有入口时使用主项目 Skill',async()=>{
+ const {root,skill}=await fixture(),phase=join(root,'期次一');await mkdir(phase);
+ const project={workspace_path:phase,local_skill_path:skill,parent_name:'Work法律全场景'};
+ expect(await resolveEffectiveProjectSkill(project)).toEqual({path:skill,source:'project',project_path:skill,phase_path:join(phase,'skill')});
+ await mkdir(join(phase,'skill'));await writeFile(join(phase,'skill','SKILL.md'),'---\nname: phase\ndescription: Phase skill\n---\n本期规则');
+ expect(await resolveEffectiveProjectSkill(project)).toEqual({path:join(phase,'skill'),source:'phase',project_path:skill,phase_path:join(phase,'skill')});
+});
+test('期次未单独保存 workspace_path 时从 material_root 推导本期 Skill 目录',async()=>{
+ const {root,skill}=await fixture(),phase=join(root,'首批筹备');await mkdir(join(phase,'questions'),{recursive:true});
+ const project={material_root:join(phase,'questions'),local_skill_path:skill,parent_name:'Work法律全场景'};
+ expect(await resolveEffectiveProjectSkill(project)).toEqual({path:skill,source:'project',project_path:skill,phase_path:join(phase,'skill')});
+ await mkdir(join(phase,'skill'));await writeFile(join(phase,'skill','SKILL.md'),'---\nname: phase\ndescription: Phase skill\n---\n本期规则');
+ expect(await resolveEffectiveProjectSkill(project)).toEqual({path:join(phase,'skill'),source:'phase',project_path:skill,phase_path:join(phase,'skill')});
 });
 test('rule inventory covers the whole skill package and keeps metadata separate from bodies',async()=>{
  const {root,skill}=await fixture();const result=await scanRuleWorkspace(root,skill);

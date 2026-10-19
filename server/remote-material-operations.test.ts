@@ -1,4 +1,4 @@
-/** 测试远程材料操作的持久推进边界：成功前置、失败和令牌拒绝；不调用真实数据库或模型。 */
+/** 验证远程材料接口鉴权、操作幂等/阶段推进、来源失效与下载校验；使用 Hono 内存请求、Pool 替身和临时文件，不访问真实数据库或模型服务。 */
 import {expect,test} from 'bun:test';
 import {Hono} from 'hono';
 import {createHash} from 'node:crypto';

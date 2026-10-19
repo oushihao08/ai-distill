@@ -1,5 +1,5 @@
 /** 文件职责：对齐指定历史任务的 GLM-OCR 与页级缓存，记录文本相似度；相似度不等于识别准确率。
- * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/compare-glm-ocr-page-cache.ts`；读取固定历史 OCR 与逐页缓存，计算规范化文本相似度并保存 JSON；不代表准确率验收。
+ * 执行入口与用途：`bun projects/豆包高经济价值/scripts/ocr/compare-glm-ocr-page-cache.ts`；查询固定 attempt 和材料，计算前13页的规范化文本相似度，仅将页指标摘要写入 `docs/evidence/`；不保存全文比较报告，也不代表准确率验收。
  */
 import{readFile,writeFile,mkdir}from'node:fs/promises';import{join,resolve}from'node:path';import{createHash}from'node:crypto';import{createPool}from'../../../../server/db';import{createVisionClient}from'../../../../server/materials/vision';
 const pool=createPool(),root=resolve('.storage'),attempt='73b10d51-717c-4e1f-bfcb-d323775db1f3';

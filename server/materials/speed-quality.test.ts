@@ -1,5 +1,6 @@
-/** 验证 PDF 页级并发与顺序、截断重试、失败页有限重试和完整性标记。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+/**
+ * 验证 PDF 页级并发与顺序、截断重试、失败页有限重试和完整性标记。
+ * PDF 命令和 OCR 均由合成文件/回调替身提供，不运行 Poppler、真实 OCR 或模型服务。
  */
 import{test,expect}from'bun:test';import{writeFile}from'node:fs/promises';import{extractPdf}from'./pdf';
 const pdf=async(args:string[])=>{if(args[0]==='pdfinfo')return'Pages: 3';if(args[0]==='pdfimages')return'1 0 image\n2 0 image\n3 0 image';if(args[0]==='pdftotext')return'';await writeFile(`${args.at(-1)}.png`,args[args.indexOf('-f')+1]!);return'';};

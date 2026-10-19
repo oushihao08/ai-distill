@@ -1,0 +1,75 @@
+{
+  "id": "A007",
+  "item_id": "cli",
+  "stage_id": "implement",
+  "previous_attempt_id": "A003",
+  "status": "succeeded",
+  "started_at": "2026-10-19T19:09:59+08:00",
+  "finished_at": "2026-10-19T19:09:59+08:00",
+  "inputs": [
+    {
+      "ref": "cli/commands.ts",
+      "sha256": "a7a41aa56c7f921ce5bd8d8a2d0316278ef48208924f1bcee984b3bb0eb260d6"
+    },
+    {
+      "ref": "cli/index.ts",
+      "sha256": "f9353c5d649dfdc7f5298643e32afb38f9573b13ab0458780f012e37a0094072"
+    },
+    {
+      "ref": "cli/remote-materials.ts",
+      "sha256": "369827f4936527532a9333e3c455e5916d25b4e8136aec5cfe023502a57fc2a0"
+    },
+    {
+      "ref": "cli/remote-answers.ts",
+      "sha256": "fb1812e9c8c277c1457a9b51242444a9effb107285a83d5eba9d43cdf8cf0562"
+    },
+    {
+      "ref": "cli/README.md",
+      "sha256": "3b717f2d236af269cbbb656b3e336664327de7e0b867354af661baef83aa992e"
+    },
+    {
+      "ref": "server/material-library/projects-routes.ts",
+      "sha256": "1cea365b710aae17a9ebb741f9a3b64943fd42a71de2af1c470ae7bd0c7ed1b9"
+    },
+    {
+      "ref": "server/material-library/routes.ts",
+      "sha256": "1743c9e5ddf7cdcc9fabc06a7642b27f484630e1b6ee576f184fee281280f42e"
+    }
+  ],
+  "configuration": {
+    "scope": "只修正CLI帮助中本机--api与远程参数的范围描述；逐条CLI/API契约核验仍继续；不运行测试"
+  },
+  "changes_from_previous": [
+    "修复HELP把--api错误表述为所有命令通用；记录CLI README对应材料/期次段落与源码一致。"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local working tree"
+  },
+  "artifacts": [
+    {
+      "ref": "cli/commands.ts"
+    },
+    {
+      "ref": "audit-v2.json"
+    },
+    {
+      "ref": "task.json"
+    }
+  ],
+  "verification": [
+    {
+      "check": "入口参数静态追踪",
+      "result": "cli/index.ts分派remote命令至独立实现；远程处理器拒绝--api，本机runCommand允许；HELP现已明确区分。"
+    },
+    {
+      "check": "CLI README材料期次契约",
+      "result": "按当前命令分支及服务端路由核对，所审37-67行一致；全文件仍partial。"
+    },
+    {
+      "check": "运行验证",
+      "result": "未运行CLI、测试或服务；遵守仓库授权边界。"
+    }
+  ],
+  "error": null
+}

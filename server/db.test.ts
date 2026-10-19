@@ -1,6 +1,4 @@
-/** 数据库连接与日志边界：覆盖必需连接配置、TLS／channel binding、查询和事务日志脱敏；确认 SQL 参数及原始错误不会进入日志。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
- */
+/** 验证数据库连接参数/TLS配置和查询、事务日志脱敏；用 example.invalid 检查 Pool 配置并替换查询行为，不建立真实 PostgreSQL 连接。 */
 import{test,expect}from'bun:test';
 import{mkdtemp,readFile,readdir,rm}from'node:fs/promises';
 import{tmpdir}from'node:os';
@@ -10,7 +8,7 @@ import{configureLogger,withLogContext}from'./logging';
 test('database URL is required',()=>{expect(()=>createPool({})).toThrow('DATABASE_URL');});
 test('database configuration verifies TLS and retains channel binding',async()=>{
  const pool=createPool({DATABASE_URL:'postgresql://test:test@example.invalid/test?sslmode=require&channel_binding=require'});
- try{expect(pool.options.ssl).toEqual({rejectUnauthorized:true});expect(pool.options.enableChannelBinding).toBe(true);expect(pool.options.max).toBe(4);expect(pool.options.connectionString).not.toContain('sslmode');expect(pool.options.connectionString).not.toContain('channel_binding');}finally{await pool.end();}
+ try{expect(pool.options.ssl).toEqual({rejectUnauthorized:true});expect(pool.options.enableChannelBinding).toBe(true);expect(pool.options.max).toBe(4);expect(pool.options.idleTimeoutMillis).toBe(10000);expect(pool.options.connectionString).not.toContain('sslmode');expect(pool.options.connectionString).not.toContain('channel_binding');}finally{await pool.end();}
 });
 test('database query and transaction logs keep SQL values and raw errors private',async()=>{
  const root=await mkdtemp(join(tmpdir(),'db-logs-')),logger=configureLogger({root,service:'api'});
@@ -27,16 +25,16 @@ test('database query and transaction logs keep SQL values and raw errors private
    await client.query('BEGIN');await client.query('COMMIT');
    failCommit=true;await expect(client.query('COMMIT')).rejects.toThrow('private commit result uncertain');failCommit=false;
    await expect(client.query('SELECT * FROM ai_distill.private_rows WHERE token=$1',['private sql value'])).rejects.toThrow('private database message');
-   await client.query('SELECT * FROM ai_distill.slow_probe');
+   await client.query('SELECT (SELECT count(*) FROM ai_distill.private_rows) FROM ai_distill.slow_probe');
   });
   await logger.flush();const day=new Date().toISOString().slice(0,10),directory=join(root,'logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
   expect(records).not.toContainEqual(expect.objectContaining({event:'transaction.started',transaction_name:'begin',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).not.toContainEqual(expect.objectContaining({event:'transaction.committed',transaction_name:'commit',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'transaction.outcome_unknown',state:'unknown',transaction_name:'commit',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.query.failed',query_name:'select:ai_distill.private_rows',error_code:'23505',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
-  expect(records).not.toContainEqual(expect.objectContaining({event:'db.query.slow',query_name:'select:ai_distill.slow_probe',duration_ms:expect.any(Number),workflow_id:'workflow-a',attempt_id:'attempt-a'}));
+  expect(records).toContainEqual(expect.objectContaining({event:'db.query.slow',level:'warn',query_name:'select:ai_distill.slow_probe',duration_ms:expect.any(Number),workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.pool.error',error_code:'08006'}));
   expect(records).not.toContainEqual(expect.objectContaining({event:'db.connection.recovered'}));
-  expect(records.every(record=>record.level==='error')).toBe(true);expect(JSON.stringify(records)).not.toContain('private database message');expect(JSON.stringify(records)).not.toContain('private commit result uncertain');expect(JSON.stringify(records)).not.toContain('private sql value');
+  expect(records.filter(record=>record.level==='warn').every(record=>record.event==='db.query.slow')).toBe(true);expect(JSON.stringify(records)).not.toContain('private database message');expect(JSON.stringify(records)).not.toContain('private commit result uncertain');expect(JSON.stringify(records)).not.toContain('private sql value');expect(records.find(record=>record.event==='db.query.slow')).not.toHaveProperty('sql');expect(records.find(record=>record.event==='db.query.slow')).not.toHaveProperty('values');
  }finally{await logger.close();await pool.end();await rm(root,{recursive:true,force:true});}
 });

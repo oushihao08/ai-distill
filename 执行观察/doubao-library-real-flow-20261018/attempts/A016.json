@@ -1,0 +1,17 @@
+{
+  "id": "A016",
+  "item_id": "new-project-compat",
+  "stage_id": "score",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T10:03:11.341Z",
+  "finished_at": "2026-10-18T10:04:26.031Z",
+  "inputs": [{"ref":"workflow 9f311b3c-cab4-4848-ac42-35c2d9ccdad2","version":"same question, rubric and answer versions"}],
+  "configuration": {"provider":"codex","model":"gpt-6-luna","reasoning_effort":"medium"},
+  "changes_from_previous": [],
+  "external_ids": {"workflow_id":"9f311b3c-cab4-4848-ac42-35c2d9ccdad2","attempt_id":"adb2bedc-eed3-4a29-9691-bb66fbcfc0b9"},
+  "environment": {"target":"local Agent"},
+  "artifacts": [{"ref":"score_report artifact"}],
+  "verification": [{"kind":"score","result":"17/17 (100%); 17 rubric items","evidence":"GET /api/attempts/adb2bedc-eed3-4a29-9691-bb66fbcfc0b9?view=full"}],
+  "error": null
+}

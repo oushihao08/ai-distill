@@ -5,14 +5,16 @@
 
 | 脚本 | 用途与影响 |
 | --- | --- |
-| `run-flash-max-question-pdfs.ts` | 对项目题目 PDF 执行页级提取，复用检查点并在 `.storage/` 私有保存结果。 |
-| `try-glm-ocr-question-folder.ts` | 将固定题目目录中的 PDF 发给 GLM-OCR，私有保存页级返回。 |
-| `try-glm-ocr-sample.ts` | 按历史 attempt 读取指定 PDF 并调用 GLM-OCR。 |
-| `review-glm-ocr-folder-samples.ts` | 对源图抽取首、中、末页，调用模型比较识别文本并保存抽查记录。 |
-| `review-glm-ocr-quality.ts` | 对历史 OCR 样本的前六页进行模型复核。 |
-| `audit-current-ocr.ts` | 抽查项目 OCR 检查点；会读取真实材料并调用模型。 |
-| `compare-glm-ocr-page-cache.ts` | 对齐历史 GLM-OCR 与页缓存，计算文本相似度；相似度不是准确率。 |
-| `verify-ocr-speed-quality.ts` | 对固定样本比较不同推理强度及缓存结果；会调用模型。 |
-| `verify-real-question-folders.ts` | 调用本地 API 推进指定真实工作流，会改变业务状态。 |
+| `run-flash-max-question-pdfs.ts` | 固定扫描题目1、题目3的 PDF；使用 GLM-5.3-Flash max、两路并发及逐页检查点。原文提取和检查点写入 `.storage/` 私有目录。 |
+| `try-glm-ocr-question-folder.ts` | 将固定题目1、题目3的 PDF 发给 GLM-OCR；原始响应写入 `.storage/`，汇总另写 `docs/evidence/`。返回文本未脱敏。 |
+| `try-glm-ocr-sample.ts` | 按固定历史 attempt 和题目3文书查询数据库、读取 PDF 并调用 GLM-OCR；原始响应以私有文件权限写入 `.storage/`。 |
+| `review-glm-ocr-folder-samples.ts` | 对固定样本的首、中、末页渲染源图并调用模型；逐页记录写 `.storage/`，汇总写 `docs/evidence/`，可能含原文摘录。 |
+| `review-glm-ocr-quality.ts` | 对固定历史 attempt 的 OCR 前六页做模型复核；结果计数及材料哈希写入 `docs/evidence/`。不是人工验收。 |
+| `audit-current-ocr.ts` | 读取固定 attempt 的真实材料和 OCR 检查点，渲染抽样原页并调用模型；报告写入 `docs/evidence/`，issue 记录可能含原文/OCR 摘录。 |
+| `compare-glm-ocr-page-cache.ts` | 查询固定历史 attempt、对齐 GLM-OCR 与 max 页缓存并计算文本相似度；摘要写入 `docs/evidence/`，相似度不是准确率。 |
+| `verify-ocr-speed-quality.ts` | 对题目1、题目3固定历史样本比较 low/high 与 max 缓存；会调用模型，原始文本写 `.storage/`，结果摘要写 `docs/evidence/`。 |
+| `verify-real-question-folders.ts` | 固定读取本地 3700 API 上的题目1、题目3；会 POST `/load-rules`、下载脱敏 Markdown、每15秒轮询活动尝试直到终态，并写报告到 `docs/evidence/`。它会改变工作流，不是只读检查。 |
 
-运行前必须读脚本文件头的范围、固定标识和副作用说明，确认对应历史材料仍适用；不要因本目录索引而批量运行。输出可能包含案件中间文本，按脚本说明留在 `.storage/` 或受限证据文件中。
+脚本含固定项目、题目、attempt、模型和输出路径；部分会向外部模型发送未脱敏原件，`verify-real-question-folders.ts` 会改变数据库中的工作流状态。运行前逐项确认真实输入、模型外发授权和副作用；不要因本目录索引而批量运行。
+
+输出边界必须区分：`.storage/` 下的页文本、OCR 完整响应和检查点可能含未脱敏正文；多份脚本把 JSON 汇总写到仓库内 `docs/evidence/`，其中可能有源文书摘录、OCR 摘录、文件名、材料哈希或工作流标识。`docs/evidence/` 不等同于私有存储，也不能据目录名推断已脱敏。脚本写出的历史记录不构成完整人工校验或验收。

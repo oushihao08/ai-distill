@@ -1,6 +1,6 @@
 /** 验证出题历史 skill 快照独立于当前目录，并确认 skill 更新只刷新项目导出。 */
 import{test,expect}from'bun:test';
-import{mkdtemp,mkdir,writeFile,rm}from'node:fs/promises';
+import{mkdtemp,mkdir,readFile,writeFile,rm}from'node:fs/promises';
 import{join,dirname}from'node:path';
 import{tmpdir}from'node:os';
 import type{Pool,PoolClient}from'pg';
@@ -43,7 +43,7 @@ test('rejects a frozen project prompt whose stored digest is inconsistent',async
  }finally{await f.cleanup();}
 });
 
-test('marks project exports and current archive state stale without rewriting attempts',async()=>{
+test('marks project exports stale while preserving current archive and attempts',async()=>{
  const statements:string[]=[];
  const db={query:async(sql:string)=>{statements.push(sql);return{rowCount:1,rows:[]};}} as unknown as PoolClient;
  const {invalidateProjectRuleOutputs}=await import('./rules');
@@ -67,11 +67,12 @@ test('adopting a different skill preserves archives and refreshes project export
   const project={id:'project',material_root:join(projectRoot,'questions'),local_skill_path:oldSkill};
   const task={project_id:'project',input:{template_path:oldSkill,source_digest:source.source_digest},result:{candidate_path:candidate,publishable:true,issues:[],unresolved:[],candidate_files:candidateView.files.filter(file=>file.path.startsWith('skill/'))}};
   const statements:string[]=[];
-  const query=async(sql:string)=>{statements.push(sql);if(sql.startsWith('SELECT * FROM ai_distill.projects'))return{rows:[project],rowCount:1};if(sql.startsWith('SELECT * FROM ai_distill.project_skill_attempts'))return{rows:[task],rowCount:1};if(sql.startsWith('UPDATE ai_distill.projects'))project.local_skill_path=candidate;return{rows:[],rowCount:1};};
+  const query=async(sql:string)=>{statements.push(sql);if(sql.startsWith('SELECT * FROM ai_distill.projects'))return{rows:[project],rowCount:1};if(sql.startsWith('SELECT * FROM ai_distill.project_skill_attempts'))return{rows:[task],rowCount:1};return{rows:[],rowCount:1};};
   const pool={query,connect:async()=>({query,release(){}})};
   const {adoptProjectSkill}=await import('./rules');
   await adoptProjectSkill(pool as unknown as Pool,'project','attempt',storage);
-  expect(project.local_skill_path).toBe(candidate);
+  expect(project.local_skill_path).toBe(oldSkill);
+  expect(await readFile(join(oldSkill,'SKILL.md'),'utf8')).toContain('新规则');
   expect(statements.some(sql=>sql.includes('UPDATE ai_distill.steps')&&sql.includes('ordinal=8'))).toBe(false);
   expect(statements.some(sql=>sql.includes('UPDATE ai_distill.workflows'))).toBe(false);
   expect(statements.some(sql=>sql.includes("UPDATE ai_distill.project_exports SET status='stale'"))).toBe(true);

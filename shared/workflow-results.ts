@@ -1,7 +1,7 @@
 /**
  * 职责：定义和识别工作流当前答案、评分与达标汇总的 API 结果形状。
  * 关键方法：`readAnswerStepResult()`、`readScoreStepResult()`、`readAcceptanceResult()` 在消费 JSON 前确认其关键字段。
- * 使用场景：服务端结果生产、Web／CLI 读取；旧记录缺少可选字段时保留为不可识别，不推断为成功。
+ * 使用场景：服务端结果生产、Web／CLI 读取；旧记录缺少可选字段仍可读取；缺少必要字段才返回不可识别，不推断业务成功。
  */
 import type {StepStatus} from './types';
 

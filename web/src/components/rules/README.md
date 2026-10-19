@@ -1,9 +1,9 @@
 <!-- 文件职责：说明项目当前资料与 skill 管理界面。 -->
-# 项目资料与 skill
+# 规则资料与 Skill
 
-- `ProjectRules.vue`：显示主项目共享 `materials/` 与 `skill/` 路径，管理共享规则文件并查看 skill 文件。
+- `ProjectRules.vue`：管理主项目跨期共享的 `materials/`，显示实际生效 Skill 和来源；分期优先读取本期工作区 `skill/`，没有有效 `SKILL.md` 时回退主项目 `local_skill_path`。若旧 API 未返回 Skill 绑定，则显示状态未读取并关闭候选生成，避免把未知来源误报为默认 Skill。两者都不是全局材料库中的案卷材料包。
 - `RuleFileEditor.vue`：读取文件；文字编辑或文件替换仅面向 `materials/`，skill 保持只读。修改已有文件携带 SHA-256 以检查并发变化。
-- `SkillGeneration.vue`：生成独立候选、轮询尝试；采用候选后更新项目当前 skill 路径。
+- `SkillGeneration.vue`：生成独立候选、轮询尝试；分期采用后写入本期 `skill/`，不改变主项目默认 Skill；非分期项目继续采用到项目 Skill 目录。
 
 依赖项目 rules/skill 接口、共享类型和 `useResource`。新任务按步骤读取当前项目文件并记录本次指纹；历史规则版本不再用于派发，也不代表题目已经完成质检或达到正式交付条件。
 

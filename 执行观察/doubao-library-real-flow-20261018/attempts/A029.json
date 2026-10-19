@@ -1,0 +1,37 @@
+{
+  "id": "A029",
+  "item_id": "existing-work-compat",
+  "stage_id": "decision",
+  "previous_attempt_id": "A022",
+  "status": "succeeded",
+  "started_at": "2026-10-18T11:19:10Z",
+  "finished_at": "2026-10-18T11:19:18Z",
+  "inputs": [
+    {
+      "ref": "workflow 5d9b4868-2623-4dd8-a1e2-fa59cb0a7727",
+      "version": "revised question, matching answer and validated score"
+    }
+  ],
+  "configuration": {
+    "gate": "existing Work threshold 55%, no changes"
+  },
+  "changes_from_previous": [
+    "基于重出题的新评分执行原有达标门槛；不调整评分标准或阈值"
+  ],
+  "external_ids": {
+    "workflow_id": "5d9b4868-2623-4dd8-a1e2-fa59cb0a7727",
+    "attempt_id": "dba037ff-0813-469b-aadb-5c0269d38314"
+  },
+  "environment": {
+    "target": "local API"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "acceptance",
+      "result": "accepted; 37/81=45.67901235%, original 55% threshold, no veto",
+      "evidence": "POST /api/workflows/5d9b4868-2623-4dd8-a1e2-fa59cb0a7727/accept?wait_ms=30000"
+    }
+  ],
+  "error": null
+}

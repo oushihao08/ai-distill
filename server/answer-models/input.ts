@@ -1,5 +1,5 @@
 /**
- * 职责：作答输入契约：校验成功出题结果和脱敏附件引用，白名单化公开成果清单，组装无工具的文字输入及冻结呈现约定。
+ * 职责：作答输入契约：校验成功出题结果和题目冻结来源附件引用，白名单化公开成果清单，组装无工具的文字输入及冻结呈现约定。
  * 关键方法与用途：`authoringQuestion()` 提取可作答题面；`buildAnswerInput()` 组装允许输入；`buildAnswerMessage()` 组装实际文字作答消息；`inputDigest()` 计算冻结输入指纹。
  * 使用场景：由 `jobs.ts` 入队前调用，拒绝未完成出题或附件绑定无效的任务。
  */
@@ -17,6 +17,7 @@ export function workAnswerCapabilityIssue(value:any):string|null{
  const task=value.task_requirements,status=value.content_status;
  if(status?.status!=='complete')return 'Work题目仍为草稿，不能作答';
  if(!task||task.input_mode!=='text'||!['text','file'].includes(task.output_mode)||!Array.isArray(task.tools))return '当前作答器仅支持文字输入；非文字任务不能按文字测试';
+ if(task.tools.length>0)return '当前作答器不支持题目要求的工具';
  return null;
 }
 export function authoringQuestion(raw:unknown) {
@@ -27,7 +28,8 @@ export function authoringQuestion(raw:unknown) {
  if(!requirements||requirements.input_mode!=='text'||requirements.output_mode!=='text'||!Array.isArray(requirements.tools)||requirements.tools.length)throw new AnswerInputError('当前Qwen执行器仅支持文字输入、文字答案且不执行工具');
  if(typeof value.question_version!=='string'||!value.question_version.trim()||value.question_version.length>160||typeof value.question!=='string'||!value.question.trim()||value.question.length>2_000_000||!Array.isArray(value.attachment_ids)||!value.attachment_ids.length||value.attachment_ids.length>100||value.attachment_ids.some(id=>typeof id!=='string'||!id)||new Set(value.attachment_ids).size!==value.attachment_ids.length)throw new AnswerInputError();
  const presentation=answerPresentation(value);
- return {question_version:value.question_version,question:value.question,attachment_ids:value.attachment_ids as string[],...(presentation?{presentation}:{})};
+ const material_origin=value.material_origin as QuestionMaterialOrigin|undefined;
+ return {question_version:value.question_version,question:value.question,attachment_ids:value.attachment_ids as string[],...(presentation?{presentation}:{}),...(material_origin?{material_origin}:{})};
 }
 /** 各项目共用成果白名单；只适配呈现方式，不把专业工具要求冒充执行能力。 */
 export function answerPresentation(value:Record<string,unknown>):AnswerPresentation|undefined{
@@ -49,11 +51,12 @@ export function buildAnswerInput(raw:unknown,artifacts:AnswerAttachment[]):Answe
  const question=authoringQuestion(raw);
  const selected=question.attachment_ids.map(id=>{
   const matches=artifacts.filter(a=>a.id===id);const a=matches[0];
-  if(matches.length!==1||!a||a.kind!=='redacted_markdown'||!/^[a-f0-9]{64}$/.test(a.sha256)||typeof a.text!=='string'||!a.text.trim())throw new AnswerInputError();
+   const expectedKind=question.material_origin?.kind==='library_v1'&&question.material_origin.material_mode==='original'?'source_markdown':'redacted_markdown';
+   if(matches.length!==1||!a||a.kind!==expectedKind||!/^[a-f0-9]{64}$/.test(a.sha256)||typeof a.text!=='string'||!a.text.trim())throw new AnswerInputError();
   return a;
  });
  if(selected.reduce((n,a)=>n+a.text.length,question.question.length)>8_000_000)throw new AnswerInputError('题面和附件过大，不能作答');
- return {question_version:question.question_version,question:question.question,materials:selected.map((a,i)=>({name:`附件${i+1}`,text:a.text})),attachments:selected.map(a=>({id:a.id,sha256:a.sha256})),...(question.presentation?{presentation:question.presentation}:{})};
+ return {question_version:question.question_version,question:question.question,materials:selected.map((a,i)=>({name:`附件${i+1}`,text:a.text})),attachments:selected.map(a=>({id:a.id,sha256:a.sha256})),...(question.presentation?{presentation:question.presentation}:{}),...(question.material_origin?{material_origin:question.material_origin}:{})};
 }
 export function inputDigest(input:AnswerPackage):string {
  // 文字成果快照整体规范化；旧无presentation尝试保持原摘要算法。

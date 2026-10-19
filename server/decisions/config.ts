@@ -1,6 +1,6 @@
 /**
  * 职责：校验项目达标判断配置。
- * 关键方法与用途：`validateAcceptanceConfig()` 校验模型集合及各模型百分制分数上限。
+ * 关键方法与用途：`validateAcceptancePolicy()` 校验当前聚合策略；`validateAcceptanceConfig()`兼容完整模型集合及百分制上限。
  * 使用场景：达标判断读取当前项目模型设置。
  */
 import {HTTPException} from 'hono/http-exception';

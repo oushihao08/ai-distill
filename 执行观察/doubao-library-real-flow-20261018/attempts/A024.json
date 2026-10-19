@@ -1,0 +1,44 @@
+{
+  "id": "A024",
+  "item_id": "existing-work-compat",
+  "stage_id": "answer",
+  "previous_attempt_id": "A020",
+  "status": "succeeded",
+  "started_at": "2026-10-18T11:01:36.457Z",
+  "finished_at": "2026-10-18T11:15:28.331Z",
+  "inputs": [
+    {
+      "ref": "workflow 5d9b4868-2623-4dd8-a1e2-fa59cb0a7727",
+      "version": "question 6aa85d05cea0b2279d20c1287812c7247a4d9902003da898a8d019435b839b59; package redaction unchanged"
+    }
+  ],
+  "configuration": {
+    "answer_model": "SiliconFlow Qwen/Qwen3.8-27B",
+    "provider": "SiliconFlow",
+    "project_configuration": "unchanged"
+  },
+  "changes_from_previous": [
+    "同一材料包、同一项目模型；只作答新的基础委托题面"
+  ],
+  "external_ids": {
+    "workflow_id": "5d9b4868-2623-4dd8-a1e2-fa59cb0a7727",
+    "attempt_id": "8b45187a-a740-4816-979e-f7f04f71d2c4"
+  },
+  "environment": {
+    "api": "http://127.0.0.1:3700"
+  },
+  "artifacts": [
+    {
+      "ref": "model_answer artifact",
+      "question_version": "6aa85d05cea0b2279d20c1287812c7247a4d9902003da898a8d019435b839b59"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "answer",
+      "result": "新题版本作答成功，API无error；将按同版本进入独立评分。",
+      "evidence": "GET /api/attempts/8b45187a-a740-4816-979e-f7f04f71d2c4?view=full"
+    }
+  ],
+  "error": null
+}

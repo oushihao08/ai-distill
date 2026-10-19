@@ -49,7 +49,7 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
  app.get(`${prefix}/project-options`,async c=>c.json({items:(await pool.query('SELECT id,name FROM ai_distill.projects WHERE deleted_at IS NULL ORDER BY name,id')).rows}));
  app.get(`${prefix}/packages`,async c=>{
   const page=Number(c.req.query('page')??1),page_size=Number(c.req.query('page_size')??30);
-  return c.json(await readLibraryPackages(pool,{q:c.req.query('q'),page,page_size,ready_only:c.req.query('ready_only')==='true',project_ids:c.req.queries('project_id'),redaction_state:c.req.query('redaction_state')}));
+  return c.json(await readLibraryPackages(pool,{q:c.req.query('q'),page,page_size,ready_only:c.req.query('ready_only')==='true',project_ids:c.req.queries('project_id'),redaction_state:c.req.query('redaction_state'),archived_only:c.req.query('archived_only')==='true'}));
  });
  app.post(`${prefix}/packages`,async c=>c.json(await createLibraryPackage(pool,await jsonBody(c)),201));
  app.get(`${prefix}/packages/:id`,async c=>c.json(await readLibraryPackage(pool,uuid(c.req.param('id')))));

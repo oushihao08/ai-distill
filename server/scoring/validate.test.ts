@@ -1,5 +1,6 @@
-/** 验证评分报告的证据引用、逐项覆盖、零分理由与合计重算。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
+/**
+ * 验证文本评分与 model_report 两种报告协议、Rubric绑定、证据和总分校验边界。
+ * 仅调用纯校验函数，不连接数据库或调用评分模型；源码审阅不代表测试已运行。
  */
 import {test,expect} from 'bun:test';
 import {validateScore} from './validate';

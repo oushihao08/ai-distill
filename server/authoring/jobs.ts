@@ -1,5 +1,5 @@
 /**
- * 职责：出题队列：冻结步骤设置、当前项目文件与数据库脱敏附件，执行出题并保存结果。
+ * 职责：出题队列：冻结步骤设置、当前有效Skill与题目冻结来源附件（脱敏或提取原文），执行出题并保存结果。
  * 关键方法与用途：`enqueueAuthoring()` 创建冻结输入任务；`runNextAuthoring()` 消费任务并提交当前版本结果。
  * 使用场景：`app.ts` 负责用户派发，`worker.ts` 负责后台消费和结果提交；新输入不向 Codex 暴露原始附件路径。
  */
@@ -14,7 +14,7 @@ import {createHash} from 'node:crypto';
 import {mkdir,realpath,rm,writeFile} from 'node:fs/promises';
 import {dirname,join,relative,resolve} from 'node:path';
 import {validateStepConfigForExecution} from '../project-folders';
-import {readRuleFile,readProjectPrompt,scanProjectPrompt,verifyRuleSnapshot,type ProjectPromptSnapshot} from '../rule-files';
+import {readRuleFile,readProjectPrompt,resolveEffectiveProjectSkill,scanProjectPrompt,verifyRuleSnapshot,type ProjectPromptSnapshot} from '../rule-files';
 import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,registerAsyncAfterHooks,StageHookError,type FrozenStageHooks} from '../workflow-hook-jobs';
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
 import {hookAdditionText} from '../workflow-hooks';
@@ -25,9 +25,9 @@ import {renderPublicQuestionPackage,runAuthoring,UnsupportedAnswerRequirementsEr
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 const stableDesignContext=(context:NonNullable<FrozenInput['design_context']>)=>({...('scenario'in context?{scenario:context.scenario}:{}),...('role_perspective'in context?{role_perspective:context.role_perspective}:{}),...('target_level'in context?{target_level:context.target_level}:{}),...('question_tags'in context?{question_tags:context.question_tags}:{})});
-const workflowSql="SELECT w.*,p.name AS project_name,p.local_skill_path,p.material_root,p.workspace_path,p.material_backend,s1.status AS ingestion_status,s9.status AS redaction_status\n FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL\n LEFT JOIN ai_distill.steps s1 ON s1.workflow_id=w.id AND s1.ordinal=1 LEFT JOIN ai_distill.steps s9 ON s9.workflow_id=w.id AND s9.ordinal=9\n WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
+const workflowSql="SELECT w.*,p.name AS project_name,p.local_skill_path,p.material_root,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot,s1.status AS ingestion_status,s9.status AS redaction_status\n FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL\n LEFT JOIN ai_distill.steps s1 ON s1.workflow_id=w.id AND s1.ordinal=1 LEFT JOIN ai_distill.steps s9 ON s9.workflow_id=w.id AND s9.ordinal=9\n WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
 interface FrozenInput {content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;scoring_policy?:ScoringPolicy;project_name?:string;authoring_contract?:string;title:string;authoring_direction?:string;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];digest:string}
-const materialIdentity=(input:Pick<FrozenInput,'redaction_attempt_id'|'material_origin'>)=>input.material_origin?.kind==='library_v1'?{material_origin:input.material_origin}:{redaction_attempt_id:input.material_origin?.kind==='legacy'?input.material_origin.redaction_attempt_id:input.redaction_attempt_id};
+const materialIdentity=(input:Pick<FrozenInput,'redaction_attempt_id'|'material_origin'>)=>input.material_origin?.kind==='library_v1'?{material_origin:{kind:input.material_origin.kind,material_mode:input.material_origin.material_mode,package_id:input.material_origin.package_id,revision_id:input.material_origin.revision_id,redaction_id:input.material_origin.redaction_id,snapshot_digest:input.material_origin.snapshot_digest}}:{redaction_attempt_id:input.material_origin?.kind==='legacy'?input.material_origin.redaction_attempt_id:input.redaction_attempt_id};
 const designContext=(workflow:any)=>{const context={...(workflow.scenario?{scenario:String(workflow.scenario)}:{}),...(workflow.role_perspective?{role_perspective:String(workflow.role_perspective)}:{}),...(workflow.target_level?{target_level:String(workflow.target_level)}:{}),...(Array.isArray(workflow.question_tags)&&workflow.question_tags.length?{question_tags:workflow.question_tags.map(String)}:{})};return Object.keys(context).length?context:undefined;};
 const sourceFiles=(workflow:any)=>Array.isArray(workflow.source_manifest)?workflow.source_manifest.filter((file:any)=>typeof file?.name==='string'&&typeof file?.path==='string').map((file:any)=>({name:file.name,path:file.path})):[];
 const questionId=(workflow:any)=>typeof workflow.source_key==='string'&&workflow.source_key.trim()?workflow.source_key:workflow.title;
@@ -37,9 +37,9 @@ async function basePrerequisites(db:PoolClient,id:string){
  const workflow=(await db.query(workflowSql,[id])).rows[0];
  if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
  if(workflow.workflow_kind==='material_package')throw new HTTPException(409,{message:'材料包只执行入库和脱敏，请先创建题目'});
- if(workflow.material_backend==='library_v1'){
+ if(workflow.material_backend==='library_v1'||workflow.has_library_snapshot){
   const source=await readQuestionMaterials(db,id);
-  if(source.origin.kind!=='library_v1')throw new HTTPException(409,{message:'library_v1 题目来源类型无效'});
+  if(source.origin.kind!=='library_v1')throw new HTTPException(409,{message:'共享材料题目来源类型无效'});
   return{workflow,redaction:null,origin:source.origin,materials:source.attachments.map(({id,sha256})=>({id,sha256}))};
  }
  if(workflow.ingestion_status!=='succeeded'||workflow.redaction_status!=='succeeded')throw new HTTPException(409,{message:'请先完成当前附件入库与脱敏'});
@@ -51,9 +51,9 @@ async function basePrerequisites(db:PoolClient,id:string){
 }
 async function prerequisites(db:PoolClient,id:string){
  const source=await basePrerequisites(db,id),workflow=source.workflow;
- if(typeof workflow.local_skill_path!=='string'||!workflow.local_skill_path)throw new HTTPException(409,{message:'请先为本项目设置本地 skill 目录'});
- const project_prompt=await scanProjectPrompt(workflow.workspace_path??dirname(workflow.material_root??workflow.local_skill_path),workflow.local_skill_path);
- return{...source,project_prompt};
+ const skill=await resolveEffectiveProjectSkill(workflow);
+ const project_prompt=await scanProjectPrompt(workflow.workspace_path??dirname(workflow.material_root??skill.path),skill.path);
+ return{...source,skill_path:skill.path,project_prompt};
 }
 async function legacyRules(db:PoolClient,id:string,workflow:any){
  const rules=(await db.query("SELECT id,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=3 AND status='succeeded' ORDER BY attempt DESC LIMIT 1",[id])).rows[0];
@@ -63,7 +63,7 @@ async function legacyRules(db:PoolClient,id:string,workflow:any){
 }
 
 /**
- * 校验当前项目文件与数据库脱敏材料后，固定题目、附件清单和步骤配置并创建 ordinal 4 尝试。
+ * 校验当前有效Skill与题目冻结来源后，固定题目、附件清单和步骤配置并创建 ordinal 4 尝试。
  * 相同输入的活动任务会复用；出题成功后再次点击会新建尝试，并使后续结果失效。
  */
 export async function enqueueAuthoring(pool:Pool,id:string){
@@ -75,7 +75,7 @@ export async function enqueueAuthoring(pool:Pool,id:string){
   const scoreConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[source.workflow.project_id])).rows[0]?.config;
   const scoreWorkflow=validateWorkflowConfig(scoreConfig?.workflow);
   const scoringPolicy:ScoringPolicy|undefined=scoreWorkflow?.contract==='model_report_v1'?{contract:scoreWorkflow.contract,rules_text:scoreWorkflow.rules_text,reference_answer:scoreWorkflow.reference_answer}:undefined;
-  const hooks=await freezeStageHooks(dirname(source.workflow.local_skill_path),config.workflow);
+  const hooks=await freezeStageHooks(dirname(source.skill_path),config.workflow);
   const loggingConfig=config as {model?:string;reasoning_effort?:string};
   const frozen:Omit<FrozenInput,'digest'>={...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),project_name:source.workflow.project_name,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),question_id:questionId(source.workflow),source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials};
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};

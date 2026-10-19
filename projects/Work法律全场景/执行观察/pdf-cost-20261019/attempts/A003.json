@@ -1,0 +1,106 @@
+{
+  "id": "A003",
+  "item_id": "pdf-baseline",
+  "stage_id": "local-pymupdf-redaction-comparison",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-19T16:50:52+08:00",
+  "finished_at": "2026-10-19T17:03:48+08:00",
+  "inputs": [
+    {
+      "ref": "首批筹备/questions/L2-房屋买卖合同/(2020)渝0104民初4227号.pdf",
+      "version": "sha256:7dae29e6797aea7e95dec897a8fb3edbb11a4d5bf9d94e47cb5e8ff7ea11c0fa",
+      "sha256": "7dae29e6797aea7e95dec897a8fb3edbb11a4d5bf9d94e47cb5e8ff7ea11c0fa"
+    },
+    {
+      "ref": "tmp/pdfs/paddleocr-3pages/page-01.json..page-03.json and tmp/pdfs/pdf-redaction-20/page-01.jpg..page-03.jpg",
+      "version": "existing PaddleOCR PP-OCRv5 CPU outputs",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "provider": "local PyMuPDF redaction using identical PaddleOCR-selected word boxes and reviewed manual regions",
+    "external_upload": false,
+    "scope": "same source PDF pages 1-3; compare redaction/mask stage and preserve prior PaddleOCR timing",
+    "visual_style": "blur patch over applied pixel redaction; source pixels under patches removed",
+    "dependency": "PyMuPDF to be used in an isolated temporary Python target, not added to project dependencies",
+    "pymupdf_version": "1.28.2",
+    "timings_seconds": {
+      "shared_paddleocr_pages_1_to_3": 55.707,
+      "paddle_pil_mask_stage": 1.269,
+      "pymupdf_mask_stage": 0.389,
+      "paddle_pipeline_estimate": 56.976,
+      "pymupdf_pipeline_estimate": 56.096
+    },
+    "mask_rectangle_counts": [
+      37,
+      6,
+      7
+    ],
+    "pdf_sizes_bytes": {
+      "paddle_pil": 759077,
+      "pymupdf": 2260386
+    }
+  },
+  "changes_from_previous": [
+    "Reuses previously generated PP-OCRv5 page outputs; no OCR rerun planned"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local",
+    "runtime_version": null
+  },
+  "artifacts": [
+    {
+      "ref": "output/pdf/PP-OCRv5-前三页局部马赛克-同框复比.pdf",
+      "sha256": "94b33874b60d6c16e60b8a2b52dae8c37b23fd38b81f9f85b229f98581615c2f"
+    },
+    {
+      "ref": "output/pdf/PyMuPDF-前三页局部模糊打码-同框复比.pdf",
+      "sha256": "74ea76c007b5071d49aafdf428a691e847544f996e2ecff7d9ca49b7e41553bc"
+    },
+    {
+      "ref": "tmp/pdfs/pymupdf-compare-20261019/comparison-contact-sheet.jpg",
+      "sha256": "3734c360b46dd81cfaef46fd5e1069328b8698fa6728ba005baa2a55f925b5fe"
+    },
+    {
+      "ref": "tmp/pdfs/pymupdf-compare-20261019/comparison-report.json",
+      "sha256": "bea50c090ef4215817a2410c4c66433287f6ca2bfcd913660af45db01babdc6c"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "matched_masks",
+      "result": "两个输出均使用同一份PP-OCRv5文本框选择与人工补框；逐页为37、6、7个区域，共50个。"
+    },
+    {
+      "kind": "timing",
+      "result": "掩码阶段：Paddle/PIL 1.269s，PyMuPDF 1.28.2 0.389s，PyMuPDF约3.26倍快；共用PaddleOCR前三页实测55.707s后，合计估算分别为56.976s和56.096s。OCR未重跑，合计是现有OCR时长加本次引擎实测，不含其他批处理启动开销。"
+    },
+    {
+      "kind": "visual_review",
+      "result": "已查看两份前三页PDF渲染对照；模糊观感、目标覆盖及未遮罩正文清晰度整体接近。PyMuPDF在首轮出现局部边缘线，加入2像素外延后复跑，最终对照未见明显边框线。比较范围限前三页。"
+    },
+    {
+      "kind": "destructive_redaction",
+      "result": "独立重放最终50个矩形，仅调用PyMuPDF apply_redactions(images=PDF_REDACT_IMAGE_PIXELS)且不加模糊叠层，50/50目标框中心像素均为黑色；说明底层图像像素已被替换，再叠加模糊图块。"
+    },
+    {
+      "kind": "output_pdf",
+      "result": "两份产物均为3页A4；Paddle/PIL 759077 bytes，PyMuPDF 2260386 bytes。PDF文件列表检查确认PyMuPDF产物包含每页替换后的原图与遮罩图块。"
+    },
+    {
+      "kind": "source_integrity",
+      "result": "源PDF SHA-256前后均为7dae29e6797aea7e95dec897a8fb3edbb11a4d5bf9d94e47cb5e8ff7ea11c0fa；未修改源件。"
+    },
+    {
+      "kind": "privacy",
+      "result": "完全本地处理，无外部上传；PyMuPDF 仅安装于/tmp/ai-distill-pymupdf-deps，未修改项目依赖。"
+    },
+    {
+      "kind": "embedded_image_integrity",
+      "result": "逐页提取最终PyMuPDF PDF的主图像，与源PDF相应页的主图像SHA-256比较，三页均不同；源图像像素已被修改。结合garbage=4保存、50个目标框未叠模糊前中心像素50/50为黑色，确认遮罩区底层原图像像素已替换。"
+    }
+  ],
+  "error": null
+}

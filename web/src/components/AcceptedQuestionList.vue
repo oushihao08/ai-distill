@@ -17,6 +17,7 @@ const selected=shallowRef<Workflow|null>(null);
 const pageSize=20;
 const accepted=computed(()=>props.workflows.filter(flow=>flow.current_ordinal===7&&flow.current_decision==='accepted'));
 const packageNames=computed(()=>Object.fromEntries(props.packages.map(item=>[item.id,item.title])));
+function sourceName(flow:Workflow){return flow.library_package_name||(flow.source_workflow_id?packageNames.value[flow.source_workflow_id]:null)||'旧题目目录';}
 function scores(flow:Workflow){return Object.entries(flow.acceptance_result?.model_scores??{}) as [string,ModelResult][];}
 function modelName(flow:Workflow,id:string){return flow.answer_models?.find(model=>model.model_id===id)?.name??id.slice(0,8);}
 function hasAnomaly(flow:Workflow){const values=scores(flow);if(flow.acceptance_result?.aggregate)return !values.length||values.some(([,score])=>score.status!=='included')||Boolean(flow.answer_models?.length&&flow.answer_models.length!==values.length);return !values.length||values.some(([,score])=>score.status!=='passed')||Boolean(flow.answer_models?.length&&flow.answer_models.length!==values.length);}
@@ -24,7 +25,7 @@ const anomalousCount=computed(()=>accepted.value.filter(hasAnomaly).length);
 const publishedCount=computed(()=>accepted.value.filter(flow=>flow.publication_status==='succeeded').length);
 const exportedCount=computed(()=>accepted.value.filter(flow=>flow.exported).length);
 const filtered=computed(()=>accepted.value.filter(flow=>{
- const matchesText=flow.title.toLowerCase().includes(search.value.trim().toLowerCase())||(flow.source_key??'').toLowerCase().includes(search.value.trim().toLowerCase())||(flow.source_workflow_id?packageNames.value[flow.source_workflow_id]?.toLowerCase().includes(search.value.trim().toLowerCase()):false);
+ const matchesText=flow.title.toLowerCase().includes(search.value.trim().toLowerCase())||(flow.source_key??'').toLowerCase().includes(search.value.trim().toLowerCase())||sourceName(flow).toLowerCase().includes(search.value.trim().toLowerCase());
  const matchesFilter=filter.value==='全部'||(filter.value==='异常'&&hasAnomaly(flow))||(filter.value==='待归档'&&flow.publication_status!=='succeeded')||(filter.value==='已归档'&&flow.publication_status==='succeeded');
  return matchesText&&matchesFilter;
 }));
@@ -56,7 +57,7 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
     <tbody>
      <tr v-for="flow in visible" :key="flow.id">
       <td class="max-w-260px"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink></td>
-      <td class="max-w-220px"><RouterLink v-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="packageNames[flow.source_workflow_id]??'查看材料包'">{{ packageNames[flow.source_workflow_id]??'查看材料包' }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
+      <td class="max-w-220px"><RouterLink v-if="flow.library_package_id" :to="`/materials/${flow.library_package_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><RouterLink v-else-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap"><button type="button" class="link-text cursor-pointer bg-transparent border-none p-0 text-sm" :title="scoreHint(flow)" @click="selected=flow">{{ scoreSummary(flow) }}</button></td>
       <td><v-chip :color="hasAnomaly(flow)?'error':'success'">{{ hasAnomaly(flow)?'需核对评分':'达标' }}</v-chip></td>
       <td class="whitespace-nowrap text-muted" :title="'题目 '+(flow.current_question_version||'—')+' · 评分表 '+(flow.current_rubric_version||'—')">题 {{ flow.current_question_version||'—' }} · 表 {{ flow.current_rubric_version||'—' }}</td>

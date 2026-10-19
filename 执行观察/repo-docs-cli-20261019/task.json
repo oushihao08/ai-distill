@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "id": "repo-docs-cli-20261019",
+  "title": "工程说明与CLI同步",
+  "goal_ref": "Codex goal 01a15164-2a3e-7b43-a01c-df7e1b919c1f",
+  "scope": "排除 docs/ 的全仓工程规则、可维护模块说明、后端与工具源码注释、CLI及根操作Skill；不改业务材料、项目Skill、题目附件、历史证据或冻结输入。 明确排除根 README 所列停用历史资源 unused/（含历史评分 JSON），保留不迁移、不删除。",
+  "completion_criteria": [
+    "纳入范围的源码与目录有可核对的职责说明，保护输入和生成文件被明确排除。",
+    "新材料库、期次、永久使用记录、冻结来源与旧流程兼容边界按现有实现说明。",
+    "CLI 命令与当前 API 路由、字段、幂等键、异步状态及恢复方式一致；必要缺口补最小客户端。",
+    "根操作 Skill 和工程文档指向准确入口，不虚构服务、平台或运行态能力。",
+    "相关静态契约、差异与链接核对完成；测试、类型检查及运行态验证遵守本轮项目规则，未经明确要求不运行，实际未做项必须单列。",
+    "复核版按文件记录实际内容/契约依据及保留或修改理由，清单数量不代表语义核对完成。",
+    "以baseline-v2.json计算本轮实际改动，结尾重新枚举差集；docs仅比较摘要以确认未写入。",
+    "以本仓库当前维护文件枚举生成覆盖矩阵，并逐项归类纳入、受保护输入排除、历史/生成物排除；与现有台账做差集，未解释差集必须为零。",
+    "纳入的每个文件均需记录具体阅读范围、源码/接口/调用依据、是否含过时或冲突约束、修改或保留理由；覆盖率不得由文件存在、头注释存在或目录有README推定。",
+    "对当前权威规则/Skill/模块说明/CLI 帮助中的旧流程与旧术语命中逐项分类：仍适用的兼容路径、已过时内容、历史状态、无效链接；不得把真实兼容代码误删，也不得让历史描述充当默认现行规则。",
+    "docs/ 全树不扫描、不改写；唯一允许读取 docs/architecture.md 作为只读背景，且不得作为当前运行事实或可执行指令来源；结束时用摘要/清单确认 docs/ 未写入。",
+    "质量承诺以可核验边界表述：证明本次纳入范围与清单无未解释遗漏，并列明所有不扫描/不读取的区域；不宣称能保证未来 AI 绝无误解。"
+  ],
+  "items": [
+    {
+      "id": "inventory",
+      "title": "全仓覆盖盘点和实现核对",
+      "plan_ref": "Goal 阶段一",
+      "stages": [
+        {
+          "id": "audit",
+          "title": "文件清单、模块规则、数据流和CLI/API契约",
+          "state": "succeeded",
+          "outcome": "纳入语义审阅449/449；reviewed 379、reviewed-updated 70，partial/pending为0。追溯生成物逐路径排除。",
+          "attempt_id": "A016",
+          "observed_at": "2026-10-19T12:01:36Z",
+          "evidence": [
+            "audit-v2.json coverage_summary",
+            "observations/O042.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "docs",
+      "title": "工程规则、模块说明、源码注释与Skill更新",
+      "plan_ref": "Goal 阶段二和三",
+      "stages": [
+        {
+          "id": "update",
+          "title": "仅按事实更新纳入范围的说明和注释",
+          "state": "succeeded",
+          "outcome": "根AGENTS内部docs更新冲突已修正；根README核对无误；其余说明修改有逐文件依据。",
+          "attempt_id": "A017",
+          "observed_at": "2026-10-19T12:01:36Z",
+          "evidence": [
+            "AGENTS.md",
+            "README.md",
+            "observations/O042.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cli",
+      "title": "补齐当前材料库/期次 CLI 缺口",
+      "plan_ref": "Goal 阶段三",
+      "stages": [
+        {
+          "id": "implement",
+          "title": "测试先行，复用现有 API 客户端",
+          "state": "succeeded",
+          "outcome": "CLI与相关路由静态交叉核对完成；发现的是操作地图缺口，已改文档，无 CLI 运行逻辑变更。未运行CLI/测试，符合本轮禁令。",
+          "attempt_id": "A009",
+          "observed_at": "2026-10-19T19:33:49+08:00",
+          "evidence": [
+            "observations/O001.json：上轮泛化覆盖证据不足，等待逐文件复核",
+            "O008：HELP 补充 operation 与 workflow/request-key 两种恢复查询形式；未运行测试或业务请求。",
+            "O009：HELP 增补 library package list 状态/归档/项目筛选、候选分页和材料使用事件查询参数。",
+            "O011：确认 CLI 项目设置可传递出题材料来源模式；文档补充完成，未运行测试。",
+            "O028：remote命令由cli/index.ts独立分派，远程实现拒绝--api；已修正cli/commands.ts HELP。CLI README共享库/期次段落与当前API参数核对一致，但整体仍partial。",
+            "O036：完成CLI命令组/handler/路由交叉核对，补齐兼容material-mode命令副作用及usage全名。",
+            "O037：修正旧A007跨阶段前次引用，Trace记录关联校验恢复。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "verify",
+      "title": "限定范围验证与自审",
+      "plan_ref": "Goal 阶段四",
+      "stages": [
+        {
+          "id": "verify",
+          "title": "定向测试、类型检查、文件覆盖和 docs/ 排除核对",
+          "state": "succeeded",
+          "outcome": "静态差异、路径、根链接和docs摘要核验完成。未运行测试、lint、类型检查、服务或业务流程；不宣称运行验收。",
+          "attempt_id": "A018",
+          "observed_at": "2026-10-19T12:01:36Z",
+          "evidence": [
+            "attempts/A018.json",
+            "observations/O042.json"
+          ]
+        }
+      ]
+    }
+  ],
+  "next_actions": [],
+  "updated_at": "2026-10-19T12:01:36Z"
+}

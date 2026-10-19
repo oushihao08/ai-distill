@@ -1,0 +1,35 @@
+{
+  "id": "O001",
+  "kind": "result",
+  "status": "open",
+  "title": "本地PDF计时已完成；历史OCR/脱敏用量缺失且未保留打码坐标",
+  "item_ids": [
+    "pdf-baseline"
+  ],
+  "attempt_ids": [
+    "A001"
+  ],
+  "facts": [
+    "输入PDF为53页A4扫描件，10,694,769字节，SHA-256为7dae29e6797aea7e95dec897a8fb3edbb11a4d5bf9d94e47cb5e8ff7ea11c0fa。",
+    "本机pdftotext提取耗时0.016秒且无可提取字符；150dpi渲染53页耗时1.735秒，临时生成约10,282,794字节JPEG后已自动清理。",
+    "本次没有向外部服务上传文件，也没有产生模型/API费用。",
+    "本地存储中发现3份SHA相同的MinerU API结构化提取产物，均为53页；对应历史调用的准确耗时与账单金额无法从现存日志确认。",
+    "MinerU公开文档当前说明精准解析API文件上限200MB/200页、每日1000页高优先级额度；轻量API上限10MB/20页，因此这份PDF不符合轻量API限制。公开接口文档没有给出可确认的人民币单页价格。",
+    "同一workflow已存在与源PDF SHA相同的53页MinerU API结构化提取产物及53页脱敏文本产物；脱敏文本文件于2026-10-14 19:00:37修改。",
+    "现存提取结构没有bbox/box/rect坐标，因此仅凭此结构无法把脱敏文字精确投影回原PDF并生成黑条打码副本。",
+    "只读API返回的入库/脱敏step started_at和finished_at相同；尝试日志没有匹配到相关调用事件。该时间戳不能用来推算实际耗时。"
+  ],
+  "hypotheses": [
+    "相同来源和配置可能复用已有提取产物，避免再次OCR计费；是否命中需由具体工作流缓存校验确认。"
+  ],
+  "evidence": [
+    "projects/Work法律全场景/执行观察/pdf-cost-20261019/attempts/A001.json",
+    ".storage中SHA相同的既有MinerU提取产物，仅核对元数据，未读取正文",
+    "MinerU官方API文档 https://mineru.net/apiManage/docs"
+  ],
+  "impact": "本次只测得本地基础处理耗时和零新增云费用；既有MinerU识别及模型脱敏发生过，但无法复原历史费用/时长。现存输出只有脱敏文本，不是视觉打码PDF。",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-19T11:48:20+08:00",
+  "updated_at": "2026-10-19T11:48:20+08:00"
+}

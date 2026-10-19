@@ -1,0 +1,42 @@
+{
+  "id": "O001",
+  "kind": "result",
+  "status": "validated",
+  "title": "主项目期次隔离、Work历史材料衔接和材料详情入口完成验收",
+  "item_ids": [
+    "T1",
+    "T2",
+    "T3"
+  ],
+  "attempt_ids": [
+    "A002",
+    "A003",
+    "A004"
+  ],
+  "facts": [
+    "计划16.6的V1-V12均有对应证据；隔离PostgreSQL/API验证58项通过。",
+    "Work 32个来源工作流映射至27个规范材料包；89个原件和89个有效提取文件导入；未将旧脱敏伪装为新库脱敏。",
+    "Work使用账27条，其中25条submitted、2条in_use；28条历史提交事件均保留证据映射。submitted只代表有提交记录，不代表平台验收通过。",
+    "首批筹备保留原项目ID并归为第一期；切换前后业务摘要均为3386条、SHA-256前缀44cbf3a4；8169个项目文件检查无变化或缺失。",
+    "本期材料表的包名可进入材料详情；详情显示材料文件、使用与提交、处理记录三个区域。",
+    "一个旧工作流标题为兼容验收题且没有历史source_workflow_id；作为既有测试fixture保留，不伪造来源关系，也不纳入29个可映射真实题目的精确来源匹配。",
+    "工作流查询热请求回到约1.8–2.5秒；历史慢样本没有稳定复现，不据单次冷请求判为持续性能故障。",
+    "前一条尝试A001在收尾时仍记录为running，无法确认其进程终态；已如实标为unknown。最终结论只依据A002-A004重新验证结果。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "attempts/A002.json",
+    "evidence/live-import-results.json",
+    "evidence/live-use-ledger-final.json",
+    "evidence/live-phase-identity-switch.json",
+    "evidence/work-files-after-phase-switch.json",
+    "evidence/live-question-originals.json",
+    "evidence/query-timings-api-loaded.json",
+    "scripts/verification/verify-project-material-usage.ts"
+  ],
+  "impact": "本期材料详情与使用状态可查；跨期隔离和永久防重具备合成反例验证；Work旧题和下游成果保持原身份及摘要。",
+  "updates": [],
+  "lesson": null,
+  "created_at": "2026-10-18T23:57:43+08:00",
+  "updated_at": "2026-10-19T07:39:49+08:00"
+}

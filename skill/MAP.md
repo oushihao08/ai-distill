@@ -1,6 +1,6 @@
 # Workflow Skill 地图
 
-路径均相对于仓库根目录。先读入口；Codex默认直接调用本机API，具体契约查服务端路由及下表。CLI是可选客户端，仅在用户明确要求命令行时使用。
+路径均相对于仓库根目录。先读入口；Codex 默认直接调用现有本机 API。只有用户明确要求使用命令行时才运行 CLI；API 与 CLI 都不得直连数据库。命令语法以 `bun run ai-distill --help` 和 [CLI README](../cli/README.md) 为准。
 
 ## 文件地图
 
@@ -29,17 +29,19 @@ ai-distill/
 └── projects/<项目>/skill/         # 各项目出题规则，非本操作Skill
 ```
 
-## 材料包多题接口
+## 共享材料库与期次接口
 
 | 操作 | API／CLI | 对象与结果 |
 | --- | --- | --- |
-| 建立新模式项目 | POST `/api/projects` 的 `material_mode=material_packages`；CLI `project create --material-mode material_packages` | 后续来源目录登记材料包 |
-| 切换旧项目 | PATCH `/api/projects/:id/material-mode`；CLI `project material-mode --clear-existing` | 显式隐藏旧题，活动任务会阻断切换 |
-| 同步／上传材料 | 既有同步或上传 API；CLI `project sync` | 新模式生成材料包工作流 |
-| 选择版本 | GET `/api/material-packages/:id/versions`；CLI `material-package versions` | 只列成功且有产物的脱敏尝试 |
-| 建题 | POST `/api/material-packages/:id/questions`；CLI `question create` | 复制题目私有快照，记录来源尝试和哈希，不派发模型 |
+| 建立主项目/期次 | POST `/api/projects` 可带 `project_group_id`、`phase_no`、`phase_name`；CLI `project create`；组导航见 `/api/project-groups` | 每个 `projects.id` 仍是一份隔离期次工作流；主项目身份用于跨期材料使用规则 |
+| 管理全局材料包 | `/api/material-library/packages`；CLI `library package ...` | 材料库独立于项目，不因某项目删除而删除 |
+| 建立不可变文件版本并处理 | `POST /packages/:id/revisions`、`POST /revisions/:id/jobs`；CLI `library revision create`、`library job start/show/cancel` | 入库、提取、脱敏是独立任务；使用幂等请求键，不由 CLI 自行处理正文 |
+| 加载本期材料 | `/api/projects/:id/material-candidates`、`/loaded-materials`；CLI `project material candidates`、`project materials load/update/remove/restore` | 仅加载全局库包的指定脱敏结果或已提取原文版本；修改关系使用 `If-Match` |
+| 建题与永久使用台账 | `POST /loaded-materials/:linkId/questions`、`/material-uses`；CLI `project materials question`、`project material use update` | 创建题目时冻结所选来源；同一主项目不同期不得重复使用材料，返修状态保留事件 |
+| 旧材料导入新库 | `/api/projects/:id/legacy-material-imports`；CLI `project legacy-materials list/import/activate` | 先 dry-run 预检；apply需确认来源摘要，激活后建立期次关系 |
+| 旧目录/旧材料包 | `/api/projects/:id/sync-folder`、`/api/material-packages/...`、`PATCH /api/projects/:id/material-mode`；CLI `project sync`、`material-package`、`question create`、`project material-mode --clear-existing` | 保留兼容路径；`material-mode` 会软隐藏旧题并使已有导出失效，只用于明确迁移到材料包模式，不等同于全局共享材料库 |
 
-服务端实现位于 `server/project-folders.ts`、`server/material-package-questions.ts`、`server/app.ts`；材料步骤与出题步骤仍沿用原队列和稳定 ordinal。材料包与题目状态均由服务端就绪投影判断。
+期次身份和导航由 `server/project-groups.ts` 管理；材料 API、存储、任务与处理见 `server/material-library/README.md`。业务契约以对应路由和模块 README 为准；本文只作导航，不复制字段级 API 规范。
 
 ## 流程地图
 
@@ -68,9 +70,9 @@ flowchart LR
 
 步骤key与ordinal以`shared/step-registry.ts`为准。隐藏的旧规则绑定/独立审查不作为当前操作入口。
 
-## API 与 CLI 接口地图
+## 服务端 API 导航
 
-Codex默认直接请求以下服务端API，不经过CLI、不直连数据库。CLI将部分相同接口封装为命令，只有用户明确要求命令行时才使用；其参数见`cli/README.md`。
+默认直接调用服务端本机 API；只有用户明确要求命令行时才使用 CLI。两种入口都必须经过 API，不得直连数据库。请求/响应字段以路由实现为准，下面只列入口类别；CLI 参数见 `cli/README.md`。
 
 | 操作 | API入口 | 用途与影响 |
 | --- | --- | --- |
@@ -93,10 +95,13 @@ Codex默认直接请求以下服务端API，不经过CLI、不直连数据库。
 | export failed | GET 项目、工作流、精确尝试及产物下载 API | 按当前 `repair` 判定导出到 `assets/未达标题目/`，含出题、逐模型作答和评分；不写数据库 |
 | export review | 同上，须指定题目 ID | 将已评分的指定题目导出到同一复核目录；保留真实 `accepted`／`repair` 判定 |
 | monitor show | GET `/api/monitor` | 运行监控快照，不等于供应商生成进度 |
+| 主项目和期次 | GET `/api/project-groups`、GET `/api/project-groups/:id/phases`、PATCH `/api/projects/:id/phase-identity` | 归组、期次导航及显式期次身份维护；期次身份是写接口；不改题目工作流结果 |
+| 全局材料库 | `/api/material-library/*`、`/api/projects/:id/material-candidates`、`loaded-materials`、`material-uses` | 包、不可变版本、提取/脱敏任务、原件预览、期次加载与使用状态；按 `server/material-library/README.md` 导航 |
+| 旧材料导入 | `/api/projects/:id/legacy-materials`、`legacy-material-imports` | 预检并将旧入库原件/提取文本同步到全局材料库；来源摘要核验后激活 |
 
 ## CLI 工具地图
 
-CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务队列、模型规则或达标算法。所有实际 API 路径以 `cli/commands.ts`、`cli/remote-materials.ts`、`cli/remote-answers.ts` 和当前服务端路由为准。用户可先看 `bun run ai-distill --help`，完整命令语法见 [CLI 使用说明](../cli/README.md)。
+CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务队列、模型规则或达标算法。所有实际命令以 `bun run ai-distill --help`、`cli/commands.ts`、`cli/remote-materials.ts`、`cli/remote-answers.ts` 和当前服务端路由为准。Codex 默认直接调用本机 API；用户明确要求命令行时使用 CLI。完整命令语法见 [CLI 使用说明](../cli/README.md)。
 
 | 能力组 | CLI 命令 | 关键实现 | 调用目标/副作用 |
 | --- | --- | --- | --- |
@@ -108,8 +113,11 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 | 批次计划 | `batch create/show/skip` | `batches.ts`、`commands.ts` | 本机 JSON 文件；固定范围，不派发任务、不覆盖服务器状态 |
 | 结果与交付 | `result list/show`、`export list/create/download`、`artifact download`、`siriser download` | `commands.ts`、`client.ts` | 本机 API 与显式下载；`publish_export`归档与Siriser五件套ZIP下载、Excel导出分开；Siriser下载仅取当前有效归档，不上传或提交 |
 | 未达标复核 | `export failed`、`export review` | `failed-export.ts` | 读取当前绑定的题目/答案/评分并写入固定 `assets/未达标题目/`，不改数据库状态 |
-| 远程材料 | `remote material start/run/status/sync` | `remote-materials.ts`、`remote-material-routes.ts`、`remote-material-operations.ts` | SSH 隧道 + 固定 token；服务器执行入库、PDF提取、API脱敏；sync 校验哈希后取回管理副本 |
+| 远程材料 | `remote material start/run/status/sync` | `remote-materials.ts`、`remote-material-routes.ts`、`remote-material-operations.ts` | SSH 隧道 + 固定 token；旧材料工作流服务器入库/提取/API脱敏；sync只取回旧工作流副本，不处理全局库blob |
 | 远程作答 | `remote answer start/run/status` | `remote-answers.ts`、`remote-material-routes.ts`、`answer-models/jobs.ts` | SSH 隧道 + 固定 token；服务器执行 server-owned 作答 attempt；状态查询不返回答案正文 |
+| 主项目/期次 | `project-group list/phases/rename/archive/restore`、`project phase-update` | `commands.ts`、`server/project-groups.ts` | 查询和维护主项目期次身份；phase-update 有活动任务时拒绝 |
+| 全局材料库 | `library package/revision/job/documents/redaction/file/processing` | `commands.ts`、`server/material-library/` | 包与版本、入库/提取/脱敏任务、正文查看、原件下载及全库处理设置 |
+| 期次材料与来源 | `project material candidates/materials/material uses/legacy-materials` | `commands.ts`、`projects-routes.ts`、`uses.ts`、`legacy-import.ts` | 候选分页、加载/选版/恢复、题目创建、永久使用台账与旧数据导入 |
 | 进程输出 | `--json`、退出码、中断信号 | `index.ts` | 输出统一结果信封；中断等待不会取消已入队的持久任务 |
 
 ### 本机与远程执行边界
@@ -130,15 +138,15 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 | 要改什么 | 首先查看/修改 | 关联核对 |
 | --- | --- | --- |
 | 用户范围、目标步骤、停止或异常处理规则 | `skill/SKILL.md` | API真实能力、本文、架构说明 |
-| API路由、请求/响应契约 | `server/app.ts`及对应模块 | Web、Skill、可选CLI客户端及接口说明 |
-| 本机CLI命令或参数 | `cli/commands.ts` | 对应API、帮助、CLI README、本地图与适用的命令契约检查 |
+| API路由、请求/响应契约 | `server/app.ts`及对应模块 | Web、Skill、CLI与对应模块 README |
+| 本机CLI命令或参数 | `cli/commands.ts` | 对应API、帮助、CLI README、本地图与命令契约检查 |
 | 远程材料CLI命令/同步 | `cli/remote-materials.ts` | `server/remote-material-routes.ts`、`remote-material-operations.ts`、`.env.example`、部署说明 |
 | 远程作答CLI命令/状态恢复 | `cli/remote-answers.ts` | `server/remote-material-routes.ts`、`server/answer-models/jobs.ts`、`server/worker.ts` |
 | 本轮范围、分组及跳过记录 | 当前任务运行记录 | Skill规则；权威状态仍以API为准 |
 | 请求/响应错误或本机限制 | `cli/client.ts` | `client.test.ts`，不得新增凭证读取 |
 | 退出码或进程信号 | `cli/index.ts` | 命令信封、CLI README |
 | 步骤就绪/阻断投影 | `server/project-folders.ts`、`workflow-view.ts` | API、Web与可选CLI共用口径 |
-| 新步骤身份 | `shared/step-registry.ts` | 服务端装配、worker、持久化兼容、可选CLI、Skill步骤卡 |
+| 新步骤身份 | `shared/step-registry.ts` | 服务端装配、worker、持久化兼容、CLI、Skill步骤卡 |
 | 模型作答/评分/达标逻辑 | `server/answer-models/`、`scoring/`、`decisions/` | 当前绑定、逐模型结果、对应模块README与测试 |
 | 任务执行或恢复问题 | `server/worker.ts`、`worker-pool.ts`及对应业务jobs | 先按workflow/attempt ID查日志，不直接改数据库状态 |
 

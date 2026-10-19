@@ -1,0 +1,33 @@
+{
+  "id": "O006",
+  "kind": "issue",
+  "status": "resolved",
+  "title": "CodeGraph status reports a large index, but the CLI/API context query returned unrelated symbols from another repository",
+  "item_ids": [
+    "inventory"
+  ],
+  "attempt_ids": [],
+  "facts": [
+    "CodeGraph status reports a large index, but the CLI/API context query returned unrelated symbols from another repository (creatorhub XhsApiClient). The graph context is not valid evidence for this repository flow and will not be used for claims; direct current-source tracing is required.",
+    "原记录类型：tool-index-contamination。"
+  ],
+  "hypotheses": [],
+  "evidence": [
+    "codegraph_status: 3769 indexed files, 66744 nodes, 125233 edges.",
+    "codegraph_context for ai-distill returned creatorhub/app/platforms/xhs/client.py as its entry point alongside ai-distill symbols."
+  ],
+  "impact": "The graph index appears cross-project or contaminated for context lookup; index size alone does not establish current-repository coverage.",
+  "updates": [
+    {
+      "at": "2026-10-19T12:01:06Z",
+      "action": "为当前 Trace 查看器补齐其要求的记录字段；保留原事实、证据和范围边界。当前只读/修改范围按本轮明确allowlist执行。历史事件本身不撤销。"
+    },
+    {
+      "at": "2026-10-19T10:30:37.403167+00:00",
+      "action": "Use current workspace rg/sed/source and route registration, not CodeGraph context, for this audit."
+    }
+  ],
+  "lesson": null,
+  "created_at": "2026-10-19T10:30:37.403167+00:00",
+  "updated_at": "2026-10-19T12:01:06Z"
+}

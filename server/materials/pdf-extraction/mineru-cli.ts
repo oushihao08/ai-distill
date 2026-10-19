@@ -1,6 +1,6 @@
 /**
  * 职责：MinerU CLI PDF 适配器及 API PDF/DOCX 结果转换：限制子进程环境、解析带页码 JSON 并支持超时和取消。
- * 关键方法与用途：`parseMineruJson()` 解析带页码输出；`MineruCliPdfExtractor` 管理子进程、超时和取消。
+ * 关键方法与用途：`parseMineruJson()`解析PDF页码；`parseMineruDocxJson()`将DOCX顺序块投影为单逻辑页并忽略图片；`MineruCliPdfExtractor` 管理子进程、超时和取消。
  * 使用场景：由统一 PDF 提取接口创建并被文档提取器调用。
  */
 import {storageDirectory,resolveRepositoryPath} from '../../paths';

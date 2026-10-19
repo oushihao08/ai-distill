@@ -1,5 +1,8 @@
-/** 验证题目信息保留Work新字段、冻结作者检索不被表述为归档新联网事件；不调用模型或数据库。 */
+/** 验证五件套投影、冻结检索表述与ZIP中文路径编码；不调用模型或数据库。 */
 import {test,expect} from 'bun:test';
+import {mkdtemp,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import * as generator from './generate-five-piece';
 
 test('TSV成果保留作者冻结的制表符和正文，不转换为Markdown表格',async()=>{
@@ -34,4 +37,29 @@ test('结构化正文内的附件及页码文字不被误当作外层定位标�
  const second:any=generator.confirmationDocument(text,[{start,end:text.length}],docs);
  expect(second.pages.map((p:any)=>p.page)).toEqual([2]);
  expect(()=>generator.confirmationDocument(text+'篡改',[{start:0,end:text.length}],docs)).toThrow('冻结正文不一致');
+});
+
+test('Siriser确认包ZIP显式标记UTF-8中文路径',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'siriser-utf8-'));
+ try{
+  const packageName='法律-LS02-测试',relativeName=`${packageName}/input_files/材料.docx`,zipPath=join(root,'package.zip');
+  await mkdir(join(root,packageName,'input_files'),{recursive:true});
+  await writeFile(join(root,relativeName),'fixture');
+  const child=Bun.spawn(['zip','-qr',zipPath,packageName],{cwd:root,stdout:'ignore',stderr:'pipe'});
+  const [,exit]=await Promise.all([new Response(child.stderr).text(),child.exited]);
+  expect(exit).toBe(0);
+  const bytes=await readFile(zipPath),normalized=(generator as any).markZipFilenamesUtf8(bytes) as Buffer;
+  let end=-1;
+  for(let offset=normalized.length-22;offset>=Math.max(0,normalized.length-65557);offset--)if(normalized.readUInt32LE(offset)===0x06054b50&&offset+22+normalized.readUInt16LE(offset+20)===normalized.length){end=offset;break;}
+  expect(end).toBeGreaterThanOrEqual(0);
+  const count=normalized.readUInt16LE(end+10);let offset=normalized.readUInt32LE(end+16);const names:string[]=[];
+  for(let index=0;index<count;index++){
+   expect(normalized.readUInt32LE(offset)).toBe(0x02014b50);
+   expect(normalized.readUInt16LE(offset+8)&0x0800).toBe(0x0800);
+   const nameLength=normalized.readUInt16LE(offset+28),extraLength=normalized.readUInt16LE(offset+30),commentLength=normalized.readUInt16LE(offset+32);
+   names.push(new TextDecoder('utf-8',{fatal:true}).decode(normalized.subarray(offset+46,offset+46+nameLength)));
+   offset+=46+nameLength+extraLength+commentLength;
+  }
+  expect(names).toContain(relativeName);
+ }finally{await rm(root,{recursive:true,force:true});}
 });

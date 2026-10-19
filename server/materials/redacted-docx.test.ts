@@ -1,7 +1,7 @@
 /**
  * 职责：验证脱敏 Markdown 到 DOCX 的转换边界与附件页码呈现。
  * 主要验证：OOXML ZIP 可解析，系统标记被隐藏，正文转义、分页及常见 Markdown 表格均保留。
- * 使用场景：修改 `redacted-docx.ts` 时由 Bun test 定向运行。
+ * 验证边界：直接检查生成的 OOXML ZIP 字节，不启动 Word/Office；修改 `redacted-docx.ts` 时可定向回归。
  */
 import {test,expect} from 'bun:test';
 import {inflateRawSync} from 'node:zlib';

@@ -1,0 +1,61 @@
+{
+  "id": "A006",
+  "item_id": "database-performance",
+  "stage_id": "targeted-tests-and-static-check",
+  "previous_attempt_id": "A005",
+  "status": "succeeded",
+  "started_at": "2026-10-19T10:52:00+08:00",
+  "finished_at": "2026-10-19T10:57:05+08:00",
+  "inputs": [
+    {
+      "ref": "server/app.ts, server/project-folders.ts, server/app.test.ts",
+      "version": "current dirty workspace",
+      "sha256": null
+    }
+  ],
+  "configuration": {
+    "commands": [
+      "bun test server/app.test.ts server/project-folders.test.ts",
+      "bun run test:backend",
+      "bun run check",
+      "git diff --check"
+    ]
+  },
+  "changes_from_previous": [
+    "项目详情将步骤配置读取并入项目查询，降低每次请求的连接占用；增加路由层返回契约和查询复用回归"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local",
+    "runtime_version": "Bun 1.3.9"
+  },
+  "artifacts": [],
+  "verification": [
+    {
+      "kind": "red_green_test",
+      "result": "passed",
+      "evidence": "项目详情新用例先因未复用预期步骤配置而失败，合并查询后通过"
+    },
+    {
+      "kind": "targeted_suite",
+      "result": "passed",
+      "evidence": "56 passed, 0 failed; 343 expectations"
+    },
+    {
+      "kind": "backend_suite",
+      "result": "passed",
+      "evidence": "1150 passed, 0 failed; 3661 expectations"
+    },
+    {
+      "kind": "static_check",
+      "result": "passed",
+      "evidence": "bun run check completed successfully"
+    },
+    {
+      "kind": "diff_check",
+      "result": "passed",
+      "evidence": "git diff --check completed successfully"
+    }
+  ],
+  "error": null
+}

@@ -1,0 +1,711 @@
+{
+  "items": [
+    {
+      "id": "ef1c4898-2f9e-493b-a719-19bc0849b9df",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "d4353085-0921-4293-9ea4-f1f808ae91c4",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "9e3cfb329556697ec0487a0ec98d25e6d670a8cd2701586b7b8033bcba5f8942",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T10:09:02.524Z",
+      "updated_at": "2026-10-18T14:30:59.245Z",
+      "lock_version": 1,
+      "package_name": "豆包题目2-新材料库全流程测试-20261018",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "ef1c4898-2f9e-493b-a719-19bc0849b9df",
+          "use_id": "ef1c4898-2f9e-493b-a719-19bc0849b9df",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "迁移前已有加载；按首次加载时间保留占用，不删除历史重复题目",
+          "evidence": {
+            "origin": "migration_045",
+            "legacy_phase_ids": [
+              "db617d63-cdc5-4c0a-a791-ec530e2fe625"
+            ]
+          },
+          "created_at": "2026-10-18T14:30:59.245Z"
+        }
+      ]
+    },
+    {
+      "id": "99b99cc1-0405-44a9-868d-272c6dfaced1",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "369bf5da-c632-4a9b-a3c2-be8f4c1549d9",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "873ed1a8458346125d675a3d0c9d8b0b601d847d85c99eb66539cd14a13bc400",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:34:57.009Z",
+      "updated_at": "2026-10-18T14:34:57.009Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L3-借款合同纠纷-2",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "a067c5be-3448-456d-a0b5-42b4ca8156c5",
+          "use_id": "99b99cc1-0405-44a9-868d-272c6dfaced1",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:34:57.009Z"
+        }
+      ]
+    },
+    {
+      "id": "954072be-787c-42d3-b08f-1f7821e1d547",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "d6073b18-1a5c-4530-806d-7a1d18b879f7",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "ba2d5c820f438c3f6688016d38a3a50c9ae8f2c69a106e54a95e736859bc26a8",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:34:57.865Z",
+      "updated_at": "2026-10-18T14:34:57.865Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L4-房屋买卖",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "4b3bc1fa-6a5b-4146-b451-63a8e9bd25e6",
+          "use_id": "954072be-787c-42d3-b08f-1f7821e1d547",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:34:57.865Z"
+        }
+      ]
+    },
+    {
+      "id": "638e69cc-bec9-4a68-be2e-9a289e1035f4",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "b065b97e-1521-422d-8168-9d74365d9fb6",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "4d976ccd3ea0644d3ea04de8de96847be749f6d78bd939c4521a012c63c4e60f",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:34:58.734Z",
+      "updated_at": "2026-10-18T14:34:58.734Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L2-运输合同",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "4fd8f23f-072c-483c-84d1-aabec1885bda",
+          "use_id": "638e69cc-bec9-4a68-be2e-9a289e1035f4",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:34:58.734Z"
+        }
+      ]
+    },
+    {
+      "id": "37decc16-d66d-4a5c-a6c3-720affeaaebf",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "c71bdcc4-3c2c-4dbe-81d0-85718d582b15",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "0d3124bf199f2d2db404cf4bc843f8c7e34b2cf966737ce801f0aa45fcd5e812",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:34:59.644Z",
+      "updated_at": "2026-10-18T14:34:59.644Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L2-房屋买卖合同",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "52a62d51-299d-48f3-bb97-9e755a672763",
+          "use_id": "37decc16-d66d-4a5c-a6c3-720affeaaebf",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:34:59.644Z"
+        }
+      ]
+    },
+    {
+      "id": "1e2ec36e-4dcc-47c4-a5f2-bc83cbfbccbb",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "7301fda4-d471-4631-9d40-6a8941ee9d88",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "c0112f3de9bcfc8b1a533e125c220eb9e79db578b4f5b7a54b7dc79c8558a943",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:00.592Z",
+      "updated_at": "2026-10-18T14:35:00.592Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L4-工伤",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "9aa9a90d-627d-439d-99b9-3c43b1b85493",
+          "use_id": "1e2ec36e-4dcc-47c4-a5f2-bc83cbfbccbb",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:00.592Z"
+        }
+      ]
+    },
+    {
+      "id": "f15f572a-404b-4b2a-a6c8-b2fa20e4f4e9",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "01c43877-28bf-4412-96ab-2b82f0f4d26d",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "589e88aa9e2bd9c1f0dcd1bc725c195f0efe65a6154ee311f9d835e60a289464",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:03.297Z",
+      "updated_at": "2026-10-18T14:35:03.297Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L3-承揽合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "e3a01e0e-634f-414f-bf85-f70bc143dc1b",
+          "use_id": "f15f572a-404b-4b2a-a6c8-b2fa20e4f4e9",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:03.297Z"
+        }
+      ]
+    },
+    {
+      "id": "554e8625-2c6d-412b-b1c1-ba1edda59086",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "61d29d04-fef0-4536-ae28-4ae3a4985dca",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "2f5bbd187d7ece1070072d84321a91d63cfefe9d3d76e5c718e6264647e1489b",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:04.338Z",
+      "updated_at": "2026-10-18T14:35:04.338Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L4-建工",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "6b415543-b7b3-4bfc-a2dd-7057a62127a9",
+          "use_id": "554e8625-2c6d-412b-b1c1-ba1edda59086",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:04.338Z"
+        }
+      ]
+    },
+    {
+      "id": "79d0b62e-720f-4b9e-8d4b-716b1edc9262",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "7891d749-7b57-480e-b7d2-a60885c9c502",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "ecd5024796e442eca406236338e7f739b4d365f8610f4858f32db45428ac1c27",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:05.510Z",
+      "updated_at": "2026-10-18T14:35:05.510Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L2-建设工程合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "8f59366c-fb23-4100-abca-b880bedda3bd",
+          "use_id": "79d0b62e-720f-4b9e-8d4b-716b1edc9262",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:05.510Z"
+        }
+      ]
+    },
+    {
+      "id": "bf836958-263e-4f9e-8a2a-90a0ec614b9a",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "8766b728-c998-4d5c-8bd6-b80cd4a5ed4f",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "d38cf756eb3c49b58cbfc0b56bd3ae0e224d1a5c65b056182cfe33bd673737aa",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:06.430Z",
+      "updated_at": "2026-10-18T14:35:06.430Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L2-合伙协议",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "f7571b9c-5115-4c79-b073-6eddcb63a6f2",
+          "use_id": "bf836958-263e-4f9e-8a2a-90a0ec614b9a",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:06.430Z"
+        }
+      ]
+    },
+    {
+      "id": "479dba28-daa7-4f89-9dd3-4b329cd8c8fd",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "b9ae7b8e-9d75-4452-8411-44041b819af2",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "5d48bd3c41b8bf45dbb1c721a8145a04a717db22d862aa3d0ab4248b66228573",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:07.617Z",
+      "updated_at": "2026-10-18T14:35:07.617Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L3-借款合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "92fe901f-648b-4b56-b7f7-676bc7b924e9",
+          "use_id": "479dba28-daa7-4f89-9dd3-4b329cd8c8fd",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:07.617Z"
+        }
+      ]
+    },
+    {
+      "id": "b079a085-9273-48ee-855f-96db3037d351",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "a58edb88-b32a-493f-9d96-aceacbf57787",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "2d3bd0c0be313126b6184af36f34b103b41bafb2a17da3450f43fb62d5a06f38",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:08.655Z",
+      "updated_at": "2026-10-18T14:35:08.655Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L3-买卖合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "55860676-1928-493e-9093-fd8f341c5be4",
+          "use_id": "b079a085-9273-48ee-855f-96db3037d351",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:08.655Z"
+        }
+      ]
+    },
+    {
+      "id": "9838b0c2-bf57-46ac-9447-60124f025ce5",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "3c2f77af-7943-43c4-aca7-82a013560e0b",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "7f2d7cb356a789e3861b758f1479af8fa4b3ce97b9b635d69140d0020ecaf4a1",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:09.581Z",
+      "updated_at": "2026-10-18T14:35:09.581Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L4-装修装饰",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "c0ba426b-bb8b-4043-b3cc-e8dd1d7ea932",
+          "use_id": "9838b0c2-bf57-46ac-9447-60124f025ce5",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:09.581Z"
+        }
+      ]
+    },
+    {
+      "id": "435238d0-0cf2-424a-8194-e9a4e1a30413",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "b2ac9a6a-96ef-4d1e-9337-d9e7491b3493",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "09649702265bffbbbd05aab7e2bc1dca899b2793119588efaa04c42e2329c5ee",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:22.118Z",
+      "updated_at": "2026-10-18T14:35:22.118Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L2-劳务合同",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "cc63faff-3eb5-483e-ab7d-0bdafb3bb23d",
+          "use_id": "435238d0-0cf2-424a-8194-e9a4e1a30413",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:22.118Z"
+        }
+      ]
+    },
+    {
+      "id": "5d22c033-49a4-47ce-b21e-86fd3aacf93c",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "a528d84e-d2de-46de-ae51-940807c6e6d1",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "956e1e1d83b87513d9b4c3517117e67bbe70a67ce115941e6490c5913fdd18ff",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:23.142Z",
+      "updated_at": "2026-10-18T14:35:23.142Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L2-装修装饰合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "787a917b-cc10-49bb-ae45-b014764f1f23",
+          "use_id": "5d22c033-49a4-47ce-b21e-86fd3aacf93c",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:23.142Z"
+        }
+      ]
+    },
+    {
+      "id": "2218950d-d23d-4f36-9e07-cba0bdc2be99",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "0427f4a1-3f50-4ffc-bb43-509ec8a4ed97",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "3a947e5192f9114f4480d46c3e930e015a1ce9f85d76bcc1de6f389da3083f93",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:24.216Z",
+      "updated_at": "2026-10-18T14:35:24.216Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L4-运输",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "38adb7ab-269c-40be-916c-c7f0b7c087a9",
+          "use_id": "2218950d-d23d-4f36-9e07-cba0bdc2be99",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:24.216Z"
+        }
+      ]
+    },
+    {
+      "id": "3825af5c-1b0c-44da-9fe3-b54fdc2a1d7e",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "0257c77e-6f00-4ae2-a714-d306daf18e85",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "ebcdbd062a7b0cf0596a9d0caa6ecdd786d9b43a79d444c79e04c956c1e7bfa1",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:25.307Z",
+      "updated_at": "2026-10-18T14:35:25.307Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L5-社保先行支付",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "99aa5efd-2155-41c3-81de-a8be4f9cf3db",
+          "use_id": "3825af5c-1b0c-44da-9fe3-b54fdc2a1d7e",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:25.307Z"
+        }
+      ]
+    },
+    {
+      "id": "8c7d9e73-1be5-48d8-9141-3be4c9dd5e64",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "988d40dd-fe74-48d2-bf27-11e31190793d",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "4fbe41df7232c5a4edfcb7468600445daf45d07538449440acf871d89a7c9d8e",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:26.816Z",
+      "updated_at": "2026-10-18T14:35:26.816Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L5-租赁合同",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "22508115-b5fb-4182-b722-4bd6f02b9ade",
+          "use_id": "8c7d9e73-1be5-48d8-9141-3be4c9dd5e64",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:26.816Z"
+        }
+      ]
+    },
+    {
+      "id": "a445fbe5-5778-44bf-8d8c-c6ad688b48e6",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "60f2861b-6efc-4a72-a629-f1b3e6794cff",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "0aae4962cb81656fbcbe4aa220d1c7510b000982004e393a98e05f1e0c0f7b9e",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:29.113Z",
+      "updated_at": "2026-10-18T14:35:29.113Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L5-建设工程施工合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "76f116b3-a1d4-461e-b9ff-5480c156650c",
+          "use_id": "a445fbe5-5778-44bf-8d8c-c6ad688b48e6",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:29.113Z"
+        }
+      ]
+    },
+    {
+      "id": "d2a8208f-333c-4881-99f7-04391f651b44",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "8ab22934-6d20-4a45-8426-52ffefdf68bb",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "272f580f3bf385e3793d3acb98d591819482831f86603309092fc72f734cec35",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:30.384Z",
+      "updated_at": "2026-10-18T14:35:30.384Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L5-买卖合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "75fed81e-158a-47f9-b8c8-7e0edcbeab22",
+          "use_id": "d2a8208f-333c-4881-99f7-04391f651b44",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:30.384Z"
+        }
+      ]
+    },
+    {
+      "id": "d09cc1b6-ca54-4d5a-ab8b-f460a6b53c2c",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "f7db0154-f34f-410f-b8e7-1aa10aba5880",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "dfd5872f3b038bdf066943e36cad843c002fa3725a389e32e3ca9cd04fb8e8e5",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:31.787Z",
+      "updated_at": "2026-10-18T14:35:31.787Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L5-合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "19579ec8-a14c-4162-bbf1-0e5fc8cc1e19",
+          "use_id": "d09cc1b6-ca54-4d5a-ab8b-f460a6b53c2c",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:31.787Z"
+        }
+      ]
+    },
+    {
+      "id": "281c5bb3-27f5-4b06-8ca6-74835c94692a",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "5d394f06-f3df-4903-abca-c4d854a4ec2a",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "d64c196fbde08361b822aece9bcd2628c1c51903bbc13f238d5ec7139ae56c89",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:32.906Z",
+      "updated_at": "2026-10-18T14:35:32.906Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L5-合伙合同纠纷",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "6f351372-58e7-4e26-89f7-d45463237abd",
+          "use_id": "281c5bb3-27f5-4b06-8ca6-74835c94692a",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:32.906Z"
+        }
+      ]
+    },
+    {
+      "id": "caa3824e-877b-40f8-8aae-b3721fd8642f",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "fee7236d-eae5-4976-a591-7d185b700a8c",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "79d3b4b166fa99a6d7b3e6a056da4abd7a56f341e1aef850790a29a7a40a77da",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:33.998Z",
+      "updated_at": "2026-10-18T14:35:33.998Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景-L5-交易借贷组合",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "afbf39ea-199c-42ab-beb1-16d78227de02",
+          "use_id": "caa3824e-877b-40f8-8aae-b3721fd8642f",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:33.998Z"
+        }
+      ]
+    },
+    {
+      "id": "a6df8396-66d0-4179-8d67-1dc8ef975962",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "c36a167a-6298-4d3d-86ed-e6dd8220a5a8",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "b35f2f2a809710c7ab0e5e49de2cd82d52d5bf3045f58c8f54302444b3bd7d94",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:35.197Z",
+      "updated_at": "2026-10-18T14:35:35.197Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景-L5-工程项目组合",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "784119d8-0f57-40c1-91bb-0efb989888e7",
+          "use_id": "a6df8396-66d0-4179-8d67-1dc8ef975962",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:35.197Z"
+        }
+      ]
+    },
+    {
+      "id": "7326582c-4e7a-4a7b-9a8f-7ef75cd66347",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "e8e55524-cf0f-412b-bb2e-27bbd22d3b04",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "16c5779ee1e329d9a1addf31bcaf86d0200db2b7fb6231953410934b54f5dae2",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:36.308Z",
+      "updated_at": "2026-10-18T14:35:36.308Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景-L5-用工运输组合",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "34e5611d-2189-479a-a9a4-ad4096d1dee6",
+          "use_id": "7326582c-4e7a-4a7b-9a8f-7ef75cd66347",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:36.308Z"
+        }
+      ]
+    },
+    {
+      "id": "0fd59c1b-662e-4c21-be6c-a32fa8f054b4",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "707f4b79-a23a-4442-8294-1b856c3db462",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "9d0f2404ccebbad9003549402f927133eebc878811ea91fed5165b52ae0cb971",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:37.598Z",
+      "updated_at": "2026-10-18T14:35:37.598Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景-L5-合作财产组合",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "382ebd03-9b2d-4879-a0cb-4e75e26ba75f",
+          "use_id": "0fd59c1b-662e-4c21-be6c-a32fa8f054b4",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:37.598Z"
+        }
+      ]
+    },
+    {
+      "id": "2b38352c-8f51-4681-9268-88415a398f25",
+      "project_group_id": "5e3d95f9-2021-48c9-a02f-81ff472bf178",
+      "package_id": "76c2c416-392d-471f-a615-585daf1de626",
+      "owner_phase_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+      "material_signature": "fdcd4d261bc2f448d54623ee8bf574f2eaed7dfdb01a3e2790e816f5200d29f9",
+      "status": "in_use",
+      "first_used_at": "2026-10-18T14:35:41.398Z",
+      "updated_at": "2026-10-18T14:35:41.398Z",
+      "lock_version": 1,
+      "package_name": "Work法律全场景 - 首批筹备-L3-豆包题目1-关联借款",
+      "phase_name": "首批筹备",
+      "phase_no": null,
+      "events": [
+        {
+          "id": "5e113f79-de98-437d-8523-7efcb2d9a947",
+          "use_id": "2b38352c-8f51-4681-9268-88415a398f25",
+          "event_type": "legacy_import",
+          "previous_status": null,
+          "status": "in_use",
+          "reason": "旧材料包原期次使用记录衔接",
+          "evidence": {},
+          "created_at": "2026-10-18T14:35:41.398Z"
+        }
+      ]
+    }
+  ]
+}

@@ -27,10 +27,11 @@ import {validateWorkflowConfig,type WorkflowConfig} from '../shared/workflow-con
 export interface FolderFile { name: string; path: string; sha256: string; size: number; split_from?: string }
 export interface QuestionFolder { key: string; files: FolderFile[] }
 const supportedDocument=/\.(pdf|docx|txt|md)$/i;
-export interface WorkflowStepState { ordinal:number;status:string;result?:any;enabled:boolean;active:boolean;has_pdf?:boolean;extraction_status?:string|null;workflow_kind?:'question'|'material_package';source_workflow_id?:string|null }
+export interface WorkflowStepState { ordinal:number;status:string;result?:any;enabled:boolean;active:boolean;has_pdf?:boolean;extraction_status?:string|null;workflow_kind?:'question'|'material_package';source_workflow_id?:string|null;library_source?:boolean }
 export function workflowStepReadiness(ordinal:number,steps:Map<number,WorkflowStepState>):{ready:true}|{ready:false;reason:string}{
  const identity=steps.values().next().value as WorkflowStepState|undefined;
  if(identity?.workflow_kind==='material_package'&&![1,2,9].includes(ordinal))return{ready:false,reason:'材料包只执行入库和脱敏'};
+ if(identity?.library_source&&[1,2,9].includes(ordinal))return{ready:false,reason:'题目使用已冻结的共享材料包快照'};
  if(identity?.source_workflow_id&&[1,2,9].includes(ordinal))return{ready:false,reason:'派生题目使用已冻结的材料快照'};
  const visible=STEP_REGISTRY.filter(stage=>stage.visible),index=visible.findIndex(stage=>stage.ordinal===ordinal),stage=visible[index];
  if(!stage)return{ready:false,reason:'此步骤不支持批量执行'};
@@ -47,7 +48,7 @@ export function workflowStepReadiness(ordinal:number,steps:Map<number,WorkflowSt
   if(!decision||!decision.enabled||decision.status!=='succeeded'||decision.result?.decision!=='accepted')return{ready:false,reason:'题目未达标，不能归档'};
  }
  let previous:typeof visible[number]|undefined,previousRow:WorkflowStepState|undefined;
- for(let position=index-1;position>=0;position--){const candidate=visible[position]!,row=steps.get(candidate.ordinal);if(row?.enabled){previous=candidate;previousRow=row;break;}}
+ for(let position=index-1;position>=0;position--){const candidate=visible[position]!,row=steps.get(candidate.ordinal);if(identity?.library_source&&[1,2,9].includes(candidate.ordinal))continue;if(row?.enabled){previous=candidate;previousRow=row;break;}}
  if(!previous)return{ready:true};
  const previousStatus=previous.ordinal===1&&previousRow?.has_pdf?previousRow.extraction_status??previousRow.status:previousRow!.status;
  const models=previousRow?.result?.models;
@@ -66,7 +67,10 @@ export function splitIntoBatches<T>(values:T[],size:number):T[][]{
  const batches:T[][]=[];for(let start=0;start<values.length;start+=size)batches.push(values.slice(start,start+size));return batches;
 }
 export async function readProjectWorkflowStepRows(pool:Pool,projectId:string,workflowIds?:string[]){
- return pool.query("SELECT w.id AS workflow_id,w.workflow_kind,w.source_workflow_id,s.ordinal,s.status,s.error,s.started_at,s.finished_at,CASE WHEN s.ordinal=4 THEN jsonb_build_object('content_contract',s.result->'content_contract','content_status',s.result->'content_status','task_requirements',s.result->'task_requirements') WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','aggregate',s.result->'aggregate','reasons',s.result->'reasons') WHEN s.ordinal=6 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','answer_status',m->'answer_status','score_status',m->'score_status','score_contract',m->'score_contract','score',m->'score','max_score',m->'max_score','raw_score',m->'raw_score','full_score',m->'full_score','evaluation_percent',m->'evaluation_percent','veto_triggered',m->'veto_triggered','valid',m->'valid')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx')) AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   (SELECT x.error FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_error,\n   (SELECT x.started_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_started_at,\n   (SELECT x.finished_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_finished_at,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx'))))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position",[projectId,workflowIds??null]);
+ // 远端数据库逐行传输此状态表成本明显高于单个JSON载荷；外部仍返回相同rows结构。
+ const result=await pool.query("SELECT COALESCE(jsonb_agg(to_jsonb(state_rows)),'[]'::jsonb) AS items FROM (SELECT w.id AS workflow_id,w.workflow_kind,w.source_workflow_id,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS library_source,s.ordinal,s.status,s.error,s.started_at,s.finished_at,CASE WHEN s.ordinal=4 THEN jsonb_build_object('content_contract',s.result->'content_contract','content_status',s.result->'content_status','task_requirements',s.result->'task_requirements') WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','aggregate',s.result->'aggregate','reasons',s.result->'reasons') WHEN s.ordinal=6 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','answer_status',m->'answer_status','score_status',m->'score_status','score_contract',m->'score_contract','score',m->'score','max_score',m->'max_score','raw_score',m->'raw_score','full_score',m->'full_score','evaluation_percent',m->'evaluation_percent','veto_triggered',m->'veto_triggered','valid',m->'valid')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx')) AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   (SELECT x.error FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_error,\n   (SELECT x.started_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_started_at,\n   (SELECT x.finished_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_finished_at,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx'))))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position) state_rows",[projectId,workflowIds??null]);
+ const rows:(WorkflowStepState&Record<string,any>)[]=result.rows[0]?.items??[];
+ return{...result,rows,rowCount:rows.length};
 }
 export async function validateFolder(value: unknown, label = '材料文件夹') {
  const path = text(value, label, 4096);
@@ -151,7 +155,7 @@ export async function registerQuestionFolders(db: PoolClient, projectId: string,
  return {discovered:questions.length,added:added.length,changed:changed.length};
 }
 export type AnswerStepConfig=ModelApiConfig&{prompt:string;workflow?:WorkflowConfig};
-export type AuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;workflow?:WorkflowConfig};
+export type AuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';workflow?:WorkflowConfig};
 export type ScoringStepConfig=AuthoringStepConfig|{provider:'api';api:ModelApiConfig;prompt:string;workflow?:WorkflowConfig};
 export function validateStepConfig(ordinal:9,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):RedactionConfig;
 export function validateStepConfig(ordinal:4,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):AuthoringStepConfig;
@@ -176,7 +180,9 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
  if(ordinal===9)return validateRedactionConfig(raw,modelCatalog);
  const value = raw as Record<string,unknown>;
  let workflow:WorkflowConfig|undefined;try{workflow=validateWorkflowConfig(value.workflow);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'项目流程配置格式无效'});}
- const extension=workflow?{workflow}:{};
+ const materialSourceMode=ordinal===4?(value.material_source_mode??'redacted'):undefined;
+ if(ordinal===4&&!['redacted','original'].includes(String(materialSourceMode)))throw new HTTPException(400,{message:'出题材料版本设置无效'});
+ const extension={...(workflow?{workflow}:{}),...(ordinal===4?{material_source_mode:materialSourceMode as 'redacted'|'original'}:{})};
  if(ordinal===6&&value.provider==='api'){
   if(Object.keys(value).some(key=>!['provider','api','prompt','workflow'].includes(key))||!value.api||typeof value.api!=='object'||Array.isArray(value.api))throw new HTTPException(400,{message:'评分API设置格式无效'});
   let api:ModelApiConfig;try{api=resolveModelApiConfig(value.api);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'评分API设置无效'});}
@@ -196,20 +202,21 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
  return { provider, model, reasoning_effort: effort, prompt, ...(ordinal===4&&timeout!==undefined?{timeout_ms:timeout as number}:{}), ...extension };
 }
 function defaultAnswerConfig(){try{return resolveQwenConfig({});}catch{return {provider:'qwen'};}}
-export async function projectStepSummary(pool: Pool, projectId: string, materialBackend:'legacy'|'library_v1'='legacy') {
- const visible=getWorkflowStepDefinitions(materialBackend);
- const [rows,configs,codexSettings]=await Promise.all([
-  readProjectWorkflowStepRows(pool,projectId),
-  pool.query('SELECT ordinal,config FROM ai_distill.project_step_configs WHERE project_id=$1 ORDER BY ordinal',[projectId]),
-  readProjectAgentSettings(pool,projectId),
+export async function projectStepSummary(pool: Pool, projectId: string, materialBackend:'legacy'|'library_v1'|Promise<'legacy'|'library_v1'>='legacy',preloadedRows?:ReturnType<typeof readProjectWorkflowStepRows>,preloadedCodexSettings?:ReturnType<typeof readProjectAgentSettings>,preloadedConfigs?:{rows:{ordinal:number;config:any}[]}|Promise<{rows:{ordinal:number;config:any}[]}>) {
+ const [rows,configs,codexSettings,resolvedMaterialBackend]=await Promise.all([
+  preloadedRows??readProjectWorkflowStepRows(pool,projectId),
+  preloadedConfigs??pool.query('SELECT ordinal,config FROM ai_distill.project_step_configs WHERE project_id=$1 ORDER BY ordinal',[projectId]),
+  preloadedCodexSettings??readProjectAgentSettings(pool,projectId),
+  materialBackend,
  ]);
+ const visible=getWorkflowStepDefinitions(resolvedMaterialBackend);
  const totals=new Map<number,Record<string,number>>();
  for(const stage of visible)totals.set(stage.ordinal,{total:0,ready:0,queued:0,running:0,succeeded:0,failed:0,needs_repair:0,quarantined:0});
  const workflowRows=new Map<string,Map<number,WorkflowStepState>>();
- for(const row of rows.rows){if(!workflowRows.has(row.workflow_id))workflowRows.set(row.workflow_id,new Map());workflowRows.get(row.workflow_id)!.set(row.ordinal,{ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id});}
+ for(const row of rows.rows){if(!workflowRows.has(row.workflow_id))workflowRows.set(row.workflow_id,new Map());workflowRows.get(row.workflow_id)!.set(row.ordinal,{ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source)});}
  for(const [,steps] of workflowRows){
   for(const stage of visible){
-   const row=steps.get(stage.ordinal);if(!row||row.workflow_kind==='material_package'&&![1,9].includes(stage.ordinal)||row.source_workflow_id&&[1,9].includes(stage.ordinal))continue;
+   const row=steps.get(stage.ordinal);if(!row||row.workflow_kind==='material_package'&&![1,9].includes(stage.ordinal)||row.source_workflow_id&&[1,9].includes(stage.ordinal)||row.library_source&&[1,2,9].includes(stage.ordinal))continue;
    const status=stage.ordinal===1&&row.has_pdf?row.extraction_status??row.status:row.status;
    const values=totals.get(stage.ordinal)!;values.total++;
    if(stage.ordinal===7&&status==='succeeded'){

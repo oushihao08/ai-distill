@@ -33,7 +33,7 @@ let configuredAdapter:AgentAdapter<any>=runCodexAdapter;
 /** 后端选择集中在模块装配处，业务调用始终使用相同任务契约。 */
 export function configureAgentAdapter(adapter:AgentAdapter<any>|null){configuredAdapter=adapter??runCodexAdapter;}
 
-/** 评分与普通出题不覆盖宿主开发者指令；其余业务任务保留通用边界指令。 */
+/** 评分、模型作答与普通出题不注入通用开发者指令；其余业务任务保留通用边界指令。 */
 export async function runAgent<T>(task:AgentTask<T>,adapter:AgentAdapter<T>=configuredAdapter as AgentAdapter<T>):Promise<AgentResult<T>>{
  if(!task.task_type.trim()||!task.prompt.trim()||!task.directory.trim()||!task.model.trim()||!task.reasoning_effort.trim())throw new Error('Agent任务配置无效');
  if(task.execution_profile==='fresh_authoring'&&(task.task_type!=='question_authoring'||!task.working_directory?.trim()))throw new Error('普通出题执行配置无效');

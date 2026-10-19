@@ -1,7 +1,7 @@
 /**
  * 文件职责：在已由 worker 槽位保护的执行通道中运行材料库入库、提取和脱敏任务。
  * 关键入口：`runNextLibraryJob()` 领取一个匹配 executor/target 的 job；提取与结构处理复用 materials 模块，脱敏复用现有字段映射算法。
- * 边界：结果只写 library_blobs/library_documents/library_redactions；所有外部调用以 library_job_id 关联，不创建 step_attempt。
+ * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
 import {createHash} from 'node:crypto';
 import {mkdir,rm,writeFile} from 'node:fs/promises';

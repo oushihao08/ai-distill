@@ -44,16 +44,20 @@ export async function readMaterialLibraryQueue(pool:Pool):Promise<MaterialLibrar
  try{
   const schema=await pool.query("SELECT to_regclass('ai_distill.library_jobs') IS NOT NULL AS available");
   if(schema.rows[0]?.available!==true)return{status:'unavailable'};
-  const [counts,active]=await Promise.all([
-   pool.query(`SELECT count(*) FILTER(WHERE status='queued')::int AS queued,count(*) FILTER(WHERE status='running')::int AS running,
-    count(*) FILTER(WHERE status='succeeded')::int AS succeeded,count(*) FILTER(WHERE status='failed')::int AS failed,count(*) FILTER(WHERE status='cancelled')::int AS cancelled
-    FROM ai_distill.library_jobs`),
-   pool.query(`SELECT j.id,j.package_id,j.revision_id,COALESCE(p.name,'（材料包已归档）') AS package_name,j.kind,j.status,j.executor_kind,j.execution_target,j.progress,j.error_code,j.created_at,j.started_at
-    FROM ai_distill.library_jobs j LEFT JOIN ai_distill.library_packages p ON p.id=j.package_id WHERE j.status IN ('queued','running') ORDER BY j.created_at,j.id LIMIT 100`),
-  ]);
-  const row=counts.rows[0]??{},number=(value:unknown)=>{const parsed=Number(value);if(!Number.isSafeInteger(parsed)||parsed<0)throw new Error('invalid library queue count');return parsed;};
+  const result=await pool.query(`WITH totals AS (
+    SELECT count(*) FILTER(WHERE status='queued')::int AS queued,count(*) FILTER(WHERE status='running')::int AS running,
+     count(*) FILTER(WHERE status='succeeded')::int AS succeeded,count(*) FILTER(WHERE status='failed')::int AS failed,count(*) FILTER(WHERE status='cancelled')::int AS cancelled
+    FROM ai_distill.library_jobs
+   ), active_jobs AS (
+    SELECT j.id,j.package_id,j.revision_id,COALESCE(p.name,'（材料包已归档）') AS package_name,j.kind,j.status,j.executor_kind,j.execution_target,j.progress,j.error_code,j.created_at,j.started_at
+    FROM ai_distill.library_jobs j LEFT JOIN ai_distill.library_packages p ON p.id=j.package_id
+    WHERE j.status IN ('queued','running') ORDER BY j.created_at,j.id LIMIT 100
+   )
+   SELECT totals.*,COALESCE((SELECT jsonb_agg(to_jsonb(active_jobs) ORDER BY active_jobs.created_at,active_jobs.id) FROM active_jobs),'[]'::jsonb) AS items FROM totals`);
+  const row=result.rows[0]??{},number=(value:unknown)=>{const parsed=Number(value);if(!Number.isSafeInteger(parsed)||parsed<0)throw new Error('invalid library queue count');return parsed;};
   const totals={queued:number(row.queued),running:number(row.running),succeeded:number(row.succeeded),failed:number(row.failed),cancelled:number(row.cancelled)};
-  const items=active.rows.map(item=>{
+  if(!Array.isArray(row.items))throw new Error('invalid library queue items');
+  const items=row.items.map((item:any)=>{
    if(!['intake','extract','redact'].includes(item.kind)||!['queued','running'].includes(item.status)||!['internal','api','agent'].includes(item.executor_kind)||!['local','server'].includes(item.execution_target))throw new Error('invalid library queue row');
    return{job_id:String(item.id),package_id:String(item.package_id),revision_id:String(item.revision_id),package_name:String(item.package_name),kind:item.kind,state:item.status,executor_kind:item.executor_kind,execution_target:item.execution_target,progress:safeLibraryProgress(item.progress),error_code:typeof item.error_code==='string'?item.error_code:null,created_at:safeTimestamp(item.created_at),started_at:safeTimestamp(item.started_at)};
   });

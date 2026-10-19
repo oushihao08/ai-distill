@@ -1,0 +1,53 @@
+{
+  "id": "A032",
+  "item_id": "existing-work-compat",
+  "stage_id": "archive",
+  "previous_attempt_id": "A031",
+  "status": "succeeded",
+  "started_at": "2026-10-18T11:33:00Z",
+  "finished_at": "2026-10-18T11:34:54.302Z",
+  "inputs": [
+    {
+      "ref": "workflow 5d9b4868-2623-4dd8-a1e2-fa59cb0a7727",
+      "version": "same accepted archive digest; retry built-in redacted DOCX and question XLSX exports"
+    }
+  ],
+  "configuration": {
+    "purpose": "retry documented post-archive exports after HTTP 409; project script is source-bound/idempotent"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "workflow_id": "5d9b4868-2623-4dd8-a1e2-fa59cb0a7727",
+    "attempt_id": "ce4ad5e8-d7e5-4dd7-9b8a-a82595582abe"
+  },
+  "environment": {
+    "target": "local API"
+  },
+  "artifacts": [
+    {
+      "kind": "redacted_docx",
+      "path": "assets/out/附件库/Work法律全场景/首批筹备/共享脱敏材料包兼容验收题-20261018/成果/(2023)渝0104民初2679号-脱敏-3043fb4b.docx"
+    },
+    {
+      "kind": "archive_xlsx",
+      "path": "assets/out/附件库/Work法律全场景/首批筹备/共享脱敏材料包兼容验收题-20261018/成果/题目归档数据.xlsx"
+    },
+    {
+      "kind": "siriser_zip",
+      "path": "assets/out/附件库/Work法律全场景/首批筹备/共享脱敏材料包兼容验收题-20261018/成果/Siriser五件套/3ff9ff7be6a73d28-2905e298c71fc590/法律-LS02-20261018-杨政.zip"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "archive",
+      "result": "HTTP 200; reused=false; completed=true; redacted DOCX and archive workbook generated",
+      "evidence": "POST /api/workflows/5d9b4868-2623-4dd8-a1e2-fa59cb0a7727/publish"
+    },
+    {
+      "kind": "delivery_package",
+      "result": "Siriser ZIP generated and integrity/UTF-8 filenames verified; local generation only, no platform submission",
+      "evidence": "Siriser五件套.json; /tmp/work-siriser-final.zip; ZIP testzip and UTF-8 flag validation"
+    }
+  ],
+  "error": null
+}

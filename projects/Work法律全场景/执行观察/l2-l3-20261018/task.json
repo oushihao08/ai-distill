@@ -62,40 +62,44 @@
         {
           "id": "answer",
           "title": "作答",
-          "state": "running",
-          "outcome": "临时api worker开始消费此前已派发的步骤5；GET /api/attempts回读running，channel=api。",
+          "state": "succeeded",
+          "outcome": "Qwen步骤5作答attempt终态succeeded，无错误。",
           "attempt_id": "e73aed40-d624-4ec1-8e80-b2e9174197e3",
-          "observed_at": "2026-10-18T17:16:49+08:00",
+          "observed_at": "2026-10-18T17:24:11+08:00",
           "evidence": [
-            "GET /api/attempts/e73aed40-d624-4ec1-8e80-b2e9174197e3?view=status",
-            "GET /api/monitor"
+            "GET /api/attempts/e73aed40-d624-4ec1-8e80-b2e9174197e3?view=status"
           ]
         },
         {
           "id": "score",
           "title": "独立评分",
-          "state": "planned",
-          "outcome": null,
-          "attempt_id": null,
-          "observed_at": "2026-10-18T16:49:00+08:00",
-          "evidence": []
+          "state": "succeeded",
+          "outcome": "评分attempt成功；系统步骤7自动判定accepted。单模型29.41176471%，55%门槛，无否决；步骤8归档ready。",
+          "attempt_id": "52f4bda1-beea-4f9c-9739-d1744127a3ca",
+          "observed_at": "2026-10-18T17:29:41+08:00",
+          "evidence": [
+            "GET /api/attempts/52f4bda1-beea-4f9c-9739-d1744127a3ca?view=status",
+            "GET /api/workflows/b4424018-bcda-4cdd-9f34-f03473e7fbca ordinal 7"
+          ]
         },
         {
           "id": "acceptance",
           "title": "达标判断",
-          "state": "planned",
-          "outcome": null,
+          "state": "succeeded",
+          "outcome": "服务端自动判定accepted，聚合均分29.41176471%，阈值55%，model_count=1。",
           "attempt_id": null,
-          "observed_at": "2026-10-18T16:49:00+08:00",
-          "evidence": []
+          "observed_at": "2026-10-18T17:29:45+08:00",
+          "evidence": [
+            "GET /api/workflows/b4424018-bcda-4cdd-9f34-f03473e7fbca ordinal 7 result"
+          ]
         },
         {
           "id": "archive",
           "title": "本地归档与五件套生成",
-          "state": "planned",
-          "outcome": null,
+          "state": "running",
+          "outcome": "步骤8已ready；开始通过项目步骤API归档并生成提交用五件套。",
           "attempt_id": null,
-          "observed_at": "2026-10-18T16:49:00+08:00",
+          "observed_at": "2026-10-18T17:29:50+08:00",
           "evidence": []
         },
         {
@@ -172,5 +176,5 @@
     "仅accepted且归档成功时核查L3有效名额并提交；平台回读后更新提交台账。",
     "钢材、合作款及L2题目2按交接SHA去重，沿用已有题目/提交，不再建重复题。"
   ],
-  "updated_at": "2026-10-18T17:16:49+08:00"
+  "updated_at": "2026-10-18T17:29:50+08:00"
 }

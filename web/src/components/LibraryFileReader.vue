@@ -1,23 +1,23 @@
-<!-- 职责：在同一阅读区查看原文件、识别原文、指定脱敏版本及逐页对照。
-props.file/revision固定文件与文件集合；对照始终读取脱敏版本实际引用的提取任务，禁止按各自“最新”拼接。
+<!-- 职责：在同一阅读区查看原文件、识别原文及逐页对照。
+props.file/revision固定文件与文件集合，v-model:mode由父级控制、redactionId固定所选脱敏版本并通过update:mode同步查看方式；对照始终读取该版本实际引用的提取任务，禁止按各自“最新”拼接。
 原文件预览通过受控API获取PDF或文本，DOCX使用本地PDF副本；切换文件/版本中止旧请求，PDF保留原文件名。 -->
 <script setup lang="ts">
 import {api} from '../api/client';
 import {dateLabel} from '../utils/format';
 import type {LibraryFile,LibraryRevision} from '../types/material-library';
-const props=defineProps<{file:LibraryFile;revision:LibraryRevision}>();
 type Mode='original'|'source'|'redacted'|'compare';
+const props=defineProps<{file:LibraryFile;revision:LibraryRevision;mode:Mode;redactionId:string}>();
+const emit=defineEmits<{ 'update:mode':[value:Mode] }>();
+const mode=computed({get:()=>props.mode,set:(value:Mode)=>emit('update:mode',value)});
 interface Page {page:number;text:string;issues?:unknown[]}
-const mode=shallowRef<Mode>('original'),redactionId=shallowRef(''),extractionId=shallowRef('');
+const extractionId=shallowRef('');
 const source=shallowRef<Page[]>([]),redacted=shallowRef<Page[]>([]),originalText=shallowRef(''),originalUrl=shallowRef('');
 const busy=shallowRef(false),error=shallowRef(''),isPdf=shallowRef(false);
 const extractions=computed(()=>props.revision.jobs.filter(item=>item.kind==='extract'&&item.status==='succeeded'));
-const selectedRedaction=computed(()=>props.revision.redactions.find(item=>item.id===redactionId.value)??props.revision.redactions.find(item=>item.usable_for_question===true||item.usable_for_question==='true')??props.revision.redactions[0]);
+const selectedRedaction=computed(()=>props.revision.redactions.find(item=>item.id===props.redactionId)??props.revision.redactions.find(item=>item.usable_for_question===true||item.usable_for_question==='true')??props.revision.redactions[0]);
 const selectedExtraction=computed(()=>extractions.value.find(item=>item.id===extractionId.value)?.id??selectedRedaction.value?.extraction_job_id??extractions.value[0]?.id);
 const effectiveExtraction=computed(()=>mode.value==='compare'?selectedRedaction.value?.extraction_job_id:selectedExtraction.value);
-const redactionItems=computed(()=>props.revision.redactions.map((item,index)=>({title:`脱敏版本 ${props.revision.redactions.length-index} · ${dateLabel(item.created_at)}`,value:item.id})));
 const extractionItems=computed(()=>extractions.value.map((item,index)=>({title:`识别版本 ${extractions.value.length-index} · ${dateLabel(item.created_at)}`,value:item.id})));
-const redactionSelection=computed({get:()=>selectedRedaction.value?.id??'',set:(id:string)=>{redactionId.value=id;}});
 const extractionSelection=computed({get:()=>selectedExtraction.value??'',set:(id:string)=>{extractionId.value=id;}});
 const comparePages=computed(()=>source.value.map(page=>({source:page,redacted:redacted.value.find(item=>item.page===page.page)})));
 const issueCount=computed(()=>source.value.reduce((sum,page)=>sum+(page.issues?.length??0),0));
@@ -54,12 +54,10 @@ watch(()=>[props.file.id,props.revision.id,mode.value,selectedRedaction.value?.i
 onUnmounted(()=>{controller?.abort();releaseOriginal();});
 </script>
 <template><Column :gap="0" class="min-w-0">
- <Row x="between" wrap y="center" :gap="8" class="border-b border-line px-8"><v-tabs v-model="mode" color="primary" aria-label="文件查看方式" class="min-w-0 flex-1"><v-tab value="original">原文件</v-tab><v-tab value="source">识别原文</v-tab><v-tab value="redacted">脱敏文本</v-tab><v-tab value="compare">原文与脱敏对照</v-tab></v-tabs><a :href="`/api/material-library/files/${file.id}/content`" class="link-text text-sm shrink-0 px-8 py-8">下载原文件</a></Row>
+ <Row x="between" wrap y="center" :gap="8" class="border-b border-line px-8"><v-tabs v-model="mode" color="primary" aria-label="文件查看方式" class="min-w-0 flex-1"><v-tab value="original">原文件</v-tab><v-tab value="source">识别原文</v-tab><v-tab value="redacted">脱敏文本</v-tab><v-tab value="compare">原文与脱敏对照</v-tab></v-tabs><a :href="`/api/material-library/files/${file.id}/content`" class="link-text text-sm shrink-0 px-8 py-4">下载原文件</a></Row>
  <p v-if="mode==='original'&&file.original_name.toLowerCase().endsWith('.docx')" class="px-16 py-8 text-xs text-muted">DOCX · PDF 预览</p>
- <Row v-if="mode!=='original'" wrap y="center" :gap="12" class="px-16 py-12 border-b border-line">
+ <Row v-if="mode==='source'&&extractions.length" wrap y="center" :gap="12" class="px-16 py-8 border-b border-line">
   <v-select v-if="mode==='source'&&extractions.length" v-model="extractionSelection" :items="extractionItems" label="识别版本" hide-details class="max-w-380 w-full"/>
-  <v-select v-if="mode!=='source'&&revision.redactions.length" v-model="redactionSelection" :items="redactionItems" label="脱敏版本" hide-details class="max-w-380 w-full"/>
-
  </Row>
  <v-alert v-if="error" type="error" class="ma-16" role="alert">{{ error }}</v-alert>
  <v-alert v-if="!busy&&issueCount" type="warning" class="ma-16">识别结果包含 {{ issueCount }} 项问题，请结合原文件核对。</v-alert>

@@ -1,7 +1,7 @@
 /**
  * 职责：验证 MinerU V1/V2 内容列表到可脱敏文档结构的完整转换。
  * 主要验证：标题、段落、表格、列表、脚注顺序和文字保留；图片路径不进入正文，图注不冒充图片 OCR。
- * 使用场景：修改 `mineru-cli.ts` 的 MinerU 输出适配时运行。
+ * 验证边界：只解析合成 MinerU 响应，不请求 MinerU API/CLI；修改 `mineru-cli.ts` 时可定向回归。
  */
 import {expect,test} from 'bun:test';
 import {parseMineruDocxJson,parseMineruJson} from './mineru-cli';

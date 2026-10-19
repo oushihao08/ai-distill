@@ -1,6 +1,4 @@
-/** 工作流重置：验证清空入库至发布的管理数据但保留项目原始来源，拒绝运行中清理并在失败时恢复文件。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
- */
+/** 验证工作流重置的来源保护、活动任务拒绝、符号链接隔离和事务失败回滚；SQL 使用替身，文件只在临时目录操作。 */
 import {test,expect,afterEach} from 'bun:test';
 import {mkdtemp,mkdir,writeFile,readFile,readdir,rm,stat,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';

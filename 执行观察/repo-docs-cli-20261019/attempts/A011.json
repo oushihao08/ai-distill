@@ -1,0 +1,68 @@
+{
+  "id": "A011",
+  "item_id": "docs",
+  "stage_id": "update",
+  "previous_attempt_id": "A008",
+  "status": "succeeded",
+  "started_at": "2026-10-19T19:39:10+08:00",
+  "finished_at": "2026-10-19T19:39:10+08:00",
+  "inputs": [
+    {
+      "ref": "projects/Work法律全场景/scripts/README.md",
+      "sha256": "56f7b6c85abb0eae42fbfa12828e2029836983ab18e6a9bb0774e3d50a16cc1b"
+    },
+    {
+      "ref": "projects/Work法律全场景/scripts/harbor/README.md",
+      "sha256": "04f3add1be1c32298b0ce9d920c4af53570df192a587609cd8b2fd061da5e174"
+    },
+    {
+      "ref": "projects/Work法律全场景/scripts/siriser/README.md",
+      "sha256": "3ef92673ee61d39b6f46bbc04ab5d7347262c92b8fe76eb2c0807d52dac48a6a"
+    },
+    {
+      "ref": "projects/Work法律全场景/scripts/siriser/generate-five-piece.ts",
+      "sha256": "1a6d93648b4bc8b6b3c26598515167429df68837a31af134b279c2265228dfa2"
+    }
+  ],
+  "configuration": {
+    "scope": "只更正Work交付目录中经源码证明的说明/注释冲突，不改运行逻辑"
+  },
+  "changes_from_previous": [
+    "README区分旧契约归档生成与work_legal_v1冻结成果投影。",
+    "README明确Harbor转换失败只记pending，不阻断Siriser归档。",
+    "移除把特定192份分册数泛化为运行规则的表述。",
+    "修正generate-five-piece.ts文件头，准确区分新旧路径。"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local working tree"
+  },
+  "artifacts": [
+    {
+      "ref": "projects/Work法律全场景/scripts/README.md"
+    },
+    {
+      "ref": "projects/Work法律全场景/scripts/harbor/README.md"
+    },
+    {
+      "ref": "projects/Work法律全场景/scripts/siriser/README.md"
+    },
+    {
+      "ref": "projects/Work法律全场景/scripts/siriser/generate-five-piece.ts"
+    },
+    {
+      "ref": "audit-v2.json"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "source_cross_check",
+      "result": "与delivery.ts、work-simulation.ts、project-delivery.ts和Harbor/Siriser生成函数逐段比对；所改文本可由源码验证。"
+    },
+    {
+      "kind": "diff_check",
+      "result": "未执行测试或类型检查；最终差异检查待整仓收尾。"
+    }
+  ],
+  "error": null
+}

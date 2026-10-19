@@ -1,0 +1,44 @@
+{
+  "id": "A033",
+  "item_id": "new-project-compat",
+  "stage_id": "archive",
+  "previous_attempt_id": null,
+  "status": "succeeded",
+  "started_at": "2026-10-18T11:21:30Z",
+  "finished_at": "2026-10-18T11:23:33.088Z",
+  "inputs": [
+    {
+      "ref": "workflow 9f311b3c-cab4-4848-ac42-35c2d9ccdad2",
+      "version": "accepted question 7148748b579deff51a4f30c253f73378eba928a449785eaf2f6875a1b0fbd235"
+    }
+  ],
+  "configuration": {
+    "project_delivery": "no Work-specific delivery script; standard system archive/export"
+  },
+  "changes_from_previous": [],
+  "external_ids": {
+    "workflow_id": "9f311b3c-cab4-4848-ac42-35c2d9ccdad2",
+    "attempt_id": "0df09eaa-732c-48cb-9aa9-b90fc7bcc46b"
+  },
+  "environment": {
+    "target": "local API"
+  },
+  "artifacts": [
+    {
+      "kind": "redacted_docx",
+      "path": "assets/out/附件库/豆包高经济价值/材料库兼容验收/共享材料包新项目兼容验收题/成果/(2023)渝0104民初2679号-脱敏-7ad928bc.docx"
+    },
+    {
+      "kind": "archive_xlsx",
+      "path": "assets/out/附件库/豆包高经济价值/材料库兼容验收/共享材料包新项目兼容验收题/成果/题目归档数据.xlsx"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "archive_export",
+      "result": "HTTP 200; completed=true; DOCX and archive workbook generated; both containers validated",
+      "evidence": "POST /api/workflows/9f311b3c-cab4-4848-ac42-35c2d9ccdad2/publish; local ZIP integrity check"
+    }
+  ],
+  "error": null
+}

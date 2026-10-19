@@ -1,0 +1,92 @@
+{
+  "id": "A014",
+  "item_id": "inventory",
+  "stage_id": "audit",
+  "previous_attempt_id": "A012",
+  "status": "succeeded",
+  "started_at": "2026-10-19T11:52:08Z",
+  "finished_at": "2026-10-19T11:52:08Z",
+  "inputs": [
+    {
+      "ref": "web/src/components/README.md",
+      "sha256": "dbe762fd6f9e4029d0560d6cc14860e7834586619e5a338ba276fb967b664e8e"
+    },
+    {
+      "ref": "web/src/views/README.md",
+      "sha256": "3390ac197c2bbcbf86faadb12e905999a68ffdcc61f04002774f007b7cbcdaae"
+    },
+    {
+      "ref": "web/README.md",
+      "sha256": "496f9b5e62b2001a023a8a9a3f734aa694ff60595296118161fd7c4fd9102e55"
+    },
+    {
+      "ref": "web/src/components/ActiveWorkflowTasks.vue",
+      "sha256": "11575b1c669c2a9d2facd163726a4cb5e5cdf72a859546263dcf29ba399557d3"
+    },
+    {
+      "ref": "web/src/components/WorkerMonitor.vue",
+      "sha256": "61738aad5fab9a69e3da4c18eda7a453a6b151ad833354f76572af38082db4e8"
+    },
+    {
+      "ref": "web/src/components/LibraryUsageSummary.vue",
+      "sha256": "87ed9d07e5a469bc59fb40ed69f9c9045cedadadf8ed42c76cc2e7b595533aff"
+    },
+    {
+      "ref": "web/src/views/ProjectDetail.vue",
+      "sha256": "3d4749ef4dc7fe5b40b838e5a49351d2f0b39004a618d90d0a315f165ab5855a"
+    },
+    {
+      "ref": "web/src/views/WorkflowDetail.vue",
+      "sha256": "89c59c23877f372cd9a3a3ca074ef970868fb731cf70806f70fe8f79d49977bc"
+    },
+    {
+      "ref": "web/src/views/MaterialLibraryView.vue",
+      "sha256": "ad7f6367821de803da4610845b1898c4babca337869863843235e2ff00b7dc2b"
+    },
+    {
+      "ref": "web/src/views/ProjectGroups.vue",
+      "sha256": "c3f345631a3dadc1d4424f58328b2ad1727825958f3242b1204d95f175264818"
+    },
+    {
+      "ref": "web/src/router/index.ts",
+      "sha256": "90c2050257281235b71dd141577b58d37c741353177c4fdce8e30d0f85530ad5"
+    },
+    {
+      "ref": "web/vite.config.ts",
+      "sha256": "bd2c14bc29b48e7fd2f85200e74a2bbacb1b50639d0c3c744097a439df42439d"
+    },
+    {
+      "ref": "web/src/utils/material-folder.test.ts",
+      "sha256": "e19fbe0c4fdeb45b6d4901285af240d9a940e5a52b1cdc09294d8239dece7dda"
+    }
+  ],
+  "configuration": {
+    "scope": "Web当前页面/组件/配置和模块说明静态审阅；不运行测试、浏览器、API或服务，不改业务逻辑"
+  },
+  "changes_from_previous": [
+    "逐项核对Web页面、组件和配置的当前行为、路由/API调用及模块说明；新增当前树遗漏的ProjectGroups视图到矩阵。"
+  ],
+  "external_ids": {},
+  "environment": {
+    "target": "local working tree"
+  },
+  "artifacts": [
+    {
+      "ref": "audit-v2.json"
+    },
+    {
+      "ref": "observations/O041.json"
+    }
+  ],
+  "verification": [
+    {
+      "kind": "source_review",
+      "result": "静态源码和调用关系审阅；未运行任何测试/类型检查/服务/API/浏览器。"
+    },
+    {
+      "kind": "runtime",
+      "result": "静态源码和调用关系审阅；未运行任何测试/类型检查/服务/API/浏览器。"
+    }
+  ],
+  "error": null
+}

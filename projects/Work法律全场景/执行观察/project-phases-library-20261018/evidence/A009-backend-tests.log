@@ -1,0 +1,1338 @@
+$ bun test server
+bun test v1.3.9 (cf6cdbbb)
+
+server/intake-jobs.test.ts:
+(pass) worker stop after intake claim requeues the task before reading or saving files [0.97ms]
+
+server/app.test.ts:
+(pass) project detail batches step configs into the existing project query [9.77ms]
+(pass) workflow detail returns the frozen shared material source mode [2.78ms]
+(pass) 材料包模式上传只登记材料包，不直接建立题目 [5.92ms]
+(pass) 材料包有题目时拒绝删除，删除单题只更新本题 [1.65ms]
+(pass) 已删除来源键不能通过再次上传把隐藏工作流当作新材料包 [4.28ms]
+(pass) reject disguised non-PDF instead of publishing intake success [0.06ms]
+(pass) reject empty and oversized PDFs [12.31ms]
+(pass) redacted-only attachment text response never includes extracted source text [5.41ms]
+(pass) save multiple PDFs with unique storage names and PDF intake waiting for extraction with stable stage identities [4.36ms]
+(pass) invalid second PDF rolls back all metadata and removes first saved file [2.96ms]
+请求失败（已写入安全诊断日志；未输出数据库或材料内容）
+(pass) database failure removes unpublished file and gives a bounded error [2.77ms]
+(pass) identical request returns prior workflow without writing more files [1.87ms]
+(pass) unchanged question folder reuses its workflow across different upload requests [2.27ms]
+(pass) changed question folder keeps the workflow identity and preserves old input history [2.35ms]
+(pass) question folder key is validated and stored on the workflow [5.21ms]
+(pass) malformed ID and cross-origin mutations are rejected before DB access [2.30ms]
+(pass) project deletion removes library snapshot references before artifacts and retains archive audit events [2.50ms]
+(pass) project list returns shared-library question source without private source manifest [1.19ms]
+(pass) project deletion remains compatible before the optional library schema is installed [0.97ms]
+(pass) unscored timeout projections expose only aggregate evidence, never answer or reasoning text
+(pass) results library lists only current accepted workflows with safe summary fields [2.45ms]
+(pass) Codex settings API exposes local suggestions and rejects malformed reasoning settings [3.76ms]
+(pass) Agent model catalog follows the configured credentials directory [4.69ms]
+(pass) project Codex settings inherit system defaults and can be overridden or reset [2.74ms]
+(pass) agent step settings endpoint exposes Codex model overrides through the Agent module [2.03ms]
+(pass) Agent connection check respects the shared concurrency limit when all slots are occupied [8.11ms]
+(pass) project batch dispatch accepts the decision step and chunks all project workflows by configuration [2.93ms]
+(pass) answer generation policy GET is read-only and PUT preserves provider settings across step config updates [2.72ms]
+(pass) DOCX redaction declaration is SHA-bound and invalidates current downstream results [2.40ms]
+(pass) DOCX redaction declaration rejects stale fingerprints and non-DOCX without invalidation [3.65ms]
+
+server/workflow-view.test.ts:
+(pass) 项目列表的作答模型仅投影摘要，完整正文只在详情按需读取
+(pass) 轻量和详情投影都保留脱敏进度
+(pass) Work完整题目详情保留独立内容字段，轻量列表不发送正文
+(pass) 批量项目状态只返回活动与已出题摘要，不拉取每题尝试历史
+(pass) 项目状态可复用项目详情已经读取的状态行与出题尝试摘要 [0.72ms]
+
+server/rules.test.ts:
+(pass) 相同当前文件清单读取得到相同摘要，不创建编号版本或运行记录 [3.19ms]
+(pass) 当前文件编辑改变新任务摘要，但不改写已经冻结的历史副本 [4.50ms]
+(pass) 陈旧编辑指纹和越界路径被拒绝，不覆盖当前文件 [2.95ms]
+
+server/extracted-text.test.ts:
+(pass) extracted-text API returns the current material redacted from redacted_index [1.71ms]
+
+server/concurrency.test.ts:
+(pass) worker concurrency settings > defaults to two Agent calls and eight model API calls
+(pass) worker concurrency settings > accepts configured positive limits
+(pass) worker concurrency settings > rejects zero, non-integers, and unsafe limits [0.21ms]
+(pass) shared Agent concurrency gate > caps work across separate SQLite connections [513.48ms]
+(pass) shared Agent concurrency gate > declines a diagnostic call when all slots are occupied [4.17ms]
+(pass) shared Agent concurrency gate > stops waiting after cancellation [13.30ms]
+(pass) shared Agent concurrency gate > releases its slot when the task fails [3.67ms]
+(pass) shared Agent concurrency gate > reclaims slots left by a process that exited [4.45ms]
+(pass) shared Agent concurrency gate > rejects different limits within the same shared storage root [2.83ms]
+
+server/rule-currentness.test.ts:
+(pass) accepts a self-consistent frozen project prompt [1.42ms]
+(pass) keeps the frozen prompt valid after current skill changes (content) [0.90ms]
+(pass) keeps the frozen prompt valid after current skill changes (added_file) [1.04ms]
+(pass) keeps the frozen prompt valid after current skill changes (removed_file) [0.79ms]
+(pass) keeps the frozen prompt valid after current skill changes (path) [0.89ms]
+(pass) rejects a frozen project prompt whose stored digest is inconsistent [0.83ms]
+(pass) marks project exports and current archive state stale without rewriting attempts [0.18ms]
+(pass) adopting a different skill preserves archives and refreshes project exports [6.02ms]
+
+server/worker-pool.test.ts:
+(pass) worker pool runs up to the configured concurrency and drains on abort [0.35ms]
+(pass) worker pool waits the configured idle interval when no task is available [5.67ms]
+(pass) dispatch guard pauses new work and resumes when resources recover [2.44ms]
+(pass) abort during resource check cannot claim a new job
+(pass) worker pool preserves the configured polling interval for newly queued work [56.97ms]
+(pass) fair queue dispatch rotates after every successful task [0.26ms]
+(pass) fair queue dispatch advances even when every queue is empty
+
+server/generated-data.test.ts:
+(pass) reset deletes workflow and attachment-library exports without touching source data [6.96ms]
+(pass) a running task cannot be cleared [3.86ms]
+(pass) database failure restores staged generated files [4.65ms]
+(pass) a symlink inside workflow storage cannot delete another question data [5.55ms]
+(pass) reset removes a phased attachment-library question directory [4.58ms]
+工作流重置事务连接中断
+(pass) workflow reset rollback failures are written without raw database errors [6.29ms]
+
+server/intake.test.ts:
+(pass) removing the last current attachment leaves intake waiting without a failed attempt [0.28ms]
+
+server/db.test.ts:
+(pass) database URL is required [0.08ms]
+(pass) database configuration verifies TLS and retains channel binding
+数据库连接异常，请检查连接配置或网络；连接信息未输出。
+(pass) database query and transaction logs keep SQL values and raw errors private [1054.51ms]
+
+server/routes.test.ts:
+(pass) Work archive passes only validated external identity to the archive handler [1.56ms]
+(pass) step-eight publication has an execution route and rejects incomplete prerequisites [5.88ms]
+(pass) authored question public package can be downloaded through the artifact whitelist [2.84ms]
+(pass) health reports database availability and disables caching [3.31ms]
+(pass) monitor starts active workflow and material library reads concurrently [3.73ms]
+(pass) project group phase listing starts group and phase reads concurrently [3.37ms]
+(pass) project export listing starts project and export reads concurrently [3.04ms]
+(pass) answer generation policy reads project and config in one scoped query [2.85ms]
+(pass) project creation validates JSON and trims input before persisting [4.54ms]
+(pass) project creation records the parent and phase and reuses that parent skill path [2.79ms]
+(pass) project listing and project detail return persisted rows [2.39ms]
+(pass) project detail shares one step-state read with the question table projection [3.14ms]
+(pass) project detail starts independent workflow and step reads before project lookup resolves [2.90ms]
+(pass) changing the project skill path invalidates current archive and exports [3.68ms]
+(pass) moving a legacy period into a shared project keeps the target project skill path [2.22ms]
+(pass) export download follows the frozen skill snapshot after the live skill changes [3.39ms]
+(pass) missing record returns 404: /api/projects/11111111-1111-4111-8111-111111111111 [1.77ms]
+(pass) missing record returns 404: /api/workflows/11111111-1111-4111-8111-111111111111 [1.92ms]
+(pass) missing record returns 404: /api/materials/11111111-1111-4111-8111-111111111111/download [2.52ms]
+(pass) missing record returns 404: /api/artifacts/11111111-1111-4111-8111-111111111111/download [2.81ms]
+(pass) malformed ID never reaches database: /api/projects/x [1.71ms]
+(pass) malformed ID never reaches database: /api/workflows/x [1.45ms]
+(pass) malformed ID never reaches database: /api/materials/x/download [1.83ms]
+(pass) malformed ID never reaches database: /api/artifacts/x/download [1.66ms]
+(pass) workflow detail hides internal rule binding and extraction stages [2.04ms]
+(pass) downloads stream exact bytes and correctly encode source names [2.50ms]
+(pass) missing stored files return 404 rather than an empty success [1.81ms]
+(pass) optional redacted DOCX export is separate from workflow steps and safely downloadable [28.87ms]
+请求失败（已写入安全诊断日志；未输出数据库或材料内容）
+(pass) unexpected database failures keep internal details out of API responses [2.87ms]
+(pass) extraction API rejects missing workflow and incomplete intake [2.86ms]
+(pass) authoring route refuses to enqueue when the current redacted artifact is missing [2.04ms]
+(pass) step four is accepted by the batch route and reports unready prerequisites [0.50ms]
+(pass) single-step routes pass the stable ordinal to the shared dispatch boundary [0.35ms]
+(pass) rule binding is no longer exposed as a standalone workflow route or batch step [1.63ms]
+(pass) current rule file routes validate malformed requests before touching database [2.11ms]
+(pass) attempt status reports the persisted result and input version [0.62ms]
+(pass) synchronous extraction waits for the same queued attempt without creating another [0.32ms]
+(pass) synchronous timeout returns the attempt ID and leaves the queued job intact [0.29ms]
+(pass) invalid wait duration is rejected before enqueue: -1 [2.60ms]
+(pass) invalid wait duration is rejected before enqueue: 30001 [2.13ms]
+(pass) invalid wait duration is rejected before enqueue: NaN [1.58ms]
+(pass) invalid wait duration is rejected before enqueue: 1.5 [1.53ms]
+(pass) disconnecting a wait neither cancels nor rewrites its persisted task [2.04ms]
+(pass) attempt status view omits result SQL while default view stays full; invalid view is rejected [0.70ms]
+(pass) single-step waiting preserves every model attempt and derives completion from all responses [0.44ms]
+(pass) project batch queues each ready workflow once and isolates unready or missing records [0.54ms]
+(pass) batch endpoint rejects hidden step numbers and malformed workflow IDs [1.59ms]
+(pass) unknown endpoint is 404 and excessive request body is 413 [1.32ms]
+(pass) a 100-question redaction batch queues exactly the 99 whose previous visible step succeeded [0.99ms]
+(pass) project skill generation rejects malformed requests before dispatch and lists only live projects [1.84ms]
+(pass) 空钩子无需033迁移即可健康，其他必需迁移缺失仍报未就绪 [2.63ms]
+
+server/workflow-hook-routes.test.ts:
+(pass) 续跑只恢复已失败钩子的原尝试，不创建新的主模型任务 [0.52ms]
+(pass) 缺少有效失败标记、当前输入不匹配或主结果未知时拒绝续跑 [0.24ms]
+(pass) 未知副作用必须明确确认，已有续跑任务重复请求复用
+(pass) HTTP续跑校验参数并返回202，不以请求完成冒充模型已完成 [0.35ms]
+(pass) 异步钩子重试不重派或改写主阶段 [0.27ms]
+(pass) 流程配置局部保存仅合并workflow，不覆盖模型、提示词和作答策略 [0.33ms]
+(pass) 成功主检查点后尚未登记后置钩子也能续跑，已成功钩子不需再次确认 [0.06ms]
+
+server/logging.test.ts:
+(pass) writes ordered, correlated JSONL events and drops unapproved private fields [2.07ms]
+(pass) persists only database latency warnings with safe metadata [1.62ms]
+(pass) isolates concurrent async log contexts [1.38ms]
+(pass) keeps concurrent process writers in separate complete JSONL segments [25.55ms]
+(pass) coordinates retention cleanup across concurrent logger processes [55.97ms]
+(pass) rotates bounded JSONL files and removes only expired logger segments [2.48ms]
+(pass) 结束原因只保留白名单枚举 [0.07ms]
+(pass) query sanitizer drops fields outside the normal log contract [0.27ms]
+结构化日志写入不可用（未输出日志内容）
+(pass) marks logger degraded when its storage path cannot be written [0.76ms]
+结构化日志写入不可用（未输出日志内容）
+(pass) persists failures after the logger storage becomes writable again without a recovery event [1.55ms]
+结构化日志写入不可用（未输出日志内容）
+(pass) marks bounded queue overflow degraded and counts dropped events [0.30ms]
+(pass) does not enqueue successful or progress events before persisting failures [1.02ms]
+(pass) closing the configured logger detaches it from later application events [0.29ms]
+(pass) fatal process errors are written synchronously without suppressing the runtime exit [42.40ms]
+(pass) redaction worker records stale-attempt recovery after committing the database update [2.91ms]
+(pass) redaction heartbeat failures and recovery include the active attempt without database text [2.66ms]
+(pass) redaction failure stores a safe Codex summary while keeping the user-facing error [4.06ms]
+
+server/rule-files.test.ts:
+(pass) library-backed projects use their explicit workspace instead of deriving it from a material directory [1.41ms]
+(pass) 期次 Skill 优先；没有入口时使用主项目 Skill [1.56ms]
+(pass) 期次未单独保存 workspace_path 时从 material_root 推导本期 Skill 目录 [1.71ms]
+(pass) rule inventory covers the whole skill package and keeps metadata separate from bodies [1.65ms]
+(pass) missing or escaping skill references prevent publication [2.46ms]
+(pass) symlinked rule inputs are never followed outside the workspace [1.60ms]
+(pass) published snapshot preserves old bytes when the working materials change [4.75ms]
+(pass) snapshot verification rejects modified bytes and extra files [4.76ms]
+(pass) snapshot fingerprints remain valid after PostgreSQL JSON object key reordering [3.60ms]
+(pass) file replacement requires the visible fingerprint and cannot overwrite a newer edit [2.00ms]
+(pass) rule file read failures emit a safe file boundary event [3.02ms]
+(pass) material add/delete is explicit and cannot edit the skill or traverse directories [2.61ms]
+
+server/question-materials.test.ts:
+(pass) reads library question snapshot without consulting legacy redaction steps [0.51ms]
+(pass) reads a shared package snapshot in a legacy project without changing its project backend [0.18ms]
+(pass) reads and validates the frozen original extraction for a library question [0.29ms]
+(pass) rejects a library question without a source snapshot instead of falling back to ordinal 9 [0.13ms]
+
+server/external-call.test.ts:
+(pass) external calls preserve structured results without model usage fields [0.41ms]
+(pass) external call contexts require exactly one workflow or library job identity [0.07ms]
+
+server/attempts.test.ts:
+(pass) 轻量等待不查询结果正文，默认完整读取保持兼容
+(pass) 持续运行任务一秒后再查；剩余预算较短时只睡剩余时间 [3.21ms]
+(pass) 等待预算结束仍返回运行状态，不写入或取消任务 [20.10ms]
+(pass) 睡眠中取消立即唤醒，不再查询或改写任务
+
+server/project-groups.test.ts:
+(pass) 仅可归档没有活动期次的主项目，归档恢复不删除永久使用记录
+(pass) 期号必须为正整数，不从期名或小数推断
+(pass) 使用明确主项目ID时拒绝名称不一致，不能错误归组 [0.38ms]
+(pass) 同名已归档主项目不能新建另一身份以清除历史使用 [0.06ms]
+(pass) 归入第一期只修改期次身份，题目/步骤/尝试/附件均保持原样 [0.21ms]
+
+server/workflow-hook-worker.test.ts:
+(pass) API worker 不查询或执行本地脚本 [0.55ms]
+(pass) 旧数据库尚无钩子表时不查询新表
+(pass) 异步结果只更新钩子记录，不修改主阶段结果
+(pass) 失效主任务取消附加任务；未知副作用不自动重试 [0.51ms]
+(pass) 服务停止保留异步任务：幂等动作等待恢复，非幂等动作待核 [0.25ms]
+
+server/material-package-questions.test.ts:
+(pass) one successful material version creates two independent question snapshots without redaction work [4.66ms]
+(pass) missing successful redaction version aborts creation without material writes [0.88ms]
+
+server/step-dispatch.test.ts:
+(pass) dispatches each workflow ordinal to its matching handler [0.20ms]
+(pass) rejects an unsupported ordinal without calling a handler [0.07ms]
+
+server/workflow-hook-jobs.test.ts:
+(pass) 无钩子路径不依赖新表且主操作只执行一次 [0.26ms]
+(pass) 后置钩子失败后复用持久主结果，不重复调用模型 [0.42ms]
+(pass) 冻结输入不同不能复用主检查点
+(pass) 主检查点正文变化不能被当成原始模型输出复用 [0.78ms]
+(pass) 异步后置动作留给主结果提交事务登记，不在主操作返回前执行 [0.19ms]
+(pass) 前置附加输入保存检查点并按顺序显式传递，后置结果不覆盖主操作 [0.21ms]
+(pass) 进程中断恢复同步记录，保留成功检查点，未知主调用不重跑 [0.13ms]
+
+server/rule-loading.test.ts:
+(pass) 旧编号规则绑定明确返回410，不重新创建隐藏步骤或修改历史绑定 [0.11ms]
+
+server/task-signal.test.ts:
+(pass) database cancellation aborts in-flight work; concurrent task signals stay isolated [5.16ms]
+(pass) database cancellation polling failures are written to structured logs [13.26ms]
+(pass) a step cancellation query failure does not prevent project skill cancellation [3.72ms]
+
+server/project-folders.test.ts:
+(pass) ordinal 7 accepts a project-configured aggregation policy [0.22ms]
+(pass) 出题超时按步骤配置并限制范围，旧配置仍保持默认 [0.22ms]
+(pass) 项目评分 workflow 配置往返保留且默认钩子同步 [0.30ms]
+(pass) 项目 workflow 不接受未知契约或越界钩子路径 [0.13ms]
+(pass) 作答 workflow 与供应商配置分开校验并保留
+(pass) 作答 workflow 配置错误返回客户端错误而非服务器错误
+(pass) folder is required, absolute and readable [0.64ms]
+(pass) each direct question directory gets a stable manifest; nested PDFs stay in their question [179.40ms]
+(pass) step configuration accepts the correct provider and rejects unsupported parameters
+(pass) 评分步骤可选择 API 且仅冻结经验证的 API 连接参数
+(pass) saved Codex step settings are not blocked by a stale advertised model catalog at dispatch [0.32ms]
+(pass) registering 100 folders keeps unique workflow and stable step identities [1.79ms]
+(pass) 材料包模式登记目录为材料包，派生题目不能派发入库，材料包不能派发出题
+(pass) legacy project shared-package questions skip legacy ingest and redaction steps
+(pass) Qwen step config validates endpoint-specific model and rejects secrets [0.26ms]
+(pass) Codex settings preserve database choices independently of the local catalog
+(pass) unsaved Codex project steps inherit the system model and reasoning defaults
+(pass) project Codex defaults feed steps while an explicit step config remains highest priority [0.34ms]
+(pass) PDF model settings reject unverified model protocols
+(pass) step 5 accepts native providers without accepting arbitrary keys
+(pass) batch eligibility uses visible workflow order and ignores historical review ordinal 10
+(pass) batch eligibility and page summaries allow scoring after all model answers settle with at least one success
+(pass) publishing is ready only after the acceptance step has an accepted decision
+(pass) project batch work is split into the configured chunk size without dropping workflows
+(pass) 项目根目录的材料不被忽略，损坏PDF不能作为可解析材料同步 [12.61ms]
+(pass) library project summary exposes only authoring through publishing even before its first question [0.21ms]
+(pass) 步骤状态聚合传输后还原原rows结构并保留筛选参数 [0.09ms]
+
+server/workflow-hooks.test.ts:
+(pass) 空钩子不执行子进程且保留明确空结果 [0.40ms]
+(pass) 实际钩子仅接收白名单环境并返回附加结果 [16.12ms]
+(pass) 入口和声明依赖一起冻结，变化或符号链接拒绝执行 [13.93ms]
+(pass) 钩子错误或越权输出不改变主结果：throw new Error('PRIVATE BODY'); [11.85ms]
+(pass) 钩子错误或越权输出不改变主结果：console.log('not json'); [11.74ms]
+(pass) 钩子错误或越权输出不改变主结果：console.log(JSON.stringify({text:'改写答案'})); [11.52ms]
+(pass) 超时和取消终止实际钩子进程 [34.34ms]
+(pass) 显式前置附加输入只能用于出题和评分，作答和异步不得注入 [20.64ms]
+(pass) 受控模型动作只用冻结声明和阶段白名单，保存调用信息，不向脚本注入密钥 [21.62ms]
+(pass) 收费复核不能声明可自动恢复的幂等动作，配置中不接受URL凭据 [0.65ms]
+
+server/remote-material-operations.test.ts:
+(pass) 远程接口没有有效令牌时拒绝请求，且不查询数据库 [1.18ms]
+(pass) 本机模式不注册远程材料接口 [0.16ms]
+(pass) 重复请求标识复用已存在操作，不再派发新任务 [0.23ms]
+(pass) 入库完成后组合操作转入脱敏，未直接标为成功 [1.55ms]
+(pass) 材料版本变化时终止操作，不派发入库或脱敏 [0.12ms]
+(pass) 脱敏步骤失效后旧操作不能提供文件清单 [0.64ms]
+(pass) 远程脱敏不能把本机完成的脱敏标为自己的结果 [0.25ms]
+(pass) 远程下载只返回当前成功操作的校验文件 [1.45ms]
+
+server/publishing/jobs.test.ts:
+(pass) 期次显示名变化后仍从已登记的归档目录读取原ZIP，不重建或改写旧成果 [4.91ms]
+(pass) archive records the accepted version in the database without creating a published file [3.53ms]
+(pass) archive provenance freezes project, library source version and redacted attachment identity [1.96ms]
+(pass) withdrawing archive clears only current publication and preserves the succeeded attempt [1.71ms]
+(pass) re-archiving after withdrawal restores current state and appends a new archive event [1.94ms]
+(pass) publication history remains readable after its workflow has been removed [0.09ms]
+(pass) archive blocks changed_answer without marking success [1.28ms]
+(pass) archive blocks changed_threshold without marking success [1.15ms]
+(pass) archive blocks changed_file without marking success [1.37ms]
+(pass) archive blocks changed_material without marking success [1.51ms]
+(pass) archive refuses historical attempts without a frozen project skill fingerprint [1.12ms]
+(pass) identical publication is reused instead of overwriting files or creating attempts [1.71ms]
+(pass) changed current skill does not invalidate an archive bound to its frozen snapshot [1.53ms]
+(pass) archives database-backed authored content without requiring a local copy [2.87ms]
+(pass) 归档新格式负分与独立否决结果，完整规则绑定仍有效 [1.89ms]
+
+server/reporting/xlsx.test.ts:
+(pass) 新项目工作簿保留计分规则、业务字段和原始分，明确标注模型指标 [121.86ms]
+(pass) writes a real workbook with safe inline text, split long cells and unique sheet names [513.62ms]
+(pass) rejects empty workbook and invalid dimensions
+(pass) keeps one question per main row and maps different attachment sets to local paths [211.44ms]
+
+server/reporting/export.test.ts:
+(pass) collects current question package and acceptance-linked model scores without loading answer bodies [4.07ms]
+(pass) 新项目导出收集保留模型原始分、独立否决和比较指标 [2.11ms]
+(pass) exports only accepted questions without requiring the separate archive step [4.69ms]
+(pass) changed current skill does not block export of a question bound to its frozen snapshot [2.37ms]
+(pass) export refuses historical accepted questions without a frozen skill fingerprint [1.54ms]
+(pass) maps the selected redaction to its generated DOCX instead of original attachments [1.58ms]
+(pass) missing current redacted DOCX blocks export instead of falling back to source files [2.45ms]
+(pass) partial per-material DOCX set blocks export [1.99ms]
+(pass) holds the project export lock inside a transaction and commits after export work [0.35ms]
+(pass) rolls back and does not run export work when another project operation owns the lock
+
+server/materials/continuation.test.ts:
+(pass) configured output budget accepts partial response with explicit issue [0.45ms]
+(pass) single page error does not stop later pages or pretend missing text exists [754.97ms]
+(pass) OCR-only processing persists its structured extraction and retains issues without entity calls [3.14ms]
+
+server/materials/redaction-structure.test.ts:
+(pass) 大题预算字段计数与结构化脱敏实际目标一致 [0.17ms]
+(pass) 精确编号匹配不扩大到删除标点后相同的其他编号或小数 [4.46ms]
+(pass) 模型未给编号遮盖子串时仍按默认首2末2规则生成遮罩 [0.35ms]
+(pass) 编号遮罩由程序执行首2末2规则，模型整段或局部遮罩都不能覆盖该规则 [0.54ms]
+(pass) 没有精确编号时禁止通过删除横线匹配另一个数字 [1.99ms]
+(pass) OCR已遮罩编号的星号转义可以定位，仍按原文位置遮盖且保留数字标点 [0.69ms]
+(pass) 汉字姓名中夹入OCR反斜线和波浪号时可定位，数字标点仍保持区别 [0.47ms]
+(pass) 金额不得脱敏时程序保留原金额，不因模型误标失败 [0.24ms]
+(pass) 固定格式过滤清除扫描水印并保留剩余主体脱敏 [0.10ms]
+(pass) 固定过滤编号前缀扫描水印并保留正文日期
+(pass) 金额日期误标敏感类别仍原样保留，重复垃圾逐处清除 [0.24ms]
+(pass) 金额由程序只遮数字，模型整段遮罩或省略遮罩都不能吞掉币种单位 [0.42ms]
+(pass) 主体名称整段遮罩仍保留明确的组织形式与法院通称 [0.35ms]
+(pass) 重复商户统一映射保留明确行业通称，混合姓名不被整段组织遮罩覆盖 [0.62ms]
+(pass) 已遮罩编号仅含星号和标点时仍可按原文字面定位，不接受不存在的遮罩 [0.40ms]
+(pass) project prompt rules cannot override the structured mapping contract [0.12ms]
+(pass) no sensitive mapping preserves every source character exactly [0.10ms]
+(pass) a literal mapping replaces only the identified source fragment [0.26ms]
+(pass) the program creates the name mask instead of accepting a model-authored replacement [0.18ms]
+(pass) repeated exact sensitive values are replaced consistently without anchor guessing [0.16ms]
+(pass) unlocatable sources fail but repeated and overlapping masks are merged [0.43ms]
+(pass) a source span with punctuation or spacing differences still maps to the original characters [0.16ms]
+(pass) incomplete and malformed fields fail with safe field diagnostics [0.30ms]
+(pass) fields split across API batches are merged by target id without losing later mappings [2.12ms]
+(pass) structured API batches combine adjacent pages and preserve their original page ownership [0.23ms]
+(pass) an incomplete oversized batch is split immediately without restarting completed fields [2.49ms]
+(pass) a failed split keeps its completed half for the next attempt [9.83ms]
+(pass) a long single target is sent intact in its own batch [0.94ms]
+(pass) a retry resumes from validated private batch checkpoints [6.77ms]
+(pass) a corrupt checkpoint is rejected before another model call [5.74ms]
+(pass) program preserves phone prefix and suffix without relying on a unique model mask [0.49ms]
+(pass) flat output tolerates fences, duplicate fields and optional mapping metadata [0.27ms]
+(pass) same block ids on different pages retain source page ownership [0.24ms]
+(pass) Agent execution uses the same flat field contract and reconstructs source metadata [1.01ms]
+(pass) Agent脱敏输出schema满足严格结构化输出约束 [1.51ms]
+
+server/materials/redacted-docx-export.test.ts:
+(pass) manual export writes one DOCX artifact without touching workflow state or attempts [15.15ms]
+(pass) new phase exports use project, phase, and question directory levels [8.36ms]
+(pass) attachment library path contract accepts legacy and project-phase-question paths only [0.04ms]
+(pass) export accepts identical attachment fingerprints returned in a different database order [241.73ms]
+(pass) incomplete workflow rejects export before writing any file or artifact [1.99ms]
+(pass) active workflow attempt rejects export before writing any file or artifact [0.87ms]
+(pass) stale material digest rejects export without changing workflow state [0.91ms]
+(pass) unsafe source key cannot escape the id-based attachment library folder [6.88ms]
+(pass) artifact-index failure removes the staged DOCX and leaves workflow state untouched [6.00ms]
+(pass) mismatched per-material redaction index rejects the entire export [0.67ms]
+(pass) structured index drives DOCX rendering and manifest binds source structure and file digest [121.38ms]
+(pass) corrupt structured index fails closed before copying or exporting materials [1.39ms]
+(pass) library completion gate uses only applicable stages before material validation (incomplete=%s) [0.31ms]
+(pass) library completion gate uses only applicable stages before material validation (incomplete=%s) [0.09ms]
+(pass) legacy project library-package question uses the library completion gate [0.12ms]
+
+server/materials/redacted-docx.test.ts:
+(pass) DOCX uses only supplied redacted text and preserves attachment/page structure and tables [5.71ms]
+(pass) DOCX rejects an empty redacted source
+(pass) structured DOCX keeps exact text in headings, lists, tables and footnotes without image content [4.20ms]
+
+server/materials/document.test.ts:
+(pass) PDF extraction requires an explicit provider instead of falling back to GLM OCR [1.03ms]
+(pass) local text documents expose a structure whose projection retains source whitespace exactly [0.08ms]
+
+server/materials/speed-quality.test.ts:
+(pass) two PDF jobs share three OCR slots and retain page order [51.88ms]
+(pass) truncated response retries at high effort, records attempts and returns complete text [252.56ms]
+(pass) failed page retries twice, marks incomplete, then continues later pages [753.46ms]
+
+server/materials/materials.test.ts:
+(pass) redaction settings compare effective defaults rather than JSON key order [0.25ms]
+(pass) redaction validation rejects structural errors with a stable reason code for fields_missing [1.17ms]
+(pass) redaction validation rejects structural errors with a stable reason code for target_coverage_mismatch [0.55ms]
+(pass) API redaction batches pages and keeps empty pages in the exact output sequence [1.06ms]
+(pass) API redaction retries one structurally incomplete batch and accounts for both calls [0.64ms]
+(pass) JSON prompt is sent verbatim and partial masks contain no subject placeholders [0.43ms]
+(pass) recognition passes configured reasoning effort rather than provider default [0.08ms]
+(pass) OCR max effort is configured independently of entity checks [0.29ms]
+(pass) consistent cross-page replacement preserves dates, money and case numbers [0.07ms]
+(pass) replace overlapping entities without interpreting regex characters
+(pass) provider rejects truncated OCR and does not expose service error body [0.22ms]
+(pass) entity response cannot invent source strings [0.16ms]
+(pass) entity requests use JSON mode and parse the declared object contract [0.06ms]
+(pass) already masked source-backed values are not redacted again [0.15ms]
+(pass) invalid entity objects still fail closed: {"entities":["无原文**"]} [0.10ms]
+(pass) invalid entity objects still fail closed: {"entities":["张"]} [0.11ms]
+(pass) invalid entity objects still fail closed: {"entities":[123]}
+(pass) legacy arrays inside whitespace-surrounded JSON fences remain readable
+(pass) invalid entity output gets one bounded retry against the same source
+(pass) text pages retain PDF page numbers without calling OCR [0.71ms]
+(pass) encrypted marker and page counts above 500 do not preempt readable text [0.66ms]
+(pass) PDF extraction stores source text only in the private page artifact [1.24ms]
+(pass) PDF extraction leaves entity checks to the separate redaction step [1.10ms]
+(pass) image page uses OCR even with a substantial text layer [0.54ms]
+(pass) PDF extraction resumes from private per-page checkpoints after an OCR interruption [757.12ms]
+(pass) command failure never includes subprocess stderr in error [5.09ms]
+(pass) invalid page count fails early: Pages: 0 [0.09ms]
+(pass) invalid page count fails early: Pages: missing
+(pass) invalid page count fails early: No page metadata
+(pass) provider validates credentials, empty output and entity JSON [0.49ms]
+(pass) invalid JSON configuration fails without fallback to another prompt [0.80ms]
+(pass) fingerprint mismatch clears unpublished files before calling extraction [1.20ms]
+(pass) unchanged PDF reuses private page extraction while a changed attachment is parsed [2.07ms]
+(pass) missing or corrupted extraction cache triggers fresh parsing rather than false reuse [1.07ms]
+(pass) legacy text-only extraction cache is rejected for a structured extraction attempt [1.25ms]
+(pass) new extraction artifacts persist a structured text projection with exact source content [1.08ms]
+(pass) extraction preserves raw page text and defers masking to redaction [1.03ms]
+(pass) extraction does not run entity correction passes [0.98ms]
+(pass) entity validation errors are not part of the extraction step [1.00ms]
+(pass) Zhipu OCR and entity requests allow thirty minutes and report that limit safely [0.16ms]
+(pass) entity retry receives the rejected output as data and must return source-backed replacements [0.33ms]
+(pass) single-character entity retry explains the unsafe replacement granularity [0.14ms]
+
+server/materials/jobs.test.ts:
+(pass) new extraction defaults to MinerU and rejects GLM OCR [0.08ms]
+(pass) MinerU API success does not call CLI fallback
+(pass) MinerU API failure falls back to CLI and preserves CLI provider identity [0.33ms]
+(pass) MinerU API cancellation does not start CLI fallback [0.04ms]
+(pass) DOCX creates an extraction attempt with its own converter version [0.21ms]
+(pass) queue serializes workflows and reuses pending attempt [0.07ms]
+(pass) queue records attempt and rejects missing upstream success [0.09ms]
+(pass) queue locks the workflow and only reuses attempts for the current attachment set [0.05ms]
+(pass) idle executor does not call material processor [0.98ms]
+(pass) pre-stopped worker does not claim an extraction attempt [0.27ms]
+(pass) worker stop prevents late extraction publication and requeues the claimed attempt [0.38ms]
+(pass) executor publishes %s blocked result atomically [0.19ms]
+(pass) executor publishes %s blocked result atomically
+(pass) processor failure records a bounded error and never publishes success [0.83ms]
+(pass) failed transaction rolls back before recording attempt failure [0.87ms]
+(pass) late result from invalidated attempt cannot overwrite replacement attempt [0.25ms]
+(pass) executor checks current attachments against the claimed snapshot [0.09ms]
+(pass) executor caches MinerU independently of legacy entity-check settings [0.14ms]
+(pass) rolled-back publication removes only unpublished attempt files [0.97ms]
+(pass) uncertain commit retains files already referenced by artifacts [1.09ms]
+(pass) MinerU does not fall back for MinerU API 上传地址申请返回HTTP 401 [0.27ms]
+(pass) MinerU does not fall back for MinerU API content_list.json无效
+(pass) MinerU does not fall back for 未配置 MINERU_KEY
+
+server/materials/redaction-jobs.test.ts:
+(pass) 派发锁争用回滚并退回轮询，不领取任务或永久占住消费者 [0.15ms]
+(pass) declared DOCX publishes full index without model or agent call [1.58ms]
+(pass) mixed package calls the model only for undeclared material and keeps both in the index [5.14ms]
+(pass) 整题时限计入原文加载，预算耗尽后不再开始收费请求 [0.38ms]
+(pass) 心跳查询有独立时限并在收尾前结束 [6.81ms]
+(pass) 执行期间规则改变，附件未变也拒绝发布旧配置结果 [5.12ms]
+(pass) API队列保存完整进度和真实模型配置 [3.91ms]
+(pass) 低并发大包按结构化字段总量扩展任务预算 [205.99ms]
+(pass) API超时失败保存原因和已完成进度，不发布附件 [16.60ms]
+(pass) 索引写入失败时清理已写正文，不留下貌似完成的文件 [5.50ms]
+(pass) 执行期间附件变更，晚到结果不提交成功 [3.68ms]
+
+server/materials/remote-routing.test.ts:
+(pass) 本机材料 worker 仅查询 local 任务
+(pass) 服务器材料 worker 仅查询 server 任务
+
+server/materials/redaction-execution.test.ts:
+(pass) 脱敏统一默认是DeepSeek V4.1 Flash并关闭思考
+(pass) 显式模型和思考配置不被默认值覆盖
+(pass) 预算拒绝无界并发、非法时限及未知字段
+(pass) 大批量脱敏按已观测处理速率扩展整题时限并封顶三倍
+
+server/materials/materials-cache.test.ts:
+(pass) material processing reuses verified healthy extraction and extracts a missing source [1.52ms]
+(pass) flagged OCR cache is rechecked once without altering the source or historical cache [1.18ms]
+(pass) redaction input digest survives JSONB field ordering and still binds exact source artifacts [0.03ms]
+(pass) legacy digest stays stable for default mode and changes for declared DOCX [0.02ms]
+(pass) DOCX extraction writes one structured private page without treating it as PDF [0.77ms]
+
+server/materials/redaction-performance.test.ts:
+(pass) 脱敏默认路由只约束指定Flash模型，显式路由和其他模型保留 [0.08ms]
+(pass) API使用完整字段字典Schema，返回字典仍按原文字段校验和生成遮罩 [0.42ms]
+(pass) 表格发送原行上下文一次，各单元格绑定行列且不假造表头 [0.62ms]
+(pass) 长表格正文不会因上下文重复原文而超预算，目标文本始终完整 [1.55ms]
+(pass) 墙钟已超过整题期限时拒绝晚到响应，即使单调计时尚未超时 [0.10ms]
+(pass) 暂停后单次请求已过期，即使整题未超时也不接受晚到响应 [0.31ms]
+(pass) 失败请求的排队耗时计入进度，不误算为全部模型执行耗时 [17.09ms]
+(pass) 同页重复字段ID在调用模型前拒绝，避免断点与写回覆盖 [0.17ms]
+(pass) 预算允许时合并超过32个短字段，同时保留输出容量余量 [6.04ms]
+(pass) 原文字符和字段数仍能装下时，不因输出估算拆批 [3.02ms]
+(pass) 硅基流动脱敏请求关闭思考，单次请求超过60秒即超时 [0.17ms]
+(pass) 请求使用有界输出上限，估算不能充当实际输出容量 [0.12ms]
+(pass) 明确输出截断立即缩批，避免原样重复收费请求 [0.12ms]
+(pass) 不完整响应缺少finish reason时也直接缩批 [0.30ms]
+(pass) 单字段修复可直接返回映射，程序绑定唯一字段且仍校验原文 [0.38ms]
+(pass) 有界并发完成一个立即补一个，乱序返回不改变字段顺序 [26.49ms]
+(pass) 默认脱敏并发使用全局API的8路上限并在批次完成后补位 [23.47ms]
+(pass) 一个字段遗漏时只补该字段，已校验字段不重发 [0.58ms]
+(pass) 单字段补做仍缺失时保留其他字段进度并拒绝整份结果 [4.87ms]
+(pass) 大批补做剩少量字段仍错位时单独隔离修复，继续复用已通过字段 [0.48ms]
+(pass) 剩余5至8个错误字段也能缩批修复，共享原批次请求上限 [0.43ms]
+(pass) 全量收束后少量定位失败只做一次单字段末轮修复，仍计入整题预算 [0.59ms]
+(pass) 末轮定位仍失败不能发布，也不能突破整题请求预算 [0.71ms]
+(pass) 失败请求记录实际耗时和调用历史 [16.88ms]
+(pass) 字段校验失败保留真正失败调用ID，不被并发取消的最后调用覆盖 [31.95ms]
+(pass) 不响应取消的调用替身也会在请求时限内结束且不重试 [22.02ms]
+(pass) 单批请求超时后继续其他批次并保留它们的断点，整题仍明确失败 [88.73ms]
+(pass) 认证或配额类全局错误立即停止派发后续批次 [0.58ms]
+(pass) 局部失败不会丢失唯一并发位置，后续批次仍全部进入断点 [0.29ms]
+(pass) 多字段请求真实到期后缩批补做，不原样再等一次 [26.30ms]
+(pass) 超时缩批中一半失败，另一半仍完成且整题不假成功 [64.00ms]
+(pass) 取消后不再发新请求，迟到结果不增加完成字段 [0.36ms]
+(pass) 并发保存后的断点包含所有完成字段，恢复不重复调用 [10.47ms]
+(pass) 批次修复和拆分共同受整题请求预算限制 [1.20ms]
+(pass) 输出预算过小在调用前拒绝，不能靠截断输入运行 [0.20ms]
+(pass) 单字段输出估算偏大但完整原文仍在输入预算内时尝试一次并校验完整结果 [0.24ms]
+(pass) 单字段响应在输出上限内仍缺失时有限补做并拒绝发布 [0.52ms]
+(pass) 整题时限包含所有请求，达到时限不继续补位 [0.25ms]
+(pass) 长时间无新增完成字段时结束等待，不把心跳当进度 [20.85ms]
+(pass) 中断后只恢复已落盘字段之外的内容 [7.46ms]
+(pass) 有界并行在相同接口延迟下减少成功完成耗时 [214.50ms]
+(pass) 同一份断点只允许一个活动写入者，避免跨尝试覆盖 [6.18ms]
+
+server/material-library/uses.test.ts:
+(pass) 相同原件的改名、改序和重复附加不能得到新材料身份 [0.07ms]
+(pass) 第五期已用，后续第六期不能加载；已退回使用中也不能释放 [0.29ms]
+(pass) 同一期相同包重放返回原使用账，复制包不能重复占用
+(pass) 尚未迁库的旧期原件同样阻止新期加载
+(pass) 旧期同源原件被发现时登记到旧期，保持题目独立并保存来源证据 [0.32ms]
+(pass) 另一个主项目独立首次加载，同时保存不依赖题目的使用事件
+(pass) 不得把归档或空证据直接当作外部已提交，退回必须说明原因 [0.20ms]
+(pass) 已提交材料不能直接新建题，串期使用账被拒绝 [0.08ms]
+(pass) 本期使用记录摘要不读取或返回全部历史事件 [0.08ms]
+
+server/material-library/service.test.ts:
+(pass) package detail returns revision rows instead of driver result metadata [0.09ms]
+(pass) validates package metadata and preserves stable unique tags
+(pass) library manifest digest binds order, filename, redaction mode and source bytes [0.28ms]
+(pass) processing settings preserve amounts and dates and reject embedded credentials [0.17ms]
+(pass) restores a soft-archived package with an optimistic version check [0.28ms]
+(pass) package usage exposes every linked project and archived or withdrawn question event [0.22ms]
+(pass) package usage marks a prior source superseded when the latest archive uses another package or version
+(pass) revision detail exposes usable redaction ids so projects can select the exact frozen standard-material set [0.14ms]
+
+server/material-library/questions.test.ts:
+(pass) validates library question fields and project-owned tags [0.26ms]
+(pass) request digest binds question content, package link and redaction but not expected lock version [0.06ms]
+(pass) library questions create only visible workflow ordinals 4 through 8
+(pass) private redaction index remaps every file reference without changing source text
+(pass) creates a private question from a usable redaction while retaining OCR warnings [4.91ms]
+(pass) creates a private question from extracted original without requiring redaction [2.35ms]
+
+server/material-library/projects-routes.test.ts:
+(pass) 候选材料支持服务端搜索分页，并只查询当前页的使用状态 [0.88ms]
+(pass) 材料候选目录与本期身份并行读取，避免多等一次数据库往返 [1.34ms]
+(pass) 本期材料可选读取已移除的原加载关系以供恢复 [0.08ms]
+(pass) 使用事件按记录读取且拒绝跨期/不存在的使用记录 [0.49ms]
+
+server/material-library/legacy-import.test.ts:
+(pass) 历史导入保留全部页序、空页和OCR issues，不虚构脱敏结果 [0.20ms]
+(pass) 拒绝旧原件摘要、内容摘要或页序不一致 [0.13ms]
+(pass) 结构正文不一致时不导入；没有成功提取产物时保持待识别
+(pass) 同原件历史导入沿用原期规范使用账和加载，不重复占用且保留版本映射 [0.42ms]
+
+server/material-library/jobs.test.ts:
+(pass) redaction retains OCR warnings without treating them as redaction content loss [0.13ms]
+(pass) redaction preflight rejects empty files but permits blank pages alongside body text
+(pass) complete issue-free extraction is eligible and retains the original documents [0.07ms]
+(pass) new extraction task freezes provider selection before worker execution [1.76ms]
+(pass) requires an explicit successful extraction reference for redaction requests [0.04ms]
+(pass) selects existing provider lanes from frozen files and settings [0.01ms]
+(pass) detects queued and lease-expired work only in the requested executor lane [0.07ms]
+(pass) skips library job claims when the optional queue schema is absent [0.13ms]
+(pass) running cancellation is persisted as cancelled rather than failed [0.22ms]
+(pass) expired leases become failed attempts and are never put back into running or queued state [0.09ms]
+(pass) late completion after cancel or lease loss cannot publish output [0.18ms]
+
+server/material-library/projects.test.ts:
+(pass) rejects loading without completed redaction and does not insert a project reference [0.66ms]
+(pass) selects only a usable redaction from the requested package [0.07ms]
+(pass) allows an existing legacy project to load a usable shared package [0.10ms]
+(pass) reads loaded packages for legacy projects without filtering by project backend
+(pass) updates selection with lock version and removes only the project relation [0.43ms]
+(pass) rejects a requested redaction that has no successful usable result
+(pass) 旧期尚未迁库时409仍提交历史占用索引，不生成新期加载关系 [0.26ms]
+
+server/material-library/storage.test.ts:
+(pass) installs content-addressed blobs once and verifies reused bytes [2.71ms]
+(pass) normalizes a filename without permitting traversal or control characters [0.06ms]
+
+server/material-library/preview.test.ts:
+(pass) document summary omits body; single-file preview verifies structure and text digests [0.30ms]
+(pass) redaction preview rejects changed content and hides storage identity [0.21ms]
+(pass) wrong or absent object identity cannot expose arbitrary blobs [0.10ms]
+
+server/codex/system-config.test.ts:
+(pass) Codex model dropdown options come from the selected local model catalog [0.55ms]
+(pass) Codex settings validate structure without enforcing the local suggestion catalog
+(pass) project Codex config overrides the system defaults without dropping step-specific fields
+(pass) saved global model and reasoning settings are returned unchanged [0.22ms]
+(pass) saving system Codex defaults persists model and effort while path-only updates preserve them [0.04ms]
+(pass) project Codex defaults override system settings and can return to inheritance [0.12ms]
+
+server/codex/client.test.ts:
+(pass) Codex status recognizes the existing ChatGPT login without exposing auth content [1004.86ms]
+(pass) Codex refuses an API-key login instead of silently using API billing [407.74ms]
+(pass) Codex run records events and validates a real result file under a named restrictive profile [341.57ms]
+(pass) Codex developer instruction is passed separately from the task prompt [353.93ms]
+(pass) Codex total deadline also covers the login preflight [43.04ms]
+(pass) Codex stops and fails when the event stream exceeds its memory bound [1077.56ms]
+(pass) Codex cannot publish success for missing [409.85ms]
+(pass) Codex cannot publish success for malformed [401.86ms]
+(pass) Codex cannot publish success for incomplete [401.66ms]
+(pass) Codex cannot publish success for exit_failure [401.22ms]
+(pass) Codex timeout stops its own process and records failure rather than completion [3005.90ms]
+(pass) already cancelled Codex work never starts a model invocation [1.13ms]
+(pass) Codex result validation failure records a safe terminal call failure [343.97ms]
+(pass) Codex errors preserve a safe call id and failure reason for the owning workflow [341.79ms]
+(pass) Codex workspace preparation failure records a safe terminal call failure [325.87ms]
+(pass) Codex preserves configured transport proxy without forwarding provider or database keys [349.18ms]
+(pass) transient reconnect events do not override a completed validated Codex result [401.61ms]
+(pass) fresh authoring uses the project cwd and writes a dedicated result without restricting desktop tools [400.86ms]
+(pass) fresh authoring does not accept the last chat reply as the result file [334.75ms]
+(pass) nonzero Codex exit records a safe call failure after the process closes [345.56ms]
+(pass) fresh authoring rejects unsafe dedicated result file_malformed [527.88ms]
+(pass) fresh authoring rejects unsafe dedicated result file_large [407.70ms]
+(pass) fresh authoring rejects unsafe dedicated result file_symlink [406.55ms]
+(pass) parallel authoring attempts share project cwd but never output files or sessions [338.48ms]
+(pass) fresh authoring timeout preserves the project directory and its inputs [3004.01ms]
+
+server/agent/processes.test.ts:
+(pass) registered Agent process IDs are unique and removed on exit
+
+server/agent/runner.test.ts:
+(pass) runAgent > fresh authoring preserves execution settings without overriding native developer instructions [0.32ms]
+(pass) runAgent > independent scoring never inherits the fresh authoring execution profile [0.06ms]
+(pass) runAgent > 把本次任务和显式 Codex 配置交给后端适配器
+(pass) runAgent > allows the module default backend to change without changing task callers
+
+server/decisions/jobs.test.ts:
+(pass) 新达标装配使用完整规则绑定和模型指标，保持原始分独立 [0.18ms]
+(pass) acceptance assembly matches latest question, answer and rubric versions
+(pass) acceptance history freezes the answer and score attempt IDs for every selected model [0.10ms]
+(pass) a score from a different rubric cannot match current answer version [0.13ms]
+(pass) failed or missing author attempts cannot be current
+(pass) acceptance snapshot filters the current model set and keys answers by stable model ID [0.18ms]
+(pass) accepted source fingerprint changes when the actual question or answer changes, not with JSONB key order [0.20ms]
+
+server/decisions/acceptance.test.ts:
+(pass) 新评分仅比较模型明确给出的指标，不由负原始分或否决改算 [0.14ms]
+(pass) each required model must be strictly below its percentage cap, without averaging
+(pass) missing configuration or model results wait explicitly [0.12ms]
+(pass) different rubric lengths use the same percentage threshold and equality fails [0.06ms]
+(pass) comparison is not rounded to the displayed two decimals [0.02ms]
+(pass) configured mean uses every required model and accepts equality without rounding [0.03ms]
+(pass) missing or invalid maxima and out-of-range scores cannot pass as low scores [0.13ms]
+(pass) stale questions and incomplete answers do not pass [0.03ms]
+
+server/decisions/config.test.ts:
+(pass) acceptance config requires explicit model set and each model threshold [0.22ms]
+(pass) project acceptance policy validates an explicit aggregation strategy without duplicating model identity [0.07ms]
+
+server/skill-generation/adopt.test.ts:
+(pass) adoption installs the checked candidate at the stable project path and retains the candidate [5.22ms]
+(pass) adoption installs a period override without changing the shared project pointer [3.90ms]
+(pass) adopting the same candidate is idempotent [6.26ms]
+(pass) unsafe or stale candidate cannot change project pointer: blocking [2.62ms]
+(pass) unsafe or stale candidate cannot change project pointer: legacy [2.14ms]
+(pass) unsafe or stale candidate cannot change project pointer: tampered [2.33ms]
+(pass) unsafe or stale candidate cannot change project pointer: changed-source [2.65ms]
+(pass) unsafe or stale candidate cannot change project pointer: wrong-project [2.10ms]
+
+server/skill-generation/generate.test.ts:
+(pass) generation uses fixed template/material inputs and preserves assets without modifying originals [7.35ms]
+(pass) unresolved semantic rules and missing references cannot be marked publishable [5.68ms]
+(pass) unsafe generated path is rejected: ../escape.md [3.43ms]
+(pass) unsafe generated path is rejected: /absolute.md [3.52ms]
+(pass) unsafe generated path is rejected: references/../../escape.md [3.85ms]
+(pass) unsafe generated path is rejected: references\escape.md [3.16ms]
+(pass) unsafe generated path is rejected: references/%2e%2e/x.md [3.18ms]
+(pass) input changes during generation prevent candidate acceptance [4.21ms]
+(pass) template symlinks cannot copy private files [1.63ms]
+(pass) tampered fixed inputs are detected even when original materials remain unchanged [3.40ms]
+(pass) pre-cancelled generation never calls Codex [1.13ms]
+(pass) SKILL entry must be actually generated instead of silently copying a stale template [3.36ms]
+(pass) external eligibility uncertainty is retained without blocking authorized internal skill use [5.37ms]
+
+server/skill-generation/jobs.test.ts:
+(pass) project generation freezes input and reuses the same source/config attempt [3.48ms]
+(pass) changed config cannot replace an active project generation [2.76ms]
+(pass) worker uses immutable snapshot and saves generated result [3.49ms]
+(pass) changed original rules stop model dispatch [3.48ms]
+(pass) deleted project cannot publish late generation result [2.98ms]
+(pass) idle or cancelled worker cannot invoke generation [0.85ms]
+
+server/authoring/executor.test.ts:
+(pass) 上传附件没有目录清单时，索引和真实渲染器使用附件原文件名 [19.53ms]
+(pass) 新契约出题执行、实际渲染脚本与返回题包保留扣分规则 [18.69ms]
+(pass) ordinary authoring cannot silently accept a historical feedback package [0.31ms]
+(pass) Work 法律全场景缺少 model_report_v1 时不启动出题模型 [0.23ms]
+(pass) Work 出题提示允许缺省登记身份但专业映射仍必填 [2.11ms]
+(pass) ordinary authoring rejects missing Markdown without changing the result [2.07ms]
+(pass) ordinary authoring rejects mismatch Markdown without changing the result [2.08ms]
+(pass) ordinary authoring rejects symlink Markdown without changing the result [2.02ms]
+(pass) ordinary authoring delivery renderer works in an actual local process [17.86ms]
+(pass) authoring writes a private complete draft and public package omits private answers [3.19ms]
+(pass) ordinary authoring removes temporary attachment text after execution fails [2.28ms]
+(pass) invalid draft is rejected before authoring completes [2.06ms]
+(pass) unsupported answer capabilities fail the authoring step [1.83ms]
+(pass) ordinary authoring schema only allows capabilities supported by the answer runner [2.47ms]
+(pass) project task inputs preserve skill files and put task instructions before skill and attachment paths [3.27ms]
+(pass) library question accepts relative source manifest paths used only as display metadata [2.65ms]
+(pass) ordinary authoring cannot include unrelated project materials as task inputs [0.26ms]
+(pass) Work交付说明冻结附件映射名称，作者不依赖不存在的模板 [2.15ms]
+
+server/authoring/validate.test.ts:
+(pass) 新出题契约保留完整扣分否决规则和业务元数据 [0.17ms]
+(pass) Work 出题保留专业映射且外部登记身份可缺省 [0.31ms]
+(pass) 新出题契约仍拒绝缺规则、重复编号及非法业务元数据 [0.08ms]
+(pass) complete draft keeps reference private and strips model selected versions [0.02ms]
+(pass) missing or foreign attachments and duplicated rubric IDs are rejected [0.04ms]
+(pass) empty full reference and invalid score cannot become a valid draft [0.02ms]
+(pass) unsupported delivery requirements are rejected before publication [0.03ms]
+
+server/authoring/jobs.test.ts:
+(pass) JSONB重排library material_origin字段后出题输入指纹保持一致 [0.15ms]
+(pass) 上传材料原文件名从数据库传入作者并用于公开题包表头 [5.41ms]
+(pass) fresh author enqueue freezes step settings without querying question or score history [1.38ms]
+(pass) fresh author enqueue freezes project settings without querying question or score history [1.08ms]
+(pass) fresh author enqueue freezes system settings without querying question or score history [0.91ms]
+(pass) active attempts are reused while terminal reauthoring creates a new attempt [1.69ms]
+(pass) 出题失败 result_missing 保存安全原因码和明确说明 [2.49ms]
+(pass) 出题失败 result_validation_failed 保存安全原因码和明确说明 [1.42ms]
+(pass) 出题失败 codex_timeout 保存安全原因码和明确说明 [1.34ms]
+(pass) 出题任务冻结项目级超时并传入作者执行器 [2.00ms]
+(pass) fresh author worker preserves current bindings and rejects late none changes [2.77ms]
+(pass) fresh author worker preserves current bindings and rejects late attachments changes [1.54ms]
+(pass) fresh author worker preserves current bindings and rejects late title changes [1.38ms]
+(pass) fresh author worker preserves current bindings and rejects late skill changes [1.53ms]
+(pass) old ordinary queued inputs never dispatch even with feedback=%s [0.99ms]
+(pass) old ordinary queued inputs never dispatch even with feedback=%s [1.00ms]
+(pass) project identity participates in author input digest without changing legacy digests [0.06ms]
+(pass) 派生题目的场景、角色和等级参与出题输入指纹 [0.05ms]
+(pass) project author enqueue freezes the database project name and current file inputs [1.13ms]
+(pass) 作者队列冻结同一评分规则并保存到题目，后续设置变化不替换它 [2.51ms]
+(pass) 作者阶段冻结并实际执行前后钩子，附加结果不修改题包 [24.58ms]
+(pass) 后置钩子失败保留检查点并向续跑入口记录明确失败标记 [14.01ms]
+(pass) 续跑后的作者worker复用主检查点，实际后置脚本恢复后只调用一次主模型 [36.61ms]
+(pass) Work内容契约由项目配置冻结并传入作者 [2.36ms]
+(pass) 内容契约配置变化后拒绝旧尝试发布且不调用作者 [0.99ms]
+
+server/authoring/work-contract.test.ts:
+(pass) Work 独立内容完整保存，兼容文本与计分规则由同一内容派生 [1.45ms]
+(pass) 未提供正式二级分类时保留null，不强迫作者编造分类；知识点不接受格式占位 [0.92ms]
+(pass) Work 拒绝丢失成果、越界引用、重复内容源和非法分值 [0.46ms]
+(pass) 未命中且未采用的真实检索允许空关联，归档保留未核验状态而不伪造URL [0.64ms]
+(pass) 文件及检索能力需求可以保存完整题目，不由文本 runner 降级 [0.25ms]
+(pass) 实际渲染脚本与新Work schema一致，私有研究不进入公开题包 [21.05ms]
+(pass) 作者渲染命令先复用正式校验器，维度错误可在同一会话修正后再保存 [36.05ms]
+(pass) Work一次返回全部ID维度错配的位置，不泄露判据正文或自动改写ID [0.11ms]
+(pass) 文本作答器允许文件成果的文字呈现，但拒绝必需工具和未完成草稿 [0.49ms]
+(pass) 评分输入排除Rubric夹带的整题研究信息 [0.21ms]
+(pass) 新Work后续成果直接读取冻结答案，不再调用数据库或模型生成 [0.15ms]
+(pass) 内容契约配置能往返并拒绝未知值，旧配置形状不变 [0.08ms]
+(pass) 结构化工作表保留数字与布尔，并拒绝缺工作表或错列 [0.33ms]
+(pass) Work结构门槛分别校验，非法原子能力与缺检索不能被保存为内容完成 [0.30ms]
+(pass) 必交成果必须在题面列出精确文件名，不能隐藏新增必交文件 [0.20ms]
+
+server/scoring/executor.test.ts:
+(pass) 新报告核对指令冻结到执行快照，旧协议摘要保持不变
+(pass) Agent和API按冻结核对指令执行，原成绩及无标答隔离保持 [2.26ms]
+(pass) 新评分输入完整传递规则并按政策只提供校准标答 [0.11ms]
+(pass) 新 API 评分保存模型原始成绩，不将负分或否决改成零分 [0.22ms]
+(pass) default scoring prompt asks for per-item reasoning and exact answer evidence [0.03ms]
+(pass) model-report default names the frozen source mode without changing custom prompts [0.20ms]
+(pass) scoring execution names and preserves the exact rubric IDs for this task
+(pass) internal anonymous context preserves binding checks while actual files exclude private references [0.22ms]
+(pass) invalid answer hash or rubric hash cannot be graded
+(pass) independent sessions receive only split files and frozen output bindings supplied by code [1.19ms]
+(pass) API评分接收相同完整脱敏材料并复用逐项总分校验，不泄漏内部答案或身份 [0.20ms]
+(pass) project skill, identity and reference answers never enter the scoring request [0.55ms]
+(pass) missing or impossible final totals are retained as invalid and never successful grading [0.63ms]
+(pass) model text cannot substitute the binding or add private fields to the structured report [0.49ms]
+(pass) cancelled grading never invokes Codex or creates an execution directory [0.29ms]
+(pass) 评分收到冻结的文字呈现边界，保留Rubric且不豁免实际错误 [0.06ms]
+(pass) model-report评分给Agent原始权重和只读复算工具，累计扣分及否决不改变业务判断 [450.03ms]
+
+server/scoring/validate.test.ts:
+(pass) 模型评分接收负分和否决，原样收集总分而不按分项重算
+(pass) 模型未给比较指标时报告仍可保存，指标保持 null [0.15ms]
+(pass) 模型报告拒绝缺失重复结果区、缺项、未知编号和越界指标 [0.09ms]
+(pass) validates complete evidence-backed report and recomputes total [0.14ms]
+(pass) rejects mismatched question_version [0.17ms]
+(pass) rejects mismatched input_digest
+(pass) rejects mismatched rubric_version
+(pass) rejects mismatched rubric_digest
+(pass) rejects mismatched answer_attempt_id
+(pass) rejects mismatched answer_sha256 [0.03ms]
+(pass) rejects fabricated quote and missing positive evidence [0.04ms]
+(pass) rejects incomplete, disputed or inconsistent score [0.02ms]
+(pass) rejects incomplete, disputed or inconsistent score
+(pass) rejects incomplete, disputed or inconsistent score
+(pass) rejects incomplete, disputed or inconsistent score
+(pass) rejects incomplete, disputed or inconsistent score
+(pass) rejects incomplete, disputed or inconsistent score
+(pass) rejects incomplete, disputed or inconsistent score
+(pass) rejects incomplete, disputed or inconsistent score
+(pass) rejects incomplete, disputed or inconsistent score
+(pass) zero score requires a reason plus evidence or explicit missing finding
+(pass) quote from materials cannot substitute answer evidence for positive score
+(pass) malformed report returns invalid without throwing
+(pass) malformed report returns invalid without throwing
+(pass) malformed report returns invalid without throwing
+(pass) malformed report returns invalid without throwing
+(pass) positive score cannot also claim the required answer was missing
+(pass) text scoring requires one binary score row for every unit-weight rubric item
+(pass) text scoring rejects partial points even when the final total is extractable
+(pass) text scoring rejects a final total when a unit-weight rubric item is missing
+(pass) text scoring validates exact IDs and weighted rows for every rubric
+(pass) Markdown headings are presentation, not rubric ID prefixes [0.47ms]
+
+server/scoring/jobs.test.ts:
+(pass) API评分的领取与恢复同时排除本地脚本任务 [1.93ms]
+(pass) enqueue pins persisted context and rejects a duplicate active score task [1.47ms]
+(pass) scoring digest binds the authoring approach and reference answer [0.04ms]
+(pass) enqueue scores every succeeded answer in the current model bundle [0.38ms]
+(pass) enqueue allows a succeeded answer after another model fails [0.18ms]
+(pass) enqueue rejects a mixed model bundle while an answer is still running [0.12ms]
+(pass) enqueue rejects a model bundle with no successful answer [0.04ms]
+(pass) missing answer cannot create score attempt
+(pass) idle scoring worker does not call Codex
+(pass) valid grade saves report, binding, usage, session and downloadable artifact [2.39ms]
+(pass) API score claims only API-configured attempts and freezes provider and model in the published result [1.27ms]
+(pass) one completed grade keeps the shared score step waiting for other model answers [1.31ms]
+(pass) ordinary scoring automatically judges once all required model scores are terminal [1.12ms]
+(pass) a failed model score marks the shared score step failed [1.04ms]
+(pass) disputed grade is retained with invalid report and does not publish success [0.99ms]
+(pass) late or invalidated grading cannot publish current score [2.49ms]
+(pass) late or invalidated grading cannot publish current score [1.17ms]
+(pass) snapshot tampering stops the model request [0.47ms]
+(pass) provider errors never put raw messages in public history [0.64ms]
+(pass) heartbeat expiry is failed and terminal ordinary scoring still gets an automatic decision
+(pass) pre-cancelled worker cannot claim a grading attempt
+(pass) cancellation after model response cannot publish successful grading [0.82ms]
+(pass) releases scoring transaction connection before automatic acceptance [0.92ms]
+(pass) releases failed scoring transaction connection before automatic acceptance [0.60ms]
+(pass) releases the recovery connection before automatic acceptance [0.15ms]
+(pass) 新评分队列按题目契约保存原文与模型指标，不再套旧正分校验 [1.35ms]
+(pass) 新评分摘要兼容JSONB键顺序但绑定完整业务规则 [0.15ms]
+(pass) 评分阶段执行前后钩子且不泄漏思路或默认标答文件 [25.62ms]
+(pass) 新model_report评分入队冻结核对正文，旧报告仍不附加 [0.76ms]
+(pass) 新评分传递冻结核对正文，旧无字段任务传递空正文，改写快照拒绝执行 [3.54ms]
+
+server/scoring/context.test.ts:
+(pass) scoring context identifies the project and supports legacy=%s [1.15ms]
+(pass) scoring context identifies the project and supports legacy=%s [0.66ms]
+(pass) failed model aggregate still permits its current successful answer to be scored [0.21ms]
+(pass) 评分接受按实际作答提示词冻结的输入指纹，提示词不成为评分依据 [0.03ms]
+(pass) 评分拒绝冻结后被修改的作答提示词
+(pass) rejects a failed aggregate answer with stale or mismatched binding: {"summary":[{"attempt_id":"older-answer","status":"succeeded","answer_sha256":"ce820ae814b908c7c0375effdae125d371585b0304439b8bfb8c4d748da3496e"}]} [0.25ms]
+(pass) rejects a failed aggregate answer with stale or mismatched binding: {"summary":[{"attempt_id":"answer","status":"failed","answer_sha256":"ce820ae814b908c7c0375effdae125d371585b0304439b8bfb8c4d748da3496e"}]}
+(pass) rejects a failed aggregate answer with stale or mismatched binding: {"summary":[{"attempt_id":"answer","status":"succeeded","answer_sha256":"83e6577a4ed8ed40a51e2bf228b75a72d24f2aa03532ce3b098feb532d0962b0"}]}
+(pass) rejects a failed aggregate answer with stale or mismatched binding: {"result_input_digest":"wrong-digest"} [0.04ms]
+(pass) rejects a failed aggregate answer with stale or mismatched binding: {"question_attempt_id":"older-author"}
+(pass) 评分上下文使用题目冻结的完整规则并将业务字段纳入绑定
+(pass) 评分回读文字成果快照并拒绝清单与当前题目不一致 [0.31ms]
+
+server/llm-api/concurrency.test.ts:
+(pass) 上游脱敏截止原因穿过HTTP取消层，且不携带私有错误正文 [1.16ms]
+(pass) 排队超时错误保留已等待毫秒，失败统计不丢排队时间 [20.44ms]
+(pass) API槽位限制实际并发并在成功失败后释放 [298.58ms]
+(pass) API排队时限独立生效，排队超时不发请求且已占用请求不受排队计时影响 [17.17ms]
+(pass) SiliconFlow长响应使用流式完整收集，保留用量且不把推理当答案 [1.20ms]
+(pass) 关闭传输空闲计时后业务总时限仍取消挂起请求 [22.20ms]
+(pass) Bun连接关闭和空闲超时保留安全原因码 [0.42ms]
+(pass) 流式截断保留安全结束原因，供脱敏立即缩批而非原样重试 [0.60ms]
+
+server/monitoring/resources.test.ts:
+(pass) resource sampling > system availability is an explicitly labeled estimate [0.13ms]
+(pass) resource sampling > invalid system reading ""
+(pass) resource sampling > invalid system reading "The system has 1000000 (100 pages with a page size of 10000).\nSystem-wide memory free percentage: 40%\nSystem-wide memory free percentage: 2%\n" [0.03ms]
+(pass) resource sampling > invalid system reading "The system has 1000000 (100 pages with a page size of 10000).\nSystem-wide memory free percentage: 101%\n"
+(pass) resource sampling > invalid system reading "The system has 0 (100 pages with a page size of 10000).\nSystem-wide memory free percentage: 40%\n"
+(pass) resource sampling > invalid system reading "The system has 1000000 (100 pages with a page size of 10000).\nSystem-wide memory free percentage: -1%\n"
+(pass) resource sampling > invalid RSS  [0.02ms]
+(pass) resource sampling > invalid RSS 42 0
+(pass) resource sampling > invalid RSS 42 -1
+(pass) resource sampling > invalid RSS 43 10
+(pass) resource sampling > invalid RSS 42 x
+(pass) resource sampling > invalid RSS 42 1
+42 2
+(pass) resource sampling > invalid RSS 42 99999999999999999
+(pass) resource sampling > RSS uses kilobytes and matches PID
+(pass) resource sampling > only registered PID and self, duplicates removed, no args/environment reads [0.44ms]
+(pass) resource sampling > reject PID 0 [0.04ms]
+(pass) resource sampling > reject PID -1
+(pass) resource sampling > reject PID 1.5
+(pass) resource sampling > reject PID NaN
+(pass) resource sampling > reject PID Infinity
+(pass) resource sampling > reject PID 9007199254740992
+(pass) resource sampling > reject PID 42;secret
+(pass) resource sampling > one process query handles missing, duplicate and unregistered rows
+(pass) resource sampling > read failure stays unknown and never leaks error [0.14ms]
+(pass) resource sampling > non-mac system is unknown without misleading free memory fallback
+(pass) resource sampling > whitelists executor status and events [0.15ms]
+(pass) resource sampling > bad events, raw errors, missing auth do not pass through [0.05ms]
+(pass) resource sampling > actual shared skipped state remains known and counted [0.13ms]
+(pass) resource sampling > invalid task state or missing tasks are unknown [0.08ms]
+(pass) dispatch advice without side effects > healthy resources permit, low memory pauses at caller threshold [0.04ms]
+(pass) dispatch advice without side effects > blocking {"authentication":"blocked"} [0.07ms]
+(pass) dispatch advice without side effects > blocking {"quota":"exhausted"} [0.01ms]
+(pass) dispatch advice without side effects > blocking {"error":"authentication"} [0.02ms]
+(pass) dispatch advice without side effects > blocking {"error":"quota"} [0.02ms]
+(pass) dispatch advice without side effects > blocking {"error":"rate_limit"} [0.02ms]
+(pass) dispatch advice without side effects > unknown memory and processes remain unknown [0.05ms]
+(pass) dispatch advice without side effects > invalid threshold
+(pass) dispatch advice without side effects > invalid threshold
+(pass) dispatch advice without side effects > invalid threshold
+(pass) dispatch advice without side effects > invalid threshold [0.04ms]
+
+server/monitoring/worker-monitor.test.ts:
+(pass) projects material library queue counts and safe active job fields [0.02ms]
+(pass) reports library queue unavailable before its migration exists
+(pass) low memory pauses and recovery resumes using shared cached sample [18.69ms]
+(pass) concurrent dispatch callers merge one sampling operation [12.55ms]
+(pass) dispatch memory check does not wait for a pending database task query [1.38ms]
+(pass) unknown memory permits existing dispatch but reports unknown readiness [0.90ms]
+(pass) database query failure is task unknown, not zero [0.92ms]
+(pass) reads task status with a server-side timeout and releases its connection [1.04ms]
+(pass) failed write cannot bypass known low memory [0.61ms]
+(pass) sampling failure produces unknown without crashing [0.82ms]
+(pass) strict projection drops tampered secrets and recomputes safe advice [0.85ms]
+(pass) stale, corrupt, missing and invalid nested records are not running [1.00ms]
+(pass) stop waits for in-flight sample then persists stopped [16.70ms]
+(pass) corrupt monitor snapshots log one failure and a recovery event [2.33ms]
+
+server/answer-models/generation-policy.test.ts:
+(pass) 作答供应商解析排除阶段 workflow 字段
+(pass) missing policy preserves the current 60-minute request and keeps score skipping disabled
+(pass) policy reads are read-only defaults and merging preserves existing provider settings [0.14ms]
+(pass) minute settings require integer durations with timeout strictly longer than the threshold
+(pass) a stored opt-in cannot enable automatic skipping before provider timing is validated [0.12ms]
+(pass) request timeout remains separate from the reasoning threshold
+(pass) observed reasoning span does not qualify before its delivery timing is validated [0.03ms]
+(pass) missing, sparse, malformed or excessively gapped reasoning events fail closed
+(pass) provider reasoning streams without validated delivery timing never qualify for automatic score skipping
+
+server/answer-models/qwen.test.ts:
+(pass) OpenRouter冻结路由实际传到HTTP请求，不允许回退或忽略输出参数 [0.12ms]
+(pass) OpenRouter key alone resolves a Qwen gateway configuration without exposing the key
+(pass) blank environment template fields do not prevent OpenRouter key-only configuration
+(pass) OpenRouter uses only its own credential and preserves gateway usage cost [0.63ms]
+(pass) OpenRouter credentials never go to an Alibaba endpoint [0.09ms]
+(pass) Alibaba credentials never go to the gateway when its key is missing [0.16ms]
+(pass) rejects non-Qwen or malformed gateway model qwen-plus [0.02ms]
+(pass) rejects non-Qwen or malformed gateway model openai/gpt-5
+(pass) rejects non-Qwen or malformed gateway model qwen/ [0.03ms]
+(pass) classifies OpenRouter numeric error 402 [1.30ms]
+(pass) classifies OpenRouter numeric error 408 [0.08ms]
+(pass) classifies OpenRouter numeric error 429 [0.07ms]
+(pass) opt-in reasoning stream keeps reasoning text private and returns only timestamp evidence [0.33ms]
+(pass) OpenRouter does not treat a provider-specific reasoning_content field as its evidence [0.19ms]
+(pass) empty OpenRouter reasoning detail metadata is not treated as generated reasoning activity [0.18ms]
+(pass) local streaming deadline retains safe reasoning timing and discards reasoning text [32.05ms]
+(pass) config resolves explicit server environment into a secret-free snapshot [0.08ms]
+(pass) explicit settings override defaults and preserve false
+(pass) explicit null model cannot silently switch to an environment default [0.08ms]
+(pass) explicit null base_url cannot silently switch to an environment default [0.02ms]
+(pass) rejects a non-assistant response rather than accepting a returned user message [0.19ms]
+(pass) successful requests remove the external cancellation listener [0.14ms]
+(pass) timeout aborts a request that has not returned headers [22.01ms]
+(pass) supports documented regional endpoint dashscope-intl.aliyuncs.com
+(pass) supports documented regional endpoint dashscope-us.aliyuncs.com
+(pass) supports documented regional endpoint workspace123.cn-beijing.maas.aliyuncs.com [0.03ms]
+(pass) supports documented regional endpoint workspace123.ap-southeast-1.maas.aliyuncs.com [0.02ms]
+(pass) supports documented regional endpoint workspace123.ap-northeast-1.maas.aliyuncs.com [0.01ms]
+(pass) supports documented regional endpoint workspace123.us-east-1.maas.aliyuncs.com
+(pass) rejects invalid config null
+(pass) rejects invalid config []
+(pass) rejects invalid config {}
+(pass) rejects invalid config {"provider":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":""}
+(pass) rejects invalid config {"provider":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen plus"}
+(pass) rejects invalid config {"provider":"codex","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen-plus"}
+(pass) rejects invalid config {"provider":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen-plus","reasoning_effort":"high"}
+(pass) rejects invalid config {"provider":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen-plus","api_key":"must-not-snapshot"}
+(pass) rejects invalid config {"provider":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen-plus","enable_thinking":"false"}
+(pass) rejects invalid config {"provider":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen-plus","max_tokens":0}
+(pass) rejects invalid config {"provider":"qwen","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","model":"qwen-plus","max_tokens":1.5}
+(pass) rejects unsafe or incomplete endpoint http://dashscope.aliyuncs.com/compatible-mode/v1
+(pass) rejects unsafe or incomplete endpoint https://example.com/compatible-mode/v1
+(pass) rejects unsafe or incomplete endpoint https://dashscope.aliyuncs.com.evil.test/compatible-mode/v1 [0.08ms]
+(pass) rejects unsafe or incomplete endpoint https://secret@dashscope.aliyuncs.com/compatible-mode/v1
+(pass) rejects unsafe or incomplete endpoint https://dashscope.aliyuncs.com/compatible-mode/v1?secret=test
+(pass) rejects unsafe or incomplete endpoint https://dashscope.aliyuncs.com/compatible-mode/v1#secret
+(pass) rejects unsafe or incomplete endpoint https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+(pass) rejects unsafe or incomplete endpoint https://dashscope.aliyuncs.com:8443/compatible-mode/v1
+(pass) rejects unsafe or incomplete endpoint https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+(pass) sends only question and selected text materials, with no SDK, history or tools [0.37ms]
+(pass) does not guess usage or actual model when the provider omits them
+(pass) ignores malformed optional metadata while preserving a complete answer
+(pass) takes the provider request ID from the header rather than inventing one from completion ID
+(pass) uses DASHSCOPE_API_KEY when the project-specific key is absent [0.31ms]
+(pass) reads a refreshed credential at the next invocation [0.13ms]
+(pass) invalid credentials never send a request {}
+(pass) invalid credentials never send a request {"QWEN_API_KEY":" "} [0.09ms]
+(pass) invalid credentials never send a request {"QWEN_API_KEY":"bad\nheader"} [0.02ms]
+(pass) rejects unexpected answer input rubric [0.05ms]
+(pass) rejects unexpected answer input reference_answer [0.02ms]
+(pass) rejects unexpected answer input target_score
+(pass) rejects unexpected answer input mapping
+(pass) rejects unexpected answer input messages
+(pass) rejects unexpected answer input tools
+(pass) rejects unsupported input {"question":""}
+(pass) rejects unsupported input {"materials":[{"name":"file","text":""}]} [0.13ms]
+(pass) rejects unsupported input {"materials":[{"name":"file","text":5}]}
+(pass) rejects unsupported input {"materials":[{"name":"file","text":"public","path":"/private/source.pdf"}]}
+(pass) rejects unsupported input {"materials":[{"name":"file","image_url":"data:private"}]}
+(pass) rejects unsupported input {"materials":"not an array"} [0.04ms]
+(pass) rejects unsupported input {"timeout_ms":0}
+(pass) rejects unsupported input {"timeout_ms":0.5} [0.05ms]
+(pass) rejects unsupported input {"timeout_ms":2147483648}
+(pass) rejects unsupported input {"signal":{}}
+(pass) HTTP 401 invalid_api_key returns authentication without leaking or retrying [0.27ms]
+(pass) HTTP 403 AccessDenied returns authentication without leaking or retrying [0.11ms]
+(pass) HTTP 400 Arrearage returns quota without leaking or retrying
+(pass) HTTP 429 PrepaidBillOverdue returns quota without leaking or retrying [0.15ms]
+(pass) HTTP 429 Throttling.RateQuota returns rate_limit without leaking or retrying [0.06ms]
+(pass) HTTP 429 Throttling.AllocationQuota returns rate_limit without leaking or retrying [0.15ms]
+(pass) HTTP 429 insufficient_quota returns rate_limit without leaking or retrying [0.09ms]
+(pass) HTTP 429 Throttling returns rate_limit without leaking or retrying
+(pass) HTTP 400 InvalidParameter returns configuration without leaking or retrying [0.02ms]
+(pass) HTTP 404 model_not_supported returns configuration without leaking or retrying [0.15ms]
+(pass) HTTP 500 InternalError returns provider without leaking or retrying [0.07ms]
+(pass) HTTP 503 ServiceUnavailable returns provider without leaking or retrying [0.07ms]
+(pass) unknown provider diagnostics are discarded, including arbitrary code and request ID [0.10ms]
+(pass) plain-text HTTP errors are classified by status without exposing body [0.12ms]
+(pass) does not turn a network failure containing secrets into a logged error cause [0.14ms]
+(pass) rejects incomplete or malformed answers null [0.06ms]
+(pass) rejects incomplete or malformed answers {} [0.02ms]
+(pass) rejects incomplete or malformed answers {"choices":[]} [0.01ms]
+(pass) rejects incomplete or malformed answers {"choices":[{"finish_reason":"stop","message":{"content":" "}}]}
+(pass) rejects incomplete or malformed answers {"choices":[{"finish_reason":"length","message":{"content":"partial"}}]}
+(pass) rejects incomplete or malformed answers {"choices":[{"finish_reason":"tool_calls","message":{"content":"text"}}]}
+(pass) rejects incomplete or malformed answers {"choices":[{"message":{"content":"unfinished"}}]}
+(pass) rejects incomplete or malformed answers {"choices":[{"finish_reason":"content_filter","message":{"content":"partial"}}]} [0.15ms]
+(pass) rejects incomplete or malformed answers {"id":"chatcmpl-fixture","model":"qwen-plus-actual","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"  剩余60元。\n"}},{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"  剩余60元。\n"}}],"usage":{"prompt_tokens":20,"completion_tokens":6,"total_tokens":26,"prompt_tokens_details":{"cached_tokens":0}}} [0.02ms]
+(pass) rejects incomplete or malformed answers {"id":"chatcmpl-fixture","model":"qwen-plus-actual","choices":[{"index":0,"finish_reason":"stop","message":{"content":"text","tool_calls":[{"id":"tool"}]}}],"usage":{"prompt_tokens":20,"completion_tokens":6,"total_tokens":26,"prompt_tokens_details":{"cached_tokens":0}}}
+(pass) rejects malformed JSON without preserving parser text [0.06ms]
+(pass) invalid completion exposes a safe reason code without retaining response text
+(pass) already cancelled work never invokes the provider
+(pass) cancellation aborts an in-flight request without returning a late answer
+(pass) timeout covers a stalled response body using native fetch [107.53ms]
+
+server/answer-models/dispatch.test.ts:
+(pass) legacy Qwen and three native provider configurations resolve without credentials [0.42ms]
+(pass) SiliconFlow freezes its OpenAI-compatible endpoint and uses its own credential [0.42ms]
+(pass) invalid provider and private config fields cannot reach a client [0.03ms]
+(pass) dispatcher selects credential and endpoint from the frozen provider [0.01ms]
+(pass) call correlation ID is forwarded internally without entering model messages
+(pass) dispatcher sends each OpenRouter model through its single gateway key
+(pass) Codex Agent answer receives only the frozen question and redacted materials with selected effort [0.70ms]
+
+server/answer-models/domestic.test.ts:
+(pass) OpenRouter routes the verified GLM, Qwen, and Kimi model IDs with only OPEN_ROUTER_KEY
+(pass) OpenRouter rejects non-gateway endpoints and unnamespaced model IDs
+(pass) OpenRouter never borrows a native provider key [3.02ms]
+(pass) kimi > explicit config and env defaults contain no credentials [0.05ms]
+(pass) kimi > isolated key and one fresh user message; complete metadata [0.19ms]
+(pass) kimi > rejects unsupported config enable_thinking
+(pass) kimi > rejects unsupported config thinking
+(pass) kimi > rejects unsupported config api_key
+(pass) kimi > rejects unsupported config tools
+(pass) kimi > rejects endpoint http://api.deepseek.com/v1 [0.02ms]
+(pass) kimi > rejects endpoint https://evil.com/v1
+(pass) kimi > rejects endpoint https://api.moonshot.ai/v1?secret=x
+(pass) kimi > rejects endpoint https://user:secret@api.moonshot.ai/v1
+(pass) kimi > rejects endpoint https://openrouter.ai/api/v1
+(pass) kimi > rejects endpoint https://api.moonshot.ai/v1/chat/completions
+(pass) kimi > rejects endpoint https://api.moonshot.ai/v1#x [0.02ms]
+(pass) kimi > missing own key never falls back [1.34ms]
+(pass) kimi > invalid model "" [0.07ms]
+(pass) kimi > invalid model null
+(pass) kimi > invalid model "bad/model"
+(pass) kimi > invalid model " bad"
+(pass) kimi > invalid model "bad\nmodel"
+(pass) kimi > invalid token limit 0 [0.04ms]
+(pass) kimi > invalid token limit -1
+(pass) kimi > invalid token limit 1.5
+(pass) kimi > invalid token limit null
+(pass) kimi > invalid token limit Infinity
+(pass) kimi > safe HTTP error 401 [0.22ms]
+(pass) kimi > safe HTTP error 403 [0.03ms]
+(pass) kimi > safe HTTP error 402
+(pass) kimi > safe HTTP error 429
+(pass) kimi > safe HTTP error 408
+(pass) kimi > safe HTTP error 400 [0.14ms]
+(pass) kimi > safe HTTP error 404 [0.01ms]
+(pass) kimi > safe HTTP error 500 [0.04ms]
+(pass) kimi > reject partial length [0.06ms]
+(pass) kimi > reject partial tool_calls [0.05ms]
+(pass) kimi > reject partial content_filter [0.02ms]
+(pass) kimi > reject partial null
+(pass) kimi > reasoning never replaces final answer [0.08ms]
+(pass) kimi > privacy rejects arbitrary input and material fields [0.02ms]
+(pass) kimi > timeout aborts during body consumption [5.75ms]
+(pass) kimi > active cancellation and listener cleanup [0.27ms]
+(pass) deepseek > explicit config and env defaults contain no credentials [0.01ms]
+(pass) deepseek > isolated key and one fresh user message; complete metadata [0.02ms]
+(pass) deepseek > rejects unsupported config enable_thinking
+(pass) deepseek > rejects unsupported config thinking
+(pass) deepseek > rejects unsupported config api_key
+(pass) deepseek > rejects unsupported config tools
+(pass) deepseek > rejects endpoint http://api.deepseek.com/v1
+(pass) deepseek > rejects endpoint https://evil.com/v1
+(pass) deepseek > rejects endpoint https://api.moonshot.ai/v1?secret=x
+(pass) deepseek > rejects endpoint https://user:secret@api.moonshot.ai/v1
+(pass) deepseek > rejects endpoint https://openrouter.ai/api/v1
+(pass) deepseek > rejects endpoint https://api.deepseek.com/v1/chat/completions
+(pass) deepseek > rejects endpoint https://api.deepseek.com/v1#x
+(pass) deepseek > missing own key never falls back [1.12ms]
+(pass) deepseek > invalid model ""
+(pass) deepseek > invalid model null
+(pass) deepseek > invalid model "bad/model"
+(pass) deepseek > invalid model " bad"
+(pass) deepseek > invalid model "bad\nmodel"
+(pass) deepseek > invalid token limit 0
+(pass) deepseek > invalid token limit -1
+(pass) deepseek > invalid token limit 1.5
+(pass) deepseek > invalid token limit null
+(pass) deepseek > invalid token limit Infinity [0.06ms]
+(pass) deepseek > safe HTTP error 401 [0.06ms]
+(pass) deepseek > safe HTTP error 403
+(pass) deepseek > safe HTTP error 402 [0.04ms]
+(pass) deepseek > safe HTTP error 429 [0.04ms]
+(pass) deepseek > safe HTTP error 408 [0.02ms]
+(pass) deepseek > safe HTTP error 400 [0.02ms]
+(pass) deepseek > safe HTTP error 404 [0.02ms]
+(pass) deepseek > safe HTTP error 500
+(pass) deepseek > reject partial length [0.04ms]
+(pass) deepseek > reject partial tool_calls [0.03ms]
+(pass) deepseek > reject partial content_filter
+(pass) deepseek > reject partial null [0.04ms]
+(pass) deepseek > reasoning never replaces final answer [0.04ms]
+(pass) deepseek > privacy rejects arbitrary input and material fields [0.02ms]
+(pass) deepseek > timeout aborts during body consumption [6.47ms]
+(pass) deepseek > active cancellation and listener cleanup [0.11ms]
+(pass) doubao > explicit config and env defaults contain no credentials [0.02ms]
+(pass) doubao > isolated key and one fresh user message; complete metadata [0.07ms]
+(pass) doubao > rejects unsupported config enable_thinking
+(pass) doubao > rejects unsupported config thinking
+(pass) doubao > rejects unsupported config api_key
+(pass) doubao > rejects unsupported config tools
+(pass) doubao > rejects endpoint http://api.deepseek.com/v1
+(pass) doubao > rejects endpoint https://evil.com/v1 [0.02ms]
+(pass) doubao > rejects endpoint https://api.moonshot.ai/v1?secret=x
+(pass) doubao > rejects endpoint https://user:secret@api.moonshot.ai/v1
+(pass) doubao > rejects endpoint https://openrouter.ai/api/v1
+(pass) doubao > rejects endpoint https://ark.cn-beijing.volces.com/api/v3/chat/completions
+(pass) doubao > rejects endpoint https://ark.cn-beijing.volces.com/api/v3#x
+(pass) doubao > missing own key never falls back [0.98ms]
+(pass) doubao > invalid model ""
+(pass) doubao > invalid model null
+(pass) doubao > invalid model "bad/model"
+(pass) doubao > invalid model " bad"
+(pass) doubao > invalid model "bad\nmodel"
+(pass) doubao > invalid token limit 0 [0.02ms]
+(pass) doubao > invalid token limit -1
+(pass) doubao > invalid token limit 1.5
+(pass) doubao > invalid token limit null
+(pass) doubao > invalid token limit Infinity
+(pass) doubao > safe HTTP error 401 [0.05ms]
+(pass) doubao > safe HTTP error 403 [0.04ms]
+(pass) doubao > safe HTTP error 402
+(pass) doubao > safe HTTP error 429
+(pass) doubao > safe HTTP error 408
+(pass) doubao > safe HTTP error 400
+(pass) doubao > safe HTTP error 404 [0.16ms]
+(pass) doubao > safe HTTP error 500
+(pass) doubao > reject partial length [0.04ms]
+(pass) doubao > reject partial tool_calls [0.04ms]
+(pass) doubao > reject partial content_filter
+(pass) doubao > reject partial null [0.04ms]
+(pass) doubao > reasoning never replaces final answer [0.02ms]
+(pass) doubao > privacy rejects arbitrary input and material fields
+(pass) doubao > timeout aborts during body consumption [5.70ms]
+(pass) doubao > active cancellation and listener cleanup
+(pass) model is required even when credentials exist [0.16ms]
+(pass) preserves missing metadata as null [0.10ms]
+(pass) malformed metadata or result {"choices":[]} [0.03ms]
+(pass) malformed metadata or result {"error":{"message":"private"}}
+(pass) malformed metadata or result {"choices":[{"finish_reason":"stop","message":{"role":"user","content":"q"}}]}
+(pass) malformed metadata or result {"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"q","tool_calls":[{}]}}]} [0.09ms]
+(pass) invalid-response failures expose a safe reason code without retaining response text [0.09ms]
+(pass) network exception strips private cause [0.06ms]
+(pass) non-json success is invalid and non-json HTTP failure remains classified [0.11ms]
+(pass) pre-cancel never sends a request [0.07ms]
+(pass) native fetch timeout covers incomplete response body [33.05ms]
+(pass) Kimi China and DeepSeek trailing slash normalize without changing route [0.02ms]
+(pass) explicit max_tokens is sent unchanged and key alias is supported [0.34ms]
+(pass) explicit null timeout is invalid rather than silently defaulted [0.05ms]
+(pass) 可选元数据异常不拒绝完整正文 {"usage":[]} [0.10ms]
+(pass) 可选元数据异常不拒绝完整正文 {"model":""}
+(pass) 可选元数据异常不拒绝完整正文 {"id":42} [0.05ms]
+
+server/answer-models/jobs.test.ts:
+(pass) 作答领取及中断恢复都按 worker 主机筛选脚本任务 [1.98ms]
+(pass) API 与 Codex Agent 作答 worker 按冻结 provider 分流领取和中断恢复 [0.12ms]
+(pass) enqueue pins safe input and configuration, duplicate does not create attempt [1.79ms]
+(pass) enqueue rejects changed database text and rolls back [1.01ms]
+(pass) enqueue freezes timeout settings but disables unverified automatic score skipping [0.74ms]
+(pass) enqueue uses the database redacted text rather than a local file copy [0.52ms]
+(pass) idle worker does not invoke provider [0.08ms]
+(pass) worker persists exact answer and usage with immutable config [1.19ms]
+(pass) late answers cannot overwrite changed source [2.18ms]
+(pass) late answers cannot overwrite changed source [0.40ms]
+(pass) provider errors are bounded and do not publish success [0.48ms]
+(pass) attachment text must come from the database rather than a storage path [0.33ms]
+(pass) publication rollback removes unpublished files and records failure [0.95ms]
+(pass) uncertain commit preserves files already referenced by artifact rows [0.78ms]
+(pass) snapshot tampering prevents any provider request [0.43ms]
+(pass) provider failure retains structured retryability without raw response [0.45ms]
+(pass) unfinished authoring cannot create answer attempts [0.36ms]
+(pass) interrupted attempts fail instead of claiming success after restart [0.11ms]
+(pass) interrupted model attempts refresh the current answer summary [0.14ms]
+(pass) interrupted recovery preserves another model that is still running [0.26ms]
+(pass) interrupted attempts from an older question cannot replace the current summary [0.06ms]
+(pass) worker uses frozen attempt config without querying project defaults [0.77ms]
+(pass) worker preserves frozen timeout and does not enable reasoning observation before provider timing validation [0.69ms]
+(pass) unverified reasoning stream timeout remains a technical failure and creates no fake answer artifact [0.43ms]
+(pass) native provider attempt uses immutable config and saves its identity [0.82ms]
+(pass) native authentication failure preserves safe error and cannot publish success [0.41ms]
+(pass) project model set creates one isolated attempt per selected model with a shared frozen set [0.51ms]
+(pass) answer retry reuses successful model attempts and queues only failed models [0.47ms]
+(pass) one model answer cannot mark the shared step complete while another required answer is pending [0.81ms]
+(pass) answer enqueue invalidates scoring and publication while preserving independent redaction [0.40ms]
+(pass) legacy single-model enqueue does not claim membership in a project model set [0.35ms]
+(pass) 作答阶段冻结并运行前后钩子，模型只接收原题面和脱敏附件 [23.32ms]
+(pass) 成果清单从当前题目进入实际队列快照，不泄露标答 [0.66ms]
+(pass) 实际供应商调用收到文字成果指令，且原题面保持绑定 [0.88ms]
+
+server/answer-models/input.test.ts:
+(pass) answer input selects question and approved attachments only [0.03ms]
+(pass) rejects unavailable or mismatched authoring result
+(pass) rejects unavailable or mismatched authoring result
+(pass) rejects unavailable or mismatched authoring result
+(pass) legacy quality report does not reinstate the removed review gate
+(pass) private artifact and blank text cannot enter answer input
+(pass) digest changes with question or attachment content, preserves exact text
+(pass) unsupported or unstated answer capabilities block dispatch
+(pass) unsupported or unstated answer capabilities block dispatch [0.19ms]
+(pass) unsupported or unstated answer capabilities block dispatch
+(pass) unsupported or unstated answer capabilities block dispatch
+(pass) 完整Work题按成果清单生成文字呈现快照
+(pass) 其他项目带成果清单也使用文字呈现，元数据不进入作答
+(pass) 草稿与非文字输入不因成果文字呈现被放开 [0.01ms]
+(pass) 成果清单格式错误明确拒绝，不能静默丢弃要求
+(pass) 实际作答消息包含成果且快照对清单变化敏感，JSONB键序不影响新增字段 [0.07ms]
+(pass) 文字成果快照在所有对象键重排后仍保持同一指纹 [0.07ms]
+(pass) 兼容已派发的文字呈现摘要，正文变化仍拒绝
+
+server/answer-models/readiness.test.ts:
+(pass) Work草稿不能显示为作答就绪 [0.03ms]
+(pass) 文字材料的文件成果可文字作答，旧文字题保持就绪 [0.06ms]
+(pass) 状态查询只投影能力与内容状态，不读取完整题面和标准成果 [0.07ms]
+
+server/answer-models/model-set.test.ts:
+(pass) valid model set has stable registry identities and safe frozen provider config [0.09ms]
+(pass) SiliconFlow model registration pins provider endpoint and never stores credentials [0.28ms]
+(pass) model-set digest is stable when JSONB reorders nested object keys [0.05ms]
+(pass) rejects invalid or ambiguous model set [0.02ms]
+(pass) rejects invalid or ambiguous model set
+(pass) rejects invalid or ambiguous model set
+(pass) rejects invalid or ambiguous model set
+(pass) rejects invalid or ambiguous model set
+(pass) rejects invalid or ambiguous model set
+(pass) rejects invalid or ambiguous model set
+(pass) rejects invalid or ambiguous model set
+(pass) project model snapshot keeps selected order and thresholds [0.09ms]
+(pass) project model snapshot preserves an unconfigured threshold as null [0.07ms]
+(pass) saving project model set preserves requested order and writes only model references [0.47ms]
+(pass) saving project model set permits unknown acceptance threshold without substituting zero [0.07ms]
+
+server/answer-models/file-executor.test.ts:
+(pass) 文件作答只提供题面附件与输出，保留配置模型且凭证不进入命令参数 [2.45ms]
+(pass) CLI退出0但没有result事件不能视为完成 [1.20ms]
+(pass) CLI返回失败或缺必交文件均不发布成功 [1.72ms]
+(pass) 拒绝宿主版本、未经支持的模型参数和额外私有输入 [0.90ms]
+(pass) 不允许候选用符号链接输出宿主文件或预取消后启动进程 [1.12ms]
+(pass) Docker执行失败与CLI版本不符分别报告，不把容器不可用误诊为版本错误 [0.76ms]
+(pass) 中断候选进程后仅清理本次容器，不使用取消信号阻断清理 [0.87ms]
+
+server/materials/pdf-extraction/mineru-structure.test.ts:
+(pass) known MinerU page furniture and aside text retain source text without false unknown-type issues [0.48ms]
+(pass) DOCX keeps document order and structured text without requiring PDF page numbers [0.13ms]
+(pass) parses MinerU page-grouped V2 blocks and preserves every text field in order [0.34ms]
+(pass) parses MinerU flat V1 blocks without trimming or dropping repeated text [0.04ms]
+(pass) decodes table cell text and spans while retaining OCR text attached to an image block
+(pass) does not treat an image caption as a substitute for OCR text inside the image
+
+ 1155 pass
+ 0 fail
+ 3680 expect() calls
+Ran 1155 tests across 84 files. [24.54s]

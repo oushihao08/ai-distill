@@ -5,6 +5,10 @@ import {test,expect} from 'bun:test';
 import {resolveAnswerConfig,createAnswerClient} from './dispatch';
 import {configureAgentAdapter} from '../agent/runner';
 const router={provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'} as const;
+function streamResponse(content='答案'){
+ const chunks=[{choices:[{delta:{content},finish_reason:null}]},{choices:[{delta:{},finish_reason:'stop'}]},{choices:[],usage:{prompt_tokens:2,completion_tokens:1,total_tokens:3}}];
+ return new Response(chunks.map(chunk=>`data: ${JSON.stringify(chunk)}\n\n`).join('')+'data: [DONE]\n\n',{headers:{'Content-Type':'text/event-stream'}});
+}
 test('legacy Qwen and three native provider configurations resolve without credentials',()=>{
  expect(resolveAnswerConfig(router,{})).toEqual(router);
  expect(resolveAnswerConfig({...router,provider:undefined},{}).provider).toBe('qwen');
@@ -12,7 +16,7 @@ test('legacy Qwen and three native provider configurations resolve without crede
 });
 test('SiliconFlow freezes its OpenAI-compatible endpoint and uses its own credential',async()=>{
  const requests:{url:string;authorization:string|null;model:string}[]=[];
- const client=createAnswerClient({SILICONFLOW_API_KEY:'siliconflow-fixture',OPEN_ROUTER_KEY:'router-fixture'},async(url,init)=>{requests.push({url,authorization:new Headers(init?.headers).get('Authorization'),model:JSON.parse(init!.body as string).model});return Response.json({model:'actual',choices:[{finish_reason:'stop',message:{role:'assistant',content:'答案'}}]});});
+ const client=createAnswerClient({SILICONFLOW_API_KEY:'siliconflow-fixture',OPEN_ROUTER_KEY:'router-fixture'},async(url,init)=>{requests.push({url,authorization:new Headers(init?.headers).get('Authorization'),model:JSON.parse(init!.body as string).model});return streamResponse();});
  const config=resolveAnswerConfig({provider:'siliconflow',model:'Qwen/Qwen3.8-2.4T-A95B'},{});
  await client.answer({config,question:'题面',materials:[]});
  expect(requests).toEqual([{url:'https://api.siliconflow.com/v1/chat/completions',authorization:'Bearer siliconflow-fixture',model:'Qwen/Qwen3.8-2.4T-A95B'}]);

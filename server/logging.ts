@@ -18,6 +18,7 @@ const safeChangedFields=new Set(['credential_home','model','reasoning_effort','e
 const allowed=new Set(['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','session_id','operation','provider','model','reasoning_effort','library_package_id','library_revision_id','library_job_id','library_file_id','build_id','child_pid','timeout_ms','elapsed_ms','wall_elapsed_ms','timer_lateness_ms','exit_code','signal','error_kind','reason_code','finish_reason','failure_phase','retryable','http_status','material_count','page_count','input_bytes','output_bytes','token_usage','method','route','status_code','duration_ms','query_name','transaction_name','artifact_id','target_id','changed_fields','file_kind','dropped_count','state','queue_wait_ms','attempt_count','batch_index','last_heartbeat_at','threshold_ms','error_code','error_constraint','process_state','event_type','event_count','level','material_id','page','expected_count','actual_count','expected_page','actual_page','source_empty','diagnostic_id'
 ]);
 const correlationKeys=['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','library_package_id','library_revision_id','library_job_id','library_file_id','ordinal','call_id','operation','provider','model','reasoning_effort'] as const;
+function shouldPersist(level:unknown,event:string){return level==='error'||level==='warn'&&(event==='db.query.slow'||event==='db.connection.waited');}
 function safeString(key:string,value:string){
  if(value.length>(key==='route'?240:160)||/[\r\n\0]/.test(value)||/^(sk-[A-Za-z0-9_-]{12,}|Bearer\s|postgres(?:ql)?:\/\/)/i.test(value))return false;
  if(key==='route')return /^\/[A-Za-z0-9_./:-]*$/.test(value);
@@ -113,7 +114,7 @@ export function createStructuredLogger(options:StructuredLoggerOptions){
   instance_id,
   log(event:string,fields:LogFields={}){
    const occurred_at=now().toISOString(),extra=projectFields(fields),level=extra.level??'info';
-   if(level!=='error')return;
+   if(!shouldPersist(level,event))return;
    if(closed){markFailure('closed');return;}if(!/^[a-z][a-z0-9_.-]{0,119}$/.test(event)){markFailure('filesystem');return;}
    if(queue.length>=maxQueue){
     markFailure('queue_full');return;

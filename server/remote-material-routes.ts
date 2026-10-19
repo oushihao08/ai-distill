@@ -1,5 +1,5 @@
 /**
- * 职责：为本地 CLI 提供带令牌的远程材料任务、作答任务及材料副本下载接口。
+ * 职责：为本机CLI提供带令牌的旧材料工作流组合操作、题目作答及旧管理副本下载接口；全局库job另走material-library路由。
  * 关键入口：registerRemoteMaterialRoutes；仅服务器设置令牌时注册，不改变本机通用 API。
  */
 import {createHash,timingSafeEqual} from 'node:crypto';
