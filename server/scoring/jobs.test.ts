@@ -23,7 +23,7 @@ afterAll(async()=>{if(previousCodexHome===undefined)delete process.env.CODEX_HOM
 const rubric=[{id:'amount',criterion:'指出100元',max_score:1}];
 const input={question_version:'v1',question:'多少',materials:[{name:'附件1',text:'欠款100元'}],attachments:[{id:'attachment',sha256:hash('欠款100元')}]};
 const context={question:input.question,materials:input.materials,answer:'100元',rubric,answer_approach:'核对金额',reference_answer:'100元',project_rules:projectRules,binding:{question_version:'v1',input_digest:inputDigest(input),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'answer',answer_sha256:hash('100元')}};
-function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:boolean;inactive?:boolean;stale?:boolean;answerStepStatus?:string;answers?:{id:string;text:string}[];bundle?:any[];scoreRows?:any[];provider?:'codex'|'api';policy?:any}={}){
+function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:boolean;inactive?:boolean;stale?:boolean;answerStepStatus?:string;answers?:{id:string;text:string}[];bundle?:any[];scoreRows?:any[];provider?:'codex'|'api';policy?:any;content_contract?:string}={}){
  const calls:{sql:string;values:any[]}[]=[],hookRuns=new Map<string,any>();let claim=false,activeConnections=0;
  const provider=options.provider??'codex';
  const job:any={id:'grade',workflow_id:'workflow',input:{context:structuredClone(context),digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(provider)},config:provider==='api'?{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b'},prompt:'逐项评分'}:{provider:'codex',model:'gpt-6-luna',reasoning_effort:'medium'}};
@@ -38,7 +38,7 @@ function fake(options:{reuse?:boolean;empty?:boolean;late?:boolean;unready?:bool
   if(sql.startsWith('SELECT w.rule_version_id'))return {rowCount:1,rows:[{rule_version_id:'rules-v1',project_name:'本期项目',title:'本期项目-题目1',source_key:'题目1',local_skill_path:join(snapshot,'skill'),material_root:join(snapshot,'questions')}]};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rowCount:1,rows:[{codex_model:null,codex_reasoning_effort:null}]};
   if(sql.startsWith('SELECT a.input,a.result')){if(options.bundle?.some(item=>item.status==='failed')){expect(sql).toContain("s.status='failed'");expect(sql).toContain("model->>'status'='succeeded'");}const answerId=values[0]??'answer',text=options.answers?.find(answer=>answer.id===answerId)?.text??'100元';return {rowCount:1,rows:[{input:{...input,question_attempt_id:'author',input_digest:inputDigest(input)},result:{text,input_digest:inputDigest(input),answer_sha256:hash(text)}}]};}
-  if(sql.startsWith('SELECT a.id,a.input,a.result'))return {rowCount:1,rows:[{id:'author',input:{...(options.policy?{scoring_policy:options.policy}:{}),rule_version_id:projectRules.version_id,rule_source_digest:projectRules.source_digest,rule_snapshot_path:snapshot,rule_files:projectRules.files},result:{...input,attachment_ids:['attachment'],answer_approach:'核对金额',reference_answer:'100元',quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:options.late&&claim?'r2':'r1',rubric:job.input.context.rubric,...(options.policy?{scoring_policy:options.policy}:{})}}]};
+  if(sql.startsWith('SELECT a.id,a.input,a.result'))return {rowCount:1,rows:[{id:'author',input:{...(options.policy?{scoring_policy:options.policy}:{}),rule_version_id:projectRules.version_id,rule_source_digest:projectRules.source_digest,rule_snapshot_path:snapshot,rule_files:projectRules.files},result:{...(options.content_contract?{content_contract:options.content_contract,content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'text',tools:[]}}:{}),...input,attachment_ids:['attachment'],answer_approach:'核对金额',reference_answer:'100元',quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:options.late&&claim?'r2':'r1',rubric:job.input.context.rubric,...(options.policy?{scoring_policy:options.policy}:{})}}]};
   if(sql.includes('a.id=ANY($2::uuid[])'))return {rowCount:options.unready?0:(options.answers?.length??0),rows:options.unready?[]:(options.answers??[]).map(answer=>({id:answer.id}))};
   if(sql.startsWith('SELECT a.id FROM'))return {rowCount:options.unready?0:1,rows:options.unready?[]:[{id:'answer'}]};
   if(sql.startsWith('SELECT status,result FROM ai_distill.steps'))return {rowCount:1,rows:[{status:options.answerStepStatus??'succeeded',result:options.bundle?{models:options.bundle}:null}]};
@@ -234,3 +234,56 @@ test('新评分传递冻结核对正文，旧无字段任务传递空正文，�
   }
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+
+test('只有Work新评分冻结候选引文核验，不改变其他项目或旧队列摘要',async()=>{
+ const policy={contract:'model_report_v1',rules_text:'模型按规则判断',reference_answer:'none'};
+ for(const provider of ['codex','api'] as const)for(const content_contract of ['work_legal_v1','other',undefined]){
+  const f=fake({provider,policy,content_contract});await enqueueScore(f.pool,'workflow');
+  const frozen=JSON.parse(f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!.values[2]);
+  expect(frozen.context.candidate_quote_check).toBe(content_contract==='work_legal_v1'?'literal_v1':undefined);
+  expect(frozen.execution_instructions.candidate_quote_check).toBe(frozen.context.candidate_quote_check);
+  if(content_contract==='work_legal_v1'){
+   expect(frozen.execution_instructions.candidate_quote_instructions).toContain('自行更正');
+   expect(frozen.execution_instructions.candidate_quote_tool_sha256).toMatch(/^[a-f0-9]{64}$/);
+   expect(frozen.digest).toBe(scoreContextDigest(frozen.context));
+  }
+ }
+ expect(scoreContextDigest({...context,content_contract:'work_legal_v1'})).toBe(scoreContextDigest(context));
+});
+test('Work两种worker都再次核验引文；错引保留原文但不产生有效指标，未改模型分数',async()=>fixture(async root=>{
+ const policy={contract:'model_report_v1',rules_text:'模型按规则判断',reference_answer:'none'};
+ for(const provider of ['codex','api'] as const)for(const quote of ['100元','仅校准中出现']){
+  const f=fake({provider,policy,content_contract:'work_legal_v1'});
+  f.job.input.context.candidate_quote_check='literal_v1';
+  f.job.input.digest=scoreContextDigest(f.job.input.context);
+  f.job.input.execution_instructions=scoreExecutionInstructions(provider,'model_report_v1','literal_v1');
+  const model={contract:'model_report_v1',items:[{id:'amount',judgment:'扣分',score_delta:-7,reason:'模型判断',answer_quotes:[quote]}],summary:{raw_score:93,full_score:100,evaluation_percent:93,veto_triggered:false}};
+  const raw_text='<model_report>'+JSON.stringify(model)+'</model_report>';
+  await runNextScore(f.pool,root,async()=>({raw_text,report:{},session_id:'fixture',usage:null,duration_ms:1}),undefined,async()=>{},provider);
+  const saved=JSON.parse(f.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.step_attempts SET status=$2'))!.values[2]);
+  expect(saved.raw_text).toBe(raw_text);expect(saved.validation.valid).toBe(quote==='100元');
+  if(quote==='100元')expect(saved.report).toMatchObject(model);
+  else {expect(saved.validation.evaluation_percent).toBeNull();expect(saved.validation.issues.join(' ')).toContain('不在候选答案原文');}
+ }
+}));
+
+test('旧Work队列不补引文字段；新Work冻结工具摘要被改写时拒绝执行',async()=>fixture(async root=>{
+ const policy={contract:'model_report_v1',rules_text:'模型按规则判断',reference_answer:'none'};
+ for(const provider of ['codex','api'] as const)for(const version of ['old','tampered']){
+  const f=fake({provider,policy,content_contract:'work_legal_v1'});
+  if(version==='tampered'){
+   f.job.input.context.candidate_quote_check='literal_v1';f.job.input.digest=scoreContextDigest(f.job.input.context);
+   f.job.input.execution_instructions=scoreExecutionInstructions(provider,'model_report_v1','literal_v1');
+   f.job.input.execution_instructions.candidate_quote_tool_sha256='0'.repeat(64);
+  }
+  let called=false;
+  const raw='<model_report>'+JSON.stringify({contract:'model_report_v1',items:[{id:'amount',judgment:'未满足',score_delta:0,reason:'旧协议理由'}],summary:{raw_score:0,full_score:7,evaluation_percent:0,veto_triggered:false}})+'</model_report>';
+  await runNextScore(f.pool,root,async()=>{called=true;return {raw_text:raw,report:{},session_id:'fixture',usage:null,duration_ms:1};},undefined,async()=>{},provider);
+  expect(called).toBe(version==='old');
+  if(version==='old'){
+   const saved=JSON.parse(f.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.step_attempts SET status=$2'))!.values[2]);
+   expect(saved.validation.valid).toBe(true);expect(saved.report.items[0]).not.toHaveProperty('answer_quotes');
+  }
+ }
+}));

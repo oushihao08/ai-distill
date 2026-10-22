@@ -4,6 +4,7 @@
 -->
 
 <script setup lang="ts">
+import {usePageBreadcrumbs} from '../composables/usePageBreadcrumbs';
 import { api } from '../api/client';
 import { useResource } from '../composables/useResource';
 import { dateLabel, fileSize } from '../utils/format';
@@ -15,6 +16,7 @@ import MaterialPackageQuestionForm from '../components/MaterialPackageQuestionFo
 import MaterialPackageQuestions from '../components/MaterialPackageQuestions.vue';
 const route = useRoute();const router=useRouter();
 const { data, error, loading, refresh } = useResource<WorkflowDetail>(`/workflows/${route.params.id}`);
+usePageBreadcrumbs(()=>{const project=data.value?.project;return [{title:'出题项目',to:'/'},...(project?.project_group_id?[{title:project.parent_name||'主项目',to:`/project-groups/${project.project_group_id}`}]:[]),...(project?[{title:project.phase_name||project.name,to:`/projects/${project.id}`}]:[]),{title:data.value?.workflow.title||'题目详情'}];});
 const submitting=shallowRef(false);
 const exportingDocx=shallowRef(false);
 const docxArchivePath=shallowRef('');

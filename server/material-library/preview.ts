@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {readLibraryBlob} from './storage';
+import {documentFieldRanges} from '../../shared/prepared-structure';
 import {documentBlocksToText} from '../materials/pdf';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
@@ -46,7 +47,7 @@ export async function readLibraryDocuments(pool:Pool,revisionId:string,jobId:str
   let document:any;
   try{document=JSON.parse(checkedText(text_content,sha256));}catch(error){if(error instanceof HTTPException)throw error;throw conflict('材料提取结构无效');}
   if(document?.version!==1||!Array.isArray(document.pages)||document.pages.some((page:any)=>typeof page?.text!=='string')||createHash('sha256').update(document.pages.map((page:any)=>page.text).join('\n')).digest('hex')!==text_sha256)throw conflict('材料提取正文校验失败');
-  return{...row,pages:document.pages.map((page:any)=>({page:page.page,text:page.text,issues:page.issues??[]}))};
+  return{...row,pages:document.pages.map((page:any)=>({page:page.page,text:page.text,structure:page.structure,field_ranges:Array.isArray(page.structure)?documentFieldRanges(page.structure):undefined,issues:page.issues??[]}))};
  })};
 }
 

@@ -40,7 +40,7 @@ input.ts → jobs.ts 从数据库取当前题面获准的冻结来源附件并�
 
 不发送作答思路、Rubric、标答、历史答案、评分结果、目标分数或项目 Skill 给作答者。API provider 是纯文字请求／响应；Codex provider 是本机隔离 Agent，可调用受限工作区内的 shell/unified_exec，但网络、记忆、宿主 Skill、插件、MCP 和浏览器均关闭。不同执行方式记录真实 provider/model/reasoning effort，不自动切换。修改模型集合后不能用旧集合答案冒充当前结果。
 
-`workAnswerCapabilityIssue()`供实际派发与项目就绪列表共用。Work草稿、非文字输入及要求外部工具的任务会阻断派发；文件成果可按下文的文字呈现适配进入作答。对 Agent 派发仍保持题目声明的 `answer_requirements` 与正文成果能力边界。
+`workAnswerCapabilityIssue()`供实际派发与项目就绪列表共用。Work草稿和非文字输入会阻断派发；业务工具清单不作为禁止作答的条件，工具操作是否完成由冻结题面和评分标准判断。文件成果可按下文的文字呈现适配进入作答。对 Agent 派发仍保持题目声明的 `answer_requirements` 与正文成果能力边界。
 
 任何项目的题目具有合法`deliverables`清单（`path`、`description`或`desc`、`required`）时，`answerPresentation()`只提取名称、说明、必交标记，生成`text_deliverables_v1`呈现快照。`buildAnswerMessage()`将原题面、快照说明、成果清单组成实际用户消息，附件仍完整发送；不读取Rubric、标答、思路或Skill。模型在回复中逐项呈现成果，不能声称实际创建文件或完成外部操作。无成果清单的旧文字题维持原输入。
 

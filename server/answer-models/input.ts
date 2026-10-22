@@ -17,7 +17,6 @@ export function workAnswerCapabilityIssue(value:any):string|null{
  const task=value.task_requirements,status=value.content_status;
  if(status?.status!=='complete')return 'Work题目仍为草稿，不能作答';
  if(!task||task.input_mode!=='text'||!['text','file'].includes(task.output_mode)||!Array.isArray(task.tools))return '当前作答器仅支持文字输入；非文字任务不能按文字测试';
- if(task.tools.length>0)return '当前作答器不支持题目要求的工具';
  return null;
 }
 export function authoringQuestion(raw:unknown) {

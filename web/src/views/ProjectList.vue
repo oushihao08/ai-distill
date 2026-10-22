@@ -5,6 +5,7 @@
 -->
 
 <script setup lang="ts">
+import {usePageBreadcrumbs} from '../composables/usePageBreadcrumbs';
 import { api } from '../api/client';
 import { useResource } from '../composables/useResource';
 import { dateLabel } from '../utils/format';
@@ -14,6 +15,7 @@ const route=useRoute();
 const groupId=String(route.params.groupId);
 const {data:response,loading,error,refresh}=useResource<{group:{id:string;name:string};items:Project[]}>(`/project-groups/${groupId}/phases`);
 const data=computed(()=>response.value?.items);
+usePageBreadcrumbs(()=>[{title:'出题项目',to:'/'},{title:response.value?.group.name??'主项目期次'}]);
 const nextPhaseNo=computed(()=>Math.max(0,...(data.value??[]).map(item=>item.phase_no??0))+1);
 const router = useRouter();
 const createOpen = shallowRef(false);

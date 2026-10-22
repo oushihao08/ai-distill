@@ -81,6 +81,8 @@ export interface MaterialLibraryRevision {
 }
 
 export interface MaterialLibraryJob {
+  material_processing_mode?:MaterialProcessingMode|null;
+  redaction_template_id?:string|null;
   origin?: 'execution'|'legacy_import';
   id: string;
   package_id: string;
@@ -102,6 +104,9 @@ export interface MaterialLibraryJob {
 }
 
 export interface MaterialLibraryRedactionSummary {
+  redaction_template_workflow?:string|null;
+  redaction_template_id?:string|null;
+  redaction_template_name?:string|null;
   id: string;
   package_id: string;
   revision_id: string;
@@ -132,6 +137,7 @@ export type QuestionMaterialOrigin =
   | {
       kind: 'library_v1';
       material_mode: QuestionMaterialMode;
+      material_processing_mode?:MaterialProcessingMode;
       package_id: string;
       revision_id: string;
       redaction_id: string | null;
@@ -158,6 +164,8 @@ export interface CreateLibraryJobRequest {
   execution_target: LibraryExecutionTarget;
   extraction_job_id?: string;
   previous_job_id?: string;
+  template_id?: string;
+  project_id?: string;
 }
 
 export interface CreateLibraryQuestionRequest {
@@ -171,4 +179,18 @@ export interface CreateLibraryQuestionRequest {
   target_level?: 'L2' | 'L3' | 'L4' | 'L5';
   authoring_direction?: string;
   question_tags?: string[];
+}
+/** 期次持久化的材料处理意图；化名方法与实际Agent执行后端分离。 */
+export type MaterialProcessingMode='original'|'mask'|'aliases';
+/** 老客户端的original设置继续生效；未指定的新期次默认整包化名。 */
+export function resolveMaterialProcessingMode(config?:{material_processing_mode?:unknown;material_source_mode?:unknown}|null):MaterialProcessingMode{
+ const value=config?.material_processing_mode;
+ if(value===undefined)return config?.material_source_mode==='original'?'original':'aliases';
+ if(value==='original'||value==='mask'||value==='aliases')return value;
+ throw new Error('材料处理模式无效');
+}
+export function materialProcessingSourceMode(mode:MaterialProcessingMode):'original'|'redacted'{return mode==='original'?'original':'redacted';}
+/** 历史无模板的脱敏结果属于旧遮挡流程；新结果优先使用冻结的workflow。 */
+export function redactionProcessingMode(value:{redaction_template_workflow?:string|null;redaction_template_id?:string|null}):Exclude<MaterialProcessingMode,'original'>{
+ return value.redaction_template_workflow==='codex_plan'||value.redaction_template_id==='aliases'?'aliases':'mask';
 }

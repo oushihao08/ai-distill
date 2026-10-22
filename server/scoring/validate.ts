@@ -6,9 +6,10 @@
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
 import type {AnswerPresentation} from '../answer-models/input';
 import type {ModelRubricItem} from '../authoring/validate';
+import {candidateQuoteIssues} from './candidate-quotes';
 export interface ScoreBinding {question_version:string;input_digest:string;rubric_version:string;rubric_digest:string;answer_attempt_id:string;answer_sha256:string}
 export interface RubricItem {id:string;criterion:string;max_score:number}
-export interface ScoreContext {answer_presentation?:AnswerPresentation;material_mode?:'redacted'|'original';scoring_policy?:ScoringPolicy;project_name?:string;question_id?:string;binding:ScoreBinding;question:string;materials:{name:string;text:string}[];answer:string;rubric:(RubricItem|ModelRubricItem)[];answer_approach:string;reference_answer:string;step_prompt?:string;project_prompt?:{workspace_path:string;skill_path:string;source_digest:string;files:{path:string;sha256:string;size_bytes:number}[]};project_rules?:{version_id:string;source_digest:string;snapshot_path:string;files:{path:string;sha256:string;size_bytes:number}[]}}
+export interface ScoreContext {content_contract?:string;candidate_quote_check?:'literal_v1';answer_presentation?:AnswerPresentation;material_mode?:'redacted'|'original';scoring_policy?:ScoringPolicy;project_name?:string;question_id?:string;binding:ScoreBinding;question:string;materials:{name:string;text:string}[];answer:string;rubric:(RubricItem|ModelRubricItem)[];answer_approach:string;reference_answer:string;step_prompt?:string;project_prompt?:{workspace_path:string;skill_path:string;source_digest:string;files:{path:string;sha256:string;size_bytes:number}[]};project_rules?:{version_id:string;source_digest:string;snapshot_path:string;files:{path:string;sha256:string;size_bytes:number}[]}}
 const object=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value);
 const nonblank=(value:unknown):value is string=>typeof value==='string'&&!!value.trim();
 /** 投影及绑定共用同一白名单；旧契约维持原始三字段及摘要字节顺序。 */
@@ -33,11 +34,11 @@ export function scoreRubricBindingText(rubric:ScoreContext['rubric'],policy?:Sco
 }
 export interface ModelReport {
  contract:'model_report_v1';
- items:{id:string;judgment:string;score_delta:number|null;reason:string}[];
+ items:{id:string;judgment:string;score_delta:number|null;reason:string;answer_quotes?:string[]}[];
  summary:{raw_score:number|null;full_score:number|null;evaluation_percent:number|null;veto_triggered:boolean|null};
 }
 /** 新模式只收集模型结果和检查结构，不重算、裁剪或改写业务分数。 */
-export function extractModelReport(text:string,rubric:{id:string}[]):{valid:boolean;report:ModelReport|null;evaluation_percent:number|null;issues:string[];mode:'model_report_v1'}{
+export function extractModelReport(text:string,rubric:{id:string}[],candidateAnswer?:string):{valid:boolean;report:ModelReport|null;evaluation_percent:number|null;issues:string[];mode:'model_report_v1'}{
  const result=(report:ModelReport|null,issues:string[])=>({valid:issues.length===0,report,evaluation_percent:issues.length===0?report?.summary.evaluation_percent??null:null,issues,mode:'model_report_v1' as const});
  const sections=[...text.matchAll(/<model_report>\s*([\s\S]*?)\s*<\/model_report>/g)];
  if(sections.length!==1||(text.match(/<model_report>/g)??[]).length!==1||(text.match(/<\/model_report>/g)??[]).length!==1)return result(null,['评分结果区缺失、重复或不完整']);
@@ -55,9 +56,10 @@ export function extractModelReport(text:string,rubric:{id:string}[]):{valid:bool
  const summary=raw.summary;
  if(!nullableNumber(summary.raw_score)||!nullableNumber(summary.full_score)||!nullableNumber(summary.evaluation_percent)||(summary.veto_triggered!==null&&typeof summary.veto_triggered!=='boolean'))issues.push('评分汇总字段缺失或类型无效');
  if(typeof summary.evaluation_percent==='number'&&(summary.evaluation_percent<0||summary.evaluation_percent>100))issues.push('模型报告比较指标超出0—100范围');
+ if(candidateAnswer!==undefined)issues.push(...candidateQuoteIssues(raw.items,candidateAnswer));
  // 不接受模型提供的绑定、身份或程序状态字段；只提取约定业务字段，原始文本另行完整保存。
  if(issues.length)return result(null,issues);
- const report:ModelReport={contract:'model_report_v1',items:raw.items.map(item=>({id:item.id,judgment:item.judgment,score_delta:item.score_delta,reason:item.reason})),summary:{raw_score:summary.raw_score as number|null,full_score:summary.full_score as number|null,evaluation_percent:summary.evaluation_percent as number|null,veto_triggered:summary.veto_triggered as boolean|null}};
+ const report:ModelReport={contract:'model_report_v1',items:raw.items.map(item=>({id:item.id,judgment:item.judgment,score_delta:item.score_delta,reason:item.reason,...(candidateAnswer!==undefined?{answer_quotes:[...item.answer_quotes]}:{})})),summary:{raw_score:summary.raw_score as number|null,full_score:summary.full_score as number|null,evaluation_percent:summary.evaluation_percent as number|null,veto_triggered:summary.veto_triggered as boolean|null}};
  return result(report,[]);
 }
 /** 回复返回后提取明确总分；有歧义时保留原文，不改分或重新评分。 */

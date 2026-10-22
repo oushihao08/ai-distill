@@ -10,6 +10,8 @@ import {readAcceptanceResult} from '../shared/workflow-results';
 import {ApiClient, CliError} from './client';
 import {batchSize,batchView,createBatch,readBatch,skipBatch} from './batches';
 import {exportFailedQuestions} from './failed-export';
+import {exportPreparedMaterials} from './material-export';
+import {validateMaterialPreparationPlan} from '../shared/material-preparation';
 
 export const HELP = `ai-distill：工作流工具（全部命令支持 --json；仅本机命令接受 --api http://127.0.0.1:3700）
 远程材料（经 SSH 隧道，凭证从 .env 读取）：
@@ -49,7 +51,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   library package create --name 名称 [--description 说明] [--tags a,b]
   library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
   library revision create --package UUID --version N --request-key UUID --manifest JSON
-  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID]
+  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID]
   library job cancel --job UUID
   project materials load --project UUID --package UUID (--redaction UUID | --revision UUID)
   project materials update --project UUID --link UUID --version N [--redaction UUID | --revision UUID] [--position N]
@@ -68,6 +70,9 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   step dispatch STEP_KEY --project UUID (--ids UUID,... | --all)
   export create --project UUID [--batch 批次]
 下载（仅写指定的新本机文件，不覆盖）：
+  library documents export --plan Codex处理计划.json --out 新目录（校验原文并应用计划；不调用模型、不入库）
+  library template list | show --template 模板ID（提示词、流程及冻结摘要）
+  library documents import --plan Codex处理计划.json --request-key UUID（正式保存新的库级脱敏结果）
   artifact download --artifact UUID --out 路径 | export download --export UUID --out 路径
   siriser download --workflow UUID --out 五件套ZIP路径（需该题已有当前有效归档）
 STEP_KEY 使用 step list；不使用页面序号。派发只执行一个步骤，不自动继续。
@@ -144,9 +149,10 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'library package usage':['package'],'library package revisions':['package'],'library package create':['name','description','tags'],
       'library package update':['package','version','file'],'library package archive':['package','version'],'library package restore':['package','version'],
       'library revision create':['package','version','request-key','manifest'],
-      'library job start':['revision','kind','target','request-key','extraction-job','previous-job'],
+      'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project'],
       'library job show':['job'],'library job cancel':['job'],
-      'library documents show':['revision','extraction-job','file'],'library redaction show':['redaction','file'],
+      'library template list':[],'library template show':['template'],
+      'library documents show':['revision','extraction-job','file'],'library documents export':['plan','out'],'library documents import':['plan','request-key'],'library redaction show':['redaction','file'],
       'library file download':['file','out'],
       'library processing show':[],'library processing update':['version','file'],
       'material-package list':['project'],'material-package versions':['workflow'],
@@ -338,15 +344,23 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'library package archive': data=await versioned(`/api/material-library/packages/${uuid('package')}`,'DELETE',required('version'));break;
       case 'library package restore': data=await versioned(`/api/material-library/packages/${uuid('package')}/restore`,'POST',required('version'));break;
       case 'library revision create': data=await createLibraryRevision(uuid('package'));break;
+      case 'library template list': data=await get('/api/material-library/redaction-templates');break;
+      case 'library template show': {const catalog=await get('/api/material-library/redaction-templates');data=catalog.items.find((t:any)=>t.id===required('template'));if(!data)throw new CliError('脱敏模板不存在');break;}
       case 'library job start': {
         const kind=required('kind'),target=required('target');
         if(!['intake','extract','redact'].includes(kind)||!['local','server'].includes(target))throw new CliError('任务 kind 或 execution target 无效');
-        const body={kind,request_key:uuid('request-key'),execution_target:target,...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{})};
+        const body={kind,request_key:uuid('request-key'),execution_target:target,...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{})};
         data=await post(`/api/material-library/revisions/${uuid('revision')}/jobs`,body);break;
       }
       case 'library job show': data=await get(`/api/material-library/jobs/${uuid('job')}`);break;
       case 'library job cancel': data=await post(`/api/material-library/jobs/${uuid('job')}/cancel`);break;
       case 'library documents show': data=await get(`/api/material-library/revisions/${uuid('revision')}/documents${queryString([['extraction_job_id',uuid('extraction-job')],['file_id',flags.has('file')?uuid('file'):undefined]])}`);break;
+      case 'library documents export': data=await exportPreparedMaterials(api,required('plan'),required('out'),signal);break;
+      case 'library documents import': {
+       const plan=await readJsonFile(required('plan'),'材料处理计划');
+       try{validateMaterialPreparationPlan(plan);}catch(error){throw new CliError(error instanceof Error?error.message:'材料处理计划无效');}
+       data=await post(`/api/material-library/revisions/${plan.revision_id}/prepared-redactions`,{request_key:uuid('request-key'),plan});break;
+      }
       case 'library redaction show': data=await get(`/api/material-library/redactions/${uuid('redaction')}/preview${queryString([['file_id',flags.has('file')?uuid('file'):undefined]])}`);break;
       case 'library file download': {
         const out=required('out'),bytes=await api.download(`/api/material-library/files/${uuid('file')}/content`,signal);
@@ -399,10 +413,16 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const settings=flags.has('settings-file')?await readJsonFile(required('settings-file'),'项目设置'):undefined;
         const materialMode=flags.has('material-mode')?required('material-mode'):'question_folders';
         if(!['question_folders','material_packages'].includes(materialMode))throw new CliError('material-mode 须为 question_folders 或 material_packages');
+        let parentName=flags.has('parent-name')?required('parent-name'):undefined;
+        if(flags.has('project-group')&&parentName===undefined){
+          const detail=object(await get(`/api/project-groups/${uuid('project-group')}/phases`),'主项目');
+          if(typeof detail.group?.name!=='string'||!detail.group.name.trim())throw new CliError('主项目响应缺少名称，未创建期次',{kind:'invalid_response'});
+          parentName=detail.group.name;
+        }
         const body={name:required('name'),description:flags.get('description')??'',...(flags.has('material-backend')?{material_backend:backend}:{}),
           ...(root?{material_root:root}:{}),...(workspace?{workspace_path:workspace}:{}),
           ...(flags.has('material-mode')?{material_mode:materialMode}:{}),
-          ...(flags.has('parent-name')?{parent_name:required('parent-name')} : {}),
+          ...(parentName!==undefined?{parent_name:parentName} : {}),
           ...(flags.has('phase-name')?{phase_name:required('phase-name')} : {}),
           ...(flags.has('phase-no')?{phase_no:positiveInteger(required('phase-no'),'期数')} : {}),
           ...(flags.has('project-group')?{project_group_id:uuid('project-group')} : {}),...(skill?{local_skill_path:skill}:{})};
@@ -416,10 +436,12 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const projectId=uuid('project'),current=object(await get(`/api/projects/${projectId}`),'项目').project;
         if(!current)throw new CliError('项目响应缺少详情',{kind:'invalid_response'});
         if(!['name','parent-name','phase-name','description','material-root','skill-path'].some(key=>flags.has(key)))throw new CliError('project update 至少需要一个要修改的字段');
+        const library=current.material_backend==='library_v1';
+        if(library&&flags.has('material-root'))throw new CliError('材料库期次通过加载材料包使用材料，不设置旧材料目录');
         const root=flags.has('material-root')?required('material-root'):current.material_root;
-        const skill=flags.has('skill-path')?required('skill-path'):current.local_skill_path;
-        if(typeof root!=='string'||!root.startsWith('/')||(skill!==undefined&&skill!==null&&(typeof skill!=='string'||!skill.startsWith('/'))))throw new CliError('材料目录和 skill 目录须为本机绝对路径');
-        data=await patch(`/api/projects/${projectId}`,{name:flags.has('name')?required('name'):current.name,description:flags.has('description')?required('description'):current.description,material_root:root,...(flags.has('parent-name')?{parent_name:required('parent-name')} : {}),...(flags.has('phase-name')?{phase_name:required('phase-name')} : {}),...(typeof skill==='string'?{local_skill_path:skill}:{})});break;
+        const skill=flags.has('skill-path')?required('skill-path'):undefined;
+        if((!library&&(typeof root!=='string'||!root.startsWith('/')))||(skill!==undefined&&!skill.startsWith('/')))throw new CliError('材料目录和 skill 目录须为本机绝对路径');
+        data=await patch(`/api/projects/${projectId}`,{name:flags.has('name')?required('name'):current.name,description:flags.has('description')?required('description'):current.description,...(!library?{material_root:root}:{}),...(flags.has('parent-name')?{parent_name:required('parent-name')} : {}),...(flags.has('phase-name')?{phase_name:required('phase-name')} : {}),...(skill!==undefined?{local_skill_path:skill}:{})});break;
       }
       case 'project delete': {
         const projectId=uuid('project'),current=object(await get(`/api/projects/${projectId}`),'项目');

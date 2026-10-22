@@ -1,6 +1,6 @@
 /** 验证 worker 池并发/空闲间隔/停止与公平轮转；任务处理器和资源门禁均为测试回调，不连接数据库或调用外部服务。 */
 import { expect, test } from 'bun:test';
-import { createFairQueueHandler,runWorkerPool } from './worker-pool';
+import { createFairQueueHandler,createSharedQueueProbe,runWorkerPool } from './worker-pool';
 
 test('worker pool runs up to the configured concurrency and drains on abort', async () => {
   const controller = new AbortController();
@@ -69,4 +69,24 @@ test('fair queue dispatch advances even when every queue is empty',async()=>{
  const dispatch=createFairQueueHandler(['skill','redaction','authoring','score'].map(name=>async()=>{order.push(name);return false;}));
  expect(await dispatch()).toBe(false);expect(await dispatch()).toBe(false);
  expect(order).toEqual(['skill','redaction','authoring','score','redaction','authoring','score','skill']);
+});
+
+
+test('shared empty probe collapses concurrent lookups and expires within the polling interval',async()=>{
+ let calls=0,clock=0,available=false;
+ const probe=createSharedQueueProbe(async()=>{calls++;await Bun.sleep(2);return available;},3000,()=>clock);
+ expect(await Promise.all(Array.from({length:8},()=>probe()))).toEqual(Array(8).fill(false));expect(calls).toBe(1);
+ clock=2999;expect(await probe()).toBe(false);expect(calls).toBe(1);
+ clock=3000;available=true;expect(await probe()).toBe(true);expect(calls).toBe(2);
+ expect(await probe()).toBe(true);expect(calls).toBe(3);
+});
+test('probe failures are not cached and retry can recover',async()=>{
+ let calls=0;const probe=createSharedQueueProbe(()=>{if(++calls===1)throw new Error('lookup failed');return Promise.resolve(true);});
+ await expect(probe()).rejects.toThrow('lookup failed');expect(await probe()).toBe(true);expect(calls).toBe(2);
+});
+test('shared positive availability does not share claimed jobs or serialize execution',async()=>{
+ let probes=0,next=0,active=0,peak=0;const seen:number[]=[];
+ const probe=createSharedQueueProbe(async()=>{probes++;await Bun.sleep(1);return true;});
+ await Promise.all(Array.from({length:4},async()=>{if(await probe()){const id=++next;seen.push(id);peak=Math.max(peak,++active);await Bun.sleep(5);active--;}}));
+ expect(probes).toBe(1);expect(new Set(seen).size).toBe(4);expect(peak).toBe(4);
 });

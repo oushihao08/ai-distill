@@ -26,6 +26,7 @@ declare module 'vue' {
     LibraryMaterialPreview: typeof import('./components/LibraryMaterialPreview.vue')['default']
     LibraryPackageCreateDialog: typeof import('./components/LibraryPackageCreateDialog.vue')['default']
     LibraryPackageSettings: typeof import('./components/LibraryPackageSettings.vue')['default']
+    LibraryPackageUseMarker: typeof import('./components/LibraryPackageUseMarker.vue')['default']
     LibraryPackageWorkspace: typeof import('./components/LibraryPackageWorkspace.vue')['default']
     LibraryProcessingSettings: typeof import('./components/LibraryProcessingSettings.vue')['default']
     LibraryUsageSummary: typeof import('./components/LibraryUsageSummary.vue')['default']

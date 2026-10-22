@@ -55,7 +55,7 @@ test('manual export writes one DOCX artifact without touching workflow state or 
  expect(result).toMatchObject({reused:false,sha256:hash(bytes)});expect(bytes.readUInt32LE(0)).toBe(0x04034b50);expect(again).toMatchObject({artifact_id:result.artifact_id,reused:true});
  expect(await readFile(sourceCopy)).toEqual(Buffer.from('original attachment'));
  expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toHaveLength(1);
- expect(f.manifestArtifacts).toHaveLength(1);expect(JSON.parse(f.manifestArtifacts[0]!.content).renderer_version).toBe('redacted-structure-docx-v1');
+ expect(f.manifestArtifacts).toHaveLength(1);expect(JSON.parse(f.manifestArtifacts[0]!.content).renderer_version).toBe('redacted-structure-docx-v3');
  expect(f.calls.some(call=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts)/.test(call.sql))).toBe(false);
 });
 
@@ -137,7 +137,7 @@ test('structured index drives DOCX rendering and manifest binds source structure
  const xml=spawnSync('python3',['-c',"import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read('word/document.xml').decode())",path],{encoding:'utf8'});
  expect(xml.status).toBe(0);expect(xml.stdout).toContain('w:val="Heading1"');expect(xml.stdout).toContain('附件1的脱敏正文');
  const manifest=JSON.parse(f.manifestArtifacts[0]!.content);expect(manifest.materials[0]).toMatchObject({material_id:materialId,source_sha256:hash(Buffer.from('original attachment')),docx_artifact_id:artifact.artifact_id,docx_sha256:artifact.sha256});
- expect(manifest.renderer_version).toBe('redacted-structure-docx-v1');
+ expect(manifest.renderer_version).toBe('redacted-structure-docx-v3');
 });
 
 test('corrupt structured index fails closed before copying or exporting materials',async()=>{

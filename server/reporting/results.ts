@@ -5,7 +5,7 @@
  */
 import {basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {buildXlsx,type WorkbookSheet} from './xlsx';
+import {buildXlsx,type WorkbookSheet} from '../document-generation/xlsx';
 
 export interface ResultExportRecord {
  workflow_id:string;title:string;accepted:boolean;

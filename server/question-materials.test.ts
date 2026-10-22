@@ -18,6 +18,19 @@ function mockDb(respond:(sql:string)=>unknown){
  const query=async(sql:string)=>{statements.push(sql);return respond(sql)??{rows:[],rowCount:0};};
  return{db:{query} as unknown as PoolClient,statements};
 }
+test('processing mode comes from the immutable question snapshot rather than current project settings',async()=>{
+ for(const mode of ['mask','aliases','original'] as const){
+  const snapshot={...manifest,origin:{...manifest.origin,material_processing_mode:mode}};
+  const {db,statements}=mockDb(sql=>{
+   if(sql.includes('FROM ai_distill.workflows w')&&sql.includes('JOIN ai_distill.projects'))return{rows:[{material_backend:'library_v1'}],rowCount:1};
+   if(sql.includes('FROM ai_distill.question_library_sources'))return{rows:[{material_mode:'redacted',snapshot_manifest:snapshot,snapshot_digest:digest(canonicalJson(snapshot)),package_id:'p1',revision_id:'r1',redaction_id:'d1',source_digest:'a'.repeat(64),markdown_artifact_id:'markdown-1',index_artifact_id:'index-1'}],rowCount:1};
+   if(sql.includes('FROM ai_distill.artifacts')&&sql.includes('ANY'))return{rows:[{id:'markdown-1',kind:'redacted_markdown',attempt_id:null,sha256:markdownSha,content:markdown},{id:'index-1',kind:'redacted_index',attempt_id:null,sha256:indexSha,content:index}],rowCount:2};
+  });
+  if(mode==='original')await expect(readQuestionMaterials(db,workflowId)).rejects.toThrow('正文来源不一致');
+  else expect((await readQuestionMaterials(db,workflowId)).origin).toMatchObject({material_processing_mode:mode,material_mode:'redacted'});
+  expect(statements.some(sql=>sql.includes('project_step_configs'))).toBe(false);
+ }
+});
 
 test('reads library question snapshot without consulting legacy redaction steps',async()=>{
  const {db,statements}=mockDb(sql=>{

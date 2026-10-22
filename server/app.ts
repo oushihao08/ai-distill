@@ -52,6 +52,7 @@ import {readSystemStepPrompts,saveSystemStepPrompts} from './system-step-prompts
 import {registerMaterialLibraryRoutes} from './material-library/routes';
 import {registerProjectLibraryRoutes} from './material-library/projects-routes';
 import {registerProjectGroupRoutes,resolveProjectGroup,validatePhaseNumber} from './project-groups';
+import {documentBlocksToText} from './materials/pdf';
 
 const repositoryRoot=resolve(fileURLToPath(new URL('../',import.meta.url)));
 // 空钩子沿用旧表；033仅在启用可执行钩子时需要，不能使既有文字流程的健康检查失败。
@@ -818,6 +819,61 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const workflowId=uuid(c.req.param('id')),materialId=uuid(c.req.param('materialId'));
   const material=(await pool.query("SELECT m.id,m.original_name,m.processing_status,m.sha256\n   FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL\n   JOIN ai_distill.materials m ON m.workflow_id=w.id AND m.deleted_at IS NULL\n   WHERE w.id=$1 AND w.deleted_at IS NULL AND m.id=$2",[workflowId,materialId])).rows[0];
   if(!material)throw new HTTPException(404,{message:'当前材料不存在'});
+  const questionSource=(await pool.query(`SELECT material_mode,index_artifact_id,snapshot_manifest
+   FROM ai_distill.question_library_sources WHERE workflow_id=$1`,[workflowId])).rows[0];
+  if(questionSource){
+   const manifest=questionSource.snapshot_manifest as {files?:unknown;material_index?:unknown;material_markdown?:unknown;origin?:{material_mode?:unknown}}|undefined;
+   const mode=questionSource.material_mode??manifest?.origin?.material_mode;
+   const files=Array.isArray(manifest?.files)?manifest.files as Record<string,unknown>[]:[];
+   const frozenFile=files.find(file=>file.material_id===materialId);
+   if(!frozenFile)throw new HTTPException(409,{message:'题目冻结材料清单与当前附件不匹配'});
+   if(mode==='redacted'){
+    const frozenIndex=manifest?.material_index as {artifact_id?:unknown;sha256?:unknown;kind?:unknown}|undefined;
+    if(!frozenIndex||frozenIndex.artifact_id!==questionSource.index_artifact_id||frozenIndex.kind!=='redacted_index'||typeof frozenIndex.sha256!=='string')throw new HTTPException(409,{message:'题目冻结脱敏索引引用无效'});
+    const indexArtifact=(await pool.query(`SELECT content,storage_path,sha256 FROM ai_distill.artifacts
+     WHERE id=$1 AND workflow_id=$2 AND material_id IS NULL AND attempt_id IS NULL AND kind='redacted_index'`,[questionSource.index_artifact_id,workflowId])).rows[0];
+    if(!indexArtifact)throw new HTTPException(409,{message:'题目冻结脱敏索引不存在'});
+    let indexContent:string;
+    if(typeof indexArtifact.content==='string')indexContent=indexArtifact.content;
+    else{
+     const base=resolve(storageRoot),path=resolve(base,indexArtifact.storage_path),rel=relative(base,path);
+     if(rel==='..'||rel.startsWith(`..${sep}`)||isAbsolute(rel))throw new HTTPException(404,{message:'题目冻结脱敏索引路径无效'});
+     try{indexContent=await readFile(path,'utf8');}catch{throw new HTTPException(404,{message:'题目冻结脱敏索引文件缺失'});}
+    }
+    if(indexArtifact.sha256!==frozenIndex.sha256||createHash('sha256').update(indexContent).digest('hex')!==indexArtifact.sha256)throw new HTTPException(409,{message:'题目冻结脱敏索引指纹校验失败'});
+    let index:any;
+    try{index=JSON.parse(indexContent);}catch{throw new HTTPException(500,{message:'题目冻结脱敏索引格式异常'});}
+    const markdownRef=manifest?.material_markdown as {sha256?:unknown}|undefined;
+    if(index?.format!=='redacted-index-v2'||typeof markdownRef?.sha256!=='string'||index.redacted_sha256!==markdownRef.sha256||!Array.isArray(index.materials))throw new HTTPException(409,{message:'题目冻结脱敏索引与正文不匹配'});
+    const entry=index.materials.find((item:any)=>item?.material_id===materialId);
+    const document=entry?.document;
+    if(typeof entry?.markdown!=='string'||document?.format!=='redacted-structure-v1'||!Array.isArray(document.pages)||typeof entry.structure_sha256!=='string'||createHash('sha256').update(JSON.stringify(document)).digest('hex')!==entry.structure_sha256)throw new HTTPException(409,{message:'题目冻结脱敏附件结构校验失败'});
+    const redactedPages=document.pages.map((page:any)=>({page:page.page,text:Array.isArray(page.blocks)?documentBlocksToText(page.blocks):undefined,method:'脱敏',...(Array.isArray(page.issues)?{issues:page.issues.filter((issue:unknown):issue is string=>typeof issue==='string')}: {})}));
+    if(redactedPages.some((page:any)=>!Number.isInteger(page.page)||typeof page.text!=='string')||redactedPages.map((page:any)=>page.text).join('\n\n')!==entry.markdown)throw new HTTPException(409,{message:'题目冻结脱敏正文与结构不匹配'});
+    if(c.req.query('redacted_only')==='true')return c.json({material:{id:material.id,original_name:material.original_name,processing_status:'redacted',sha256:material.sha256},redaction_status:'redacted',redacted_text:entry.markdown,redacted_pages:redactedPages});
+    return c.json({material:{id:material.id,original_name:material.original_name,processing_status:'redacted',sha256:material.sha256},format:'redacted-structure-v1',provider:'library_v1',pages:[],redaction_status:'redacted',redacted_text:entry.markdown,redacted_pages:redactedPages});
+   }
+   if(mode==='original'){
+    if(c.req.query('redacted_only')==='true')throw new HTTPException(409,{message:'此题冻结的是原文材料，没有可查看的脱敏全文'});
+    if(typeof frozenFile.pages_artifact_id!=='string')throw new HTTPException(409,{message:'题目冻结提取全文引用无效'});
+    const pagesArtifact=(await pool.query(`SELECT content,storage_path,sha256 FROM ai_distill.artifacts
+     WHERE id=$1 AND workflow_id=$2 AND material_id=$3 AND attempt_id IS NULL AND kind='private_extracted_pages'`,[frozenFile.pages_artifact_id,workflowId,materialId])).rows[0];
+    if(!pagesArtifact)throw new HTTPException(409,{message:'题目冻结提取全文不存在'});
+    let pagesContent:string;
+    if(typeof pagesArtifact.content==='string')pagesContent=pagesArtifact.content;
+    else{
+     const base=resolve(storageRoot),path=resolve(base,pagesArtifact.storage_path),rel=relative(base,path);
+     if(rel==='..'||rel.startsWith(`..${sep}`)||isAbsolute(rel))throw new HTTPException(404,{message:'题目冻结提取全文路径无效'});
+     try{pagesContent=await readFile(path,'utf8');}catch{throw new HTTPException(404,{message:'题目冻结提取全文文件缺失'});}
+    }
+    if(createHash('sha256').update(pagesContent).digest('hex')!==pagesArtifact.sha256)throw new HTTPException(409,{message:'题目冻结提取全文指纹校验失败'});
+    let extracted:any;
+    try{extracted=JSON.parse(pagesContent);}catch{throw new HTTPException(500,{message:'题目冻结提取全文格式异常'});}
+    if(!Array.isArray(extracted.pages)||extracted.pages.some((page:any)=>!page||typeof page.text!=='string'))throw new HTTPException(500,{message:'题目冻结提取全文页内容不完整'});
+    return c.json({material:{id:material.id,original_name:material.original_name,processing_status:'text_extracted',sha256:material.sha256},format:typeof extracted.format==='string'?extracted.format:'unknown',provider:'library_v1',pages:extracted.pages.map((page:any,index:number)=>({page:Number.isInteger(page.page)?page.page:index+1,text:page.text,method:typeof page.method==='string'?page.method:'unknown',...(Array.isArray(page.issues)?{issues:page.issues.filter((issue:unknown):issue is string=>typeof issue==='string')}: {})})),redaction_status:'not_redacted'});
+   }
+   throw new HTTPException(409,{message:'题目冻结材料来源模式无效'});
+  }
   const artifact=(await pool.query("SELECT ar.content,ar.storage_path,ar.sha256\n   FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id\n   WHERE ar.workflow_id=$1 AND ar.material_id=$2 AND ar.kind='private_extracted_pages' AND a.status='succeeded' AND a.ordinal IN (1,2)\n   ORDER BY a.finished_at DESC NULLS LAST,ar.created_at DESC,ar.id DESC LIMIT 1",[workflowId,materialId])).rows[0];
   if(!artifact)throw new HTTPException(409,{message:'该附件尚无已入库全文，请先完成文本提取'});
   let content:string;

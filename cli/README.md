@@ -36,7 +36,15 @@ bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本
 
 ## 共享材料库与期次
 
+两种脱敏流程的入口不同：字段遮罩用`library job start --kind redact --template mask --extraction-job UUID`并查询job到终态；默认Agent整包化名使用`library job start --kind redact --extraction-job UUID`，省略模板时选择aliases/codex_plan；通过现有Agent消费池生成语义计划、程序编译并保存。模板每次从共用配置数据库读取并冻结，单任务最多10分钟，到限停止且不自动重试。显式`--template mask`保留旧字段映射。人工精确计划仍可用`library documents export/import`校验导入。两条路径的成功结果都用同一个`--redaction UUID`加载及建题；原文路径用`--revision UUID`，无需先脱敏。
+
+计划导入和导出共用服务端采用的格式校验；模板身份与摘要须成对提供。旧计划完全不带模板字段时保留兼容。导出成功只证明来源、精确编辑及覆盖有效；正式导入还需核对当前模板、活动任务和数据库事务。重放原导入请求须保留原plan与request-key，不能修改plan后复用旧key。
+
 全局材料包不隶属于单个项目；主项目用稳定 group ID 关联多个期次，每期仍是独立 project/workflow 范围。创建新期次用 `project create --material-backend library_v1 --workspace-path <绝对路径> --parent-name <主项目> --phase-name <期名> --phase-no <正整数>`，或用 `--project-group UUID` 关联已有主项目。若不指定 backend，保持旧 legacy 项目创建行为。
+
+仅指定`--project-group`时，CLI先读取该ID的当前主项目名称再创建期次；显式给出`--parent-name`仍由服务端核对一致性。不能用期次显示名称代替主项目名称。
+
+`project update`更新材料库期次的名称、说明或Skill时不要求旧式`material_root`，也不重新提交未修改的推断Skill路径；旧目录项目仍带上当前材料目录。材料库期次的材料来自加载关系，不用`--material-root`替换。
 
 常用路径：
 
@@ -62,7 +70,7 @@ bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本
 
 材料正文查看：`library documents show --revision UUID --extraction-job UUID [--file UUID]`、`library redaction show --redaction UUID [--file UUID]`。原件下载 `library file download --file UUID --out <新文件路径>` 仅写入新文件且不覆盖。
 
-旧目录项目和旧 `material_packages` 多题路径继续兼容；`project sync` 与 `material-package` 命令不等同于全局材料库。`project material-mode --project UUID --clear-existing` 是显式迁移旧项目到材料包模式的兼容命令：服务端会软隐藏该项目当前旧题并将已有导出标为失效，项目有活动任务时拒绝切换；不要将它用于日常加载材料或新建 `library_v1` 期次。旧数据导入先 `project legacy-materials list`，再用 `project legacy-materials import --project UUID --workflow UUID --request-key UUID` 做 dry-run；确认来源摘要后才加 `--apply --digest SHA256`，随后按返回 ID 调用 `activate`。导入的是旧材料原件/成功提取结构，不会伪装成重新脱敏，且不修改旧题快照。
+旧目录项目和旧 `material_packages` 多题路径继续兼容；这是系统对历史数据和旧流程的兼容能力，不代表每个业务项目都允许一包多题。Work法律全场景按[项目规则](../projects/Work法律全场景/AGENTS.md)执行一个材料包对应一道题；`project sync` 与 `material-package` 命令不等同于全局材料库。`project material-mode --project UUID --clear-existing` 是显式迁移旧项目到材料包模式的兼容命令：服务端会软隐藏该项目当前旧题并将已有导出标为失效，项目有活动任务时拒绝切换；不要将它用于日常加载材料或新建 `library_v1` 期次。旧数据导入先 `project legacy-materials list`，再用 `project legacy-materials import --project UUID --workflow UUID --request-key UUID` 做 dry-run；确认来源摘要后才加 `--apply --digest SHA256`，随后按返回 ID 调用 `activate`。导入的是旧材料原件/成功提取结构，不会伪装成重新脱敏，且不修改旧题快照。
 
 写请求使用幂等 request-key 或版本锁的命令按其 API 契约执行；CLI 不会对 POST 自动重试。版本冲突先读取最新状态，网络结果未知先用已有 ID/request-key 查询。材料任务派发成功只代表任务已被接受，是否完成以任务终态为准。
 
@@ -145,7 +153,7 @@ bun run ai-distill result show --workflow <题目UUID> --json
     { "model_id": "系统模型UUID", "minimum_score": 50 }
   ],
   "steps": {
-    "author_question": { "model": "gpt-6.1-sol", "reasoning_effort": "high", "material_source_mode": "redacted", "prompt": "查看指定 skill，依据本次附件出题。" },
+    "author_question": { "model": "gpt-6.1-sol", "reasoning_effort": "high", "material_processing_mode": "aliases", "material_source_mode": "redacted", "prompt": "查看指定 skill，依据本次附件出题。" },
     "independent_score": { "model": "gpt-6.1-sol", "reasoning_effort": "medium", "prompt": "按题面和rubric逐项评分。" }
   },
   "answer_generation_policy": { "request_timeout_minutes": 60, "reasoning_threshold_minutes": 45, "skip_scoring_on_qualified_timeout": false }
@@ -167,6 +175,16 @@ Work 五件套的 CLI 流程：先用 `step dispatch publish_export --project UU
 明确指定已评分题目做作答质量复核，可用 `export review --project UUID --ids UUID,... --json` 导出同样的文件，即使系统判定已达标；清单保留真实 `accepted`／`repair`，不把模型低分冒充作答任务失败。此命令必须列明题目，不支持 `--all`。
 
 ## 状态和错误契约
+
+### Codex材料计划的本地导出
+
+`library documents export --plan 私有计划.json --out 新目录` 由 CLI 通过 HTTP 重新读取已入库提取原文，验证来源摘要，应用 Codex 明确给出的编辑，再按材料范围生成独立 Markdown、正文 JSON 和材料清单。它不运行模型、不重新OCR、不入库、不派发后续任务；自然人关联、代称和分册判断由 Codex 按项目 Skill 先完成。执行成功仅证明机械校验及文件写入，不证明脱敏无遗漏或文书边界正确。
+
+计划 `format=codex-material-export-v1`，包含 `revision_id`、`extraction_job_id`、`files[{file_id,text_sha256}]`、`edits[{file_id,page,start,end,source_text,replacement_text}]`、`documents[{id,title,segments[{file_id,page,start,end}]}]`，以及可选安全 `notes`。文件摘要是该文件所有页原文按 `\n` 拼接后的UTF-8 SHA256；偏移使用JavaScript UTF-16、左闭右开，编辑定位原文，分册定位编辑后的页文本。全部附件、非空处理后页必须完整覆盖；重叠编辑、来源变化、分册遗漏/重复及不安全文件名被拒绝。计划包含原文片段，只能私有保存，不放入交付目录。输出目录必须不存在；写入失败清理本次创建目录。正文不添加原页定位和识别提示，来源范围留在私有计划。
+
+`material-export.ts` 实现上述机械处理，`commands.ts` 仅分发命令。项目操作 Skill 见 `projects/Work法律全场景/material-prep/SKILL.md`。
+
+`library documents import --plan 私有计划.json --request-key UUID` 将同一计划通过 HTTP 正式保存为新的库级脱敏结果，不重新上传或OCR。返回 `job_id`、`redaction_id`、摘要及计数后，再用 `library redaction show` 读回。相同键与相同计划复用同一结果，计划变化必须使用新请求；响应未知先以原键重试核对，不换键盲发。它不调用模型，Codex判断由前置Skill完成；不自动建题或推进。该结果的分册元数据随新题冻结，旧题不改写。
 
 除帮助文本外统一输出 JSON（显式 `--json` 便于 Agent 调用）。顶层 `outcome` 表示命令情况，`data` 保留 API 事实；派发含逐题 `dispatch`、分组 `batches`、精确选定范围和所有 `attempt_ids`。错误输出到 stderr，含 `kind`、可用的 HTTP 状态及 `request_id`；不转发非JSON响应正文、底层网络错误或凭证。
 
@@ -217,3 +235,16 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/remote-materials.test
 ```
 
 不要使用 `bun test cli`：Bun将它视为名称筛选，可能匹配其他目录的client测试。合成题目1流程验证命令契约，不能证明真实卷宗、正在运行的后端或Codex自主执行质量。操作Skill见 [SKILL.md](../skill/SKILL.md)。
+
+
+## 选择脱敏模板
+
+`library template list`及`library template show --template ID`读取提示词、workflow、digest；不要从旧笔记推断当前规则。`library job start --kind redact ... --template ID`按数据库模板选择实际流程；省略模板默认aliases/codex_plan，自动进入本机Agent消费池。Agent模型和推理强度沿用系统Agent设置并在入队冻结。Agent读取整包、维护私有固定虚构姓名表、保留法院名称并输出字段/结构块语义计划；程序计算偏移、校验并在现有事务保存。最多10分钟，到限停止保留私有进度，不自动重试。显式mask继续原字段映射；CLI本身不调用模型。
+
+新计划在既有`codex-material-export-v1`上增加`template_id`和`template_digest`。单文件documents show返回structure及field_ranges，原页UTF-16编辑必须位于单个字段内，分册定位替换后正文且不切断表格/列表。export与import均校验模板摘要和结构；import保存新版本，不切换项目选版。无模板旧计划保留文本兼容，不能声称保留表格结构。
+
+共用processing show/apply的redaction_templates数组每项包含id/name/workflow/redaction；mask不可重定义，改旧模板用原redaction字段。field_mapping的redaction与原模型配置格式相同，codex_plan仅接受`{provider:"codex",prompt:"本项目规则"}`。每个模板可有独立提示词；修改仅影响之后的新任务。
+
+### 期次材料处理模式
+
+`project configure`的`steps.author_question.material_processing_mode`支持`aliases`（默认化名）、`mask`（API遮挡）和`original`（不脱敏）；与旧`material_source_mode`同时提交时必须一致。配置仍经现有步骤API保存到数据库。`library job start --project <期次UUID>`把期次上下文交给服务器选择处理流程，不用提示词指示改流程；原文模式无需redact任务。CLI只调用API，不实现脱敏，也不把阶段文件当作已入库。模式、来源冻结与恢复边界见[材料库说明](../server/material-library/README.md#期次三种处理模式)。

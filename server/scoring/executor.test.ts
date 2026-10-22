@@ -223,3 +223,42 @@ test('model-report评分给Agent原始权重和只读复算工具，累计扣分
   expect(JSON.parse(negative.stdout.toString())).toMatchObject({raw_score:-46,full_score:75,net_percentage:0});
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+
+test('Work评分提供可执行的原文核验器；同一会话自行纠正，API返回后同样拒绝错引',async()=>{
+ const {scoreRubricBindingText,extractModelReport}=await import('./validate');
+ const policy={contract:'model_report_v1' as const,rules_text:'模型自行判断；从100分扣分',reference_answer:'calibration' as const};
+ const rubric=[{id:'x',criterion:'业务错误',rule:'出现错误扣7分'}];
+ const task:ScoreContext={...context,content_contract:'work_legal_v1',candidate_quote_check:'literal_v1',rubric,scoring_policy:policy,binding:{...context.binding,rubric_digest:hash(scoreRubricBindingText(rubric,policy))}};
+ const model={contract:'model_report_v1',items:[{id:'x',judgment:'满足',score_delta:-7,reason:'模型判断',answer_quotes:['私有标准答案']}],summary:{raw_score:93,full_score:100,evaluation_percent:93,veto_triggered:false}};
+ const root=await mkdtemp(join(tmpdir(),'score-quotes-'));
+ try{
+  const result=await runIndependentScore(task,{root,model:'fixture',reasoning_effort:'low',execute:async(call:any)=>{
+   expect(call.prompt).toContain('answer_quotes');expect(call.prompt).toContain('自行更正相关判断');
+   expect(call.input_files.some((f:any)=>f.name==='核验候选引文.py')).toBe(true);
+   for(const file of call.input_files)await writeFile(join(call.directory,file.name),file.text);
+   const path=join(call.directory,'report.json');await writeFile(path,JSON.stringify(model));
+   const check=()=>Bun.spawnSync(['python3',join(call.directory,'核验候选引文.py'),path]);
+   const wrong=check();expect(wrong.exitCode).toBe(1);expect(wrong.stdout.toString()).toContain('不在候选答案原文');
+   // 替身模拟模型收到核验结果后自行更正；不声称是真实模型行为。
+   const corrected={...model,items:[{...model.items[0],answer_quotes:['100元']}]};
+   await writeFile(path,JSON.stringify(corrected));const valid=check();expect(valid.exitCode).toBe(0);
+   await writeFile(join(call.directory,'待评答案.txt'),'100元\r\n附：清单');
+   await writeFile(path,JSON.stringify({...corrected,items:[{...corrected.items[0],answer_quotes:['100元\r\n附：']}]}));
+   expect(check().exitCode).toBe(0);
+   await writeFile(join(call.directory,'待评答案.txt'),task.answer);
+   const raw='<model_report>'+JSON.stringify(corrected)+'</model_report>';
+   expect(extractModelReport(raw,rubric,task.answer).valid).toBe(true);
+   return reply(call,raw);
+  }});
+  expect(result.validation.valid).toBe(true);expect(result.report.summary).toEqual(model.summary);
+  expect(result.execution_request.candidate_quote_check).toBe('literal_v1');
+  const raw='<model_report>'+JSON.stringify(model)+'</model_report>';
+  const api=await runIndependentApiScore(task,{config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture'},complete:async(call:any)=>{
+   expect(call.messages[0].content).toContain('answer_quotes');
+   return{text:raw,provider:'openrouter',requested_model:'fixture',usage:null,duration_ms:1} as any;
+  }});
+  expect(api.raw_text).toBe(raw);expect(api.validation.valid).toBe(false);expect(api.validation).toMatchObject({evaluation_percent:null});
+  expect(buildScoreFiles(buildAnonymousInput(context)).some(f=>f.name==='核验候选引文.py')).toBe(false);
+ }finally{await rm(root,{recursive:true,force:true});}
+});

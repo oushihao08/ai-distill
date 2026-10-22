@@ -9,6 +9,7 @@ import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../shared/workflow-config';
 import {documentBlocksToText} from './materials/pdf';
 import type {QuestionMaterialOrigin} from '../shared/material-library';
+import {resolveMaterialProcessingMode,materialProcessingSourceMode} from '../shared/material-library';
 
 type Db=Pool|PoolClient;
 type MaterialArtifact={id:string;kind:string;attempt_id:string|null;sha256:string;content:string|null};
@@ -79,7 +80,12 @@ async function readLibraryMaterials(db:Db,workflowId:string):Promise<QuestionMat
   const projected=parsedIndex.materials.map((item:any,index:number)=>`# ${String(manifest.files[index]?.original_name??'')}\n\n${item.markdown}`).join('\n\n---\n\n');
   if(projected!==markdown.content)throw conflict('library_v1 题目原文索引投影与正文不匹配');
  }else if(parsedIndex?.format!=='redacted-index-v2'||parsedIndex.redacted_sha256!==markdown.sha256||!Array.isArray(parsedIndex.materials))throw conflict('library_v1 题目脱敏索引与正文不匹配');
- const origin:QuestionMaterialOrigin={kind:'library_v1',material_mode:mode,package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id===null?null:String(row.redaction_id),snapshot_digest:String(row.snapshot_digest)};
+ let processingMode:ReturnType<typeof resolveMaterialProcessingMode>|undefined;
+ if(manifest.origin.material_processing_mode!==undefined){
+  try{processingMode=resolveMaterialProcessingMode(manifest.origin);}catch{throw conflict('题目冻结的材料处理方式无效');}
+  if(materialProcessingSourceMode(processingMode)!==mode)throw conflict('题目冻结的处理方式与正文来源不一致');
+ }
+ const origin:QuestionMaterialOrigin={kind:'library_v1',material_mode:mode,...(processingMode?{material_processing_mode:processingMode}:{}),package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id===null?null:String(row.redaction_id),snapshot_digest:String(row.snapshot_digest)};
  return{origin,attachments:[{id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null}],digest:String(row.snapshot_digest)};
 }
 

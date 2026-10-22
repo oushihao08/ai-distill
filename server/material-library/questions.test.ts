@@ -34,6 +34,11 @@ test('private redaction index remaps every file reference without changing sourc
  expect(result.materials[0]).toMatchObject({material_id:'private-material',markdown:'脱敏正文'});
  expect(()=>remapLibraryRedactedIndex(source,new Map())).toThrow('不存在的附件');
 });
+test('Agent document segment references freeze to private question material ids',()=>{
+ const source={material_mode:'redacted' as const,index:JSON.stringify({format:'redacted-index-v2',materials:[{material_id:'file-a',markdown:'正文'}],pages:[{material_id:'file-a',page:1}],prepared_documents:[{id:'doc',title:'申请书',text:'正文',segments:[{file_id:'file-a',page:1,start:0,end:2}]}]})};
+ const index=JSON.parse(remapLibraryRedactedIndex(source,new Map([['file-a','private-material']])));
+ expect(index.prepared_documents[0].segments[0].file_id).toBe('private-material');expect(index.prepared_documents[0].text).toBe('正文');
+});
 
 test('creates a private question from a usable redaction while retaining OCR warnings',async()=>{
  const {createLibraryQuestion}=await import('./questions');
@@ -53,6 +58,7 @@ test('creates a private question from a usable redaction while retaining OCR war
   const inserts:{sql:string;values:any[]}[]=[];
   const query=async(sql:string,values:any[]=[])=>{
    if(sql.startsWith('SELECT package_id FROM'))return{rows:[{package_id:'package-a'}]};
+   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{material_processing_mode:'mask'}}]};
    if(sql.startsWith('SELECT question_tags'))return{rows:[{question_tags:['执行']}]};
    if(sql.startsWith('SELECT id,name,deleted_at FROM'))return{rows:[{id:'package-a',name:'共享材料',deleted_at:null}]};
    if(sql.startsWith('SELECT id,name,material_backend'))return{rows:[{id:'project-a',name:'验证项目',material_backend:'legacy',question_tags:['执行'],deleted_at:null}]};

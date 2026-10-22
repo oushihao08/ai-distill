@@ -5,6 +5,7 @@
  */
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
+import {redactionJobCurrentValidationSql} from './processing-policy';
 import {randomUUID} from 'node:crypto';
 import {assertMaterialUse,claimMaterialUse,indexLegacyMaterialUse,readPackageSignature} from './uses';
 
@@ -26,7 +27,7 @@ async function selectedRedaction(db:Db,packageId:string,redactionId:string|null)
   JOIN ai_distill.library_revisions rev ON rev.id=r.revision_id AND rev.package_id=r.package_id AND rev.state='ready'
   JOIN ai_distill.library_jobs e ON e.id=r.extraction_job_id AND e.revision_id=r.revision_id AND e.kind='extract' AND e.status='succeeded'
   JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id AND j.revision_id=r.revision_id AND j.kind='redact' AND j.status='succeeded'
-  WHERE r.id=$1`,[redactionId])).rows[0];
+  WHERE r.id=$1 AND ${redactionJobCurrentValidationSql('j')}`,[redactionId])).rows[0];
  if(!row||row.package_id!==packageId||row.usable!=='true')throw conflict('所选脱敏结果不存在、已失效或不属于该材料包');
  return{revision_id:String(row.revision_id),redaction_id:String(row.id)};
 }
@@ -61,11 +62,16 @@ async function withTransaction<T>(pool:Pool,operation:(db:PoolClient)=>Promise<T
 
 export async function readLoadedLibraryPackages(pool:Pool,projectId:string,options:{includeRemoved?:boolean}={}):Promise<LoadedLink[]>{
  const result=await pool.query(`SELECT l.id,l.project_id,l.package_id,p.name AS package_name,l.selected_revision_id,l.selected_redaction_id,
-   p.current_revision_id,l.position,l.lock_version,l.removed_at,l.created_at,l.updated_at,l.material_use_id,u.status AS usage_status,u.lock_version AS use_lock_version
+   p.current_revision_id,l.position,l.lock_version,l.removed_at,l.created_at,l.updated_at,l.material_use_id,u.status AS usage_status,u.lock_version AS use_lock_version,
+   CASE WHEN l.selected_redaction_id IS NULL THEN 'original'
+    WHEN red_job.config_snapshot->'redaction_template'->>'workflow'='codex_plan' OR red.validation_report->>'redaction_template_id'='aliases' THEN 'aliases'
+    ELSE 'mask' END AS selected_processing_mode
   FROM ai_distill.project_library_packages l
   JOIN ai_distill.library_packages p ON p.id=l.package_id
   JOIN ai_distill.projects pr ON pr.id=l.project_id AND pr.deleted_at IS NULL
   LEFT JOIN ai_distill.project_material_uses u ON u.id=l.material_use_id
+  LEFT JOIN ai_distill.library_redactions red ON red.id=l.selected_redaction_id
+  LEFT JOIN ai_distill.library_jobs red_job ON red_job.id=red.redaction_job_id
   WHERE l.project_id=$1 AND ($2::boolean OR l.removed_at IS NULL) AND p.deleted_at IS NULL
   ORDER BY l.position,l.id`,[projectId,options.includeRemoved===true]);
  return result.rows.map(row=>({...row,lock_version:Number(row.lock_version),...(row.use_lock_version==null?{}:{use_lock_version:Number(row.use_lock_version)})})) as LoadedLink[];

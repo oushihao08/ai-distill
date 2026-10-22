@@ -4,6 +4,7 @@
  * 使用场景：`app.ts` 提供目录同步与列表接口，入库队列按扫描结果处理材料。
  */
 import {mergeRedactionDefaults,validateRedactionConfig,type RedactionConfig} from './materials/redaction-config';
+import {resolveMaterialProcessingMode,materialProcessingSourceMode,type MaterialProcessingMode} from '../shared/material-library';
 import {resolveModelApiConfig,type ModelApiConfig} from './llm-api';
 import {mergeCodexDefaults,validateAgentModel,readProjectAgentSettings} from './agent/config';
 import { readdir, realpath, readFile, stat } from 'node:fs/promises';
@@ -155,7 +156,7 @@ export async function registerQuestionFolders(db: PoolClient, projectId: string,
  return {discovered:questions.length,added:added.length,changed:changed.length};
 }
 export type AnswerStepConfig=ModelApiConfig&{prompt:string;workflow?:WorkflowConfig};
-export type AuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';workflow?:WorkflowConfig};
+export type AuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';material_processing_mode?:MaterialProcessingMode;workflow?:WorkflowConfig};
 export type ScoringStepConfig=AuthoringStepConfig|{provider:'api';api:ModelApiConfig;prompt:string;workflow?:WorkflowConfig};
 export function validateStepConfig(ordinal:9,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):RedactionConfig;
 export function validateStepConfig(ordinal:4,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):AuthoringStepConfig;
@@ -180,9 +181,13 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
  if(ordinal===9)return validateRedactionConfig(raw,modelCatalog);
  const value = raw as Record<string,unknown>;
  let workflow:WorkflowConfig|undefined;try{workflow=validateWorkflowConfig(value.workflow);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'项目流程配置格式无效'});}
- const materialSourceMode=ordinal===4?(value.material_source_mode??'redacted'):undefined;
- if(ordinal===4&&!['redacted','original'].includes(String(materialSourceMode)))throw new HTTPException(400,{message:'出题材料版本设置无效'});
- const extension={...(workflow?{workflow}:{}),...(ordinal===4?{material_source_mode:materialSourceMode as 'redacted'|'original'}:{})};
+ let materialProcessingMode:MaterialProcessingMode|undefined;
+ if(ordinal===4){
+  if(value.material_source_mode!==undefined&&!['redacted','original'].includes(String(value.material_source_mode)))throw new HTTPException(400,{message:'出题材料版本设置无效'});
+  try{materialProcessingMode=resolveMaterialProcessingMode(value);}catch{throw new HTTPException(400,{message:'材料处理模式无效'});}
+  if(value.material_processing_mode!==undefined&&value.material_source_mode!==undefined&&value.material_source_mode!==materialProcessingSourceMode(materialProcessingMode))throw new HTTPException(400,{message:'材料处理模式与来源版本不一致'});
+ }
+ const extension={...(workflow?{workflow}:{}),...(materialProcessingMode?{material_processing_mode:materialProcessingMode,material_source_mode:materialProcessingSourceMode(materialProcessingMode)}:{})};
  if(ordinal===6&&value.provider==='api'){
   if(Object.keys(value).some(key=>!['provider','api','prompt','workflow'].includes(key))||!value.api||typeof value.api!=='object'||Array.isArray(value.api))throw new HTTPException(400,{message:'评分API设置格式无效'});
   let api:ModelApiConfig;try{api=resolveModelApiConfig(value.api);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'评分API设置无效'});}

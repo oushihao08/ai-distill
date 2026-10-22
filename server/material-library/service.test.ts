@@ -81,3 +81,26 @@ test('revision detail exposes usable redaction ids so projects can select the ex
  expect(revisions).toMatchObject([{id:'revision-a',redactions:[{id:'redaction-a',usable_for_question:'true'}]}]);
  expect(calls[1]).toContain('AS redactions');
 });
+
+test('同原文字节可在TXT和MD之间复用，其他类型冲突不放宽且不改旧对象',async()=>{
+ const {mkdtemp,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
+ const {createLibraryRevision}=await import('./service');
+ const root=await mkdtemp(join(tmpdir(),'library-text-mime-'));let storedType='text/markdown',path='',writes:string[]=[];
+ const db={query:async(sql:string,values:any[]=[])=>{
+  writes.push(sql);
+  if(sql.startsWith('SELECT current_revision_id'))return{rows:[{lock_version:1}]};
+  if(sql.startsWith('INSERT INTO ai_distill.library_blobs')){path=values[5];return{rows:[]};}
+  if(sql.startsWith('SELECT id,size_bytes,content_type'))return{rows:[{id:'blob',size_bytes:Buffer.byteLength('测试正文'),content_type:storedType,storage_path:path}]};
+  if(sql.startsWith('UPDATE ai_distill.library_packages'))return{rows:[{lock_version:2}],rowCount:1};
+  return{rows:[],rowCount:0};
+ },release(){}};const pool={connect:async()=>db} as any;
+ try{
+  for(const [name,mime] of [['测试.txt','text/markdown'],['测试.md','text/plain']]){
+   storedType=mime!;
+   expect((await createLibraryRevision(pool,root,'package',1,crypto.randomUUID(),[{original_name:name!,bytes:Buffer.from('测试正文')}])).reused).toBe(false);
+  }
+  storedType='application/pdf';
+  await expect(createLibraryRevision(pool,root,'package',1,crypto.randomUUID(),[{original_name:'测试.txt',bytes:Buffer.from('测试正文')}])).rejects.toThrow('类型或摘要');
+  expect(writes.some(sql=>sql.startsWith('UPDATE ai_distill.library_blobs'))).toBe(false);
+ }finally{await rm(root,{recursive:true,force:true});}
+});

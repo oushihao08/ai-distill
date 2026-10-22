@@ -9,7 +9,15 @@ description: Use when the user asks to inspect, execute, or improve ai-distill w
 
 CLI 是工作流客户端，不是新的业务执行器：本机命令覆盖项目期次、全局材料库、加载/使用记录、题目状态、步骤派发、等待、达标、归档、导出和下载；远程专用命令覆盖旧材料工作流的服务器入库／脱敏及题目作答；全局库使用独立 library job，并按实际 blob 存储位置校验执行端。命令的权威语法是 `bun run ai-distill --help` 和 [CLI 命令参考](../cli/README.md)，不在多个地图重复维护参数表。远程模式不提供 Agent 出题、评分、达标判定或归档；这些需要由支持相应 worker 的本机工作流执行。本 Skill 规定工作流决策；`projects/<项目>/skill/` 规定项目出题内容，交由现有作者执行器读取。
 
+## 材料处理模式
+
+先读`GET /api/projects/:id/material-processing`或步骤4配置的`material_processing_mode`：`aliases`默认化名、`mask` API遮挡、`original`原文。由程序状态选流程，不能用提示词/Skill覆盖。项目材料任务带`project_id`；CLI仅用户要求时使用`library job start --project <期次UUID>`。原文无需脱敏，直接选择成功提取版本；遮挡/化名选匹配的成功结果后建题。待脱敏材料可以先加载本期，再打开带期次上下文的材料页处理。旧题按冻结快照继续作答、评分和交付，不按当前期次设置切换正文。
+
+Agent主体表为私有辅助记录；成功标准是程序校验完成并发布`library_redactions`，不是写出计划、消息称完成或临时文件存在。Agent内置本地校验工具只修正本次产物，不调用其他模型；单次最多10分钟，超时停并保留进度，不自动重试。不要在当前聊天手工脱敏后冒称程序验证成功。具体模块与恢复见[材料库](../server/material-library/README.md)。
+
 ## 材料包与题目身份
+
+材料包与题目的数量关系由当前项目规则决定；系统支持多种关系不代表本次项目允许多题。Work法律全场景固定为 **一个材料包只对应一个题目身份**：同包全部附件共同作为一道题的来源，返修、重出和重评沿用原题身份；发现历史重复关联时先核对并报告，不擅自删除。执行该项目的出题任务前读取[项目规则](../projects/Work法律全场景/AGENTS.md)与[出题 Skill](../projects/Work法律全场景/skill/SKILL.md)；其他项目不得套用这项 Work 专属数量约束。
 
 先识别主项目、期次的 `project_group_id`/`phase_no`、`material_backend` 和工作流身份。新 `library_v1` 期次从全局材料库选择 package revision；默认来源模式为 `redacted`，用户可将本期设置为 `original`，但所选版本必须有完整成功提取。默认通过本机 API 的现有材料候选、加载、题目创建路由操作；只有用户明确要求命令行时才使用对应 CLI 命令。失败后按返回 ID 查询，不生成新 request key 重复写入。题目快照冻结来源模式、材料与版本，不因后续包更新或设置变更而切换。主项目 `project_material_uses` 记录独立于题目的永久占用与提交/返修历史；同一主项目跨期不得重复加载相同原件集合，提交状态退回使用中用于原期返修，不释放跨期占用。旧 `question_folders` 与旧材料包仍沿各自兼容入口操作。批量派发前按 workflow 身份筛选，不能把旧材料包当题或把 library 派生题送去重复入库/脱敏。目标等级是出题设计输入，不代表自动验收通过。
 

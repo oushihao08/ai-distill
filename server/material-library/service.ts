@@ -3,6 +3,7 @@
  * 关键入口：`createLibraryPackage()`、`readLibraryPackages()`、`readLibraryPackage()`、`updateLibraryPackage()`、`archiveLibraryPackage()` 与 `createLibraryRevision()` 供材料库 HTTP 路由调用。
  * 边界：所有写入只涉及 library_* 表；上传原件写入独立受管 blob 目录，不创建项目或题目工作流。
  */
+import {redactionJobCurrentValidationSql} from './processing-policy';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -34,7 +35,7 @@ export function buildLibraryManifest(files:Array<{original_name:string;position:
 }
 
 export function validateProcessingSettings(value:unknown){
- if(!object(value)||Object.keys(value).some(key=>!['version','extraction','redaction','execution','policy'].includes(key))||value.version!==1||!object(value.extraction)||!object(value.redaction)||!object(value.execution)||!object(value.policy))throw new HTTPException(400,{message:'材料库处理设置格式无效'});
+ if(!object(value)||Object.keys(value).some(key=>!['version','extraction','redaction','execution','policy','redaction_templates'].includes(key))||value.version!==1||!object(value.extraction)||!object(value.redaction)||!object(value.execution)||!object(value.policy))throw new HTTPException(400,{message:'材料库处理设置格式无效'});
  const settings=value as Record<string,any>,extraction=settings.extraction,redaction=settings.redaction,execution=settings.execution,policy=settings.policy;
  if(Object.keys(extraction).some(key=>!['provider_config','protocol'].includes(key))||typeof extraction.protocol!=='string'||!extraction.protocol.trim()||!object(extraction.provider_config))throw new HTTPException(400,{message:'材料提取设置无效'});
  if(Object.keys(redaction).some(key=>!['provider','api','model','reasoning_effort','prompt'].includes(key))||!['api','codex'].includes(redaction.provider)||typeof redaction.prompt!=='string'||!redaction.prompt.trim()||redaction.prompt.length>12000)throw new HTTPException(400,{message:'材料脱敏设置无效'});
@@ -45,8 +46,20 @@ export function validateProcessingSettings(value:unknown){
  if(redaction.provider==='codex'&&(typeof redaction.model!=='string'||!redaction.model.trim()||typeof redaction.reasoning_effort!=='string'||redaction.api!==undefined))throw new HTTPException(400,{message:'材料库 Agent 模型设置无效'});
  if(Object.keys(execution).some(key=>!['task_timeout_ms','request_timeout_ms'].includes(key))||![execution.task_timeout_ms,execution.request_timeout_ms].every(item=>Number.isSafeInteger(item)&&item>0&&item<=1800000))throw new HTTPException(400,{message:'材料库执行预算无效'});
  if(Object.keys(policy).some(key=>!['preserve_amounts','preserve_dates'].includes(key))||policy.preserve_amounts!==true||policy.preserve_dates!==true)throw new HTTPException(400,{message:'材料库金额和日期策略必须保持原文'});
+ if(settings.redaction_templates!==undefined){
+  if(!Array.isArray(settings.redaction_templates)||settings.redaction_templates.length>20)throw new HTTPException(400,{message:'脱敏模板列表无效'});
+  const ids=new Set<string>(['mask']);
+  for(const template of settings.redaction_templates){
+   if(!object(template)||Object.keys(template).some(k=>!['id','name','workflow','redaction'].includes(k))||typeof template.id!=='string'||! /^[a-z][a-z0-9_-]{0,47}$/.test(template.id)||ids.has(template.id)||typeof template.name!=='string'||!template.name.trim()||template.name.length>80||!['field_mapping','codex_plan'].includes(String(template.workflow)))throw new HTTPException(400,{message:'脱敏模板身份或流程无效'});
+   ids.add(template.id);
+   const config=template.redaction;
+   if(template.workflow==='codex_plan'&&(!object(config)||Object.keys(config).some(k=>!['provider','prompt'].includes(k))||config.provider!=='codex'))throw new HTTPException(400,{message:'整包计划模板仅配置Codex提示词，模型由执行会话固定'});
+   const checked=validateProcessingSettings({...settings,redaction:template.workflow==='codex_plan'?{...(config as Record<string,unknown>),model:'session',reasoning_effort:'medium'}:config,redaction_templates:undefined}) as any;
+   if(template.workflow==='codex_plan'&&checked.redaction.provider!=='codex')throw new HTTPException(400,{message:'整包代称计划模板必须使用Codex'});
+  }
+ }
  const encoded=JSON.stringify(value);
- if(encoded.length>30000||/(?:api[_-]?key|authorization|access[_-]?token|client[_-]?secret|credential[_-]?home)/i.test(encoded))throw new HTTPException(400,{message:'设置过大或包含凭据字段'});
+ if(encoded.length>300000||/(?:api[_-]?key|authorization|access[_-]?token|client[_-]?secret|credential[_-]?home)/i.test(encoded))throw new HTTPException(400,{message:'设置过大或包含凭据字段'});
  return JSON.parse(encoded) as Record<string,unknown>;
 }
 
@@ -100,7 +113,7 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
    JOIN ai_distill.library_revisions v ON v.id=x.revision_id AND v.package_id=x.package_id AND v.state='ready'
    JOIN ai_distill.library_jobs e ON e.id=x.extraction_job_id AND e.revision_id=x.revision_id AND e.kind='extract' AND e.status='succeeded'
    JOIN ai_distill.library_jobs j ON j.id=x.redaction_job_id AND j.revision_id=x.revision_id AND j.kind='redact' AND j.status='succeeded'
-   WHERE x.package_id=p.id AND x.validation_report->>'usable_for_question'='true') available
+   WHERE x.package_id=p.id AND x.validation_report->>'usable_for_question'='true' AND ${redactionJobCurrentValidationSql('j')}) available
   CROSS JOIN LATERAL (SELECT count(DISTINCT v.id)::int FROM ai_distill.library_revisions v
    JOIN ai_distill.library_jobs e ON e.revision_id=v.id AND e.kind='extract' AND e.status='succeeded'
    WHERE v.package_id=p.id AND v.state='ready'
@@ -150,9 +163,9 @@ export async function readLibraryRevisions(pool:Pool,id:string){
  if(!visible.rowCount)throw new HTTPException(404,{message:'材料包不存在'});
  return(await pool.query(`SELECT r.id,r.package_id,r.parent_revision_id,r.state,r.manifest_sha256,r.file_count,r.created_at,r.sealed_at,
   COALESCE(jsonb_agg(jsonb_build_object('id',f.id,'original_name',f.original_name,'position',f.position,'sha256',b.sha256,'size_bytes',b.size_bytes,'content_type',b.content_type,'redaction_mode',f.redaction_mode) ORDER BY f.position) FILTER(WHERE f.id IS NOT NULL),'[]'::jsonb) AS files,
-  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',red.id,'extraction_job_id',red.extraction_job_id,'redaction_job_id',red.redaction_job_id,'output_digest',red.output_digest,'usable_for_question',(red.validation_report->>'usable_for_question'='true' AND r.state='ready'
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',red.id,'extraction_job_id',red.extraction_job_id,'redaction_job_id',red.redaction_job_id,'output_digest',red.output_digest,'redaction_template_id',red.validation_report->>'redaction_template_id','redaction_template_workflow',COALESCE(red.validation_report->>'redaction_template_workflow',(SELECT j.config_snapshot->'redaction_template'->>'workflow' FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id)),'redaction_template_name',red.validation_report->>'redaction_template_name','usable_for_question',(red.validation_report->>'usable_for_question'='true' AND r.state='ready'
      AND EXISTS(SELECT 1 FROM ai_distill.library_jobs e WHERE e.id=red.extraction_job_id AND e.revision_id=r.id AND e.kind='extract' AND e.status='succeeded')
-     AND EXISTS(SELECT 1 FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id AND j.revision_id=r.id AND j.kind='redact' AND j.status='succeeded')),'created_at',red.created_at) ORDER BY red.created_at DESC,red.id)
+     AND EXISTS(SELECT 1 FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id AND j.revision_id=r.id AND j.kind='redact' AND j.status='succeeded' AND ${redactionJobCurrentValidationSql('j')})),'created_at',red.created_at) ORDER BY red.created_at DESC,red.id)
     FROM ai_distill.library_redactions red WHERE red.revision_id=r.id),'[]'::jsonb) AS redactions,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id',j.id,'kind',j.kind,'status',j.status,'origin',j.origin,'created_at',j.created_at,'finished_at',j.finished_at) ORDER BY j.created_at DESC) FROM ai_distill.library_jobs j WHERE j.revision_id=r.id),'[]'::jsonb) AS jobs
   FROM ai_distill.library_revisions r LEFT JOIN ai_distill.library_files f ON f.revision_id=r.id LEFT JOIN ai_distill.library_blobs b ON b.id=f.blob_id
@@ -258,7 +271,18 @@ export async function createLibraryRevision(pool:Pool,storageRoot:string,id:stri
    const inserted=await db.query(`INSERT INTO ai_distill.library_blobs(id,sha256,size_bytes,content_type,storage_kind,storage_target,storage_path)
     VALUES($1,$2,$3,$4,'file',$5,$6) ON CONFLICT(sha256,storage_target) WHERE storage_kind='file' DO NOTHING RETURNING id`,[randomUUID(),blob.sha256,blob.size_bytes,blob.content_type,blob.storage_target,blob.storage_path]);
    let blobId=inserted.rows[0]?.id;
-   if(!blobId){const existingBlob=(await db.query("SELECT id,size_bytes,content_type,storage_path FROM ai_distill.library_blobs WHERE sha256=$1 AND storage_target=$2 AND storage_kind='file'",[blob.sha256,blob.storage_target])).rows[0];if(!existingBlob||Number(existingBlob.size_bytes)!==blob.size_bytes||existingBlob.content_type!==blob.content_type||existingBlob.storage_path!==blob.storage_path)throw conflict('已有材料对象与新文件的类型或摘要信息不一致');blobId=existingBlob.id;}
+   if(!blobId){
+    const existingBlob=(await db.query("SELECT id,size_bytes,content_type,storage_path FROM ai_distill.library_blobs WHERE sha256=$1 AND storage_target=$2 AND storage_kind='file'",[blob.sha256,blob.storage_target])).rows[0];
+    if(!existingBlob||Number(existingBlob.size_bytes)!==blob.size_bytes||existingBlob.storage_path!==blob.storage_path)throw conflict('已有材料对象与新文件的类型或摘要信息不一致');
+    if(existingBlob.content_type!==blob.content_type){
+     // 同一UTF8原件可按TXT/MD命名；复用已核验的字节，不改既有对象的MIME。
+     // 历史PDF的scanned/text识别类别继续兼容，二进制格式仍不能混用。
+     const compatibleText=['text/plain','text/markdown'].includes(blob.content_type)&&['text/plain','text/markdown'].includes(existingBlob.content_type);
+     const legacyPdf=blob.content_type==='application/pdf'&&['scanned','text'].includes(existingBlob.content_type);
+     if(!compatibleText&&!legacyPdf)throw conflict('已有材料对象与新文件的类型或摘要信息不一致');
+    }
+    blobId=existingBlob.id;
+   }
    await db.query('INSERT INTO ai_distill.library_files(id,revision_id,blob_id,original_name,position,redaction_mode) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),revisionId,blobId,file.original_name,file.position,file.redaction_mode]);
   }
   const updated=await db.query('UPDATE ai_distill.library_packages SET current_revision_id=$2,lock_version=lock_version+1,updated_at=now() WHERE id=$1 AND lock_version=$3 AND deleted_at IS NULL RETURNING lock_version',[id,revisionId,expectedVersion]);

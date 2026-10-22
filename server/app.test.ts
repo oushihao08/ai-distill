@@ -128,6 +128,7 @@ test('redacted-only attachment text response never includes extracted source tex
  const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
  const pool={query:async(sql:string)=>{
   if(sql.includes('SELECT m.id,m.original_name,m.processing_status'))return{rows:[{id:materialId,original_name:'材料.pdf',processing_status:'redacted',sha256:hash('pdf')}]};
+  if(sql.includes('FROM ai_distill.question_library_sources'))return{rows:[]};
   if(sql.includes("ar.kind='private_extracted_pages'"))return{rows:[{content:extracted,sha256:hash(extracted)}]};
   if(sql.includes("idx.kind='redacted_index'"))return{rows:[{content:redacted,sha256:hash(redacted)}]};
   throw new Error(`Unexpected query: ${sql}`);

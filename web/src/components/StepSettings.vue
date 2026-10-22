@@ -9,7 +9,8 @@ import type {WorkflowConfig} from '@shared/workflow-config';
 import { api } from '../api/client';
 import type { ProjectStage } from '../types/api';
 import {DEFAULT_MODEL_API_MODEL,type ModelApiConfig} from '@shared/types';
-import {resolveScoreStepPrompt} from '@shared/step-prompts';
+import {AUTHORING_FIXED_PROMPT,resolveScoreStepPrompt} from '@shared/step-prompts';
+import {resolveMaterialProcessingMode,materialProcessingSourceMode,type MaterialProcessingMode} from '@shared/material-library';
 const props=defineProps<{ projectId:string; step:ProjectStage; materialSourceMode:'redacted'|'original'; allowOriginalMaterialMode:boolean }>();
 const emit=defineEmits<{ saved:[];close:[];openModels:[] }>();
 const editable=computed(()=>[4,5,6,9].includes(props.step.ordinal));
@@ -25,7 +26,7 @@ const selectedApiModel=computed({get:()=>apiConfig.value?apiIdentity(apiConfig.v
 const model=shallowRef(props.step.config.model ?? 'gpt-6.1-sol');
 const effort=shallowRef(props.step.config.reasoning_effort ?? 'medium');
 const authorTimeoutMinutes=shallowRef<number|string>(props.step.config.timeout_ms?props.step.config.timeout_ms/60000:'');
-const authoringMaterialMode=shallowRef<'redacted'|'original'>(props.allowOriginalMaterialMode&&props.step.config.material_source_mode==='original'?'original':'redacted');
+const authoringProcessingMode=shallowRef<MaterialProcessingMode>(resolveMaterialProcessingMode(props.step.config));
 const prompt=shallowRef(props.step.ordinal===6?resolveScoreStepPrompt(props.step.config.prompt):props.step.config.prompt??'');
 const scoreInstructions=shallowRef<{developer_instructions:string;task_prompt:string;isolation_config:Record<string,unknown>}|null>(null);
 interface ModelOption {slug:string;supported_reasoning_levels:{effort:string}[]}
@@ -79,7 +80,7 @@ async function save(){
   const apiSettings=isApiRedaction.value||isApiScoring.value?{provider:apiConfig.value!.provider,model:apiConfig.value!.model,base_url:apiConfig.value!.base_url,...(apiMaxTokens.value===''?{}:{max_tokens:Number(apiMaxTokens.value)}),...(['qwen','openrouter'].includes(apiConfig.value!.provider)&&apiThinking.value!=='default'?{enable_thinking:apiThinking.value==='enabled'}:{})}:undefined;
   const config=isApiRedaction.value?{provider:'api',prompt:prompt.value,api:apiSettings}:isApiScoring.value?{provider:'api',prompt:prompt.value,api:apiSettings}:{model:model.value,reasoning_effort:effort.value,...(props.step.ordinal===9?{provider:'codex',prompt:prompt.value}:{prompt:prompt.value})};
   const endpoint=`/${isCodexStep.value?'agent/':''}projects/${props.projectId}/steps/${props.step.ordinal}/config`;
-  await api(endpoint,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...config,...(props.step.ordinal===4?{material_source_mode:authoringMaterialMode.value}:{}),...(props.step.ordinal===4&&authorTimeoutMinutes.value!==''?{timeout_ms:Number(authorTimeoutMinutes.value)*60000}:{}),...([4,6].includes(props.step.ordinal)&&workflowDraft.value?{workflow:workflowDraft.value}:{})})});
+  await api(endpoint,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...config,...(props.step.ordinal===4?{material_processing_mode:authoringProcessingMode.value,material_source_mode:materialProcessingSourceMode(authoringProcessingMode.value)}:{}),...(props.step.ordinal===4&&authorTimeoutMinutes.value!==''?{timeout_ms:Number(authorTimeoutMinutes.value)*60000}:{}),...([4,6].includes(props.step.ordinal)&&workflowDraft.value?{workflow:workflowDraft.value}:{})})});
   emit('saved');emit('close');
  }catch(cause){
   error.value=cause instanceof Error?cause.message:'保存失败';
@@ -90,13 +91,14 @@ async function inheritDefaults(){
  catch(cause){error.value=cause instanceof Error?cause.message:'恢复默认设置失败';}finally{busy.value=false;}
 }
 </script>
-<template><v-form class="surface-card p-20" @submit.prevent="save"><Column :gap="16">
- <Row x="between"><h2 class="section-title">{{ step.position }} · {{ step.name }}</h2><v-btn icon="$close" variant="text" aria-label="关闭步骤设置" :disabled="busy" @click="emit('close')" /></Row>
+<template><v-form class="surface-card max-h-[calc(100dvh-48px)] min-h-0 flex flex-col overflow-hidden" @submit.prevent="save">
+ <Row x="between" class="p-20 pb-12 shrink-0"><h2 class="section-title">{{ step.position }} · {{ step.name }}</h2><v-btn icon="$close" variant="text" aria-label="关闭步骤设置" :disabled="busy" @click="emit('close')" /></Row>
+ <Column :gap="16" class="min-h-0 overflow-y-auto px-20 pb-16">
  <p class="text-sm text-muted">就绪 {{ step.ready }} · 排队 {{ step.queued }} · 运行 {{ step.running }} · 成功 {{ step.succeeded }} · 失败 {{ step.failed }}</p>
  <Column v-if="step.ordinal===5" :gap="8"><v-alert type="info">点击“模型作答”会为项目模型集合中的每个已选模型分别派发作答任务，随后逐份评分。每题只读取创建题目时冻结的材料版本，脱敏或未脱敏由题目快照决定；请在出题前为本期选择新题材料版本。请在项目的“作答模型”页选择并保存多个模型；这里无需选择单个模型。新建项目会复制当时的系统提示词，修改本项目提示词只影响后续作答。</v-alert><v-textarea v-model="prompt" label="模型作答步骤提示词" rows="8" required :disabled="busy" /><Row x="end"><v-btn color="primary" variant="flat" @click="emit('openModels')">配置作答模型</v-btn></Row></Column>
  <template v-else-if="editable">
-  <v-alert type="info">{{ step.ordinal===9?'脱敏读取数据库中的原始文本。可选择大模型 API 或本地 Agent；保存执行方式、模型或提示词后，原脱敏及后续结果失效，需要重新执行。':step.ordinal===4?'出题 Agent 每次读取当前项目 skill 和资料、本期选定的材料版本及本步提示词；新材料库题目默认使用脱敏版本，也可使用 MinerU 提取原文。来源选择冻结在新建题目，并贯穿该题作答、评分和交付；原有题目仍使用创建时冻结的附件来源。未脱敏可能包含个人信息。':'独立评分只读取同版题面、rubric、匿名完整答案、每题创建时冻结的材料版本和评分提示词；默认不向评分 Agent 提供作答思路或标准答案；新契约可显式启用标答校准，逐项证据须来自待评答案原文。不读取项目 skill、历史评分或个人记忆。下方显示当前服务发送的应用指令，历史实际指令请查看评分执行记录。' }}</v-alert>
-  <v-select v-if="step.ordinal===4&&props.allowOriginalMaterialMode" v-model="authoringMaterialMode" label="新题材料版本" :items="[{title:'脱敏材料（默认）',value:'redacted'},{title:'未脱敏材料',value:'original'}]" :disabled="busy" />
+  <Column v-if="step.ordinal===4" :gap="8" class="rounded border border-line-subtle p-12"><strong class="text-sm">系统固定通用出题规则</strong><pre class="max-h-[320px] overflow-auto whitespace-pre-wrap break-words text-xs">{{ AUTHORING_FIXED_PROMPT }}</pre></Column>
+  <v-select v-if="step.ordinal===4&&props.allowOriginalMaterialMode" v-model="authoringProcessingMode" label="本期材料处理方式" :items="[{title:'Agent 主导化名脱敏（默认）',value:'aliases'},{title:'API 遮挡脱敏',value:'mask'},{title:'不脱敏，使用提取原文',value:'original'}]" :disabled="busy" />
   <v-select v-if="[6,9].includes(step.ordinal)" v-model="backend" label="执行方式" :items="[{title:'本地 Agent（Codex）',value:'codex'},{title:'大模型 API',value:'api'}]" :disabled="busy" />
   <v-combobox :return-object="false" v-if="isCodexStep" v-model="effort" label="推理强度" :items="effortItems" :disabled="busy||loadingModels" />
    <template v-if="isApiRedaction">
@@ -114,7 +116,7 @@ async function inheritDefaults(){
     <v-combobox :return-object="false" v-if="isCodexStep" v-model="model" label="模型" :items="modelItems" :loading="loadingModels" required :disabled="busy||loadingModels" />
    <v-text-field v-else-if="!isApiRedaction&&step.ordinal!==6" v-model="model" label="模型 ID" required :disabled="busy" />
    <v-textarea v-if="step.ordinal===9" v-model="prompt" label="脱敏步骤提示词" rows="8" required :disabled="busy" />
-   <v-textarea v-if="[4,6].includes(step.ordinal)" v-model="prompt" :label="step.ordinal===4?'出题步骤提示词':'评分步骤提示词'" rows="8" required :disabled="busy" />
+   <v-textarea v-if="[4,6].includes(step.ordinal)" v-model="prompt" :label="step.ordinal===4?'本项目出题提示词（可定制）':'评分步骤提示词'" rows="8" required :disabled="busy" />
    <v-text-field v-if="step.ordinal===4" v-model="authorTimeoutMinutes" label="出题时限（分钟，留空为默认 30）" type="number" min="1" max="120" step="1" :disabled="busy" />
    <Column v-if="step.ordinal===6&&scoreInstructions" :gap="8">
     <p class="text-xs text-muted">每次评分使用新会话，完整题目、各份附件及待评答案分别放入临时文件，由 Agent 完整读取；消息包含文件用途和上方原样提示词。结束后删除临时文件，保留评分原文及发送记录。记忆和外部资料访问关闭。</p>
@@ -126,5 +128,6 @@ async function inheritDefaults(){
  <p v-else-if="!editable && step.ordinal!==5" class="text-sm text-muted">{{ step.ordinal===1?'TXT/MD本地解析；PDF/DOCX先完成结构化提取再入库。材料变化后先同步目录。':'此步骤不需要模型配置。' }}</p>
  <WorkflowPolicyEditor v-if="[4,5,6].includes(step.ordinal)" :initial="step.config.workflow" :ordinal="step.ordinal" :disabled="busy" @change="workflowDraft=$event" @invalid="workflowInvalid=$event" />
  <v-alert v-if="error" type="error">{{ error }}</v-alert>
- <Row x="end" :gap="8"><v-btn v-if="(isCodexStep||step.ordinal===9)&&step.config_source==='step'" @click="inheritDefaults" :disabled="busy">恢复默认设置</v-btn><v-btn @click="emit('close')" :disabled="busy">关闭</v-btn><v-btn v-if="editable" type="submit" color="primary" variant="flat" :loading="busy" :disabled="busy||invalidConfig||workflowInvalid">保存设置</v-btn></Row>
-</Column></v-form></template>
+ </Column>
+ <Row x="end" :gap="8" wrap class="shrink-0 p-20 pt-12 border-t border-line-subtle"><v-btn v-if="(isCodexStep||step.ordinal===9)&&step.config_source==='step'" @click="inheritDefaults" :disabled="busy">恢复默认设置</v-btn><v-btn @click="emit('close')" :disabled="busy">关闭</v-btn><v-btn v-if="editable" type="submit" color="primary" variant="flat" :loading="busy" :disabled="busy||invalidConfig||workflowInvalid">保存设置</v-btn></Row>
+</v-form></template>

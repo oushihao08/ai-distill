@@ -20,8 +20,8 @@
 | `redaction-execution.ts` | 有界批次、时限和token估算；缺省不等于每个调用方的冻结值。 |
 | `redaction-jobs.ts` | 旧步骤9冻结原文/配置/协议/预算，执行后重验来源与配置，保存完整脱敏正文/结构；全局库使用独立runner。 |
 | `redaction.ts` | `redactExtractedMaterials()`逐字段映射，`applyStructuredRedactions()`定位/清理/遮罩，`renderRedactedMaterials()`同源正文和索引，`filterRedactionFormatting()`固定格式清理。 |
-| `redacted-docx.ts` | `buildRedactedDocx()`纯文字/结构渲染；名称兼容，可接受已核验脱敏或明确冻结原文，不读取原件、数据库或图片。 |
-| `redacted-docx-export.ts` | `readCurrentRedactionForDocx()`核验所选模式结构，`exportCurrentMaterialDocx()`逐附件生成/复用，`readCurrentMaterialDocx()`安全下载；`questionResultDirectory()`和`isLibraryDocxPath()`共用目录契约。 |
+| `redacted-docx.ts` | 兼容导出公共`document-generation/docx.ts`的`buildDocx()`纯文字/结构渲染；默认连续排版并跳过纯空段/空页，只有显式pagination=source才保留扫描页硬分页，表格单元格采用紧凑段距；名称兼容，可接受已核验脱敏或明确冻结原文，不读取原件、数据库或图片。可选 `style: legal` 只供 Work 业务成稿使用宋体正文、黑色标题及行距，并保留逐行文书字段，独立首段使用标题样式；默认附件渲染不变。 |
+| `redacted-docx-export.ts` | `readCurrentRedactionForDocx()`核验所选模式结构，`exportCurrentMaterialDocx()`逐附件生成/复用，`readCurrentMaterialDocx()`安全下载；`readOriginalFilesForDelivery()`仅在归档原文模式按冻结清单和SHA读取原件；`questionResultDirectory()`和`isLibraryDocxPath()`共用目录契约。 |
 
 `*.test.ts`验证范围分别看文件头与用例，未运行不能说通过。材料/缓存/续接测试覆盖旧解析；redaction结构/性能/执行测试覆盖字段与预算；DOCX测试覆盖结构字节与来源绑定。测试、真实供应商、GUI视觉和完整业务分别报告。
 
@@ -93,3 +93,5 @@ DOCX可声明declared_redacted，仍完整提取，声明内容原样进入正�
 产物位于assets/out/附件库/<主项目>/<期次>/<题目>/，兼容无期次旧路径；原件/DOCX均私有，原件副本不代表允许把它发送给脱敏作答者。材料导出只更新artifact，不改业务步骤；失败尝试恢复文件，但文件与数据库非原子，提交未知必须核对。工作流重置另按共同路径契约清理，不混同逻辑移除或材料库归档。
 
 操作授权和敏感信息边界遵循根AGENTS.md；本说明为源码核对结果，不证明当前worker已加载、真实OCR/脱敏质量或完整业务验收。
+
+DOCX渲染版本为redacted-structure-docx-v3，版本参与缓存索引；连续排版不执行脱敏清理；公共渲染器只在显示副本隐藏独立“（此页无正文）”分页提示，对异常OCR表格网格保留非空文字顺序做单列显示降级，正常表格保留合并关系。来源记录不变。旧题的垃圾扫描标记如需处理，先显式生成清理副本或新脱敏版本；不能在导出时静默改写原文来源或历史冻结数据。

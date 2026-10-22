@@ -8,7 +8,7 @@ import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
 import {documentBlocksToText} from '../materials/pdf';
-import {readLibraryBlob,installLibraryBlob,normalizeLibraryFilename} from './storage';
+import {readLibraryBlob,installLibraryBlob,normalizeLibraryFilename,insertLibraryTextBlob} from './storage';
 import {buildDefaultProcessingSettings,buildLibraryManifest} from './service';
 import {claimMaterialUse,materialSetSignature} from './uses';
 import {uuid,validateFile} from '../validation';
@@ -58,16 +58,6 @@ export async function readLegacyMaterialInventory(pool:Pool,phaseId:string){
   FROM ai_distill.workflows w LEFT JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=1
   WHERE w.project_id=$1 AND w.workflow_kind='material_package' AND w.deleted_at IS NULL ORDER BY w.created_at,w.id`,[phaseId]);
  return packages.rows;
-}
-
-async function textBlob(db:PoolClient,content:string){
- const sha=hash(content),type='application/vnd.ai-distill.extracted-document+json';
- const inserted=(await db.query(`INSERT INTO ai_distill.library_blobs(id,sha256,size_bytes,content_type,storage_kind,text_content)
-  VALUES($1,$2,$3,$4,'database_text',$5) ON CONFLICT(sha256,content_type) WHERE storage_kind='database_text' DO NOTHING RETURNING id`,[randomUUID(),sha,Buffer.byteLength(content),type,content])).rows[0];
- if(inserted)return inserted.id;
- const existing=(await db.query("SELECT id,text_content FROM ai_distill.library_blobs WHERE sha256=$1 AND content_type=$2 AND storage_kind='database_text'",[sha,type])).rows[0];
- if(existing?.text_content!==content)throw conflict('旧提取内容与已有文本对象冲突');
- return existing.id;
 }
 
 async function importedJob(db:PoolClient,packageId:string,revisionId:string,kind:'intake'|'extract',snapshot:Record<string,unknown>,summary:Record<string,unknown>){
@@ -142,7 +132,7 @@ export async function importLegacyMaterial(pool:Pool,root:string,phaseId:string,
    if(!blobId)throw conflict('原件对象登记失败');
    const fileId=randomUUID();
    await db.query('INSERT INTO ai_distill.library_files(id,revision_id,blob_id,original_name,position,redaction_mode) VALUES($1,$2,$3,$4,$5,$6)',[fileId,revisionId,blobId,item.name,index+1,item.file.redaction_mode??'model']);
-   const documentBlob=item.document?await textBlob(db,JSON.stringify(item.document)):null;
+   const documentBlob=item.document?(await insertLibraryTextBlob(db,JSON.stringify(item.document),'application/vnd.ai-distill.extracted-document+json')).id:null;
    mappings.push({legacy_material_id:item.file.id,file_id:fileId,source_sha256:item.file.sha256,original_name:item.name,source_attempt_id:item.file.extraction_attempt_id??null,source_artifact_sha256:item.file.artifact_sha256??null,document_blob_id:documentBlob});
   }
   const snapshot={origin:'legacy_import',source_phase_id:phaseId,source_workflow_id:workflowId,source_digest:source.source_digest,manifest_sha256:manifest.sha256,files:mappings};

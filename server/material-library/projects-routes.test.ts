@@ -28,7 +28,9 @@ test('候选材料支持服务端搜索分页，并只查询当前页的使用�
  expect(body).toMatchObject({page:3,page_size:2,total_count:21,items:[{used_in_project:true,used_phase_name:'第二期'}]});
  const catalog=statements.find(item=>item.sql.startsWith('SELECT p.id,p.name,p.description'))!;
  expect(catalog.values.slice(0,3)).toEqual(['施工',2,4]);
- expect(statements).toHaveLength(2);
+ const useSummaries=statements.filter(item=>item.sql.includes('GROUP BY u.package_id'));
+ expect(useSummaries).toHaveLength(1);
+ expect(useSummaries[0]!.values).toEqual([[packageId]]);
  expect(catalog.values[7]).toBe(phaseId);
  expect(catalog.sql).toContain('project_material_uses');
 });

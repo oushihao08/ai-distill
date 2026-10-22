@@ -12,6 +12,8 @@ import {readLibraryPackages} from './service';
 import {readLegacyMaterialInventory,importLegacyMaterial,activateLegacyImports} from './legacy-import';
 import {createLibraryQuestion} from './questions';
 import {readPhaseMaterialUseEvents,readPhaseMaterialUses,updateMaterialUse} from './uses';
+import {readProjectMaterialProcessingMode} from './processing-policy';
+import {materialProcessingSourceMode} from '../../shared/material-library';
 
 async function jsonBody(c:any){try{return await c.req.json();}catch{throw new HTTPException(400,{message:'请求必须是有效JSON'});}}
 function versionHeader(value:string|undefined){
@@ -22,6 +24,7 @@ function versionHeader(value:string|undefined){
 }
 
 export function registerProjectLibraryRoutes(app:Hono,pool:Pool,storageRoot:string){
+ app.get('/api/projects/:id/material-processing',async c=>{const mode=await readProjectMaterialProcessingMode(pool,uuid(c.req.param('id')));return c.json({material_processing_mode:mode,material_source_mode:materialProcessingSourceMode(mode)});});
  app.get('/api/projects/:id/legacy-materials',async c=>c.json({items:await readLegacyMaterialInventory(pool,uuid(c.req.param('id')))}));
  app.post('/api/projects/:id/legacy-material-imports',async c=>c.json(await importLegacyMaterial(pool,storageRoot,uuid(c.req.param('id')),await jsonBody(c))));
  app.post('/api/projects/:id/legacy-material-imports/:importId/activate',async c=>c.json(await activateLegacyImports(pool,uuid(c.req.param('id')),uuid(c.req.param('importId')))));

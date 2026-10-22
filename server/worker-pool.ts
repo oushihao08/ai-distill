@@ -1,6 +1,6 @@
 /**
  * 职责：通用任务轮询：控制并发、空闲等待、错误退避和退出信号，不承载业务阶段规则。
- * 关键方法与用途：`runWorkerPool()` 按并发上限轮询并处理停止信号；`createFairQueueHandler()` 轮转探测多个业务队列。
+ * 关键方法与用途：`runWorkerPool()` 按并发上限轮询并处理停止信号；`createFairQueueHandler()` 轮转探测多个业务队列；`createSharedQueueProbe()` 合并可用性探测并短暂缓存空结果。
  * 使用场景：由 `worker.ts` 注册业务 handler；本模块不决定各业务阶段规则。
  */
 import {classifyLogError,logEvent,withLogContext} from './logging';
@@ -12,6 +12,20 @@ export interface WorkerPoolOptions {
   beforeDispatch?: () => Promise<boolean>;
   onError?: (error: unknown, worker: number) => void;
   component?: string;
+}
+
+/** 合并同一进程的并发探测，只缓存空结果；有任务时仍由各消费者独立领取，绝不共享已领取任务。 */
+export function createSharedQueueProbe(probe:()=>Promise<boolean>,emptyMs=3000,now=Date.now){
+  let pending:Promise<boolean>|undefined,emptyUntil=0;
+  return async()=>{
+    if(now()<emptyUntil)return false;
+    if(pending)return pending;
+    pending=(async()=>{
+      try{const available=await Promise.resolve().then(probe);if(!available)emptyUntil=now()+emptyMs;return available;}
+      finally{pending=undefined;}
+    })();
+    return pending;
+  };
 }
 
 /** 按轮转顺序探测队列；成功消费后从下一类开始，避免持续繁忙的前置队列饿死后续队列。 */

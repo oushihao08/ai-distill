@@ -13,7 +13,9 @@ import {assertMaterialUse} from './uses';
 import {canonicalJson} from '../../shared/workflow-config';
 import type {CreateLibraryQuestionRequest} from '../../shared/material-library';
 import {readLibraryBlob} from './storage';
+import {redactionJobCurrentValidationSql} from './processing-policy';
 import {assertLibraryExtractionUsable} from './jobs';
+import {resolveMaterialProcessingMode,materialProcessingSourceMode,redactionProcessingMode,type MaterialProcessingMode} from '../../shared/material-library';
 
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -57,7 +59,7 @@ export function libraryQuestionRequestDigest(value:{project_id:string;project_ma
 }
 
 type SourceFile={id:string;original_name:string;position:number;redaction_mode:'model'|'declared_redacted';source_sha256:string;source_size_bytes:number;source_content_type:string;source_storage_path:string;source_storage_target:string;document_content:string;document_blob_sha256:string;document_sha256:string;document_issues:unknown;};
-type FrozenSource={material_mode:'redacted'|'original';project_id:string;project_name:string;project_tags:string[];package_id:string;package_name:string;revision_id:string;redaction_id:string|null;source_digest:string;markdown:string;markdown_sha256:string;index:string;index_sha256:string;files:SourceFile[];};
+type FrozenSource={processing_mode:MaterialProcessingMode;material_mode:'redacted'|'original';project_id:string;project_name:string;project_tags:string[];package_id:string;package_name:string;revision_id:string;redaction_id:string|null;source_digest:string;markdown:string;markdown_sha256:string;index:string;index_sha256:string;files:SourceFile[];};
 
 async function transaction<T>(pool:Pool,action:(db:PoolClient)=>Promise<T>,beforeCommit?:()=>void):Promise<T>{
  const db=await pool.connect();
@@ -78,14 +80,20 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
  await db.query('SELECT g.id FROM ai_distill.project_groups g JOIN ai_distill.projects p ON p.project_group_id=g.id WHERE p.id=$1 FOR UPDATE OF g',[projectId]);
  const project=(await db.query('SELECT id,name,material_backend,workspace_path,local_skill_path,question_tags,deleted_at,project_group_id FROM ai_distill.projects WHERE id=$1 FOR UPDATE',[projectId])).rows[0];
  if(!project||project.deleted_at)throw new HTTPException(404,{message:'项目不存在'});
+ const packageLevel=/(?:^|[-_\s])L([2-5])(?=$|[-_\s])/i.exec(String(pkg.name))?.[1];
+ if(packageLevel&&input.target_level!==`L${packageLevel}`)throw conflict(`材料包标题标注为L${packageLevel}，题目目标等级须为L${packageLevel}`);
  if(input.question_tags.some(tag=>!Array.isArray(project.question_tags)||!project.question_tags.includes(tag)))throw conflict('项目出题标签已变化，请刷新后重试');
  const link=(await db.query(`SELECT id,project_id,package_id,selected_revision_id,selected_redaction_id,lock_version,removed_at,material_use_id
   FROM ai_distill.project_library_packages WHERE id=$1 AND project_id=$2 FOR UPDATE`,[linkId,projectId])).rows[0];
  if(!link||link.removed_at||link.package_id!==packageId)throw conflict('项目材料加载关系已移除或已变化');
+ const activeQuestion=(await db.query(`SELECT q.workflow_id
+  FROM ai_distill.question_library_sources q JOIN ai_distill.workflows w ON w.id=q.workflow_id
+  WHERE q.project_id=$1 AND q.package_id=$2 AND w.deleted_at IS NULL LIMIT 1`,[projectId,packageId])).rows[0];
+ if(activeQuestion)throw conflict('该材料包已创建题目；每个材料包只能保留一道活动题');
  if(project.project_group_id)await assertMaterialUse(db,projectId,packageId,link.material_use_id);
  if(Number(link.lock_version)!==input.expected_link_version)throw conflict('材料选择已更新，请刷新项目后重试');
  const authorConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[projectId])).rows[0]?.config;
- const materialMode=authorConfig?.material_source_mode==='original'?'original':'redacted';
+ const processingMode=resolveMaterialProcessingMode(authorConfig),materialMode=materialProcessingSourceMode(processingMode);
  if(materialMode==='original'){
   if(input.redaction_id||input.revision_id!==link.selected_revision_id||link.selected_redaction_id!==null||!link.selected_revision_id)throw conflict('未脱敏提取版本与本期设置或当前材料选择不一致');
   const extraction=(await db.query(`SELECT e.id,r.file_count FROM ai_distill.library_revisions r
@@ -112,18 +120,20 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
   }
   const markdown=markdownParts.join('\n\n---\n\n'),index=JSON.stringify({format:'source-index-v1',materials:indexMaterials});
   const markdownSha=hash(markdown),indexSha=hash(index),sourceDigest=hash(canonicalJson({revision_id:link.selected_revision_id,extraction_job_id:extraction.id,files:rows.map(file=>({id:file.id,source_sha256:file.source_sha256,document_sha256:file.document_sha256,document_blob_sha256:file.document_blob_sha256}))}));
-  return{material_mode:'original',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:String(link.selected_revision_id),redaction_id:null,source_digest:sourceDigest,markdown,markdown_sha256:markdownSha,index,index_sha256:indexSha,files:rows};
+  return{processing_mode:processingMode,material_mode:'original',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:String(link.selected_revision_id),redaction_id:null,source_digest:sourceDigest,markdown,markdown_sha256:markdownSha,index,index_sha256:indexSha,files:rows};
  }
  if(!input.redaction_id||link.selected_redaction_id!==input.redaction_id||!link.selected_revision_id)throw conflict('所选脱敏结果与项目当前选择不一致');
  const redaction=(await db.query(`SELECT r.id,r.package_id,r.revision_id,r.extraction_job_id,r.output_digest,r.validation_report,
    m.text_content AS markdown,m.sha256 AS markdown_sha256,i.text_content AS redacted_index,i.sha256 AS index_sha256,
-   rev.state AS revision_state,redact_job.status AS redact_status,extract_job.status AS extract_status
+   rev.state AS revision_state,redact_job.status AS redact_status,extract_job.status AS extract_status,
+   redact_job.config_snapshot->'redaction_template'->>'workflow' AS redaction_template_workflow
   FROM ai_distill.library_redactions r JOIN ai_distill.library_blobs m ON m.id=r.markdown_blob_id
   JOIN ai_distill.library_blobs i ON i.id=r.index_blob_id JOIN ai_distill.library_revisions rev ON rev.id=r.revision_id AND rev.package_id=r.package_id
   JOIN ai_distill.library_jobs redact_job ON redact_job.id=r.redaction_job_id AND redact_job.kind='redact'
   JOIN ai_distill.library_jobs extract_job ON extract_job.id=r.extraction_job_id AND extract_job.kind='extract'
-  WHERE r.id=$1 AND r.package_id=$2 AND r.revision_id=$3`,[input.redaction_id,packageId,link.selected_revision_id])).rows[0];
+  WHERE r.id=$1 AND r.package_id=$2 AND r.revision_id=$3 AND ${redactionJobCurrentValidationSql('redact_job')}`,[input.redaction_id,packageId,link.selected_revision_id])).rows[0];
  if(!redaction||redaction.revision_state!=='ready'||redaction.redact_status!=='succeeded'||redaction.extract_status!=='succeeded'||redaction.validation_report?.usable_for_question!==true)throw conflict('所选脱敏结果尚未完整成功或不适用于建题');
+ if(redactionProcessingMode({...redaction.validation_report,redaction_template_workflow:redaction.redaction_template_workflow??redaction.validation_report?.redaction_template_workflow})!==processingMode)throw conflict('该脱敏结果的处理方式与本期设置不一致，请选择对应版本');
  if(typeof redaction.markdown!=='string'||typeof redaction.redacted_index!=='string'||hash(redaction.markdown)!==redaction.markdown_sha256||hash(redaction.redacted_index)!==redaction.index_sha256)throw conflict('材料库脱敏产物摘要校验失败');
  let parsedIndex:any;try{parsedIndex=JSON.parse(redaction.redacted_index);}catch{throw conflict('材料库脱敏结构索引无效');}
  if(parsedIndex?.format!=='redacted-index-v2'||parsedIndex.redacted_sha256!==redaction.markdown_sha256||!Array.isArray(parsedIndex.materials))throw conflict('材料库脱敏索引与正文不匹配');
@@ -141,7 +151,7 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
   assertLibraryExtractionUsable([{issues:file.document_issues,pages:document.pages}]);
   if(document.version!==1||document.source_sha256!==file.source_sha256||hash(document.pages.map((page:any)=>page.text).join('\n'))!==file.document_sha256)throw conflict('材料提取正文摘要校验失败');
  }
- return{material_mode:'redacted',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:redaction.revision_id,redaction_id:redaction.id,source_digest:redaction.output_digest,markdown:redaction.markdown,markdown_sha256:redaction.markdown_sha256,index:redaction.redacted_index,index_sha256:redaction.index_sha256,files:rows};
+ return{processing_mode:processingMode,material_mode:'redacted',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:redaction.revision_id,redaction_id:redaction.id,source_digest:redaction.output_digest,markdown:redaction.markdown,markdown_sha256:redaction.markdown_sha256,index:redaction.redacted_index,index_sha256:redaction.index_sha256,files:rows};
 }
 
 async function copyPrivateSource(root:string,questionId:string,source:FrozenSource){
@@ -174,6 +184,7 @@ export function remapLibraryRedactedIndex(source:Pick<FrozenSource,'index'|'mate
  const remap=(id:string)=>{const target=mapping.get(id);if(!target)throw conflict('脱敏索引引用了不存在的附件');return target;};
  index.materials=index.materials.map((item:any)=>({...item,material_id:remap(item.material_id)}));
  index.pages=index.pages.map((item:any)=>({...item,material_id:remap(item.material_id)}));
+ if(Array.isArray(index.prepared_documents))index.prepared_documents=index.prepared_documents.map((document:any)=>({...document,...(Array.isArray(document.segments)?{segments:document.segments.map((segment:any)=>({...segment,file_id:remap(segment.file_id)}))}:{})}));
  return JSON.stringify(index);
 }
 
@@ -194,11 +205,11 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
   const indexText=remapLibraryRedactedIndex(first,copied.mapping),indexSha=hash(indexText),indexPath=`${questionId}/${first.material_mode==='original'?'source':'redacted'}_index.json`,markdownPath=`${questionId}/${first.material_mode==='original'?'source':'redacted'}_markdown.md`;
   await writeFile(join(copied.directory,`${first.material_mode==='original'?'source':'redacted'}_markdown.md`),first.markdown,{mode:0o600,flag:'wx'});
   await writeFile(join(copied.directory,`${first.material_mode==='original'?'source':'redacted'}_index.json`),indexText,{mode:0o600,flag:'wx'});
-  const manifest={version:2,origin:{kind:'library_v1',material_mode:first.material_mode,package_id:packageId,package_name:first.package_name,revision_id:first.revision_id,redaction_id:first.redaction_id,source_digest:first.source_digest},files:copied.files.map(({file,materialId,sourceArtifactId,pagesArtifactId})=>({library_file_id:file.id,material_id:materialId,source_sha256:file.source_sha256,document_sha256:file.document_sha256,source_artifact_id:sourceArtifactId,pages_artifact_id:pagesArtifactId,position:file.position,original_name:file.original_name})),material_markdown:{artifact_id:markdownArtifactId,sha256:first.markdown_sha256,kind:first.material_mode==='original'?'source_markdown':'redacted_markdown'},material_index:{artifact_id:indexArtifactId,sha256:indexSha,kind:first.material_mode==='original'?'source_index':'redacted_index'}};
+  const manifest={version:2,origin:{kind:'library_v1',material_processing_mode:first.processing_mode,material_mode:first.material_mode,package_id:packageId,package_name:first.package_name,revision_id:first.revision_id,redaction_id:first.redaction_id,source_digest:first.source_digest},files:copied.files.map(({file,materialId,sourceArtifactId,pagesArtifactId})=>({library_file_id:file.id,material_id:materialId,source_sha256:file.source_sha256,document_sha256:file.document_sha256,source_artifact_id:sourceArtifactId,pages_artifact_id:pagesArtifactId,position:file.position,original_name:file.original_name})),material_markdown:{artifact_id:markdownArtifactId,sha256:first.markdown_sha256,kind:first.material_mode==='original'?'source_markdown':'redacted_markdown'},material_index:{artifact_id:indexArtifactId,sha256:indexSha,kind:first.material_mode==='original'?'source_index':'redacted_index'}};
   const snapshotDigest=hash(canonicalJson(manifest)),sourceManifest=copied.files.map(({file})=>({name:file.original_name,path:markdownPath,size:Buffer.byteLength(first.markdown),sha256:first.markdown_sha256}));
   const result=await transaction(pool,async db=>{
    const current=await lockAndReadSource(db,projectId,linkId,packageId,input);
-   if(current.source_digest!==first.source_digest||current.markdown_sha256!==first.markdown_sha256||current.index_sha256!==first.index_sha256)throw conflict('材料来源在复制期间发生变化，请重新建题');
+   if(current.processing_mode!==first.processing_mode||current.source_digest!==first.source_digest||current.markdown_sha256!==first.markdown_sha256||current.index_sha256!==first.index_sha256)throw conflict('材料来源在复制期间发生变化，请重新建题');
    const existing=(await db.query('SELECT workflow_id,request_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
    if(existing){if(existing.request_digest!==requestDigest)throw conflict('同一建题幂等标识对应了不同请求内容');return{id:existing.workflow_id,reused:true};}
    await db.query(`INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_manifest,workflow_kind,scenario,role_perspective,target_level,question_tags,authoring_direction)

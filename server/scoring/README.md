@@ -9,6 +9,7 @@
 | `context.ts` | `readScoreContext()`从同版成功题目/答案读取上下文，复核题面、附件模式、呈现约定和摘要；`validateAnswerScore()`按当前契约校验报告。 |
 | `executor.ts` | `buildAnonymousInput()`构造内部绑定上下文；`buildScoreFiles()`投影实际模型白名单；`runIndependentScore()`和`runIndependentApiScore()`执行并保存原文；指令/摘要函数用于冻结与回放核对。 |
 | `validate.ts` | `scoreRubricSnapshot()`/`scoreRubricBindingText()`规范判据绑定；`extractTextScore()`、`extractModelReport()`和旧`validateScore()`具有不同校验范围，见下表。 |
+| `candidate-quotes.ts` | Work新评分候选引文的字面来源核验；提供会话内只读Python工具与返回后同义检查，不决定业务或改分。 |
 | `arithmetic-tool.ts` | `buildScoreArithmeticFiles()`提供同版权重JSON和只读Python复算器，不决定业务判分，不写回模型报告或数据库。 |
 | `jobs.ts` | `enqueueScore()`逐答案冻结上下文/参数；`runNextScore()`按provider和钩子亲和性消费，提交前复核版本、汇总并接续达标判断。 |
 | `context.test.ts` | 用 SQL 替身和临时文件核对上下文、版本及隔离边界。 |
@@ -57,3 +58,12 @@ worker按Codex/API分别领取，带钩子的API任务由local/all亲和队列�
 before/after钩子输入仍是相同白名单；notes/data不能覆盖模型成绩。主检查点及明确续跑由`../workflow-hook-*`管理，异步后置与成功提交同事务登记。真实使用须具备对应表，不因文档描述而自动迁移。
 
 维护时保留输入隔离、来源模式、版本与契约区别。静态核对和替身测试不能证明真实模型评分准确率、当前worker已加载、外部提交或整条业务验收。
+
+
+## Work新评分的候选引文核验
+
+只对成功作者契约为`work_legal_v1`且评分为`model_report_v1`的新派发任务，入队冻结`context.candidate_quote_check=literal_v1`，随执行指令冻结提示正文和核验脚本SHA；上下文摘要包含标记。旧无标记队列、历史报告及其他项目维持原协议，不补造字段或重评。内部作者契约用于选择本次协议，不交给匿名评分模型。
+
+每项模型结果增加`answer_quotes:string[]`；所有声称来自候选的原句按原标点/空格复制，没有可引用内容时允许`[]`，避免为缺失判断编造证据。Codex收到`核验候选引文.py`，按指令在本会话对报告JSON核验；工具只列错引条目，模型自行回读、纠正判断和成绩，再核对汇总。没有新增通用Agent重试或自动付费重评；API无文件执行能力，只要求同样的原文核对与结果格式。
+
+两类执行器返回后，以及worker结果提交前，都对已声明引文做逐字包含核验。失败仍完整保存原文和校验问题，但不产生有效比较指标，不参与达标；程序不调整、裁剪或重算模型分数。空数组不证明内容不存在，引文字面存在不证明语义匹配或专业结论正确，reason遗漏声明的引文也不能由此自动证明可靠，仍须按试点计划审计实际报告。`validateAnswerScore()`的独立兼容校验接口不代表重放某次任务的冻结协议；真实评分有效性以对应attempt的冻结标记和worker校验为准。

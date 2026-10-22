@@ -8,20 +8,9 @@ import { tmpdir } from 'node:os';
 import {currentTaskSignal} from '../task-signal';
 import { join } from 'node:path';
 import type { VisionClient } from './vision';
-export interface DocumentCell { text: string; rowSpan?: number; columnSpan?: number }
-export interface DocumentRow { cells: DocumentCell[] }
-export const DOCUMENT_STRUCTURE_VERSION = 'document-structure-v1';
-export type DocumentBlock =
- | { id: string; kind: 'heading' | 'paragraph' | 'footnote' | 'caption' | 'formula' | 'code'; text: string; level?: number }
- | { id: string; kind: 'list'; items: string[] }
- | { id: string; kind: 'table'; rows: DocumentRow[]; caption?: string; footnotes?: string[] };
-export function documentBlocksToText(blocks: DocumentBlock[]) {
- return blocks.map(block => {
-  if (block.kind === 'table') return [block.caption, block.rows.map(row => row.cells.map(cell => cell.text).join('\t')).join('\n'), ...(block.footnotes ?? [])].filter((part): part is string => part !== undefined).join('\n');
-  if (block.kind === 'list') return block.items.join('\n');
-  return block.text;
- }).join('\n');
-}
+export {DOCUMENT_STRUCTURE_VERSION,documentBlocksToText} from '../../shared/document-structure';
+export type {DocumentCell,DocumentRow,DocumentBlock} from '../../shared/document-structure';
+import type {DocumentBlock} from '../../shared/document-structure';
 export interface Page { page: number; text: string; structure?: DocumentBlock[]; method: 'text' | 'ocr'; usage?: unknown; model?: string; reused?: boolean; issues?: string[]; attempts?: { effort:string; elapsed_ms:number; issue?:string; usage?:unknown }[]; }
 export interface PageCheckpoint { directory:string; source_sha256:string; config_fingerprint:string; }
 const PAGE_CONCURRENCY=3,MAX_PAGE_RETRIES=2;

@@ -8,12 +8,10 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,readFile,rename,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname,isAbsolute,join} from 'node:path';
-import {generateSiriserFivePiece,generateSiriserConfirmation} from './siriser/generate-five-piece';
+import {deliverableBytes,generateSiriserFivePiece,generateSiriserConfirmation} from './siriser/generate-five-piece';
 import {exportAcceptedTask,HARBOR_TOOL_SET,type HarborTaskMetadata} from './harbor/export-accepted-task';
 import type {WorkContent} from '../../../server/authoring/work-contract';
 import {documentBlocksToText} from '../../../server/materials/pdf';
-import {buildRedactedDocx} from '../../../server/materials/redacted-docx';
-import {buildXlsx,type WorkbookSheet} from '../../../server/reporting/xlsx';
 
 interface DeliveryInput{
  version:1;
@@ -26,7 +24,7 @@ interface DeliveryInput{
  rubric_version:string;
  question:{task_name:unknown;task_type:unknown;header:unknown;question:unknown;attachment_ids:unknown;rubric:unknown;answer_approach:unknown;reference_answer:unknown;delivery_identity?:{task_id:string;org:string}}&Partial<WorkContent>;
  acceptance:unknown;
- attachments:{id:string;sha256:string;name:string;text:string;material_mode?:'redacted'|'original';documents?:RedactedDocumentStructure[]}[];
+ attachments:{id:string;sha256:string;name:string;text:string;material_mode?:'redacted'|'original';documents?:RedactedDocumentStructure[];prepared_documents?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[];original_files?:{name:string;sha256:string;content_base64:string}[]}[];
  simulation:{deliverable_type:'F1'|'F2'|'F3'|'F4'|'F5';deliverable_title:string;deliverable_markdown:string;harbor_files:{path:string;markdown:string;sheets:{name:string;columns:string[];rows:(string|number|boolean)[][]}[]}[];research_entries:{id:string;query:string;title:string;url:string;finding:string;version_or_date:string;used_in:string}[];unresolved:string[];generated_at:string;model:string;reasoning_effort:string;actual_search_queries:string[];actually_opened_urls:string[]};
 }
 
@@ -55,21 +53,6 @@ function assertHarborRelative(path:string){
  if(!path||Buffer.byteLength(path,'utf8')>200||path.includes('\\')||path.startsWith('/')||path.split('/').some(part=>!part||part==='.'||part==='..')||/[\u0000-\u001f\u007f]/.test(path))throw new Error(`Harbor 文件路径无效：${path}`);
 }
 
-async function harborFileBytes(file:{path:string;markdown:string;sheets:{name:string;columns:string[];rows:(string|number|boolean)[][]}[]}){
- const extension=file.path.split('.').at(-1)?.toLowerCase();
- if(extension==='docx')return buildRedactedDocx(file.markdown);
- if(extension==='md'||extension==='txt'||extension==='csv')return Buffer.from(file.markdown,'utf8');
- if(extension==='json'){
-  const parsed=JSON.parse(file.markdown);
-  return Buffer.from(JSON.stringify(parsed,null,2)+'\n','utf8');
- }
- if(extension==='xlsx'){
-  const sheets:WorkbookSheet[]=file.sheets.map(sheet=>({name:sheet.name,columns:sheet.columns,rows:sheet.rows.map(values=>Object.fromEntries(sheet.columns.map((column,index)=>[column,values[index]])))}));
-  return buildXlsx(sheets);
- }
- throw new Error(`Harbor 暂不支持输出格式：${file.path}`);
-}
-
 async function generateHarborPackage(parent:string,input:DeliveryInput){
  const mapping=harborMapping(input.question),simulation=input.simulation;
  if(mapping.input_files.length!==input.attachments.length||mapping.input_files.some((file:{path:string;description:string},index:number)=>file.path!==input.attachments[index]?.name||typeof file.description!=='string'||!file.description.trim()))throw new Error('Harbor 输入材料清单必须按本题冻结材料顺序逐一映射并提供说明');
@@ -86,7 +69,7 @@ async function generateHarborPackage(parent:string,input:DeliveryInput){
   const goldenFiles=[];
   for(const file of simulation.harbor_files){
    assertHarborRelative(file.path);
-   const path=join(workspace,'golden',file.path);await mkdir(dirname(path),{recursive:true});await writeFile(path,await harborFileBytes(file),{mode:0o600});
+   const path=join(workspace,'golden',file.path);await mkdir(dirname(path),{recursive:true});await writeFile(path,await deliverableBytes(file),{mode:0o600});
    goldenFiles.push({relativePath:file.path,sourcePath:path});
   }
   const template=await readFile(join(import.meta.dir,'harbor/judge-prompt-template.md'),'utf8');
@@ -108,15 +91,14 @@ function parseInput(value:unknown):DeliveryInput{
  const question=input.question;
  if(!question||typeof question.question!=='string'||!question.question.trim()||typeof question.reference_answer!=='string'||!question.reference_answer.trim()||!Array.isArray(question.rubric)||!question.rubric.length||!Array.isArray(question.attachment_ids)||!question.attachment_ids.length||!Array.isArray(input.attachments)||!input.attachments.length)throw new Error('题目快照不完整');
  if(input.attachments.some(item=>!uuid.test(item.id)||!sha.test(item.sha256)||!/^材料-\d{3}\.md$/.test(item.name)||typeof item.text!=='string'||!item.text.trim()||!['redacted','original'].includes(item.material_mode??'redacted'))||question.attachment_ids.some(id=>typeof id!=='string'||!input.attachments.some(item=>item.id===id)))throw new Error('附件身份或题目冻结材料不一致');
- if(!input.simulation||!input.simulation.deliverable_markdown?.trim()||!Array.isArray(input.simulation.harbor_files)||!input.simulation.harbor_files.length||!Array.isArray(input.simulation.research_entries)||!input.simulation.research_entries.length||!Array.isArray(input.simulation.actual_search_queries)||!Array.isArray(input.simulation.actually_opened_urls))throw new Error('模拟专家成果或实际检索证据缺失');
+ if(question.content_contract!=='work_legal_v1'&&(!input.simulation||!input.simulation.deliverable_markdown?.trim()||!Array.isArray(input.simulation.harbor_files)||!input.simulation.harbor_files.length||!Array.isArray(input.simulation.research_entries)||!input.simulation.research_entries.length||!Array.isArray(input.simulation.actual_search_queries)||!Array.isArray(input.simulation.actually_opened_urls)))throw new Error('模拟专家成果或实际检索证据缺失');
  if(!input.acceptance||typeof input.acceptance!=='object'||(input.acceptance as {decision?:unknown}).decision!=='accepted')throw new Error('达标结果无效');
  return input;
 }
 
-/** 兼容尚未重载的本地API：仅用公开只读成果接口补齐同次脱敏结构，不访问数据库或原件。 */
+/** 兼容尚未重载的本地API：从题目冻结索引补齐所选来源结构，不访问数据库或原件。 */
 async function hydrateRedactedDocuments(input:DeliveryInput){
- if(input.question.content_contract!=='work_legal_v1'||input.attachments.every(item=>item.documents!==undefined))return;
- if(input.attachments.some(item=>item.material_mode==='original'&&item.documents===undefined))throw new Error('未脱敏材料缺少题目快照中的MinerU结构，不能回退读取脱敏材料');
+ if(input.question.content_contract!=='work_legal_v1'||input.attachments.every(item=>item.documents!==undefined&&item.prepared_documents!==undefined))return;
  const read=async(path:string)=>{
   const response=await fetch(`http://127.0.0.1:3700/api/${path}`,{signal:AbortSignal.timeout(10000)});
   if(!response.ok)throw new Error('无法读取冻结脱敏结构');
@@ -124,14 +106,44 @@ async function hydrateRedactedDocuments(input:DeliveryInput){
  };
  const workflow=await read(`workflows/${input.workflow_id}`);
  if(workflow.workflow?.id!==input.workflow_id||workflow.workflow?.project_id!==input.project_id||!Array.isArray(workflow.artifacts))throw new Error('脱敏结构工作流不一致');
+ const originalAttachments=input.attachments.filter(item=>item.material_mode==='original'&&item.documents===undefined);
+ if(originalAttachments.length){
+  if(originalAttachments.length!==1||!Array.isArray(workflow.materials))throw new Error('原文结构索引与冻结题目不匹配');
+  const indexes=workflow.artifacts.filter((item:any)=>item.kind==='source_index'&&item.attempt_id===null);
+  if(indexes.length!==1)throw new Error('缺少唯一冻结原文结构索引');
+  const index=await read(`artifacts/${indexes[0].id}/download`);
+  if(index.format!=='source-index-v1'||!Array.isArray(index.materials)||index.materials.length!==workflow.materials.length)throw new Error('冻结原文结构索引无效');
+  const materials=new Map(workflow.materials.map((item:any)=>[item.id,item]));
+  const projected:string[]=[];
+  const documents:RedactedDocumentStructure[]=[];
+  for(const item of index.materials){
+   const material=materials.get(item.material_id) as any,sourceDocument=item.document;
+   if(!material||typeof material.original_name!=='string'||typeof item.markdown!=='string'||!sourceDocument||sourceDocument.version!==1||sourceDocument.source_sha256!==material.sha256||!Array.isArray(sourceDocument.pages)||!sourceDocument.pages.length)throw new Error('冻结原文索引与材料清单不一致');
+   const pageTexts:string[]=[];
+   const pages=sourceDocument.pages.map((page:any)=>{
+    if(!Number.isSafeInteger(page.page)||typeof page.text!=='string'||!Array.isArray(page.structure)||documentBlocksToText(page.structure)!==page.text)throw new Error('冻结原文页结构与正文不一致');
+    pageTexts.push(page.text);
+    return{page:page.page,blocks:page.structure,...(Array.isArray(page.issues)?{issues:page.issues}:{})};
+   });
+   if(pageTexts.filter(Boolean).join('\n\n')!==item.markdown)throw new Error('冻结原文索引投影不一致');
+   projected.push(`# ${material.original_name}\n\n${item.markdown}`);
+   documents.push({format:'redacted-structure-v1',pages});
+  }
+  if(projected.join('\n\n---\n\n')!==originalAttachments[0]!.text)throw new Error('冻结原文结构与题目附件正文不一致');
+  originalAttachments[0]!.documents=documents;
+ }
  for(const attachment of input.attachments){
-  if(attachment.documents!==undefined)continue;
+  if(attachment.material_mode==='original'&&attachment.documents!==undefined)continue;
   if(digest(attachment.text)!==attachment.sha256)throw new Error('冻结脱敏正文摘要不一致');
   const artifact=workflow.artifacts.find((item:any)=>item.id===attachment.id&&item.kind==='redacted_markdown');
   const indexes=workflow.artifacts.filter((item:any)=>item.attempt_id===artifact?.attempt_id&&item.kind==='redacted_index');
   if(!artifact||indexes.length!==1)throw new Error('缺少同次脱敏结构索引');
   const index=await read(`artifacts/${indexes[0].id}/download`);
   if(index.redacted_sha256!==attachment.sha256||!Array.isArray(index.materials)||!index.materials.length)throw new Error('结构索引与冻结脱敏正文不一致');
+  if(index.prepared_documents!==undefined){
+   if(!Array.isArray(index.prepared_documents)||!index.prepared_documents.length||index.prepared_documents.some((doc:any)=>typeof doc.id!=='string'||typeof doc.title!=='string'||typeof doc.text!=='string')||index.prepared_documents.map((doc:any)=>doc.text).join('\n\n')!==attachment.text)throw new Error('冻结分册索引与正文不一致');
+   attachment.prepared_documents=index.prepared_documents.map(({id,title,text,document}:any)=>({id,title,text,...(document?{document}:{})}));
+  }
   const documents:RedactedDocumentStructure[]=[];
   for(const material of index.materials){
    if(!material.document){if(index.format==='redacted-index-v2')throw new Error('结构化索引缺少文档');continue;}

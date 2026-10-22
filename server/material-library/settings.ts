@@ -10,6 +10,7 @@ import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {storageDirectory} from '../paths';
 import {buildDefaultProcessingSettings,validateProcessingSettings} from './service';
+import {libraryRedactionTemplates} from '../../shared/redaction-templates';
 
 function open(root:string){
  const directory=join(root,'material-library');mkdirSync(directory,{recursive:true,mode:0o700});
@@ -24,11 +25,14 @@ export async function readLibraryProcessingSettings(pool:Pick<Pool,'query'>,root
   try{const row=db.query('SELECT settings,version FROM processing_settings WHERE id=1').get() as {settings:string;version:number}|null;if(row)return{processing_settings:validateProcessingSettings(JSON.parse(row.settings)),lock_version:row.version};}
   finally{db.close();}
  }
- return{processing_settings:await buildDefaultProcessingSettings(pool),lock_version:0};
+ const defaults=await buildDefaultProcessingSettings(pool);
+ try{const saved=saveLibraryProcessingSettings(root,0,defaults);return{processing_settings:defaults,lock_version:saved.lock_version};}
+ catch(error){if(error instanceof HTTPException&&error.status===409)return readLibraryProcessingSettings(pool,root);throw error;}
 }
 export function saveLibraryProcessingSettings(root:string,version:number,value:unknown){
  if(!Number.isSafeInteger(version)||version<0)throw new HTTPException(400,{message:'共用设置版本无效'});
- const settings=validateProcessingSettings(value),db=open(root);let active=false;
+ const raw=validateProcessingSettings(value);
+ const settings=validateProcessingSettings({...raw,redaction_templates:libraryRedactionTemplates(raw).filter(t=>t.id!=='mask')}),db=open(root);let active=false;
  try{
   db.exec('BEGIN IMMEDIATE');
   active=true;

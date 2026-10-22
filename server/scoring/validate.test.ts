@@ -11,6 +11,26 @@ const report={binding,assessment_valid:true,items:[{id:'one',score:1,reason:'金
 const modelRubric=[{id:'positive',criterion:'正向要求',rule:'命中加10分'},{id:'negative',criterion:'错误',rule:'命中扣7分'},{id:'veto',criterion:'否决',rule:'触发时单独记录，不计分'}];
 const modelReport={contract:'model_report_v1',items:modelRubric.map((r,i)=>({id:r.id,judgment:'模型判断',score_delta:[10,-7,null][i],reason:'模型说明'})),summary:{raw_score:-9,full_score:100,evaluation_percent:0,veto_triggered:true}};
 const envelope=(value:unknown)=>`完整评分原文\n<model_report>\n${JSON.stringify(value)}\n</model_report>`;
+test('候选引文核验仅检查字面来源，不改负分、否决或模型汇总',()=>{
+ const quoted={...modelReport,items:modelReport.items.map((item,index)=>({...item,answer_quotes:index===0?['候选原句']:[]}))};
+ const valid=extractModelReport(envelope(quoted),modelRubric,'候选原句\n附：完整清单');
+ expect(valid).toMatchObject({valid:true,report:quoted});
+ const wrong={...quoted,items:quoted.items.map((item,index)=>index===0?{...item,answer_quotes:['仅校准标答有的句子']}:item)};
+ const invalid=extractModelReport(envelope(wrong),modelRubric,'候选原句\n附：完整清单');
+ expect(invalid.valid).toBe(false);expect(invalid.evaluation_percent).toBeNull();
+ expect(invalid.issues.join(' ')).toContain('不在候选答案原文');
+ expect(extractModelReport(envelope(modelReport),modelRubric,'候选原句').valid).toBe(false);
+ // 历史及其他项目未冻结核验标记，仍按旧的报告结构读取。
+ expect(extractModelReport(envelope(modelReport),modelRubric).valid).toBe(true);
+});
+test('候选引文不接受空字符串、非字符串或省略改写；空数组可记录没有可引用内容',()=>{
+ for(const quotes of [[''],[42],['候选…原句'],null]){
+  const value={...modelReport,items:modelReport.items.map(item=>({...item,answer_quotes:quotes}))};
+  expect(extractModelReport(envelope(value),modelRubric,'候选原句').valid).toBe(false);
+ }
+ const empty={...modelReport,items:modelReport.items.map(item=>({...item,answer_quotes:[]}))};
+ expect(extractModelReport(envelope(empty),modelRubric,'候选原句')).toMatchObject({valid:true,report:empty});
+});
 test('模型评分接收负分和否决，原样收集总分而不按分项重算',()=>{
  const result=extractModelReport(envelope(modelReport),modelRubric);
  expect(result).toMatchObject({valid:true,report:modelReport,evaluation_percent:0,issues:[]});

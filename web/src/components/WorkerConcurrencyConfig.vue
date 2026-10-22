@@ -43,7 +43,7 @@ onMounted(load);
 <template><section class="surface-card p-16"><Column :gap="12">
  <Column :gap="4"><h2 class="section-title">Agent / API 并发</h2><p class="text-xs text-muted">设置所有项目共享的同时执行上限。Agent 覆盖出题、评分及 Agent 脱敏；API 覆盖模型作答及 API 脱敏。</p></Column>
  <Row wrap :gap="12"><v-select v-model="settings.agent" label="Agent 同时执行数" :items="agentOptions" hide-details :disabled="loading||saving" @update:model-value="saved=false" /><v-select v-model="settings.llmApi" label="API 同时执行数" :items="apiOptions" hide-details :disabled="loading||saving" @update:model-value="saved=false" /></Row>
- <p class="text-xs text-muted">当前机器建议安全范围：Agent 1–4，API 1–8。降低设置不会中断正在运行的任务。</p>
+ <p class="text-xs text-muted">可设置范围：Agent 1–{{ limits.agent }}，API 1–{{ limits.llmApi }}。请结合机器资源设置；降低设置不会中断正在运行的任务。</p>
  <v-alert v-if="changed" type="warning" density="compact">当前生效：Agent {{ active.agent }}、API {{ active.llmApi }}。保存后需重启 API 和 worker，之后的新任务才会使用新上限。</v-alert>
  <v-alert v-if="saved" type="success" density="compact">并发设置已保存。按提示重启 API 和 worker 后生效。</v-alert>
  <v-alert v-if="error" type="error" density="compact">{{ error }}</v-alert>

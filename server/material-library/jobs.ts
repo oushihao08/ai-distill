@@ -9,6 +9,10 @@ import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
 import type {CreateLibraryJobRequest,LibraryExecutionTarget,LibraryExecutorKind,LibraryJobKind} from '../../shared/material-library';
 import {readLibraryProcessingSettings} from './settings';
+import {resolveLibraryTemplate} from './templates';
+import {readAgentDefaults} from '../agent';
+import {AGENT_REDACTION_MAX_MS} from '../../shared/redaction-templates';
+import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
 const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -37,12 +41,14 @@ export async function hasLibraryQueueWork(pool:Pool,executor:LibraryExecutorKind
 
 export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest{
  if(!value||typeof value!=='object'||Array.isArray(value))throw new HTTPException(400,{message:'材料处理任务参数无效'});
- const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','extraction_job_id','previous_job_id'];
+ const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','extraction_job_id','previous_job_id','template_id','project_id'];
  if(Object.keys(body).some(key=>!allowed.includes(key))||!['intake','extract','redact'].includes(String(body.kind))||typeof body.request_key!=='string'||!uuidPattern.test(body.request_key)||!['local','server'].includes(String(body.execution_target)))throw new HTTPException(400,{message:'材料处理任务参数无效'});
  if(body.kind==='redact'&&(typeof body.extraction_job_id!=='string'||!uuidPattern.test(body.extraction_job_id)))throw new HTTPException(400,{message:'脱敏任务必须明确指定成功的文本提取任务'});
  if(body.kind!=='redact'&&body.extraction_job_id!==undefined)throw new HTTPException(400,{message:'仅脱敏任务可以指定文本提取任务'});
  if(body.previous_job_id!==undefined&&(typeof body.previous_job_id!=='string'||!uuidPattern.test(body.previous_job_id)))throw new HTTPException(400,{message:'重试来源任务 ID 无效'});
- return{kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
+ if(body.template_id!==undefined&&(body.kind!=='redact'||typeof body.template_id!=='string'||! /^[a-z][a-z0-9_-]{0,47}$/.test(body.template_id)))throw new HTTPException(400,{message:'仅脱敏任务可指定有效模板'});
+ if(body.project_id!==undefined&&(typeof body.project_id!=='string'||!uuidPattern.test(body.project_id)))throw new HTTPException(400,{message:'材料处理期次标识无效'});
+ return{...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
 }
 
 export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:string;redaction_mode?:'model'|'declared_redacted'}>,settings:{provider?:string}|null,target:LibraryExecutionTarget='local'):LibraryExecutorKind{
@@ -73,7 +79,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    FROM ai_distill.library_files f JOIN ai_distill.library_blobs b ON b.id=f.blob_id WHERE f.revision_id=$1 ORDER BY f.position`,[revisionId])).rows as LibraryFileRow[];
   if(files.length!==Number(revision.file_count))throw conflict('材料文件集合清单不完整');
   if(files.some(file=>file.storage_target!==request.execution_target))throw conflict('所选执行位置无法读取文件集合中的全部原件');
-  const intent={version:1,kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
+  const intent={version:1,...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
   const requestDigest=hash(intent);
   const previousRequest=(await db.query('SELECT id,input_snapshot FROM ai_distill.library_jobs WHERE package_id=$1 AND request_key=$2',[packageId,request.request_key])).rows[0];
   if(previousRequest){
@@ -81,11 +87,22 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    await db.query('COMMIT');return{id:previousRequest.id,reused:true};
   }
   const settings=(await readLibraryProcessingSettings(db,storageRoot)).processing_settings as Record<string,any>;
-  const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:file.redaction_mode})),settings.redaction,request.execution_target);
+  const projectMode=request.project_id?await readProjectMaterialProcessingMode(db,request.project_id):undefined;
+  const template=request.kind==='redact'?resolveLibraryTemplate(settings,projectMode?projectRedactionTemplate(projectMode,request.template_id):request.template_id):undefined;
+  if(projectMode==='aliases'&&template&&template.workflow!=='codex_plan')throw conflict('化名模式需要整包Agent模板，当前模板配置与流程不一致');
+  if(projectMode==='mask'&&template&&template.workflow!=='field_mapping')throw conflict('API遮挡模式需要字段映射模板，当前模板配置与流程不一致');
+  if(template?.workflow==='codex_plan'){
+   settings.redaction={...template.redaction,...await readAgentDefaults(db)};
+   settings.execution.task_timeout_ms=Math.min(settings.execution.task_timeout_ms,AGENT_REDACTION_MAX_MS);
+  }else if(template){
+   settings.redaction={...template.redaction,...(projectMode==='mask'?{provider:'api'}:{})};
+   if(projectMode==='mask'&&!settings.redaction.api)throw conflict('请先在材料处理设置中配置API遮挡模型');
+  }
+  const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:template?.workflow==='codex_plan'||projectMode==='mask'?'model':file.redaction_mode})),settings.redaction,request.execution_target);
   if(request.kind==='redact'&&executor==='api'&&!settings.redaction?.api)throw conflict('材料库 API 模型尚未配置');
   if(request.kind==='extract'&&executor==='api'&&!process.env.MINERU_KEY?.trim())throw conflict('文本提取服务尚未配置');
   if(request.previous_job_id){
-   const retry=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE id=$1 AND package_id=$2 AND revision_id=$3 AND kind=$4 AND status IN ('failed','cancelled') FOR UPDATE",[request.previous_job_id,packageId,revisionId,request.kind])).rows[0];
+   const retry=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE id=$1 AND package_id=$2 AND revision_id=$3 AND kind=$4 AND (status IN ('failed','cancelled') OR (kind='redact' AND status='succeeded')) FOR UPDATE",[request.previous_job_id,packageId,revisionId,request.kind])).rows[0];
    if(!retry)throw conflict('重试来源必须是同包、同文件集合、同类型且已失败或取消的任务');
   }
   if(request.kind==='intake'&&revision.state!=='pending')throw conflict('只有待入库核验的文件集合可以入库');
@@ -104,10 +121,10 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   }else{
    fileSnapshot=files.map(file=>({file_id:file.id,blob_id:file.blob_id,original_name:file.original_name,position:file.position,source_sha256:file.sha256,size_bytes:Number(file.size_bytes),content_type:file.content_type,storage_path:file.storage_path,redaction_mode:file.redaction_mode,format:fileFormat(file.original_name)}));
   }
-  const inputSnapshot={...intent,manifest_sha256:revision.manifest_sha256,request_digest:requestDigest,files:fileSnapshot};
+  const inputSnapshot={...intent,...(projectMode?{material_processing_mode:projectMode}:{}),manifest_sha256:revision.manifest_sha256,request_digest:requestDigest,files:fileSnapshot};
   const pdfProvider=process.env.PDF_EXTRACTION_PROVIDER||'mineru-api';
   if(request.kind==='extract'&&executor==='api'&&!['mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取供应商配置无效');
-  const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(request.kind==='extract'?{pdf_provider:pdfProvider}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id}:{})},configDigest=hash(configSnapshot),id=randomUUID();
+  const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id}:{})},configDigest=hash(configSnapshot),id=randomUUID();
   const active=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND status IN ('queued','running') LIMIT 1",[revisionId])).rows[0];
   if(active)throw conflict('该文件集合已有活动任务，请等待完成或取消后重试');
   const result=await db.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,previous_job_id,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
@@ -118,7 +135,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
 
 export async function readLibraryJob(pool:Pool,id:string){
  const row=(await pool.query(`SELECT id,package_id,revision_id,kind,status,origin,executor_kind,execution_target,progress,result_summary,error_code,error_message,previous_job_id,cancel_requested_at,
-  input_snapshot->>'extraction_job_id' AS extraction_job_id,created_at,started_at,finished_at
+  input_snapshot->>'extraction_job_id' AS extraction_job_id,input_snapshot->>'material_processing_mode' AS material_processing_mode,config_snapshot->'redaction_template'->>'id' AS redaction_template_id,created_at,started_at,finished_at
   FROM ai_distill.library_jobs WHERE id=$1`,[id])).rows[0];
  if(!row)throw new HTTPException(404,{message:'材料处理任务不存在'});
  return row;
@@ -137,18 +154,20 @@ export async function cancelLibraryJob(pool:Pool,id:string){
 }
 
 /** 只由已经取得对应 worker 槽位的消费者调用；失租旧任务终结，不重新排回队列。 */
-export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,target:LibraryExecutionTarget){
+export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,target:LibraryExecutionTarget,onlyJobId?:string){
  const schema=await pool.query("SELECT to_regclass('ai_distill.library_jobs') IS NOT NULL AS available");
  if(schema.rows[0]?.available!==true)return null;
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
-  await db.query("UPDATE ai_distill.library_jobs SET status='failed',error_code='worker_interrupted',error_message='执行进程租约过期，可创建新尝试',finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE executor_kind=$1 AND execution_target=$2 AND status='running' AND lease_expires_at<now()",[executor,target]);
+  const values=onlyJobId?[executor,target,onlyJobId]:[executor,target];
+  await db.query("UPDATE ai_distill.library_jobs SET status='failed',error_code='worker_interrupted',error_message='执行进程租约过期，可创建新尝试',finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE executor_kind=$1 AND execution_target=$2 AND status='running' AND lease_expires_at<now()"+(onlyJobId?' AND id=$3::uuid':''),values);
   const job=(await db.query(`SELECT j.*,p.name AS package_name FROM ai_distill.library_jobs j JOIN ai_distill.library_packages p ON p.id=j.package_id
-   WHERE j.executor_kind=$1 AND j.execution_target=$2 AND j.status='queued' AND p.deleted_at IS NULL
-   ORDER BY j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1`,[executor,target])).rows[0];
+   WHERE j.executor_kind=$1 AND j.execution_target=$2 AND j.status='queued' AND p.deleted_at IS NULL ${onlyJobId?'AND j.id=$3::uuid':''}
+   ORDER BY j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1`,values)).rows[0];
   if(!job){await db.query('COMMIT');return null;}
-  const leaseToken=randomUUID(),timeout=Math.max(1,Math.min(1800000,Number(job.config_snapshot?.settings?.execution?.task_timeout_ms)||1200000));
+  const ceiling=job.config_snapshot?.redaction_template?.workflow==='codex_plan'?AGENT_REDACTION_MAX_MS:1800000;
+  const leaseToken=randomUUID(),timeout=Math.max(1,Math.min(ceiling,Number(job.config_snapshot?.settings?.execution?.task_timeout_ms)||1200000));
   const claimed=await db.query(`UPDATE ai_distill.library_jobs SET status='running',lease_token=$2,started_at=now(),deadline_at=now()+($3::text||' milliseconds')::interval,heartbeat_at=now(),lease_expires_at=now()+($4::text||' milliseconds')::interval,error_code=NULL,error_message=NULL
    WHERE id=$1 AND status='queued' RETURNING *`,[job.id,leaseToken,timeout,LIBRARY_JOB_LEASE_MS]);
   if(!claimed.rowCount)throw conflict('材料任务已由其他 worker 领取');

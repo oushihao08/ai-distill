@@ -1,15 +1,26 @@
 /**
- * 文件职责：管理独立材料库的内容寻址文件对象及受控读取。
- * 关键入口：`installLibraryBlob()` 原子安装并校验不可变 blob；`normalizeLibraryFilename()` 校验上传相对名称；`readLibraryBlob()` 校验路径边界与内容摘要后读取。
- * 使用场景：材料库服务和处理 worker；对象只写入指定 storageRoot 下的 material-library/blobs，不接触项目目录。
+ * 文件职责：管理独立材料库的不可变文件/数据库文本对象及受控读取。
+ * 关键入口：`installLibraryBlob()` 原子安装原件；`insertLibraryTextBlob()` 沿用调用方事务保存提取/脱敏正文；`readLibraryBlob()` 校验路径和摘要后读取；`normalizeLibraryFilename()` 校验上传名称。
+ * 使用场景：材料库服务、处理worker、旧数据导入和Codex计划导入；文件只写受管blob目录，文本只写library_blobs，不接触项目输入目录。
  */
 import {createHash,randomUUID} from 'node:crypto';
 import {link,mkdir,readFile,realpath,rm,writeFile} from 'node:fs/promises';
 import {dirname,join,relative,resolve,sep} from 'node:path';
 import {HTTPException} from 'hono/http-exception';
+import type {PoolClient} from 'pg';
 
 export interface InstalledLibraryBlob {sha256:string;size_bytes:number;content_type:string;storage_target:'local'|'server';storage_path:string}
 const digest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
+/** 三条材料处理入口共用不可变文本对象写入；沿用调用方事务，同摘要/MIME复用前复核正文及UTF8字节数。 */
+export async function insertLibraryTextBlob(db:Pick<PoolClient,'query'>,content:string,contentType:string){
+ const sha256=createHash('sha256').update(content).digest('hex'),size=Buffer.byteLength(content);
+ const inserted=await db.query(`INSERT INTO ai_distill.library_blobs(id,sha256,size_bytes,content_type,storage_kind,text_content)
+  VALUES($1,$2,$3,$4,'database_text',$5) ON CONFLICT(sha256,content_type) WHERE storage_kind='database_text' DO NOTHING RETURNING id`,[randomUUID(),sha256,size,contentType,content]);
+ if(inserted.rows[0]?.id)return{id:inserted.rows[0].id as string,sha256,size_bytes:size};
+ const existing=(await db.query("SELECT id,text_content,size_bytes FROM ai_distill.library_blobs WHERE sha256=$1 AND content_type=$2 AND storage_kind='database_text'",[sha256,contentType])).rows[0];
+ if(!existing||existing.text_content!==content||Number(existing.size_bytes)!==size)throw new HTTPException(409,{message:'材料文本对象摘要或大小冲突'});
+ return{id:existing.id as string,sha256,size_bytes:size};
+}
 function inside(root:string,path:string){const rel=relative(root,path);return rel!==''&&rel!=='..'&&!rel.startsWith(`..${sep}`)&&!rel.startsWith(sep);}
 
 /** 保留层级但拒绝绝对路径、空段、路径回退和控制字符。 */

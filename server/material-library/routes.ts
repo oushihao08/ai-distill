@@ -13,6 +13,10 @@ import {cancelLibraryJob,enqueueLibraryJob,readLibraryJob} from './jobs';
 import {readLibraryDocuments,readLibraryOriginal,readLibraryRedactionPreview} from './preview';
 import {readLibraryProcessingSettings,saveLibraryProcessingSettings} from './settings';
 import {readLibraryOriginalPreview} from './original-preview';
+import {libraryRedactionTemplates} from '../../shared/redaction-templates';
+import {resolveLibraryTemplate} from './templates';
+import {importPreparedLibraryMaterials} from './prepared-import';
+import {revalidateAgentLibraryRedaction} from './redaction-review';
 
 function versionHeader(value:string|undefined){
  if(!value)throw new HTTPException(428,{message:'缺少 If-Match 材料包版本'});
@@ -24,6 +28,7 @@ async function jsonBody(c:any){try{return await c.req.json();}catch{throw new HT
 
 export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:string){
  const prefix='/api/material-library';
+ app.get(`${prefix}/redaction-templates`,async c=>{const {processing_settings}=await readLibraryProcessingSettings(pool,storageRoot);return c.json({items:libraryRedactionTemplates(processing_settings).map(t=>resolveLibraryTemplate(processing_settings,t.id))});});
  app.get(`${prefix}/processing-defaults`,async c=>c.json(await buildDefaultProcessingSettings(pool)));
  app.get(`${prefix}/processing-settings`,async c=>c.json(await readLibraryProcessingSettings(pool,storageRoot)));
  app.put(`${prefix}/processing-settings`,async c=>{
@@ -46,6 +51,7 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
   return c.json(await readLibraryDocuments(pool,uuid(c.req.param('id')),uuid(job),file?uuid(file):undefined));
  });
  app.get(`${prefix}/redactions/:id/preview`,async c=>{c.header('Cache-Control','no-store');const file=c.req.query('file_id');return c.json(await readLibraryRedactionPreview(pool,uuid(c.req.param('id')),file?uuid(file):undefined));});
+ app.post(`${prefix}/redactions/:id/revalidate`,async c=>c.json(await revalidateAgentLibraryRedaction(pool,storageRoot,uuid(c.req.param('id')))));
  app.get(`${prefix}/project-options`,async c=>c.json({items:(await pool.query('SELECT id,name FROM ai_distill.projects WHERE deleted_at IS NULL ORDER BY name,id')).rows}));
  app.get(`${prefix}/packages`,async c=>{
   const page=Number(c.req.query('page')??1),page_size=Number(c.req.query('page_size')??30);
@@ -66,6 +72,7 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
   return c.json(result,result.reused?200:202);
  });
  app.get(`${prefix}/jobs/:id`,async c=>c.json(await readLibraryJob(pool,uuid(c.req.param('id')))));
+ app.post(`${prefix}/revisions/:id/prepared-redactions`,async c=>c.json(await importPreparedLibraryMaterials(pool,uuid(c.req.param('id')),await jsonBody(c),storageRoot),201));
  app.post(`${prefix}/jobs/:id/cancel`,async c=>c.json(await cancelLibraryJob(pool,uuid(c.req.param('id')))));
  app.post(`${prefix}/packages/:id/revisions`,async c=>{
   const packageId=uuid(c.req.param('id')),ifMatch=versionHeader(c.req.header('If-Match'));

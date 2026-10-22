@@ -134,7 +134,7 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
    const attempt=questionAttemptByWorkflow.get(workflowId),record=records.find(item=>item.workflow_id===workflowId);
    if(!attempt)throw new Error('input_attachment_missing');
    const paths=pathsByQuestionAttempt.get(attempt.id)??[];
-   if(!paths.length||paths.length!==countsByQuestionAttempt.get(attempt.id)||materialIdsByQuestionAttempt.get(attempt.id)?.size!==paths.length)throw new HTTPException(409,{message:`${record?.title??'题目'}尚未生成全部附件的当前来源 DOCX，请先归档并重新生成材料 DOCX`});
+   if(!paths.length||materialIdsByQuestionAttempt.get(attempt.id)?.size!==countsByQuestionAttempt.get(attempt.id))throw new HTTPException(409,{message:`${record?.title??'题目'}尚未生成全部附件的当前来源 DOCX，请先归档并重新生成材料 DOCX`});
    if(record)record.input_attachments=paths;
   }
  }

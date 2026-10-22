@@ -1,9 +1,11 @@
 /**
  * 职责：Work 法律题目的内容 schema、专业字段校验及兼容文本投影。
- * 入口：workQuestionSchema / normalizeWorkQuestion 供出题执行器使用；projectReference / projectRule 供同源渲染使用。
+ * 入口：workQuestionSchema / normalizeWorkQuestion 供出题执行器使用；assertWorkSubmissionReady / assertWorkBusinessRequirements 供本项目交付准入复用；projectReference / projectRule 供同源渲染使用。
  * 边界：只校验确定性结构，不认定法律正确、原子性、工作量或正式难度。
  */
 export const WORK_CONTENT_CONTRACT='work_legal_v1' as const;
+/** Work本批项目方反馈的交付下限；不适用于其他内容契约，不证明判据专业有效。 */
+export const WORK_MIN_RUBRIC_ITEMS=30;
 export interface WorkContent {
  content_contract:typeof WORK_CONTENT_CONTRACT;
  task_metadata:{occupation:string;scenario:string;role_perspective:string;domain_l2:string|null;capabilities:string[];professional_knowledge:string[];vl_dependency:boolean;source_note:string;generation_note:string;tools:string[];target_level:'L2'|'L3'|'L4'|'L5';level_basis:{documents:{id:string;attachment_id:string;locator:string;description:string}[];necessary_steps:string[];estimated_hours:number|null;explanation:string}};
@@ -22,7 +24,7 @@ export const WORK_RUBRIC_FIELDS=['statement','criterion_type','criterion_necessi
 export function workQuestionSchema(base:any){
  const metadata=obj({statement:str,criterion_type:{enum:['Objective','Subjective'],type:'string'},criterion_necessity:{enum:['Explicit','Implicit'],type:'string'},dimension:str,evaluated_files:strings,knowledge_points:strings,atomic_capabilities:arr({type:'string',enum:WORK_ATOMIC_CAPABILITIES}),priority:{type:'string',enum:['Critically Important','Important','Slightly Important','Slightly Detrimental','Detrimental','Critically Detrimental','Veto']},score:{type:['number','null'],enum:[10,7,3,-3,-7,-10,null]},type:{type:'string',enum:['binary','likert']},points:{type:['integer','null'],enum:[5,null]},trigger_count:nullableString});
  const {reference_answer,answer_requirements,...properties}=base.properties;void reference_answer;void answer_requirements;
- return obj({...properties,content_contract:{type:'string',enum:[WORK_CONTENT_CONTRACT]},rubric:arr(obj({id:str,metadata})),
+ return obj({...properties,content_contract:{type:'string',enum:[WORK_CONTENT_CONTRACT]},rubric:{...arr(obj({id:str,metadata})),description:`Work完整题包至少${WORK_MIN_RUBRIC_ITEMS}项独立判据；draft可保留部分结果，不为数量凑项。`},
  task_metadata:obj({occupation:str,scenario:str,role_perspective:str,domain_l2:nullableString,capabilities:strings,professional_knowledge:strings,vl_dependency:{type:'boolean'},source_note:str,generation_note:str,tools:strings,target_level:{type:'string',enum:['L2','L3','L4','L5']},level_basis:obj({documents:arr(obj({id:str,attachment_id:str,locator:str,description:str})),necessary_steps:strings,estimated_hours:{type:['number','null']},explanation:str})}),
  input_files:arr(obj({attachment_id:str,name:str,description:str})),deliverables:arr(obj({id:str,path:str,format:str,description:str,required:{type:'boolean'}})),
  reference_outputs:arr(obj({deliverable_id:str,content:str,sheets:arr(obj({name:str,columns:strings,rows:arr(arr({type:['string','number','boolean']}))}))})),
@@ -48,6 +50,42 @@ function names(value:any,label:string,min=0,max=500){list(value,label,min,max).f
 function keys(value:any,allowed:readonly string[],label:string,required=allowed){object(value,label);if(Object.keys(value).some(key=>!allowed.includes(key))||required.some(key=>!Object.hasOwn(value,key)))fail(`${label}字段缺失或未知`);}
 function path(value:any){text(value,'成果路径',200);if(Buffer.byteLength(value)>200||/[\\\x00-\x1f\x7f]/.test(value)||value.startsWith('/')||/^[a-z]:/i.test(value)||value.split('/').some((part:string)=>!part||part==='.'||part==='..'))fail('成果须为安全相对路径');}
 const weights:Record<string,number|null>={'Critically Important':10,Important:7,'Slightly Important':3,'Slightly Detrimental':-3,Detrimental:-7,'Critically Detrimental':-10,Veto:null};
+/** 新Work完整题和本项目新交付共用的数量、Office格式与评分文件引用准入。 */
+export function assertWorkBusinessRequirements(rubric:unknown,files:{path:string;format?:string}[]){
+ const items=list(rubric,'Rubric',1,500);
+ if(items.length<WORK_MIN_RUBRIC_ITEMS)fail(`完整题包Rubric至少${WORK_MIN_RUBRIC_ITEMS}项，当前${items.length}项；请从完整标准成果提炼独立判据`);
+ list(files,'成果清单',1,100);const paths=new Set<string>();
+ for(const file of files){
+  path(file.path);const extension=file.path.split('.').at(-1)?.toLowerCase();
+  if(!['docx','xlsx'].includes(extension??'')||file.format!==undefined&&file.format.toLowerCase()!==extension)fail(`业务成果须为DOCX/XLSX且格式一致：${file.path}`);
+  if([...paths].some(other=>file.path===other||file.path.startsWith(other+'/')||other.startsWith(file.path+'/')))fail(`成果路径重复或层级冲突：${file.path}`);paths.add(file.path);
+ }
+ const ids=new Set<string>();
+ for(const item of items){
+  text(item.id,'Rubric ID',160);if(ids.has(item.id))fail(`Rubric ID重复：${item.id}`);ids.add(item.id);
+  text(item.metadata?.statement??item.criterion,'完整判据');
+  const refs=item.metadata?.evaluated_files;names(refs,'evaluated_files',1);
+  if(refs.some((p:string)=>p!=='all'&&!paths.has(p))||refs.includes('all')&&refs.length!==1)fail(`evaluated_files引用无效：${item.id}`);
+ }
+}
+/** 标准成果与公开文件要求的既有结构检查；出题和交付均不得丢失映射。 */
+function validateWorkOutputs(value:any){
+ const deliverables=list(value.deliverables,'成果清单',1,100),paths=new Set(),ids=new Set();
+ for(const file of deliverables){keys(file,['id','path','format','description','required'],'成果');text(file.id,'成果ID',160);path(file.path);text(file.format,'格式',80);text(file.description,'成果说明',4000);if(typeof file.required!=='boolean'||ids.has(file.id)||paths.has(file.path)||file.path.split('.').at(-1)?.toLowerCase()!==file.format.toLowerCase())fail('成果ID/路径重复或格式不匹配');ids.add(file.id);paths.add(file.path);}
+ text(value.question,'题面');
+ const hiddenRequired=deliverables.filter((file:any)=>file.required&&!value.question.includes(file.path));
+ if(hiddenRequired.length)fail(`必交成果未在题面列明：${hiddenRequired.map((file:any)=>file.path).join('、')}`);
+ const outputs=list(value.reference_outputs,'标准成果',1,100),outputIds=new Set();
+ for(const output of outputs){keys(output,['deliverable_id','content','sheets'],'标准成果');if(!ids.has(output.deliverable_id)||outputIds.has(output.deliverable_id))fail('标准成果引用越界或重复');outputIds.add(output.deliverable_id);text(output.content,'完整成果正文');const sheets=list(output.sheets,'工作表',0,100);const sheetNames=new Set();for(const sheet of sheets){keys(sheet,['name','columns','rows'],'工作表');text(sheet.name,'工作表名',31);if(sheetNames.has(sheet.name))fail('工作表名重复');sheetNames.add(sheet.name);names(sheet.columns,'列名',1,1000);for(const row of list(sheet.rows,'行',0,100000)){if(!Array.isArray(row)||row.length!==sheet.columns.length||row.some(cell=>!['string','number','boolean'].includes(typeof cell)||typeof cell==='number'&&!Number.isFinite(cell)))fail('工作表行/列无效');}}const file=deliverables.find((d:any)=>d.id===output.deliverable_id);if(file.format.toLowerCase()==='xlsx'&&!sheets.length)fail('xlsx须提供结构化工作表');}
+ if(outputIds.size!==ids.size)fail('每份成果必须有对应完整标准内容');
+ return{deliverables,paths,ids};
+}
+/** 仅用于重新生成Work交付；历史读取不调用，不修改冻结题包。 */
+export function assertWorkSubmissionReady(value:any){
+ if(value.content_status?.status!=='complete'||!Array.isArray(value.content_status.issues)||value.content_status.issues.length)fail('交付须使用内容完整的题包，请先完成返修');
+ const {deliverables}=validateWorkOutputs(value);
+ assertWorkBusinessRequirements(value.rubric,deliverables);
+}
 /** 返回无丢字段的规范内容及派生兼容值；重复调用保持相同结果。 */
 export function normalizeWorkQuestion(raw:any,materials:{id:string;text:string}[]):any{
  const value=JSON.parse(JSON.stringify(raw,(_key,entry)=>{if(typeof entry==='number'&&!Number.isFinite(entry)||typeof entry==='undefined'||typeof entry==='function'||typeof entry==='bigint')fail('必须为有效JSON');return entry;}));
@@ -65,14 +103,7 @@ export function normalizeWorkQuestion(raw:any,materials:{id:string;text:string}[
  const docIds=new Set();for(const doc of list(basis.documents,'独立文书',1,10000)){keys(doc,['id','attachment_id','locator','description'],'文书');for(const key of Object.keys(doc))text(doc[key],key,4000);if(!materials.some(m=>m.id===doc.attachment_id)||docIds.has(doc.id))fail('文书引用越界或重复');docIds.add(doc.id);}
  const inputs=list(value.input_files,'输入映射',1,1000);if(inputs.length!==materials.length)fail('输入映射数量与本次材料不一致');
  inputs.forEach((file:any,index:number)=>{keys(file,['attachment_id','name','description'],'输入映射');if(file.attachment_id!==materials[index]?.id||file.name!==`附件${index+1}`)fail('输入映射须按本次附件顺序和可见名称填写');text(file.description,'材料说明',4000);});
- const deliverables=list(value.deliverables,'成果清单',1,100),paths=new Set(),ids=new Set();
- for(const file of deliverables){keys(file,['id','path','format','description','required'],'成果');text(file.id,'成果ID',160);path(file.path);text(file.format,'格式',80);text(file.description,'成果说明',4000);if(typeof file.required!=='boolean'||ids.has(file.id)||paths.has(file.path)||file.path.split('.').at(-1)?.toLowerCase()!==file.format.toLowerCase())fail('成果ID/路径重复或格式不匹配');ids.add(file.id);paths.add(file.path);}
- // 必交文件是候选可见义务，不能只藏在作者清单或标答里；精确命名要求来自Work任务书规范。
- const hiddenRequired=deliverables.filter((file:any)=>file.required&&!value.question.includes(file.path));
- if(hiddenRequired.length)fail(`必交成果未在题面列明：${hiddenRequired.map((file:any)=>file.path).join('、')}`);
- const outputs=list(value.reference_outputs,'标准成果',1,100),outputIds=new Set();
- for(const output of outputs){keys(output,['deliverable_id','content','sheets'],'标准成果');if(!ids.has(output.deliverable_id)||outputIds.has(output.deliverable_id))fail('标准成果引用越界或重复');outputIds.add(output.deliverable_id);text(output.content,'完整成果正文');const sheets=list(output.sheets,'工作表',0,100);const sheetNames=new Set();for(const sheet of sheets){keys(sheet,['name','columns','rows'],'工作表');text(sheet.name,'工作表名',31);if(sheetNames.has(sheet.name))fail('工作表名重复');sheetNames.add(sheet.name);names(sheet.columns,'列名',1,1000);for(const row of list(sheet.rows,'行',0,100000)){if(!Array.isArray(row)||row.length!==sheet.columns.length||row.some(cell=>!['string','number','boolean'].includes(typeof cell)||typeof cell==='number'&&!Number.isFinite(cell)))fail('工作表行/列无效');}}const file=deliverables.find((d:any)=>d.id===output.deliverable_id);if(file.format==='xlsx'&&!sheets.length)fail('xlsx须提供结构化工作表');}
- if(outputIds.size!==ids.size)fail('每份成果必须有对应完整标准内容');
+ const {deliverables,paths,ids}=validateWorkOutputs(value);
  const requirements=value.task_requirements;keys(requirements,['input_mode','output_mode','tools'],'业务能力');names(requirements.tools,'必要工具');if(!['text','image'].includes(requirements.input_mode)||!['text','file'].includes(requirements.output_mode))fail('业务能力无效');
  keys(value.content_status,['status','issues'],'内容状态');names(value.content_status.issues,'内容缺口');if(!['complete','draft'].includes(value.content_status.status)||value.content_status.status==='complete'&&value.content_status.issues.length||value.content_status.status==='draft'&&!value.content_status.issues.length)fail('完成/草稿状态与缺口矛盾');
  const researchIds=new Set();for(const research of list(value.research_records,'检索记录',value.content_status.status==='complete'?1:0,5000)){keys(research,['id','query','source_url','source_title','version','findings','verification_status','supports'],'检索记录');for(const key of ['id','query','source_title','version','findings'])text(research[key],key);if(researchIds.has(research.id))fail('检索ID重复');researchIds.add(research.id);names(research.supports,'检索关联');if(!['verified','unverified'].includes(research.verification_status))fail('检索状态无效');if(research.source_url!==null){let url:URL;try{url=new URL(research.source_url);}catch{fail('来源URL无效');}if(!['http:','https:'].includes(url!.protocol)||url!.username||url!.password)fail('来源URL无效');}if(research.verification_status==='verified'&&!research.source_url)fail('已核验记录须有正文来源');}
@@ -84,6 +115,7 @@ export function normalizeWorkQuestion(raw:any,materials:{id:string;text:string}[
  if(dimensionErrors.length)fail(`Rubric ID与维度不一致：${dimensionErrors.slice(0,20).join('；')}${dimensionErrors.length>20?`；另有${dimensionErrors.length-20}项`:''}`);
  if(value.content_status.status==='complete'&&(![1,2,5].every(d=>dimensions.has(d))||[3,4,6,7].filter(d=>dimensions.has(d)).length<2||qs.size<3||!anchors[f![1]!]!.every(q=>qs.has(q))||positive<=0||anchor/positive<.3||critical<2||subjective/rubric.length>.1||veto!==1))fail('维度、锚点、权重、主观比例或独立否决不符合规范');
  for(const r of value.research_records)if(r.supports.some((id:string)=>!ids.has(id)&&!rubricIds.has(id)))fail('检索关联对象不存在');
+ if(value.content_status.status==='complete')assertWorkBusinessRequirements(value.rubric,deliverables);
  const reference=projectReference(value);if(value.reference_answer!==undefined&&value.reference_answer!==reference)fail('兼容标答与逐成果内容不一致');value.reference_answer=reference;
  const runner={input_mode:'text',output_mode:'text',tools:[]};if(value.answer_requirements!==undefined&&(value.answer_requirements.input_mode!=='text'||value.answer_requirements.output_mode!=='text'||!Array.isArray(value.answer_requirements.tools)||value.answer_requirements.tools.length||Object.keys(value.answer_requirements).some(k=>!['input_mode','output_mode','tools'].includes(k))))fail('本地runner能力字段不可改写');value.answer_requirements=runner;
  return value;

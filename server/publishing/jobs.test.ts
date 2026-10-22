@@ -8,9 +8,10 @@ import type {Pool} from 'pg';
 import {publishWorkflow,readPublicationHistory,withdrawPublication,readSiriserArchive} from './jobs';
 import {acceptanceSourceDigest} from '../decisions/jobs';
 import {scanProjectPrompt} from '../rule-files';
+import {getAgentConcurrencyGate,closeAgentConcurrencyGate,saveWorkerConcurrencySettings} from '../concurrency';
 import {canonicalJson} from '../../shared/workflow-config';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
-async function fixture(options:{withoutPrompt?:boolean}={}){
+async function fixture(options:{withoutPrompt?:boolean;work?:boolean}={}){
  const root=await mkdtemp(join(tmpdir(),'publish-test-'));const text='模型完整答案';
  const skill=join(root,'skill');await mkdir(skill);await writeFile(join(skill,'SKILL.md'),'---\nname: current-skill\ndescription: publication fixture\n---\n当前出题规则');
  const prompt=await scanProjectPrompt(root,skill);
@@ -38,7 +39,7 @@ async function fixture(options:{withoutPrompt?:boolean}={}){
   if(sql.startsWith('SELECT p.material_backend FROM ai_distill.workflows'))return{rows:[{material_backend:'library_v1'}],rowCount:1};
   if(sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))return{rows:[{id:'material',kind:'redacted_markdown',attempt_id:null,sha256:hash('脱敏材料'),content:'脱敏材料'},{id:'library-index',kind:'redacted_index',attempt_id:null,sha256:hash(libraryIndex),content:libraryIndex}],rowCount:2};
   if(sql.startsWith('SELECT id,content,sha256 FROM ai_distill.artifacts'))return{rows:[{id:'library-index',content:libraryIndex,sha256:hash(libraryIndex)}],rowCount:1};
-  if(sql.startsWith('SELECT w.project_id'))return {rows:[{project_id:'project',project_name:'项目',title:'标题',material_root:join(root,'questions'),local_skill_path:skill,status:'succeeded'}],rowCount:1};
+  if(sql.startsWith('SELECT w.project_id'))return {rows:[{project_id:'project',project_name:'项目',...(options.work?{parent_name:'Work法律全场景'}:{}),title:'标题',material_root:join(root,'questions'),local_skill_path:skill,status:'succeeded'}],rowCount:1};
   if(sql.startsWith('SELECT s.model_id'))return {rows:[{model_id:modelId,name:'Qwen',enabled:true,minimum_score:config.minimum_score_by_model[modelId],config:{provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'}}],rowCount:1};
   if(sql.startsWith('SELECT config'))return {rows:[{config}],rowCount:1};
   if(sql.startsWith('SELECT ordinal,status'))return {rows:[4,5,6,7].map(ordinal=>({ordinal,status:'succeeded'})),rowCount:4};
@@ -54,7 +55,8 @@ async function fixture(options:{withoutPrompt?:boolean}={}){
   if(sql.startsWith('INSERT')||sql.startsWith('UPDATE'))writes.push({sql,values});
   return {rows:[],rowCount:0};
  };
- return {root,skill,snapshot,accepted,artifacts,writes,librarySnapshotDigest,pool:{query,connect:async()=>({query,release(){}})} as unknown as Pool,setPrevious:(value:any)=>{previous=value;},setLatestEvent:(value:'archived'|'withdrawn')=>{latestEventType=value;}};
+ const connections={held:0,opened:0};
+ return {root,skill,snapshot,accepted,artifacts,writes,librarySnapshotDigest,connections,pool:{query,connect:async()=>{connections.held++;connections.opened++;let released=false;return{query,release(){if(released)throw new Error('double release');released=true;connections.held--;}};}} as unknown as Pool,setPrevious:(value:any)=>{previous=value;},setLatestEvent:(value:'archived'|'withdrawn')=>{latestEventType=value;}};
 }
 async function publisher(){return publishWorkflow;}
 test('期次显示名变化后仍从已登记的归档目录读取原ZIP，不重建或改写旧成果',async()=>{
@@ -165,5 +167,30 @@ test('归档新格式负分与独立否决结果，完整规则绑定仍有效',
   f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);
   expect((await publishWorkflow(f.pool,'workflow',f.root)).completed).toBe(true);
   expect(q.result.rubric[0].metadata.score).toBe(-7);expect(s.result.report.summary.veto_triggered).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+
+const preparedWork:any={deliverable_type:'F1',deliverable_title:'业务成果',deliverable_markdown:'成果',harbor_files:[],research_entries:[],unresolved:[],generated_at:'frozen',model:'author_snapshot',reasoning_effort:'not_applicable',actual_search_queries:[],actually_opened_urls:[]};
+test.each([true,false])('Work frozen=%s releases DB before preparation and only legacy waits for Agent',async(frozen)=>{
+ const f=await fixture({work:true});saveWorkerConcurrencySettings(f.root,{agent:1,llmApi:8});
+ if(frozen)(f.snapshot.question.result as any).content_contract='work_legal_v1';
+ f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);
+ let release!:()=>void,occupied=false,called=false;const gate=getAgentConcurrencyGate(f.root,1);
+ const held=gate.run(async()=>{occupied=true;await new Promise<void>(r=>{release=r;});});
+ while(!occupied)await Bun.sleep(1);
+ const run=publishWorkflow(f.pool,'workflow',f.root,undefined,{resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,prepareWork:async()=>{called=true;expect(f.connections.held).toBe(0);return preparedWork;}});
+ try{
+  if(frozen){await run;expect(called).toBe(true);}
+  else{await Bun.sleep(25);expect(called).toBe(false);expect(f.connections.held).toBe(0);release();await held;await run;expect(called).toBe(true);}
+  expect(f.connections.held).toBe(0);expect(f.connections.opened).toBe(2);
+  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(true);
+ }finally{release();await held;closeAgentConcurrencyGate(f.root);await rm(f.root,{recursive:true,force:true});}
+});
+test.each(['error','changed'])('Work generation %s never publishes stale results or leaks a connection',async(mode)=>{
+ const f=await fixture({work:true});(f.snapshot.question.result as any).content_contract='work_legal_v1';f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);
+ try{
+  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,prepareWork:async()=>{expect(f.connections.held).toBe(0);if(mode==='error')throw new Error('prepare failed');f.snapshot.question.result.question_version='changed';return preparedWork;}})).rejects.toThrow(mode==='error'?'prepare failed':'生成期间');
+  expect(f.connections.held).toBe(0);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });

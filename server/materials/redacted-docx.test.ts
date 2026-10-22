@@ -1,6 +1,6 @@
 /**
  * 职责：验证脱敏 Markdown 到 DOCX 的转换边界与附件页码呈现。
- * 主要验证：OOXML ZIP 可解析，系统标记被隐藏，正文转义、分页及常见 Markdown 表格均保留。
+ * 主要验证：OOXML ZIP 可解析，系统标记被隐藏，正文转义、按需源页分页与默认连续排版及常见 Markdown 表格均保留。
  * 验证边界：直接检查生成的 OOXML ZIP 字节，不启动 Word/Office；修改 `redacted-docx.ts` 时可定向回归。
  */
 import {test,expect} from 'bun:test';
@@ -24,7 +24,7 @@ test('DOCX uses only supplied redacted text and preserves attachment/page struct
  expect(parts.has('[Content_Types].xml')).toBe(true);
  expect(parts.has('_rels/.rels')).toBe(true);expect(parts.has('word/styles.xml')).toBe(true);
  expect(xml).not.toContain('【附件 1】');expect(xml).not.toContain('【原附件第 1 页】');expect(xml).not.toContain('【原附件第 3 页】');expect(xml).not.toContain('【附件 1 结束】');
- expect(xml).toContain('43****33 元 &amp; &lt;已脱敏&gt;');expect(xml).not.toContain('**重点核对**');expect(xml).toContain('<w:b');expect(xml).toContain('<w:tbl>');expect(xml).toContain('<w:pageBreakBefore');
+ expect(xml).toContain('43****33 元 &amp; &lt;已脱敏&gt;');expect(xml).not.toContain('**重点核对**');expect(xml).toContain('<w:b');expect(xml).toContain('<w:tbl>');expect(xml).not.toContain('<w:pageBreakBefore');
  expect(xml).not.toContain('原始OCR');
 });
 
@@ -45,8 +45,25 @@ test('structured DOCX keeps exact text in headings, lists, tables and footnotes 
  expect(xml).toContain(' 标题 &amp; &lt;脱敏&gt; ');
  expect(xml).toContain('第一项  ');expect(xml).toContain('第二项');
  expect(xml).toContain('付款表');expect(xml).toContain('2025-01-02');expect(xml).toContain('甲某 100 元');expect(xml).toContain('脚注内容');
- expect(xml.match(/重复文本/g)).toHaveLength(2);expect(xml).toContain('<w:tbl>');expect(xml).toContain('<w:pageBreakBefore');
+ expect(xml.match(/重复文本/g)).toHaveLength(2);expect(xml).toContain('<w:tbl>');expect(xml).not.toContain('<w:pageBreakBefore');
  const renderedText=[...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map(match=>match[1]!.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'"));
  expect(renderedText).toEqual([' 标题 & <脱敏> ','第一项  ','第二项','付款表','日期','金额','2025-01-02','甲某 100 元','脚注内容','重复文本\n重复文本  ']);
  expect(parts.get('word/_rels/document.xml.rels')??'').not.toContain('/media/');
+});
+
+
+test('source pagination is explicit and skips blank source pages while flow keeps every real paragraph',async()=>{
+ const structure:any={format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'a',kind:'paragraph',text:'完整正文甲'}]},{page:2,blocks:[{id:'b',kind:'paragraph',text:'   '}]},{page:3,blocks:[{id:'c',kind:'paragraph',text:'完整正文乙'}]}]};
+ const flow=docxParts(await buildRedactedDocx(structure)).get('word/document.xml')!;
+ expect(flow).not.toContain('<w:pageBreakBefore');expect(flow.match(/<w:p>/g)).toHaveLength(2);expect(flow).toContain('完整正文甲');expect(flow).toContain('完整正文乙');
+ const source=docxParts(await buildRedactedDocx(structure,{pagination:'source'})).get('word/document.xml')!;
+ expect(source.match(/<w:pageBreakBefore/g)).toHaveLength(1);
+ await expect(buildRedactedDocx({format:'redacted-structure-v1',pages:[{page:1,blocks:[]}]})).rejects.toThrow('脱敏文本为空');
+});
+
+
+test('table cells use compact paragraph spacing without changing amounts or dates',async()=>{
+ const doc:any={format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'t',kind:'table',rows:[{cells:[{text:'本金10000元'},{text:'2025-03-26'}]}]}]}]};
+ const xml=docxParts(await buildRedactedDocx(doc)).get('word/document.xml')!;
+ expect(xml).toContain('本金10000元');expect(xml).toContain('2025-03-26');expect(xml).toContain('w:after="0"');expect(xml).toContain('w:line="240"');
 });

@@ -176,12 +176,14 @@ test('project task inputs preserve skill files and put task instructions before 
  try{
   const author=await runAuthoring({...task,step_prompt:'本次重点检查金额口径',execute:async(call:any)=>{
    const input=await Bun.file(join(call.directory,'input/input.json')).json();
-   expect(input).toMatchObject({project_name:'测试期项目',question_id:'题目1',step:'出题',step_prompt:'本次重点检查金额口径',materials:[{id:task.materials[0].id,sha256:task.materials[0].sha256,name:'附件1',path:'input/attachments/附件1.txt'}]});
+   expect(input).toMatchObject({project_name:'测试期项目',question_id:'题目1',step:'出题',project_authoring_prompt:'本次重点检查金额口径',materials:[{id:task.materials[0].id,sha256:task.materials[0].sha256,name:'附件1',path:'input/attachments/附件1.txt'}]});
+   expect(input.system_authoring_prompt).toContain('<固定通用出题规则>');
    expect(await Bun.file(join(call.directory,input.materials[0].path)).text()).toBe(task.materials[0].text);
    expect(input.source_files).toEqual([{name:'原件.pdf'}]);
    expect(await Bun.file(join(call.directory,'input/render-package.cjs')).text()).not.toContain(join(root,'original.pdf'));
    expect(JSON.stringify(input)).not.toContain(root);
-   expect(call.prompt.startsWith(input.step_prompt+'\n\n')).toBe(true);
+   expect(call.prompt.startsWith(input.system_authoring_prompt+'\n\n<项目可配置出题提示词>')).toBe(true);
+   expect(call.prompt).toContain('本次重点检查金额口径');
    expect(call.execution_profile).toBe('fresh_authoring');expect(call.working_directory).toBe(await realpath(root));
    expect(call.prompt.indexOf('skill：')).toBeLessThan(call.prompt.indexOf('附件（'));
    expect(call.prompt).toContain(`skill：${join(call.directory,'input/project-context/skill/SKILL.md')}`);

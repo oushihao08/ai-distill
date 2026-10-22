@@ -5,9 +5,9 @@
 
 | 组件 | 职责 |
 | --- | --- |
-| `AppShell`、`UiIcon` | 应用外壳、路由出口与固定图标；材料库桌面端使用视口高度容器，供左右阅读栏等高布局使用 |
+| `AppShell`、`UiIcon` | 应用外壳、路由出口与固定图标；材料库桌面端使用视口高度容器，切换材料包时保留页面实例与列表状态 |
 | `ProjectForm` | 创建主项目首期或新增期次；分期编辑只维护业务说明和标签、不提交材料目录/后端/工作区或共享 skill 字段；grouped legacy 目录只作为历史来源，未分期旧项目保留目录编辑兼容；项目详情以 `tagsOnly` 只保存本期题目标签 |
-| `ProjectLibraryMaterials` | 在期次建立全局材料包版本的加载关系；首屏仅读取本期引用和使用摘要，材料候选搜索分页、提交历史及本期来源模式要求的成功提取或脱敏版本均按需读取；在弹窗编辑题目名称、场景、角色、等级、方向和标签，支持恢复本期已移除引用；包本身不归属项目或期次，不在项目页处理原件、入库、提取或脱敏 |
+| `ProjectLibraryMaterials` | 在期次建立全局材料包版本的加载关系；首屏仅读取本期引用和使用摘要，材料候选搜索分页、提交历史及本期来源模式要求的成功提取或脱敏版本均按需读取；每个加载包仅创建一道活动题，包名含L2–L5时等级自动带入；可编辑场景、角色、方向和标签，支持恢复本期已移除引用；包本身不归属项目或期次，不在项目页处理原件、入库、提取或脱敏 |
 | `MaterialUsePanel` | 显示主项目材料使用／提交状态；提交和返修原因在对话框编辑，事件历史通过单条使用记录接口按需读取，不随本期材料首屏加载 |
 | `LibraryPackageUseMarker` | 在全局材料包列表展示未使用／已使用项目数；点开后查看每个主项目的所属期次与使用状态，不读取事件历史 |
 | `ProjectMaterialRecords` | 项目材料包平铺表；逐包显示入库、脱敏状态、附件数和派生题目数，当前页读取状态；单项或按全部搜索结果批量派发入库／脱敏 |
@@ -16,7 +16,7 @@
 | `WorkflowAttemptHistory` | 按工作流与步骤分页查看安全执行元信息；入库记录合并内部 PDF/DOCX 提取尝试 |
 | `AcceptedQuestionList`、`AcceptedQuestionDetail` | 当前达标题目的共享材料包或旧来源、搜索、异常筛选、分页、模型评分概览和单题归档入口；详情弹窗按需展示当前题目包、答案、评分及脱敏附件全文 |
 | `CodexConfig`、`ProjectCodexSettings`、`StepSettings` | 全局、项目、步骤 Agent 配置；步骤覆盖优先于项目，项目优先于全局；仅出题、评分及脱敏步骤开放单独设置 |
-| `SystemStepPromptSettings` | 主项目首页维护四类系统级提示词；保存只影响之后新建的期次，已有期次提示词独立保存 |
+| `SystemStepPromptSettings` | 主项目首页维护四类系统默认提示词；出题标签页分开展示固定通用规则与新项目可配置默认要求，保存仅影响之后新建的期次 |
 | `WorkerConcurrencyConfig` | 系统级 Agent／API 并发设置；显示安全上限及当前生效值，保存后重启 API 与 worker 生效 |
 | `AnswerModelSet` | 系统模型目录、当前期次作答模型集合及各模型百分制分数上限；这是该期达标判断的唯一配置来源 |
 | `AnswerGenerationPolicySettings` | 本期作答请求上限、推理增量认定阈值及免评分策略；读取/保存 `/answer-generation-policy`，保存只影响新作答任务 |
@@ -32,7 +32,7 @@
 | `WorkerMonitor`、`ActiveWorkflowTasks` | WorkerMonitor 展示执行器心跳、内存、独立材料库队列和项目步骤；ActiveWorkflowTasks 按 API／Agent 展示运行中的项目、题目和步骤；由全局任务监控路由承载 |
 | [rules](rules/README.md) | 规则资料、skill 候选及冻结版本 |
 
-`ProjectStepRecords` 分批读取既有工作流详情，不派发任务；逐题详情返回的 `ready` 与 `ready_reason` 来自服务端统一就绪判断，组件不复制前置条件。该弹窗没有定时轮询，页面刷新或用户操作后更新。`MaterialRecordsTable` 的附件进度由题目步骤推导；全文通过附件接口按需读取，PDF 原件在同一弹窗的 PDF 标签中通过 Blob URL 使用浏览器内置查看器预览，并提示原件可能未脱敏，关闭弹窗后释放预览 URL。附件已标记脱敏仍可能缺少附件级脱敏正文。
+`ProjectStepRecords` 分批读取既有工作流详情，不派发任务；逐题详情返回的 `ready` 与 `ready_reason` 来自服务端统一就绪判断，组件不复制前置条件。该弹窗没有定时轮询，页面刷新或用户操作后更新。`MaterialRecordsTable` 的附件进度由题目步骤推导；全文通过附件接口按需读取，共享材料题按冻结来源显示对应原文或脱敏正文，脱敏视图不返回原始提取页；旧流程附件仍可能标记脱敏却缺少附件级脱敏正文。
 
 `AcceptedQuestionList` 只展示当前 ordinal 7 成功且判定为 accepted 的题目；模型得分、百分制、门槛和归档／导出状态来自项目详情响应。待归档行可进入题目详情，由详情页按活动尝试判断归档操作是否可用；归档成功的题目仍在全部题目表，并同时出现在达标题目表。`AcceptedQuestionDetail` 延迟读取工作流详情，附件标签仅请求 `redacted_only=true` 的脱敏正文，不读取或返回原始提取文本；题面、作答和评分文本保留换行并在弹窗滚动区域显示。列表的 Excel 操作汇总全部当前有效达标题目。
 
@@ -40,7 +40,7 @@
 
 上传入口支持的材料格式依组件而异：`UploadForm`、`DirectoryImportForm`、`MaterialEditor` 和材料包文件夹导入均接受 PDF、DOCX、TXT、MD；其中 `DirectoryImportForm` 按项目目录的直接子目录分组上传，`MaterialEditor` 管理单题附件。此处只说明浏览器接受的格式，不代表提取或脱敏任务已运行成功。
 
-`StepSettings.vue` 的脱敏设置可选择独立大模型 API 或本地 Agent；API 模型选项复用 `/api/answer-models` 系统目录。`AnswerModelSet.vue` 管理作答模型集合，可登记 OpenRouter API 模型或本机 Codex Agent 的模型/推理强度；作答 worker 根据冻结 provider 分流，Codex 不经 llm-api，也不在服务器 worker 执行。
+`StepSettings.vue` 的出题设置分别显示固定通用提示词与本项目可配置提示词；前者由作者执行器固定附加，后者按系统默认快照或项目设置派发并冻结。脱敏设置可选择独立大模型 API 或本地 Agent；API 模型选项复用 `/api/answer-models` 系统目录。`AnswerModelSet.vue` 管理作答模型集合，可登记 OpenRouter API 模型或本机 Codex Agent 的模型/推理强度；作答 worker 根据冻结 provider 分流，Codex 不经 llm-api，也不在服务器 worker 执行。
 
 评分步骤设置显示并编辑实际执行的评分提示词；已知旧内置默认正文映射为当前默认，自定义提示词原样保留。从 `/api/agent/scoring-instructions` 读取程序调用说明和隔离参数。`ModelEvaluationSummary` 提供“查看评分”，逐模型展示已保存的实际回复和程序校验问题；历史记录未保存校验细节时不补造原因。
 
@@ -77,7 +77,13 @@
 - `LibraryPackageSettings`：只维护包名称、说明和标签，使用If-Match保存；模型和提示词由材料库共用设置维护。
 - `LibraryMaterialPreview`：保留旧弹窗兼容组件；材料库主入口已改用逐文件阅读区，不再并排铺开历史提取按钮。
 
-- `LibraryProcessingSettings`：所有材料包共用的模型/提示词设置；复用模型目录，保存时比较共用配置版本，系统默认只应用到草稿。
-- `LibraryPackageWorkspace`：在紧凑工具栏中显示处理状态、操作、文件版本、文件选择及按需出现的脱敏版本选择；当前结果与历史任务分开。
+- `LibraryProcessingSettings`：打开时默认选择Agent整包代称模板；所有材料包共用的模型/提示词设置；复用模型目录，保存时比较共用配置版本，系统默认只应用到草稿。
+- `LibraryPackageWorkspace`：默认选择Agent整包代称模板，保留字段映射模板手动选择；在紧凑工具栏中显示处理状态、操作、文件版本、文件选择及按需出现的脱敏版本选择；当前结果与历史任务分开，阅读区不预览原件，仍提供显式下载。
 - `LibraryFileReader`：原PDF/DOCX（本地PDF副本）/文本、识别原文、单文件脱敏文本及逐页对照；查看模式和脱敏版本由父级工具栏控制，对照锁定所选脱敏版本实际引用的提取任务，切换文件或版本会取消旧读取。
 - `LibraryUsageSummary`：材料详情展示主项目跨期使用状态与提交/返修事件、项目加载关系及题目归档/撤回时间线；不把当前状态重复标在每次历史操作上。
+
+材料库共用设置支持编辑多个独立脱敏模板；材料包工作区选择模板后只派发field_mapping，codex_plan显示CLI整包审阅入口，不伪装已派发。省略模板仍按旧mask执行。
+
+材料处理三模式由`StepSettings.vue`保存到期次步骤4的`material_processing_mode`。`ProjectLibraryMaterials.vue`按模式过滤结果、允许先加载待处理版本，并把期次上下文传给材料详情；`LibraryPackageWorkspace.vue`在该上下文锁定处理方式。前端不执行脱敏、不替代后端模式核验；已有题目的来源不随设置改变。
+
+面包屑由AppShell渲染，三级业务页面通过usePageBreadcrumbs使用各自已加载的API身份；主项目、期次和题目逐层跳转。StepSettings表单使用视口上限，标题与底部操作固定，主体独立滚动；长提示词不应撑出窗口。

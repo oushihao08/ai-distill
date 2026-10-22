@@ -10,6 +10,8 @@ import type {Pool} from 'pg';
 
 import {enqueueAuthoring,runNextAuthoring,inputDigest} from './jobs';
 import {scanProjectPrompt} from '../rule-files';
+import {canonicalJson} from '../../shared/workflow-config';
+import {AUTHORING_FIXED_PROMPT} from '../../shared/step-prompts';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const empty={rows:[],rowCount:0};
 
@@ -25,15 +27,29 @@ async function projectFixture(){
  await writeFile(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'low'}]},{slug:'project-model',supported_reasoning_levels:[{effort:'high'}]},{slug:'system-model',supported_reasoning_levels:[{effort:'medium'}]}]}));
  const state:any={title:'题目1',text:'脱敏材料100元',projectConfig:{provider:'codex',model:'fixture-model',reasoning_effort:'low'},projectDefault:null,job:null,reuse:null,active:false,hookRuns:new Map()};
  const calls:{sql:string;values:any[]}[]=[];let saved:any;
+ const library=()=>{
+  const mode=state.library,sourceSha=hash('original'),text=state.text;
+  const item=mode==='original'?{material_id:'source-file',markdown:text,document:{version:1,source_sha256:sourceSha,pages:[{page:1,text,structure:[{id:'p',kind:'paragraph',text}]}]}}:{material_id:'source-file',markdown:text};
+  const markdown=mode==='original'?'# 附件.pdf\n\n'+text:text;
+  const index=JSON.stringify({format:mode==='original'?'source-index-v1':'redacted-index-v2',redacted_sha256:hash(markdown),materials:[item]});
+  const manifest={version:2,origin:{kind:'library_v1',material_mode:mode,package_id:'pkg',revision_id:'rev',redaction_id:mode==='original'?null:'redact',source_digest:hash('source')},files:[{material_id:'source-file',original_name:'附件.pdf',source_sha256:sourceSha,document_sha256:hash(text)}],material_markdown:{artifact_id:'attachment',sha256:hash(markdown)},material_index:{artifact_id:'index',sha256:hash(index)}};
+  return {row:{project_id:'project',package_id:'pkg',revision_id:'rev',redaction_id:manifest.origin.redaction_id,material_mode:mode,source_digest:hash('source'),snapshot_manifest:manifest,snapshot_digest:hash(canonicalJson(manifest)),markdown_artifact_id:'attachment',index_artifact_id:'index'},artifacts:[{id:'attachment',kind:mode==='original'?'source_markdown':'redacted_markdown',attempt_id:null,sha256:hash(markdown),content:markdown},{id:'index',kind:mode==='original'?'source_index':'redacted_index',attempt_id:null,sha256:hash(index),content:index}]};
+ };
+
  const query=async(sql:string,values:any[]=[]):Promise<any>=>{
   calls.push({sql,values});
+  if(state.library){
+   if(sql.startsWith('SELECT p.material_backend'))return{rows:[{material_backend:'library_v1',has_library_snapshot:true}],rowCount:1};
+   if(sql.startsWith('SELECT project_id,package_id,revision_id'))return{rows:[library().row],rowCount:1};
+   if(sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))return{rows:library().artifacts,rowCount:2};
+  }
   if(sql.startsWith('SELECT * FROM ai_distill.hook_runs')){const row=[...state.hookRuns.values()].find((r:any)=>r.attempt_id===values[0]&&r.position===values[1]&&r.action_id===values[2]);return {rows:row?[structuredClone(row)]:[],rowCount:row?1:0};}
   if(sql.startsWith('INSERT INTO ai_distill.hook_runs')){const row={id:values[0],workflow_id:values[1],attempt_id:values[2],stage:values[3],position:values[4],action_id:values[5],mode:values[6],binding_digest:values[7],snapshot:JSON.parse(values[8]),idempotent:values[9],status:'waiting'};state.hookRuns.set(row.id,row);return {rows:[structuredClone(row)],rowCount:1};}
   if(sql.startsWith('UPDATE ai_distill.hook_runs')){const row=state.hookRuns.get(values[0]);if(!row)return empty;row.status=values[1];row.result=values[2]?JSON.parse(values[2]):null;row.result_digest=values[4];return {rows:[structuredClone(row)],rowCount:1};}
 
   if(sql.includes("a.status='running' AND COALESCE(a.heartbeat_at"))return empty;
   if(sql.startsWith('SELECT a.*'))return{rows:state.job?[state.job]:[],rowCount:state.job?1:0};
-  if((sql.startsWith('SELECT w.project_id')||sql.startsWith('SELECT w.*')))return{rows:[{project_id:'project',project_name:'项目名称',title:state.title,source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};
+  if((sql.startsWith('SELECT w.project_id')||sql.startsWith('SELECT w.*')))return{rows:[{project_id:'project',project_name:'项目名称',material_backend:state.library?'library_v1':'legacy',has_library_snapshot:!!state.library,title:state.title,source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redaction'}],rowCount:1};
   if(sql.startsWith('SELECT ar.id'))return{rows:[{id:'attachment',sha256:hash(state.text)}],rowCount:1};
   if(sql.startsWith('SELECT sha256,content'))return{rows:[{sha256:hash(state.text),content:state.text,sources:state.originalNames?.map((original_name:string)=>({original_name}))}],rowCount:1};
@@ -69,7 +85,7 @@ test.each([
  const f=await projectFixture();try{
   f.state.projectConfig=config;f.state.projectDefault=defaults;await enqueueAuthoring(f.pool,'workflow');
   expect(f.saved.config.model).toBe(expected);expect(f.saved.input.authoring_contract).toBe('fresh-desktop-v1');
-  expect(f.saved.input.project_prompt.workspace_path).toBe(await realpath(f.root));expect(f.saved.input).not.toHaveProperty('evaluation_feedback');
+  expect(f.saved.input.project_prompt.workspace_path).toBe(await realpath(f.root));expect(f.saved.input.system_authoring_prompt).toBe(AUTHORING_FIXED_PROMPT);expect(f.saved.input).not.toHaveProperty('evaluation_feedback');
   expect(f.calls.some(c=>c.sql.includes('SELECT id,result')&&c.sql.includes('ordinal=4'))).toBe(false);
   expect(f.calls.some(c=>c.sql.includes('ordinal=7')&&c.sql.startsWith('SELECT'))).toBe(false);
   const {digest,...input}=f.saved.input;expect(inputDigest(input)).toBe(digest);
@@ -107,7 +123,7 @@ test.each(['none','attachments','title','skill'])('fresh author worker preserves
  const f=await projectFixture();let received:any;try{
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
   await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{received=options;if(change==='attachments')f.state.text='changed';if(change==='title')f.state.title='新题';if(change==='skill')await writeFile(join(f.skill,'SKILL.md'),'changed');return authored;});
-  expect(received.workspace_path).toBe(await realpath(f.root));expect(received).not.toHaveProperty('evaluation_feedback');
+  expect(received.workspace_path).toBe(await realpath(f.root));expect(received.system_authoring_prompt).toBe(AUTHORING_FIXED_PROMPT);expect(received).not.toHaveProperty('evaluation_feedback');
   expect(received.materials).toEqual([{id:'attachment',sha256:hash('脱敏材料100元'),text:'脱敏材料100元'}]);
   const completed=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));
   if(change==='none'){
@@ -247,5 +263,34 @@ test('内容契约配置变化后拒绝旧尝试发布且不调用作者',async(
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;f.state.projectConfig={provider:'codex',model:'fixture-model',reasoning_effort:'low'};
   let called=false;await runNextAuthoring(f.pool,f.root,async()=>{called=true;return authored;});expect(called).toBe(false);
   expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(false);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+// 新三模式快照必须保留到出题冻结输入；旧快照无此字段继续保持原摘要。
+test('出题指纹绑定三模式字段且兼容旧来源',()=>{
+ const base={title:'题目',materials:[{id:'material',sha256:hash('材料')}],material_origin:{kind:'library_v1' as const,material_mode:'redacted' as const,package_id:'package',revision_id:'revision',redaction_id:'redaction',snapshot_digest:hash('snapshot')}};
+ expect(inputDigest({...base,material_origin:{...base.material_origin,material_processing_mode:'aliases'}})).not.toBe(inputDigest({...base,material_origin:{...base.material_origin,material_processing_mode:'mask'}}));
+ expect(inputDigest(base)).toBe(inputDigest({...base,material_origin:{...base.material_origin,material_processing_mode:undefined}}));
+});
+
+
+test.each(['redacted','original'])('library %s loads once at startup and rechecks before publishing',async(mode)=>{
+ const f=await projectFixture();try{
+  f.state.library=mode;await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;f.calls.length=0;
+  await runNextAuthoring(f.pool,f.root,async options=>{
+   expect(options.materials[0]?.text).toContain('100元');
+   expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))).toHaveLength(1);
+   return authored;
+  });
+  expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))).toHaveLength(3);
+  expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('reusing validated library input still rejects material changes made during authoring',async()=>{
+ const f=await projectFixture();try{
+  f.state.library='redacted';await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;f.calls.length=0;
+  await runNextAuthoring(f.pool,f.root,async()=>{f.state.text='changed source';return authored;});
+  expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });

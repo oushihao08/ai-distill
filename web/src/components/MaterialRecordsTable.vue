@@ -186,12 +186,12 @@ async function viewFullText(material: Material) {
      <v-tab v-if="isPdf" value="pdf">PDF 预览</v-tab>
     </v-tabs>
     <template v-if="detailTab === 'text'">
-     <Row v-if="detail" wrap :gap="8">
+     <Row v-if="detail && !preferRedacted" wrap :gap="8">
      <v-chip :color="detail.redaction_status === 'redacted' ? 'success' : 'warning'">{{ detail.redaction_status === 'redacted' ? '已完成脱敏' : '尚未脱敏' }}</v-chip>
      <v-btn size="small" :variant="!showingRedacted ? 'flat' : 'text'" @click="showingRedacted = false">原始提取文本</v-btn>
      <v-btn size="small" :disabled="detail.redaction_status !== 'redacted' || detail.redacted_text === undefined" :variant="showingRedacted ? 'flat' : 'text'" @click="showingRedacted = true">脱敏后文本</v-btn>
     </Row>
-    <v-alert v-if="detail && !showingRedacted" type="warning" density="compact">当前显示原始提取文本，包含未脱敏信息，请注意权限与使用范围。</v-alert>
+    <v-alert v-if="detail && !preferRedacted && !showingRedacted" type="warning" density="compact">当前显示原始提取文本，包含未脱敏信息，请注意权限与使用范围。</v-alert>
     <v-alert v-if="detail && showingRedacted && detail.redacted_text === undefined" type="info" density="compact">此记录已标记脱敏，但索引中没有附件级正文，当前无法在这里展示脱敏文本。可在工作流步骤产物中下载整卷脱敏文本。</v-alert>
     <v-alert v-if="detailError" type="error" role="alert">{{ detailError }}</v-alert>
     <span v-else-if="detailBusy" class="text-sm text-muted">正在读取已入库全文…</span>
@@ -209,7 +209,7 @@ async function viewFullText(material: Material) {
       <pre class="surface-panel p-12 text-sm whitespace-pre-wrap break-words">{{ page.text || '（本页未提取到文字）' }}</pre>
       <span v-if="page.issues?.length" class="text-xs text-danger">{{ page.issues.join('、') }}</span>
      </Column>
-     <span v-if="!detail.pages.length" class="text-sm text-muted">已入库记录没有页级文本。</span>
+     <span v-if="showingRedacted ? !detail.redacted_pages?.length && detail.redacted_text === undefined : !detail.pages.length" class="text-sm text-muted">已入库记录没有页级文本。</span>
     </Column>
     </template>
     <template v-else-if="isPdf">

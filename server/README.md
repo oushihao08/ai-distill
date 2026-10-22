@@ -12,6 +12,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | [answer-models/](answer-models/README.md) | 模型目录/项目集合、作答输入隔离、逐模型队列和结果 |
 | [scoring/](scoring/README.md) | 同版匿名评分输入、Codex/API执行、报告解析及版本校验 |
 | [decisions/](decisions/README.md) | 按项目配置解释评分指标并保存达标依据 |
+| [document-generation/](document-generation/README.md) | 各项目共用DOCX与XLSX字节生成、表格显示布局，不承担项目交付资格 |
 | [publishing/](publishing/README.md) | 复核达标、调用项目交付、记录归档/撤回及下载五件套 |
 | [reporting/](reporting/README.md) | 单题/项目 Excel、版本一致性、费用与统计投影 |
 | [agent/](agent/README.md)、[codex/](codex/README.md) | 本地 Agent 任务契约及底层 Codex CLI/配置；作者和盲作答/评分使用不同隔离策略 |
@@ -24,7 +25,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | 文件 | 入口、调用方与用途 |
 | --- | --- |
 | `index.ts` | API进程入口；创建pool/app、配置HOST/PORT，可选提供web/dist，退出时关闭资源 |
-| `app.ts` | `createApp()`：请求/错误/日志中间件与项目、配置、文件和模块路由装配 |
+| `app.ts` | `createApp()`：请求/错误/日志中间件与项目、配置、文件和模块路由装配；题目附件全文接口按共享题快照读取冻结的原文或脱敏正文 |
 | `paths.ts` | `repositoryRoot`、`resolveRepositoryPath()`、`storageDirectory()`：路径相对仓库解析，绝对路径保持 |
 | `db.ts` | `createPool()`：启用TLS证书验证及可选channel binding；连接/查询安全日志，不输出SQL正文或参数 |
 | `migrate.ts` | 人工迁移入口：互斥事务内按完整文件名执行所有未登记SQL；API健康检查不执行迁移 |
@@ -106,8 +107,9 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 - `api` 不运行Agent或本地脚本；按执行端处理可领取的API任务，server目标还可处理服务器材料/组合操作。
 - `materials` 必须是server目标，处理服务器材料、API脱敏及旧组合操作；不作答或评分。
 - `server` 必须是server目标，处理服务器材料/API脱敏和无本地钩子的API作答，不运行Agent和评分。
+- 可选 `WORKER_WORKFLOW_IDS` 接收逗号分隔的工作流 UUID；设置后，worker 只领取这些工作流的出题、作答和评分任务，并跳过材料、脱敏、项目 Skill 与异步钩子队列。未设置时保持上述默认行为。该范围只限制领取和中断恢复，不改变已冻结任务输入。
 
-新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发来自 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，未保存才回退环境默认Agent2/API8；页面安全范围与环境兼容范围见 `concurrency.ts`，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
+新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发来自 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，未保存才回退环境默认Agent2/API8；页面可设置Agent 1–6、API 1–8；范围以 `concurrency.ts` 的常量为准，环境兼容范围另见该文件，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
 
 `steps`是当前状态，`step_attempts`是尝试历史。`waiting`须结合活动尝试、就绪原因和worker归属判断；HTTP202只表示已接受或等待未终结。按原attempt/job/request key恢复，不因超时重新派发。单题与批量资格分别由入口及业务模块复核；批量一题失败不把其余结果改成失败。
 
@@ -120,3 +122,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 共用安全日志入口为 `logging.ts`，默认位于 `<STORAGE_DIR>/logs/<UTC日期>/`。请求通过 `X-Request-ID`、attempt/job/call ID关联。普通JSONL只落盘错误及指定数据库慢查询/连接等待告警；不记录材料、题面、提示词、答案、SQL参数或凭证。Codex私有事件和业务报告不是普通日志。命令和限制见 [诊断脚本](../scripts/diagnostics/README.md)；健康和`/api/monitor`状态不能证明供应商仍在生成。
 
 修改公共契约同时核对前端、CLI、路由、任务输入快照及历史兼容。文档中的配置/迁移/启动命令是参考，授权边界见 [AGENTS.md](../AGENTS.md)。本文件不声明某次数据库、真实模型或外部平台验收已完成；历史证据按其时间和范围单独阅读。
+
+### 空队列探测
+
+worker 对同类队列的并发可用性查询共用一个进行中的探测；空结果最多复用3秒，与原空闲轮询间隔一致。正结果不缓存，实际领取事务、执行并发、公平轮转及过期任务恢复保持独立。此优化不增加并发上限，也不共用已领取任务。

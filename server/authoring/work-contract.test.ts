@@ -1,10 +1,14 @@
 /** 验证 Work 内容契约的无损保存、判据计分、成果对应与研究隔离；不调用数据库或真实模型。 */
 import {test,expect} from 'bun:test';
 import {validateDraft} from './validate';
+import {assertWorkSubmissionReady} from './work-contract';
 const materials=[{id:'a',text:'脱敏材料'}];
 export function workFixture():any{
- const row=(id:string,dimension:string,score:number|null)=>({id,metadata:{statement:'本项独立判断的具体标准',criterion_type:'Objective',criterion_necessity:'Implicit',dimension,evaluated_files:['意见.md'],knowledge_points:[],atomic_capabilities:[],priority:score===10?'Critically Important':score===null?'Veto':'Slightly Important',score,type:'binary',points:null,trigger_count:null}});
- return {content_contract:'work_legal_v1',task_name:'证据审查意见',task_type:'F2 审查审核',header:{industry_l1:'法律服务',industry_l2:'诉讼',task_form:'single_round',occupation_l1:'诉讼律师',occupation_l2:'律师'},question:'作为我方律师，依据附件1出具意见.md。基准日2026年10月1日。',attachment_ids:['a'],answer_approach:'核对证据与规范，形成意见',task_metadata:{occupation:'诉讼律师',scenario:'LS02',role_perspective:'我方律师',domain_l2:'证据审查',capabilities:['证据评估','风险识别'],professional_knowledge:['证据规则'],vl_dependency:false,source_note:'本次脱敏卷宗',generation_note:'AI模拟专家生成，非真人签署',tools:[],target_level:'L2',level_basis:{documents:[{id:'d1',attachment_id:'a',locator:'第1页',description:'原始独立文书'}],necessary_steps:['核对证据来源'],estimated_hours:1,explanation:'根据本题工作估算，非外部核定'}},input_files:[{attachment_id:'a',name:'附件1',description:'脱敏材料'}],deliverables:[{id:'opinion',path:'意见.md',format:'md',description:'证据审查意见',required:true}],reference_outputs:[{deliverable_id:'opinion',content:'完整业务意见正文',sheets:[]}],research_records:[{id:'s1',query:'核对证据规则',source_url:'https://example.org/law',source_title:'法源正文',version:'适用版本',findings:'适用规则内容',verification_status:'verified',supports:['opinion']}],task_requirements:{input_mode:'text',output_mode:'text',tools:[]},content_status:{status:'complete',issues:[]},rubric:[row('R1-P01','1-指令遵循',3),row('R2-P01','2-交付物内容质量/Q2风险识别',10),row('R2-P02','2-交付物内容质量/Q3法源定位',10),row('R2-P03','2-交付物内容质量/Q1事实证据',3),row('R3-P01','3-体例',3),row('R4-P01','4-推理规划',3),{...row('R5-N01','5-安全合规',-7),metadata:{...row('R5-N01','5-安全合规',-7).metadata,priority:'Detrimental'}},row('R0-V01','0-一票否决',null)]};
+ const row=(id:string,dimension:string,score:number|null)=>({id,metadata:{statement:'本项独立判断的具体标准',criterion_type:'Objective',criterion_necessity:'Implicit',dimension,evaluated_files:['意见.docx'],knowledge_points:[],atomic_capabilities:[],priority:score===10?'Critically Important':score===null?'Veto':'Slightly Important',score,type:'binary',points:null,trigger_count:null}});
+ const value={content_contract:'work_legal_v1',task_name:'证据审查意见',task_type:'F2 审查审核',header:{industry_l1:'法律服务',industry_l2:'诉讼',task_form:'single_round',occupation_l1:'诉讼律师',occupation_l2:'律师'},question:'作为我方律师，依据附件1出具意见.docx。基准日2026年10月1日。',attachment_ids:['a'],answer_approach:'核对证据与规范，形成意见',task_metadata:{occupation:'诉讼律师',scenario:'LS02',role_perspective:'我方律师',domain_l2:'证据审查',capabilities:['证据评估','风险识别'],professional_knowledge:['证据规则'],vl_dependency:false,source_note:'本次脱敏卷宗',generation_note:'AI模拟专家生成，非真人签署',tools:[],target_level:'L2',level_basis:{documents:[{id:'d1',attachment_id:'a',locator:'第1页',description:'原始独立文书'}],necessary_steps:['核对证据来源'],estimated_hours:1,explanation:'根据本题工作估算，非外部核定'}},input_files:[{attachment_id:'a',name:'附件1',description:'脱敏材料'}],deliverables:[{id:'opinion',path:'意见.docx',format:'docx',description:'证据审查意见',required:true}],reference_outputs:[{deliverable_id:'opinion',content:'完整业务意见正文',sheets:[]}],research_records:[{id:'s1',query:'核对证据规则',source_url:'https://example.org/law',source_title:'法源正文',version:'适用版本',findings:'适用规则内容',verification_status:'verified',supports:['opinion']}],task_requirements:{input_mode:'text',output_mode:'text',tools:[]},content_status:{status:'complete',issues:[]},rubric:[row('R1-P01','1-指令遵循',3),row('R2-P01','2-交付物内容质量/Q2风险识别',10),row('R2-P02','2-交付物内容质量/Q3法源定位',10),row('R2-P03','2-交付物内容质量/Q1事实证据',3),row('R3-P01','3-体例',3),row('R4-P01','4-推理规划',3),{...row('R5-N01','5-安全合规',-7),metadata:{...row('R5-N01','5-安全合规',-7).metadata,priority:'Detrimental'}},row('R0-V01','0-一票否决',null)]};
+ // 合成条目仅覆盖结构边界，不声称是独立有效的专业判据。
+ while(value.rubric.length<30){const item=structuredClone(value.rubric[1]!);item.id=`R2-P${value.rubric.length+10}`;value.rubric.push(item);}
+ return value;
 }
 test('Work 独立内容完整保存，兼容文本与计分规则由同一内容派生',()=>{
  const raw=workFixture(),result:any=validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'} as any);
@@ -13,6 +17,39 @@ test('Work 独立内容完整保存，兼容文本与计分规则由同一内容
  expect(result.rubric[1].criterion).toBe(raw.rubric[1].metadata.statement);expect(result.rubric[1].rule).toContain('10');
  expect(result.rubric[0].metadata).not.toHaveProperty('project_context');
  expect(validateDraft(JSON.parse(JSON.stringify(result)),materials,'model_report_v1',{contentContract:'work_legal_v1'} as any)).toEqual(result);
+});
+test('Work完整题包至少30项且使用Office成果，草稿仍保留部分结果',()=>{
+ for(const count of [29,30,31]){
+  const raw=workFixture();raw.rubric=raw.rubric.slice(0,count);
+  raw.question=raw.question.replaceAll('意见.docx','意见.docx');raw.deliverables[0].path='意见.docx';raw.deliverables[0].format='docx';
+  while(raw.rubric.length<count){const item=structuredClone(raw.rubric[1]);item.id=`R2-P${raw.rubric.length+10}`;raw.rubric.push(item);}
+  raw.rubric.forEach((r:any)=>r.metadata.evaluated_files=['意见.docx']);
+  const validate=()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'});
+  if(count===29)expect(validate).toThrow('至少30项');else expect(validate).not.toThrow();
+ }
+ const old=workFixture();old.rubric=old.rubric.slice(0,8);expect(()=>validateDraft(old,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow();
+ old.content_status={status:'draft',issues:['尚未形成完整成果和独立判据']};
+ expect(()=>validateDraft(old,materials,'model_report_v1',{contentContract:'work_legal_v1'})).not.toThrow();
+});
+test('Work完整业务成果拒绝MD，草稿可保留旧格式等待返修',()=>{
+ const raw=workFixture();raw.question=raw.question.replace('意见.docx','意见.md');raw.deliverables[0].path='意见.md';raw.deliverables[0].format='md';raw.rubric.forEach((r:any)=>r.metadata.evaluated_files=['意见.md']);
+ expect(()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('DOCX/XLSX');
+ raw.content_status={status:'draft',issues:['专业成果尚待成稿']};expect(()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'})).not.toThrow();
+});
+test('Work新交付复用成果映射校验，不改写历史对象或自动补项',()=>{
+ const good=workFixture(),before=JSON.stringify(good);assertWorkSubmissionReady(good);expect(JSON.stringify(good)).toBe(before);
+ for(const change of [
+  (v:any)=>v.content_status={status:'draft',issues:['待补']},
+  (v:any)=>v.rubric.pop(),
+  (v:any)=>v.rubric[1].id=v.rubric[0].id,
+  (v:any)=>v.rubric[0].metadata.statement=' ',
+  (v:any)=>v.rubric[0].metadata.evaluated_files=['旧名.md'],
+  (v:any)=>v.question='交付文件',
+  (v:any)=>v.reference_outputs=[],
+  (v:any)=>v.reference_outputs.push(structuredClone(v.reference_outputs[0])),
+  (v:any)=>v.deliverables[0].format='xlsx',
+  (v:any)=>{v.deliverables[0].path='核算.xlsx';v.deliverables[0].format='xlsx';v.question='交付核算.xlsx';v.rubric.forEach((r:any)=>r.metadata.evaluated_files=['核算.xlsx']);},
+ ]){const value=structuredClone(good);change(value);expect(()=>assertWorkSubmissionReady(value)).toThrow();}
 });
 test('未提供正式二级分类时保留null，不强迫作者编造分类；知识点不接受格式占位',()=>{
  const raw=workFixture();raw.task_metadata.domain_l2=null;
@@ -84,14 +121,14 @@ test('Work一次返回全部ID维度错配的位置，不泄露判据正文或�
  expect(raw.rubric[1].id).toBe('R3-P09');expect(raw.rubric[2].id).toBe('R4-P02');
 });
 
-test('文本作答器允许文件成果的文字呈现，但拒绝必需工具和未完成草稿',async()=>{
+test('文本作答器允许业务工具要求和文件成果的文字呈现，但拒绝未完成草稿',async()=>{
  const {authoringQuestion}=await import('../answer-models/input');
  const fileTask=workFixture();fileTask.task_requirements.output_mode='file';
  const fileResult=validateDraft(fileTask,materials,'model_report_v1',{contentContract:'work_legal_v1'});
  expect(authoringQuestion({...fileResult,question_version:'v1'}).presentation?.mode).toBe('text_deliverables_v1');
  const toolTask=workFixture();toolTask.task_requirements.tools=['web_search'];
  const toolResult=validateDraft(toolTask,materials,'model_report_v1',{contentContract:'work_legal_v1'});
- expect(()=>authoringQuestion({...toolResult,question_version:'v1'})).toThrow('当前作答器不支持题目要求的工具');
+ expect(authoringQuestion({...toolResult,question_version:'v1'}).question_version).toBe('v1');
  const draft=workFixture();draft.content_status={status:'draft',issues:['核心法源未核验']};
  const draftResult=validateDraft(draft,materials,'model_report_v1',{contentContract:'work_legal_v1'});
  expect(()=>authoringQuestion({...draftResult,question_version:'v1'})).toThrow('Work题目仍为草稿，不能作答');
@@ -107,7 +144,7 @@ test('新Work后续成果直接读取冻结答案，不再调用数据库或模�
  const {getOrGenerateWorkSimulation}=await import('../publishing/work-simulation');
  const question:any=validateDraft(workFixture(),materials,'model_report_v1',{contentContract:'work_legal_v1'});
  const result=await getOrGenerateWorkSimulation({query:async()=>{throw new Error('不得读取模型配置');}} as any,{project_id:'p',workflow_id:'w',title:'测试',question_version:'v',rubric_version:'r',question,attachments:[]},'/tmp','a'.repeat(64));
- expect(result.harbor_files).toEqual([{path:'意见.md',markdown:'完整业务意见正文',sheets:[]}]);expect(result.model).toBe('author_snapshot');expect(result.actual_search_queries).toEqual([]);
+ expect(result.harbor_files).toEqual([{path:'意见.docx',markdown:'完整业务意见正文',sheets:[]}]);expect(result.model).toBe('author_snapshot');expect(result.actual_search_queries).toEqual([]);
 });
 
 
@@ -119,7 +156,7 @@ test('内容契约配置能往返并拒绝未知值，旧配置形状不变',asy
 });
 
 test('结构化工作表保留数字与布尔，并拒绝缺工作表或错列',()=>{
- const value=workFixture();value.question=value.question.replace('意见.md','台账.xlsx');value.deliverables[0].path='台账.xlsx';value.deliverables[0].format='xlsx';value.rubric.forEach((r:any)=>r.metadata.evaluated_files=['台账.xlsx']);value.reference_outputs[0].sheets=[{name:'明细',columns:['金额','已核对'],rows:[[100,true]]}];
+ const value=workFixture();value.question=value.question.replace('意见.docx','台账.xlsx');value.deliverables[0].path='台账.xlsx';value.deliverables[0].format='xlsx';value.rubric.forEach((r:any)=>r.metadata.evaluated_files=['台账.xlsx']);value.reference_outputs[0].sheets=[{name:'明细',columns:['金额','已核对'],rows:[[100,true]]}];
  const result:any=validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'});expect(result.reference_outputs[0].sheets[0].rows).toEqual([[100,true]]);
  for(const change of [(v:any)=>v.reference_outputs[0].sheets=[],(v:any)=>v.reference_outputs[0].sheets[0].rows=[[100]]]){const bad=structuredClone(value);change(bad);expect(()=>validateDraft(bad,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow();}
 });
@@ -131,11 +168,11 @@ test('Work结构门槛分别校验，非法原子能力与缺检索不能被保�
 });
 
 test('必交成果必须在题面列出精确文件名，不能隐藏新增必交文件',()=>{
- const value=workFixture();value.deliverables.push({id:'research',path:'检索记录.md',format:'md',description:'研究轨迹',required:true});
+ const value=workFixture();value.deliverables.push({id:'research',path:'检索记录.docx',format:'docx',description:'研究轨迹',required:true});
  value.reference_outputs.push({deliverable_id:'research',content:'真实研究记录',sheets:[]});
  expect(()=>validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('必交成果未在题面列明');
- value.question+='同时交付检索记录.md。';
+ value.question+='同时交付检索记录.docx。';
  expect(()=>validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'})).not.toThrow();
- value.question=value.question.replace('同时交付检索记录.md。','');value.deliverables[1].required=false;
+ value.question=value.question.replace('同时交付检索记录.docx。','');value.deliverables[1].required=false;
  expect(()=>validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'})).not.toThrow();
 });

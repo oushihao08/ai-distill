@@ -312,6 +312,40 @@ describe('命令范围和结果', () => {
     expect(calls.map(call=>call.url.pathname)).toEqual([`/api/material-library/revisions/${revision}/jobs`,`/api/material-library/jobs/${job}`,`/api/material-library/jobs/${job}/cancel`]);
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({kind:'extract',request_key:attempt,execution_target:'server'});
   });
+  test('材料任务将期次上下文交给服务端选择模式',async()=>{
+    const {client,calls}=fixture(()=>({id:second,status:'queued'}));
+    await runCommand(['library','job','start','--revision',second,'--kind','extract','--target','local','--request-key',attempt,'--project',project],client);
+    expect(JSON.parse(String(calls[0].init?.body)).project_id).toBe(project);
+  });
+
+  test('脱敏模板按ID读取，并在字段映射派发中显式冻结选择', async () => {
+    const revision='00000000-0000-4000-8000-000000000014';
+    const extraction='00000000-0000-4000-8000-000000000015';
+    const template={id:'strict',name:'严格字段模板',workflow:'field_mapping',digest:'a'.repeat(64),redaction:{provider:'api',prompt:'只替换身份证号'}};
+    const {client,calls}=fixture((url,init)=>{
+      if(url.pathname==='/api/material-library/redaction-templates')return{items:[template]};
+      if(init?.method==='POST')return{id:second,status:'queued',reused:false};
+      return{};
+    });
+    expect((await runCommand(['library','template','list'],client)).data.items).toEqual([template]);
+    expect((await runCommand(['library','template','show','--template','strict'],client)).data).toEqual(template);
+    await runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','local','--request-key',attempt,'--extraction-job',extraction,'--template','strict'],client);
+    expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({kind:'redact',request_key:attempt,execution_target:'local',template_id:'strict',extraction_job_id:extraction});
+  });
+
+  test('Codex材料计划通过CLI请求既有HTTP导入接口并保留完整计划', async () => {
+    const root=await mkdtemp(join(tmpdir(),'ai-distill-material-plan-'));
+    try{
+      const revision='00000000-0000-4000-8000-000000000016',planPath=join(root,'plan.json');
+      const plan={format:'codex-material-export-v1',revision_id:revision,extraction_job_id:attempt,template_id:'aliases',template_digest:'b'.repeat(64),files:[{file_id:question,text_sha256:'a'.repeat(64)}],edits:[],documents:[{id:'d1',title:'测试材料',segments:[{file_id:question,page:1,start:0,end:1}]}]};
+      await writeFile(planPath,JSON.stringify(plan));
+      const {client,calls}=fixture(()=>({job_id:second,redaction_id:question,reused:false}));
+      await runCommand(['library','documents','import','--plan',planPath,'--request-key',project],client);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.url.pathname).toBe(`/api/material-library/revisions/${revision}/prepared-redactions`);
+      expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({request_key:project,plan});
+    }finally{await rm(root,{recursive:true,force:true});}
+  });
 
   test('新材料项目创建可明确绑定稳定主项目和期号', async () => {
     const group='00000000-0000-4000-8000-000000000010';
@@ -363,4 +397,35 @@ describe('命令范围和结果', () => {
       await expect(runCommand(['library','file','download','--file',question,'--out',out],client)).rejects.toThrow('无法写入');
     }finally{await rm(root,{recursive:true,force:true});}
   });
+});
+
+// 畸形模板不能在本地导出与正式导入间悄悄降级为旧计划。
+test('CLI导入和导出共用模板身份校验，失败时不请求API',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'material-plan-invalid-'));const path=join(root,'计划.json');const {client,calls}=fixture(()=>({}));
+ try{
+  await writeFile(path,JSON.stringify({format:'codex-material-export-v1',revision_id:project,extraction_job_id:attempt,files:[{file_id:question,text_sha256:'a'.repeat(64)}],edits:[],documents:[{id:'d',title:'测试',segments:[]}],template_id:'',template_digest:'b'.repeat(64)}));
+  await expect(runCommand(['library','documents','import','--plan',path,'--request-key',second],client)).rejects.toThrow('模板身份和摘要');
+  await expect(runCommand(['library','documents','export','--plan',path,'--out',join(root,'新目录')],client)).rejects.toThrow('模板身份和摘要');
+  expect(calls).toHaveLength(0);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('仅按稳定主项目ID创建期次时读取真实主项目名称，不把期次显示名当主项目',async()=>{
+ const {client,calls}=fixture((url)=>url.pathname.endsWith('/phases')?{group:{id:second,name:'项目甲'},items:[]}:{id:project});
+ await runCommand(['project','create','--name','第二期独立显示名','--project-group',second,'--phase-name','第二期','--phase-no','2','--material-backend','library_v1','--workspace-path','/tmp/test'],client);
+ expect(calls[0]!.url.pathname).toBe(`/api/project-groups/${second}/phases`);
+ expect(JSON.parse(String(calls[1]!.init?.body))).toMatchObject({project_group_id:second,parent_name:'项目甲',phase_name:'第二期',phase_no:2});
+ const broken=fixture(()=>({items:[]}));
+ await expect(runCommand(['project','create','--name','测试','--project-group',second,'--material-backend','library_v1','--workspace-path','/tmp/test'],broken.client)).rejects.toThrow('缺少名称');
+ expect(broken.calls).toHaveLength(1);
+});
+
+test('材料库期次更新不要求旧材料目录，也不重绑未修改的推断Skill路径',async()=>{
+ const {client,calls}=fixture((url,init)=>init?.method==='GET'?{project:{id:project,name:'测试第一期',description:'旧说明',material_backend:'library_v1',material_root:null,local_skill_path:'/missing/inferred/skill'}}:{id:project});
+ await runCommand(['project','update','--project',project,'--description','新说明'],client);
+ const body=JSON.parse(String(calls[1]!.init?.body));expect(body).toMatchObject({name:'测试第一期',description:'新说明'});
+ expect(body).not.toHaveProperty('material_root');expect(body).not.toHaveProperty('local_skill_path');
+ const legacy=fixture((url,init)=>init?.method==='GET'?{project:{id:project,name:'旧项目',description:'',material_root:'/tmp/legacy',local_skill_path:'/tmp/skill'}}:{id:project});
+ await runCommand(['project','update','--project',project,'--description','更新'],legacy.client);
+ expect(JSON.parse(String(legacy.calls[1]!.init?.body)).material_root).toBe('/tmp/legacy');
 });

@@ -9,8 +9,9 @@
 | `workflow-config.ts` | 项目阶段扩展配置及同步／异步钩子声明的结构校验；缺省不添加字段，不解释业务规则。钩子执行在 server/workflow-hooks.ts 和各阶段队列中完成，启用所需表仍需按环境核实 |
 | `types.ts` | 项目材料模式、材料包／派生题目身份、材料、步骤、执行尝试与 API 返回类型，含跨项目成果库摘要 |
 | `material-library.ts` | 独立材料库、项目加载关系、材料任务状态和题目材料来源的 DTO；不替代旧材料类型 |
+| `material-preparation.ts` | CLI与服务端共用的精确编辑、分册范围和完整覆盖校验；不判断主体或法律内容，不访问数据库 |
 | `workflow-results.ts` | 当前答案、评分、达标汇总的共享类型与 JSON 读取边界；不改变历史存储格式 |
-| `step-prompts.ts` | 脱敏、出题、作答和评分的系统级提示词默认；新建项目复制快照，项目提示词和冻结任务各自独立 |
+| `step-prompts.ts` | 脱敏、出题、作答和评分的系统提示词；出题另提供固定通用规则，作者任务单独冻结该规则与项目可配置提示词 |
 | `step-registry.ts` | 步骤 key、持久化 ordinal、可见 position、默认启用项和脱敏默认提示词 |
 | `score.test.ts` | 新评分指标与原始分、否决项之间的百分制转换边界 |
 | `step-registry.test.ts` | legacy、library_v1及旧材料包的可见步骤身份兼容 |
@@ -37,3 +38,13 @@ WorkflowDetail 的 artifacts 可带 filename，供逐附件脱敏 DOCX 下载链
 workflow-config.ts 的可选 content_contract=work_legal_v1 供出题阶段显式绑定内容结构，与评分 contract 分开；未提供时不增加默认键。
 
 结果读取函数只做关键形状检查，并保留传入对象的其他字段；它们不是敏感字段过滤器，也不证明模型数量、来源版本或业务达标。输入隔离和达标校验由后端执行器及判断模块负责。
+
+`redaction-templates.ts`维护模板身份、两种流程和默认代称提示词；`document-structure.ts`是共用结构类型和唯一文字投影，旧server/materials/pdf继续兼容导出；`prepared-structure.ts`校验字段内修改、结构分册和投影覆盖，不运行模型或存储。
+
+`material-preparation.ts`提供CLI/HTTP共用计划入口校验与文字编辑/覆盖校验；入口身份校验不能代替数据库里的来源/模板绑定，也不证明模型识别的主体及分册判断正确。
+
+`agent-material-plan.ts`定义Agent整包语义输出及编译器：生成稳定字段/块ID，展开已确认的固定主体映射，应用类型化遮盖，自动计算UTF-16和编辑后分册坐标，再调用原prepared-structure完整校验。`agent-material-plan.test.ts`仅用合成资料验证此契约。
+
+`material-library.ts`同时定义三模式`MaterialProcessingMode`及兼容解析/来源映射/结果分类函数，供后端和页面共用。处理意图与original/redacted快照来源是不同层次：mask和aliases均冻结redacted，原文冻结original；执行后端不写进处理方式枚举。
+
+`scan-noise.ts`识别同文件跨页重复的扫描时间戳签名、已证明的扫描号及连续页角码，返回精确删除范围；不处理表格/列表字段，不删除无上下文的业务数字或日期。编译器将这些范围合并进正式计划，再做原文/结构/完整覆盖校验；cleanScanNoisePages只生成显式预览副本，不改变冻结来源。其单元测试覆盖业务值保留与孤立时间戳不清理。

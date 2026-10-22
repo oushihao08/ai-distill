@@ -68,6 +68,14 @@ test('step configuration accepts the correct provider and rejects unsupported pa
  expect(() => validateStepConfig(4, { model: 'gpt-6.1-sol', reasoning_effort: 'bad effort' })).toThrow();
  expect(() => validateStepConfig(1, { model: 'x' })).toThrow();
 });
+test('authoring persists three processing modes with one consistent material source',async()=>{
+ const {validateStepConfigForExecution}=await import('./project-folders');
+ const base={model:'fixture',reasoning_effort:'medium',prompt:'使用本次材料'};
+ expect(validateStepConfigForExecution(4,base)).toMatchObject({material_processing_mode:'aliases',material_source_mode:'redacted'});
+ for(const mode of ['original','mask','aliases'] as const)expect(validateStepConfigForExecution(4,{...base,material_processing_mode:mode})).toMatchObject({material_processing_mode:mode,material_source_mode:mode==='original'?'original':'redacted'});
+ expect(validateStepConfigForExecution(4,{...base,material_source_mode:'original'})).toMatchObject({material_processing_mode:'original'});
+ expect(()=>validateStepConfigForExecution(4,{...base,material_processing_mode:'aliases',material_source_mode:'original'})).toThrow('不一致');
+});
 
 test('评分步骤可选择 API 且仅冻结经验证的 API 连接参数',()=>{
  const config=validateStepConfig(6,{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen3.8-27b'},prompt:'逐项评分'});
