@@ -53,6 +53,6 @@ onMounted(load);
  <v-select v-if="!isPlan" v-model="backend" label="脱敏执行方式" :items="[{title:'大模型 API',value:'api'},{title:'本地 Codex Agent',value:'codex'}]" :disabled="busy"/>
  <template v-if="!isPlan&&backend==='api'"><v-select v-model="selectedApi" label="脱敏模型" :items="apiItems" :disabled="busy"/><v-text-field v-model="maxTokens" label="最大输出 token（留空使用模型默认）" type="number" :disabled="busy"/><v-select v-if="config&&['qwen','openrouter'].includes(config.provider)" v-model="thinking" label="思考模式" :items="[{title:'模型默认',value:'default'},{title:'关闭',value:'disabled'},{title:'开启',value:'enabled'}]" :disabled="busy"/></template>
  <template v-else-if="!isPlan"><v-combobox v-model="model" label="Agent 模型" :items="agentModels.map(item=>item.slug)" :return-object="false" :disabled="busy"/><v-combobox v-model="effort" label="推理强度" :items="efforts" :return-object="false" :disabled="busy"/></template>
- <v-textarea v-model="prompt" label="脱敏提示词" rows="8" :disabled="busy"/>
+ <v-textarea v-model="prompt" label="脱敏提示词" rows="8" auto-grow :disabled="busy"/>
  </template><Row x="end" wrap :gap="8"><v-btn :disabled="busy||loading" @click="defaults">恢复系统默认到草稿</v-btn><v-btn color="primary" type="submit" :loading="busy" :disabled="busy||invalid">保存设置</v-btn></Row>
 </Column></v-form></template>

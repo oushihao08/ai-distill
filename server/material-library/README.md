@@ -32,6 +32,8 @@
 
 原件位于`<STORAGE_DIR>/material-library/blobs/`；共用处理设置位于同目录下私有`processing-settings.sqlite3`；DOCX预览缓存位于`previews/`，转换临时目录和用户profile使用后删除。所有SQLite配置供同一STORAGE_DIR的本机API实例共用；未承诺多台独立API自动同步本地配置。worker读取已冻结的PostgreSQL任务快照，不在执行中重新读取本地共用配置。
 
+Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symlinks-main --preserve-symlinks validate-plan.mjs`，避免MXC默认拒绝读取父目录时运行时真实路径探测失败。其他平台继续使用`bun validate-plan.mjs`。调用命令由程序提供，不修改数据库中的业务脱敏规则。
+
 包名称/说明/标签与处理设置分开。历史`library_packages.processing_settings`保留兼容初始快照，不再作为新任务执行配置，也不从包详情返回；包创建/更新接口拒绝单包处理配置写入。未保存共用配置时，从数据库系统提示词与当前系统模型/提取默认组合完整配置。保存后的共用设置只影响之后派发的新任务，历史任务与题目快照不回写。
 
 ## 期次三种处理模式
@@ -134,7 +136,7 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 ## Agent材料执行与验收
 
-语义协议和编译器以`shared/agent-material-plan.ts`为准。模型只提供固定主体表、需要处理的字段原文/类别和文书首尾块ID；程序生成原页及编辑后坐标、按规则遮盖、验证完整覆盖。共享主体表避免各批次独立起名；重复扫描保留并关联，当前不自动去重。两套脱敏执行分支的成功结果仍进入相同library_redactions及prepared_documents/题目快照链路。
+语义协议和编译器以`shared/agent-material-plan.ts`为准。模型只提供固定主体表、需要处理的字段原文/类别和文书首尾块ID；程序生成原页及编辑后坐标、按规则遮盖、清除明确图像占位符及独立字段“无法识别”并拒绝其残留、验证完整覆盖。共享主体表避免各批次独立起名；重复扫描保留并关联，当前不自动去重。两套脱敏执行分支的成功结果仍进入相同library_redactions及prepared_documents/题目快照链路。
 
 边界不清的连续附件可完整保留为组合文书；身份归并不明时不强行合并，敏感名称使用独立主体ID和字段作用域化名。未确认的归并或精确分册写私有非阻断疑点；隐私片段未安全处理或正文无法完整覆盖仍阻断。该处理由本次数据库模板指导Agent决定，编译器不擅自把blocking改为false。
 
@@ -148,4 +150,4 @@ Agent完整语义计划交付到固定私有文件`output/material-plan.json`（
 
 身份及边界疑点必须给出本次真实字段或结构块ID，不接受all等整包概述。非阻断身份疑点必须已有对应化名或原有遮盖；无法确认身份对应不构成保留原名的理由。Agent工作区的`review-hints.json`仅是程序根据角色/标题定位的阅读导航，不能当作身份判断、边界结论或材料份数目标。
 
-Agent计划编译调用shared/scan-noise.ts，将跨页有证据的扫描签名/页角码清理合并入精确编辑计划；语义不明的数字与真实业务日期保留。清理可能使分册片段只剩换行，prepared-structure保留其精确覆盖，DOCX渲染跳过空段。现有材料的修复通过prepared-redactions接口保存新版本，选版只影响以后新题，不能改写旧题快照。
+Agent返回计划后，编译器调用`shared/scan-noise.ts`的统一正则规则，将固定OCR占位符、独立数字行和扫描时间戳清理合并入精确原文编辑，随后重新计算分册范围并校验完整覆盖。表格/列表值、金额/编号标签后的数值及已提交遮盖映射的编号不按数字垃圾删除；普通业务日期保留。规则与边界唯一说明见`shared/README.md`。清理可能使分册片段只剩换行，prepared-structure保留其精确覆盖，DOCX渲染跳过空段。API遮挡流程在AI映射返回后调用同一结构清理方法。既有发布结果和题目快照不追溯改写；现有材料修复须生成新版本。

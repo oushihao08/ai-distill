@@ -156,7 +156,8 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
   try{
    const settings=saveWorkerConcurrencySettings(storageRoot,body);
-   return c.json({settings,active:concurrency,limits:SAFE_WORKER_CONCURRENCY_LIMITS,restart_required:settings.agent!==concurrency.agent||settings.llmApi!==concurrency.llmApi});
+   const next=readConcurrencySettings(process.env,storageRoot);
+   return c.json({settings,active:concurrency,limits:SAFE_WORKER_CONCURRENCY_LIMITS,restart_required:next.agent!==concurrency.agent||next.llmApi!==concurrency.llmApi});
   }catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'并发设置无效'});}
  });
  app.get('/api/system/step-prompts',async c=>c.json({prompts:await readSystemStepPrompts(pool)}));

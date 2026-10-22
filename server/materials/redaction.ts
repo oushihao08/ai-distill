@@ -13,6 +13,7 @@ import type {RedactionConfig} from './redaction-config';
 import { documentBlocksToText, type DocumentBlock, type Page } from './pdf';
 import {logEvent} from '../logging';
 import {AgentConcurrencyGate} from '../concurrency';
+import {cleanRedactionText,cleanScanNoisePages} from '../../shared/scan-noise';
 import {resolveRedactionExecution,estimateRedactionTokens,type RedactionExecutionPolicy,type RedactionProgress} from './redaction-execution';
 
 export interface ExtractedMaterial { material_id:string;source_sha256:string;pages:Page[] }
@@ -98,7 +99,7 @@ function structuredCheckpointId(source:StructuredSourceMaterial[],config:Redacti
  return createHash('sha256').update(stableJson({format:REDACTION_PROTOCOL_VERSION,materials:source.map(material=>({material_id:material.material_id,source_sha256:material.source_sha256,pages:material.pages.map(page=>({page:page.page,targets:page.targets}))})),config})).digest('hex');
 }
 function structuredFieldKey(material_id:string,page:number,target_id:string){return JSON.stringify([material_id,page,target_id]);}
-// User policy: square-bracketed OCR content is garbage. Normalize fixed escapes locally,
+// 固定OCR占位标记按程序白名单清理，保留证据引用等其他方括号正文。Normalize fixed escapes locally,
 // before collecting model fields, so formatting cannot block model redaction.
 export function filterRedactionFormatting(text:string){
  // Decode Markdown punctuation escapes only; JSON escapes are decoded by JSON.parse.
@@ -109,7 +110,7 @@ export function filterRedactionFormatting(text:string){
   // A previous OCR cleanup may already have removed the time portion. Keep this
   // narrower fallback to explicit punctuation separators so ordinary dates survive.
   .replace(/(?<!\d)\d{3,10}(?:_|\.)(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}(?!\d)/gu,'');
- return withoutWatermarks.replace(/\[[^\[\]]*\]/gu,'')
+ return cleanRedactionText(withoutWatermarks,{removeStandaloneNumbers:false})
   .replace(/\$([+-]?\d+(?:\.\d+)?%)\$/gu,'$1');
 }
 function isFixedOcrPlaceholder(text:string){return text.trim().length>0&&!filterRedactionFormatting(text).trim();}
@@ -456,7 +457,7 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
   '孤立数字字段也要判断是否为页码：结合 page、position、block_count 以及同批前后页的连续编号；确认是页角页码时返回 kind=cleanup。识别块顺序未必等于视觉页边界；如果可能是正文序号、表格值或证据编号，就保留。',
   'page_number_context 列出同一附件各页的孤立数字字段，仅供你比较跨页编号序列；它不是额外待处理目标。只返回本轮 targets 的字段映射，不能凭数字形态直接断定为页码。',
   '真实日期、时间和金额遵照项目保留规则；绝不可把含真实日期的正文句子或整行标成 cleanup。水印若夹在正文中，source_text 只取水印自身；即使一个字段里同时有垃圾与正文，也不得把相邻正文并入删除范围。',
-  '每项 redactions 用 source_text 写出字段内的原文片段。垃圾片段用 kind=cleanup、mask_text=null，程序精确定位后删除；方括号及其中内容、转义下划线和包裹转义百分号的美元符号由程序预先清理，不需要返回 kind=format。程序先清理垃圾，再对剩余原文应用敏感映射；清理项只选实际垃圾片段。敏感项 kind 可用 name、phone、address、identifier、amount、case_number、organization、secret。姓名、电话、编号和案号由程序按规则生成遮罩，无需重复给 mask_text；其他类别需保留部分内容时，用 mask_text 标明其中应遮盖的部分。程序保留其余原文和结构。',
+  '每项 redactions 用 source_text 写出字段内的原文片段。垃圾片段用 kind=cleanup、mask_text=null，程序精确定位后删除；固定OCR占位标记、转义下划线和包裹转义百分号的美元符号由程序预先清理，不需要返回 kind=format；证据引用等其他方括号正文保留。程序先清理垃圾，再对剩余原文应用敏感映射；清理项只选实际垃圾片段。敏感项 kind 可用 name、phone、address、identifier、amount、case_number、organization、secret。姓名、电话、编号和案号由程序按规则生成遮罩，无需重复给 mask_text；其他类别需保留部分内容时，用 mask_text 标明其中应遮盖的部分。程序保留其余原文和结构。',
   ...(preserveAmounts?['本项目普通金额必须原样保留，不得把金额列入 redactions；若数字本身属于账号、案号等编号，仍按编号类别处理。']:[]),
   '仅返回完整 JSON，不附加说明。',
  ].join('\n');
@@ -725,7 +726,10 @@ async function redactStructuredMaterials(options:RedactionOptions,config:Redacti
   const agentResult=await (options.execute??runAgent)<StructuredRedactionOutput>({task_type:'material_redaction',directory:options.directory,model:config.model,reasoning_effort:config.reasoning_effort,signal:options.signal,timeout_ms:30*60*1000,schema:structuredSchema,prompt:'请按要求处理 materials.json。\n'+prompt,validate:value=>validate(value)});
   output=agentResult.result;session_id=agentResult.session_id;usage=agentResult.usage;duration_ms=agentResult.duration_ms;
  }
- const materials:RedactedMaterial[]=output.materials.map(material=>({material_id:material.material_id,pages:material.pages.map(({page,text,structure,issues})=>({page,text,structure,...(issues?.length?{issues}:{})}))}));
+ const materials:RedactedMaterial[]=output.materials.map(material=>{
+  const cleaned=cleanScanNoisePages(material.pages.map(page=>({file_id:material.material_id,page:page.page,blocks:page.structure})));
+  return {material_id:material.material_id,pages:material.pages.map((page,index)=>({page:page.page,text:documentBlocksToText(cleaned.pages[index]!.blocks),structure:cleaned.pages[index]!.blocks,...(page.issues?.length?{issues:page.issues}:{})}))};
+ });
  const rendered=renderRedactedMaterials(materials);
  return{...rendered,session_id,usage,duration_ms,completion_id,call_ids,...(executionProgress?{progress:executionProgress}:{}),...(config.provider==='api'&&options.checkpointDirectory?{checkpoint_path:join(options.checkpointDirectory,`${structuredCheckpointId(source,config)}.json`)}:{})};
 }

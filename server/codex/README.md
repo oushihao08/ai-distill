@@ -23,6 +23,8 @@ system-config.ts 解析步骤覆盖 → 项目默认 → 系统默认；models.t
 
 本模块的 `*.test.ts` 保留既有验证意图；存在测试文件不表示本次运行。执行与授权遵循 [项目规则](../../AGENTS.md)。
 
+Windows 默认从 PATH 启动 `codex.exe`，避免 npm 命令脚本的子进程参数兼容问题；显式 `CODEX_BIN` 仍优先。子进程仅额外继承系统目录、用户目录、临时目录和命令解析所需的 Windows 环境变量，不传数据库或供应商密钥。受限任务在 Windows 显式选择 MXC 沙箱，以支持 `:root=deny` 的读取隔离；为宿主 Bun 与 PATH 中的 PowerShell、Node 运行时目录补充只读权限，材料与输出仍使用原隔离范围，不回退到全盘可读或无沙箱。机器不支持 MXC 时执行失败，须使用支持同等隔离的执行环境。普通出题的完整访问配置不受此选择影响。跨机器共用设置可将凭证目录留空，让各机器使用自己的默认登录目录；不复制凭证。
+
 每次 Codex CLI 调用都通过 `features.memories=false` 关闭记忆；`--ephemeral` 另用于不持久化 CLI 会话。独立评分还通过 `isolate_context` 关闭宿主资料发现等其他外部上下文入口，并保留既有目录权限与网络限制。评分的实际 CLI 参数、stdin、开发者指令和输出 schema 保存到源私有输出目录的 `request.json`，不复制给模型，不记录环境变量或凭证。
 
 

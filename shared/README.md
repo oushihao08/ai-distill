@@ -43,8 +43,12 @@ workflow-config.ts 的可选 content_contract=work_legal_v1 供出题阶段显�
 
 `material-preparation.ts`提供CLI/HTTP共用计划入口校验与文字编辑/覆盖校验；入口身份校验不能代替数据库里的来源/模板绑定，也不证明模型识别的主体及分册判断正确。
 
-`agent-material-plan.ts`定义Agent整包语义输出及编译器：生成稳定字段/块ID，展开已确认的固定主体映射，应用类型化遮盖，自动计算UTF-16和编辑后分册坐标，再调用原prepared-structure完整校验。`agent-material-plan.test.ts`仅用合成资料验证此契约。
+`agent-material-plan.ts`定义Agent整包语义输出及编译器：生成稳定字段/块ID，展开已确认的固定主体映射，应用类型化遮盖，自动计算UTF-16和编辑后分册坐标；精确图像占位标记及独立字段“无法识别”由程序清除，编译后仍有标记则拒绝发布，再调用原prepared-structure完整校验。`agent-material-plan.test.ts`仅用合成资料验证此契约。
+
+识别编号/电话编辑还须检查完整原字段中的金额和百分比范围；即使Agent仅提交不含单位的数字或其子串，碰到这些业务值也以`agent_business_value_edit`拒绝发布，防止“334666元”的数字部分被误当识别编号。
 
 `material-library.ts`同时定义三模式`MaterialProcessingMode`及兼容解析/来源映射/结果分类函数，供后端和页面共用。处理意图与original/redacted快照来源是不同层次：mask和aliases均冻结redacted，原文冻结original；执行后端不写进处理方式枚举。
 
-`scan-noise.ts`识别同文件跨页重复的扫描时间戳签名、已证明的扫描号及连续页角码，返回精确删除范围；不处理表格/列表字段，不删除无上下文的业务数字或日期。编译器将这些范围合并进正式计划，再做原文/结构/完整覆盖校验；cleanScanNoisePages只生成显式预览副本，不改变冻结来源。其单元测试覆盖业务值保留与孤立时间戳不清理。
+`scan-noise.ts`提供脱敏后统一清理方法`cleanRedactionText()`：将明确OCR占位标记、数字前缀扫描时间戳、扫描/打印时间标签及独立数字行（包括`-22-`）替换为空串，保留换行；支持大小写和常见空格/下划线变体。固定列表包括NO TEXT、NO TEXT DETECTED、NO TEXT FOUND、QR Code、Image、Barcode、Bar Code、UNREADABLE等，不泛删`[证据1]`等正文。数字行不作用于表格/列表/公式/代码块；明确金额、数量或编号标签后的值及已被Agent遮盖的编号保留。普通正文日期、带单位金额、小数和`1、`条目不匹配。
+
+`findScanNoiseEdits()`将同一清理规则转为冻结原文精确坐标，供Agent计划编译并验证文书覆盖；`cleanScanNoisePages()`按结构字段生成清理副本，供API映射返回后调用并重建正文/索引。两者不修改冻结提取原文或既有发布结果。跨页扫描签名/页角序列仍作为补充规则；测试包含坐标、幂等、单位/日期、表格和映射后编号保留。

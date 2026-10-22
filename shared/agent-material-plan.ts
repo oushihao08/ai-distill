@@ -1,5 +1,5 @@
 /** 职责：将Agent的主体表、字段语义编辑和结构块分册编译为既有精确计划。供材料库Agent执行器调用；不运行模型、不访问存储。 */
-import {findScanNoiseEdits} from './scan-noise';
+import {cleanRedactionText,findScanNoiseEdits} from './scan-noise';
 import {documentBlocksToText,type DocumentBlock} from './document-structure';
 import {documentFieldRanges,prepareStructuredMaterialData} from './prepared-structure';
 
@@ -78,6 +78,11 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
   const f=fields.get(edit.target_id);if(!f||!edit.source_text||!Number.isSafeInteger(edit.occurrence)||edit.occurrence<0)fail('agent_edit_target_invalid');
   const found=locations(f.text,edit.source_text),starts=edit.occurrence===0?found:[found[edit.occurrence-1]];
   if(!starts.length||starts.some(at=>at===undefined))fail('agent_edit_source_missing');
+  // 模型可能只提交金额数字、不带单位；必须从原字段上下文识别金额/比例，不能只检查source_text。
+  if(edit.kind==='identifier'||edit.kind==='phone'){
+   const values=[...f.text.matchAll(/\d[\d,，. \t]*(?:万|亿)?[ \t]*[元圆%％]/g)];
+   if((starts as number[]).some(at=>values.some(value=>at<value.index+value[0].length&&at+edit.source_text.length>value.index)))fail('agent_business_value_edit');
+  }
   let replacement:string;
   if(edit.kind==='identifier'){
    if(/^\d{4}[年./-]\d{1,2}(?:[月./-]\d{1,2})?日?$/.test(edit.source_text)||/[元圆%％]|人民币/.test(edit.source_text))fail('agent_business_value_edit');
@@ -90,8 +95,8 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
   else fail('agent_edit_kind_invalid');
   if(replacement!==edit.source_text)for(const at of starts as number[])edits.push({file_id:f.file_id,page:f.page,start:f.start+at,end:f.start+at+edit.source_text.length,source_text:edit.source_text,replacement_text:replacement});
  }
- // 程序只补充重复扫描签名/页角码的精确清理，纳入同一原文编辑与分册覆盖校验。
- for(const noise of findScanNoiseEdits(files.flatMap(file=>file.pages.map(page=>({file_id:file.file_id,page:page.page,blocks:page.structure}))))){
+ // 程序补充明确OCR占位符及有证据的扫描签名/页角码清理，纳入同一原文编辑与分册覆盖校验。
+ for(const noise of findScanNoiseEdits(files.flatMap(file=>file.pages.map(page=>({file_id:file.file_id,page:page.page,blocks:page.structure}))),edits)){
   const overlapping=edits.filter(edit=>edit.file_id===noise.file_id&&edit.page===noise.page&&edit.start<noise.end&&edit.end>noise.start);
   if(overlapping.some(edit=>edit.start<noise.start||edit.end>noise.end))continue;
   for(const edit of overlapping)edits.splice(edits.indexOf(edit),1);
@@ -122,5 +127,10 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
  if(used.size!==blocks.length)fail('agent_document_coverage_missing');
  const plan={format:'codex-material-export-v1',...identity,files:files.map(f=>({file_id:f.file_id,text_sha256:f.text_sha256})),edits:exact.map(({entity_id,...edit})=>edit),documents};
  const prepared=prepareStructuredMaterialData(plan,files.flatMap(f=>f.pages.map(p=>({file_id:f.file_id,...p}))));
+ const knownPlaceholderRemains=prepared.pages.some(page=>page.structure.some(block=>{
+  const text=documentBlocksToText([block]);
+  return cleanRedactionText(text,{removeStandaloneNumbers:false})!==text;
+ }));
+ if(knownPlaceholderRemains)fail('agent_ocr_placeholder_remaining');
  return {plan,prepared};
 }

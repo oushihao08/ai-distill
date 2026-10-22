@@ -16,7 +16,7 @@ export async function prepareAgentRedactionArtifacts(options:{directory:string;f
  await writePrivateJson(join(options.directory,'review-hints.json'),{subject_fields:subjectFields,possible_document_start_blocks:documentStarts,scope:'heuristic_navigation_not_identity_or_boundary_decisions'});
  await writePrivateJson(join(options.directory,'plan-schema.json'),AGENT_MATERIAL_PLAN_SCHEMA);
  await writePrivateJson(join(options.directory,'validation-source.json'),{files:options.files,identity:options.identity});
- const validator=await Bun.build({entrypoints:[join(import.meta.dir,'agent-redaction-validator.ts')],target:'bun',format:'esm'});
+ const validator=await Bun.build({entrypoints:[join(import.meta.dir,'agent-redaction-validator.ts')],target:'node',format:'esm'});
  if(!validator.success||validator.outputs.length!==1)throw Object.assign(new Error('Agent本地校验工具准备失败'),{reason_code:'agent_validator_setup_failed'});
  await writeFile(join(options.directory,'validate-plan.mjs'),await validator.outputs[0]!.text(),{mode:0o600});
  if(!options.previous_directory)return;
