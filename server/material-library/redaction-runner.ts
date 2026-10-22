@@ -1,4 +1,5 @@
 /** 职责：执行已冻结的遮挡或化名脱敏，校验并事务发布材料库结果；由runner调度，不领取队列或选择期次模式。 */
+import {cachedExternalCall} from '../execution-queue/runtime';
 import type {Pool} from 'pg';
 import type {Page} from '../materials/pdf';
 import {join} from 'node:path';
@@ -36,11 +37,11 @@ export async function executeRedaction(pool:Pool,root:string,job:any,signal:Abor
  // 旧队列可能早于派发前检查；在任何收费调用之前按相同门槛再次核对。
  assertLibraryExtractionUsable(documents);
  if(job.config_snapshot.redaction_template?.workflow==='codex_plan'){
-  const output=await prepareAgentLibraryMaterials({directory:join(jobDirectory(root,job.id),'private'),files:documents.map(d=>({file_id:d.file_id,text_sha256:hash(d.pages.map(p=>p.text).join('\n')),pages:d.pages.map(p=>{if(!p.structure)throw new Error('Agent脱敏要求完整提取结构');return{...p,structure:p.structure};})})),revision_id:job.revision_id,extraction_job_id:job.input_snapshot.extraction_job_id,
+  const output=await cachedExternalCall('library_preparation_complete',()=>prepareAgentLibraryMaterials({directory:join(jobDirectory(root,job.id),'private'),files:documents.map(d=>({file_id:d.file_id,text_sha256:hash(d.pages.map(p=>p.text).join('\n')),pages:d.pages.map(p=>{if(!p.structure)throw new Error('Agent脱敏要求完整提取结构');return{...p,structure:p.structure};})})),revision_id:job.revision_id,extraction_job_id:job.input_snapshot.extraction_job_id,
    template:job.config_snapshot.redaction_template,model:settings.redaction.model,reasoning_effort:settings.redaction.reasoning_effort,signal,timeout_ms:Math.min(AGENT_REDACTION_MAX_MS,new Date(job.deadline_at).getTime()-Date.now()),
    ...(job.previous_job_id?{previous_directory:join(jobDirectory(root,job.previous_job_id),'private')}:{}),
    execute:options=>runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,operation:'library_preparation_agent'},call_id=>runAgent({...options,call_id})),
-  });
+  }));
   const materials=documents.map(d=>({material_id:d.file_id,pages:output.prepared.pages.filter(p=>p.file_id===d.file_id).map(p=>({page:p.page,text:p.text,structure:p.structure,issues:d.pages.find(original=>original.page===p.page)?.issues}))}));
   const rendered=renderRedactedMaterials(materials),index=JSON.parse(rendered.index);
   index.prepared_documents=output.prepared.documents.map((d,i)=>({id:d.id,title:d.title,text:d.text,duplicate_of:output.plan.documents[i]!.duplicate_of,segments:output.plan.documents[i]!.segments,document:d.document}));
@@ -59,14 +60,14 @@ export async function executeRedaction(pool:Pool,root:string,job:any,signal:Abor
  const modelMaterials:ExtractedMaterial[]=pending.map(document=>({material_id:document.file_id,source_sha256:document.source_sha256,pages:document.pages}));
  let config:RedactionConfig|null=null,modelOutput:any=null;
  if(pending.length){
-  config=validateRedactionConfig(settings.redaction);
+  config=validateRedactionConfig(settings.redaction);const activeConfig=config;
   const dir=join(jobDirectory(root,job.id),'private');
-  modelOutput=await redactExtractedMaterials({directory:dir,checkpointDirectory:dir,materials:modelMaterials,config,signal,execution:resolveRedactionExecution({task_timeout_ms:settings.execution.task_timeout_ms,request_timeout_ms:settings.execution.request_timeout_ms}),
+  modelOutput=await cachedExternalCall('library_redaction_complete',()=>redactExtractedMaterials({directory:dir,checkpointDirectory:dir,materials:modelMaterials,config:activeConfig,signal,execution:resolveRedactionExecution({task_timeout_ms:settings.execution.task_timeout_ms,request_timeout_ms:settings.execution.request_timeout_ms}),
    execute:options=>runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,operation:'library_redaction_agent'},call_id=>runAgent({...options,call_id})),
    executeApi:(request,operation)=>runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,operation},async call_id=>{
     try{return{...await createModelApiClient().complete({...request,call_id}),call_id};}catch(error){if(error instanceof Error)Object.assign(error,{call_id});throw error;}
    }),
-  });
+  }));
  }
  const redactedByFile=new Map<string,RedactedMaterial>((modelOutput?.materials??[]).map((item:RedactedMaterial)=>[item.material_id,item]));
  const composed:RedactedMaterial[]=documents.map(document=>{

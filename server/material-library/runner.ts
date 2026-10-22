@@ -3,7 +3,8 @@
  * 关键入口：`runNextLibraryJob()` 领取匹配任务；默认Agent按语义计划整包脱敏，显式旧模板继续字段映射。
  * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
-import {mkdir,writeFile} from 'node:fs/promises';
+import {deferLocalPublication} from '../execution-queue/runtime';
+import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -72,7 +73,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
     else extraction=await documentExtractor(root,job.id,job.config_snapshot.pdf_provider);
    }
    const path=join(extraction.directory,`${item.file_id}.${item.format}`),fileBuffer=new ArrayBuffer(bytes.byteLength);new Uint8Array(fileBuffer).set(bytes);
-   await writeFile(path,Buffer.from(bytes),{mode:0o600,flag:'wx'});
+   try{await writeFile(path,Buffer.from(bytes),{mode:0o600,flag:'wx'});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST'||hash(await readFile(path))!==item.source_sha256)throw error;}
    const extractor=extraction.extractor;
    const extracted=await runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,library_file_id:item.file_id,operation:'library_document_extract'},async()=>extractor.extract(path,signal));
    if(extracted.sha256!==item.source_sha256||extracted.format!==item.format)throw new Error('文本提取结果与原件摘要不匹配');
@@ -143,6 +144,7 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   });
   logEvent('library_job.completed',{level:'info',state:'succeeded'});
  }catch(error){
+  deferLocalPublication(error);
   const classified=classifyLogError(error);
   const reason=local.signal.aborted?local.signal.reason:error;
   const hasReasonCode=reason&&typeof reason==='object'&&typeof reason.reason_code==='string';

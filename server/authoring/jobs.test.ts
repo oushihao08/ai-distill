@@ -1,6 +1,8 @@
 /** 验证出题队列拒绝过期材料版本并稳定核验输入指纹。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
+import {LocalQueue} from '../execution-queue/store';
+import {withLocalExecution,PendingLocalCommit} from '../execution-queue/runtime';
 import {test,expect} from 'bun:test';
 import {mkdtemp,rm,mkdir,writeFile,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -293,4 +295,18 @@ test('reusing validated library input still rejects material changes made during
   expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
   expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('本地结果提交断线只恢复完整作者成果，不重复创建作者会话',async()=>{
+ const f=await projectFixture();const old=process.env.EXECUTION_QUEUE_MODE;let queue:LocalQueue|undefined;
+ try{
+  delete process.env.EXECUTION_QUEUE_MODE;await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  process.env.EXECUTION_QUEUE_MODE='local';queue=new LocalQueue(join(f.root,'queue'),'test-device');queue.intent(f.saved.id,'step','agent','authoring');queue.confirm(f.saved.id);const job=queue.claim('agent')!;
+  let attempts=0,drop=true;const pool={query:f.pool.query.bind(f.pool),connect:async()=>{const db=await f.pool.connect();return{release:()=>db.release(),query:async(sql:string,values?:unknown[])=>{if(drop&&sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'")){drop=false;throw Object.assign(new Error('Connection terminated unexpectedly'),{code:'ECONNRESET'});}return db.query(sql,values);}};}} as unknown as Pool;
+  const author=async()=>{attempts++;return authored;};
+  await expect(withLocalExecution(queue,job,()=>runNextAuthoring(pool,join(f.root,'storage'),author))).rejects.toBeInstanceOf(PendingLocalCommit);
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(false);
+  await withLocalExecution(queue,job,()=>runNextAuthoring(pool,join(f.root,'storage'),author));expect(attempts).toBe(1);
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
+ }finally{queue?.close();if(old===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=old;await rm(f.root,{recursive:true,force:true});}
 });

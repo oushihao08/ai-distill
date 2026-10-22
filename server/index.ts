@@ -3,17 +3,21 @@
  * 关键方法与用途：启动入口绑定 API、可选静态文件路由，并在进程退出时关闭服务与连接池。
  * 使用场景：通过 `bun run server/index.ts` 启动本地 API；容器可设置 `SERVE_WEB=1` 提供工作台。
  */
+import {localQueueEnabled,assertLocalQueueEnvironment} from './execution-queue/runtime';
 import {join,resolve,sep} from 'node:path';
 import {storageDirectory} from './paths';
 import { createPool } from './db';
 import { createApp } from './app';
 import {configureLogger,installFatalErrorLogging,logEvent,classifyLogError} from './logging';
+// 服务入口默认每机独立；仅显式 legacy 用于受控兼容。
+process.env.EXECUTION_QUEUE_MODE ??= 'local';
 const logger=configureLogger({root:storageDirectory(),service:'api'});
 installFatalErrorLogging();
 let pool:ReturnType<typeof createPool>|undefined;
 let server:ReturnType<typeof Bun.serve>;
 try{
  pool=createPool();
+ if(localQueueEnabled())await assertLocalQueueEnvironment(pool,storageDirectory());
  const app = createApp(pool, storageDirectory());
  const serveWeb=process.env.SERVE_WEB==='1';
  const webRoot=resolve(import.meta.dir,'../web/dist');

@@ -87,3 +87,5 @@
 材料处理三模式由`StepSettings.vue`保存到期次步骤4的`material_processing_mode`。`ProjectLibraryMaterials.vue`按模式过滤结果、允许先加载待处理版本，并把期次上下文传给材料详情；`LibraryPackageWorkspace.vue`在该上下文锁定处理方式。前端不执行脱敏、不替代后端模式核验；已有题目的来源不随设置改变。
 
 面包屑由AppShell渲染，三级业务页面通过usePageBreadcrumbs使用各自已加载的API身份；主项目、期次和题目逐层跳转。StepSettings表单使用视口上限，标题与底部操作固定，主体独立滚动；长提示词不应撑出窗口。
+
+`WorkerMonitor.vue`在local队列模式显示本机执行器、Agent/API实际排队和运行数，以及待同步/待核实数量；业务历史与执行状态分开。数据契约和切换边界见`server/execution-queue/README.md`。

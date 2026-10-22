@@ -3,6 +3,7 @@
  * 关键方法与用途：`enqueueScore()` 按答案冻结上下文；`runNextScore()` 执行单个模型评分并聚合当前集合；摘要函数去重输入。
  * 使用场景：`app.ts` 派发，`worker.ts` 消费持久化评分队列。
  */
+import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {runExternalCall} from '../external-call';
@@ -65,6 +66,7 @@ export async function enqueueScore(pool:Pool,id:string){
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
+   await registerLocalJob(db,attempt,'step',config.provider==='api'?'api':'agent','score');
    queued.push({id:attempt,reused:false,answer_attempt_id:answerId});
   }
   if(queued.every(item=>item.reused)){await db.query('COMMIT');for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
@@ -122,10 +124,10 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
  const db=await pool.connect();let job:any,staleRows:any[]=[];const staleScoreStatuses=new Map<string,string>();
  try{
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${affinity} AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[provider,workflowIds?.length?workflowIds:null]);
+  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${affinity} AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a',true)}  ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[provider,workflowIds?.length?workflowIds:null]);
   for(const row of stale.rows){await recoverInterruptedStageHooks(db,row);const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='评分进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=6 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1)",[row.workflow_id]);if(updated.rowCount)staleRows.push(row);}
   for(const workflowId of new Set(staleRows.map(row=>row.workflow_id))){staleScoreStatuses.set(workflowId,await refreshScoreStep(db,{workflow_id:workflowId,status:'failed',result:null}));}
-  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${affinity} AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[provider,workflowIds?.length?workflowIds:null])).rows[0];
+  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${affinity} AND ${localWaitingSql('a')} ${localClaimSql('a',false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[provider,workflowIds?.length?workflowIds:null])).rows[0];
   if(!job){await db.query('COMMIT');}
   else{await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=6",[job.workflow_id]);await db.query('COMMIT');}
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
@@ -176,6 +178,7 @@ export async function runNextScore(pool:Pool,root:string,grade:Grader=runIndepen
   }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
   await automaticallyJudgeAfterScoring(job,scoreStepStatus,judgeAcceptance);
  }catch(error){
+  deferLocalPublication(error);
   logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error),failure_phase:failurePhase});
   if(wrote)try{if(!(await pool.query('SELECT id FROM ai_distill.artifacts WHERE attempt_id=$1 LIMIT 1',[job.id])).rowCount)await rm(join(directory,'score.json'),{force:true});}catch(cleanupError){logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'score_report',...classifyLogError(cleanupError)});console.error('评分发布状态未知，保留文件等待核对');}
   const tx=await pool.connect();let scoreStepStatus='',shouldJudge=false;try{await tx.query('BEGIN');const current=await stillCurrent(tx,job);const failed=await tx.query("UPDATE ai_distill.step_attempts SET status='failed',result=$2,error='评分或钩子执行失败，或版本已失效，可检查记录后重试',finished_at=now() WHERE id=$1 AND status='running'",[job.id,error instanceof StageHookError?JSON.stringify({error_code:'project_hook_failed'}):null]);if(current&&failed.rowCount){job.status='failed';job.result=null;scoreStepStatus=await refreshScoreStep(tx,job);shouldJudge=true;}await tx.query('COMMIT');}catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}if(shouldJudge)await automaticallyJudgeAfterScoring(job,scoreStepStatus,judgeAcceptance);

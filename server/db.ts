@@ -3,6 +3,8 @@
  * 关键方法与用途：`createPool()` 创建 PostgreSQL 连接池并启用证书校验与安全错误处理。
  * 使用场景：由 API、worker 和迁移入口分别创建本进程连接池。
  */
+import {localQueueEnabled,localQueue} from './execution-queue/runtime';
+import {storageDirectory} from './paths';
 import { Pool } from 'pg';
 import {classifyLogError,logEvent} from './logging';
 function queryName(value:unknown){
@@ -48,7 +50,7 @@ export function createPool(env = process.env) {
   // Explicit TLS verification; avoid sslmode=require replacing the verified SSL options.
   const requireBinding = url.searchParams.get('channel_binding') === 'require';
   for (const key of ['sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'channel_binding']) url.searchParams.delete(key);
-  const pool = new Pool({ connectionString: url.toString(), ssl: { rejectUnauthorized: true }, enableChannelBinding: requireBinding, max: 4, idleTimeoutMillis: 10000, connectionTimeoutMillis: 15000 });
+  const pool = new Pool({ ...(localQueueEnabled()?{application_name:`ai-distill-executor:${localQueue(storageDirectory(env)).executorId}`}:{application_name:'ai-distill-legacy'}), connectionString: url.toString(), ssl: { rejectUnauthorized: true }, enableChannelBinding: requireBinding, max: 4, idleTimeoutMillis: 10000, connectionTimeoutMillis: 15000 });
   const clients=new WeakSet<object>();let connectionUnavailable=false;
   const installClient=(client:any)=>{
     if(!client||typeof client!=='object'||clients.has(client))return;clients.add(client);

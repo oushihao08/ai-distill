@@ -103,7 +103,7 @@ test('API score claims only API-configured attempts and freezes provider and mod
  const a=fake({provider:'api'});let received:any;
  const apiGrade=async(c:any,o:any)=>{received=o;return grade(c);};
  await runNextScore(a.pool,root,apiGrade,undefined,async()=>{},'api');
- expect(a.calls.find(call=>call.sql.includes("COALESCE(a.config->>'provider','codex')=$1"))?.values).toEqual(['api']);
+ expect(a.calls.find(call=>call.sql.includes("COALESCE(a.config->>'provider','codex')=$1"))?.values).toEqual(['api',null]);
  expect(received.config).toEqual(a.job.config.api);
  const saved=a.calls.find(call=>call.sql.startsWith('UPDATE ai_distill.step_attempts SET status=$2'));
  expect(JSON.parse(saved!.values[2])).toMatchObject({provider:'api',model:'qwen/qwen3.8-27b'});

@@ -3,6 +3,7 @@
  * 关键方法与用途：`readAnswerAttachment()` 兼容旧题数据库脱敏附件；`enqueueAnswer()` 冻结并创建尝试；`runNextAnswer()` 领取、调用供应商并保存结果。
  * 使用场景：`app.ts` 接收用户派发，`worker.ts` 持续调用消费入口。
  */
+import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {canonicalJson,validateWorkflowConfig} from '../../shared/workflow-config';
 import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,registerAsyncAfterHooks,StageHookError,stageHookAffinitySql,type StageWorkerMode} from '../workflow-hook-jobs';
 import {watchTaskCancellation} from '../task-signal';
@@ -95,6 +96,7 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
  if(previous.rowCount){queued.push({id:previous.rows[0].id,reused:true});continue;}
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,execution_target) SELECT $2,$1::uuid,5,COALESCE(max(attempt),0)+1,'waiting',$3,$4,$5 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=5",[id,attempt,JSON.stringify(input),JSON.stringify(model.config),executionTarget]);
+   await registerLocalJob(db,attempt,'step',model.config.provider==='codex'?'agent':'api','answer');
    queued.push({id:attempt,reused:false});
   }
   const existingQueued=await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND execution_target=$5 AND status IN ('waiting','running') AND (input->>'model_set_digest' IS DISTINCT FROM $2 OR COALESCE(input->'hooks','null'::jsonb) IS DISTINCT FROM $4::jsonb) AND id<>ALL($3::uuid[]) LIMIT 1",[id,modelSetDigest,queued.map(item=>item.id),JSON.stringify(hooks??null),executionTarget]);
@@ -150,7 +152,7 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
  const db=await pool.connect();let job:any,staleRows:any[]=[];
  try{
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,a.config,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=5 AND a.execution_target=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${providerAffinity} AND ${affinity} AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget,workflowIds?.length?workflowIds:null]);
+  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,a.config,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=5 AND a.execution_target=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${providerAffinity} AND ${affinity} AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a',true)}  ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget,workflowIds?.length?workflowIds:null]);
   for(const row of stale.rows){
    const hookInterrupted=await recoverInterruptedStageHooks(db,row);
    const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='作答进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);
@@ -160,7 +162,7 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
    const row=staleRows.find(item=>item.workflow_id===workflowId)!;
    if(await matchesQuestion(db,row)&&await matchesModelSet(db,row))await refreshAnswerStep(db,row);
   }
-  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.execution_target=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${providerAffinity} AND ${affinity} AND a.status='waiting' ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[executionTarget,workflowIds?.length?workflowIds:null])).rows[0];
+  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.execution_target=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${providerAffinity} AND ${affinity} AND ${localWaitingSql('a')} ${localClaimSql('a',false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[executionTarget,workflowIds?.length?workflowIds:null])).rows[0];
   if(!job){await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'answer',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:5,attempt_id:row.id,operation:'answer'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false;}
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=5",[job.workflow_id]);
@@ -203,6 +205,7 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
    logEvent('attempt.completed',{level:'info',state:'succeeded',output_bytes:bytes.length,token_usage:result.usage});
   }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
  }catch(error){
+  deferLocalPublication(error);
   let qualifiedTimeout=false;
   try{qualifiedTimeout=isQualifiedLongGenerationTimeout(error,resolveAnswerGenerationPolicy(job.input.answer_generation_policy));}catch{qualifiedTimeout=false;}
   if(qualifiedTimeout)logEvent('attempt.long_generation_timeout_unscored',{level:'warn',state:'skipped',...classifyLogError(error)});

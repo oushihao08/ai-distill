@@ -24,6 +24,7 @@ test('extracted-text API returns the current material redacted from redacted_ind
    if (sql.includes('FROM ai_distill.workflows w JOIN ai_distill.projects')) {
     return { rows: [{id: materialId,original_name: '材料.txt',processing_status: 'redacted',sha256: 'a'.repeat(64) }], rowCount: 1 };
    }
+   if(sql.includes('FROM ai_distill.question_library_sources'))return {rows:[],rowCount:0};
    if (sql.includes("ar.kind='private_extracted_pages'")) {
     return { rows: [{ content: rawContent, storage_path: 'unused.json', sha256: sha256(rawContent) }], rowCount: 1 };
    }

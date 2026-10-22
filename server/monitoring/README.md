@@ -32,3 +32,5 @@ worker-monitor.ts 在 worker 生命周期采样并写共享存储快照；resour
 - 项目任务统计查询不含library_jobs，后者通过独立队列摘要展示。快照中的auth/quota通常为unknown，不进行实时登录/额度探针。
 
 `resources.test.ts`通过注入命令输出核对解析/PID/建议；`worker-monitor.test.ts`使用临时文件、注入数据库与采样检查共享写入、低内存/未知、统计超时、停止等待和投影。它们不证明真实OS资源、供应商进度或多机监控。
+
+本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。

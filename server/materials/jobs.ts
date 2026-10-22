@@ -3,6 +3,7 @@
  * 关键方法与用途：`enqueueExtraction()` 冻结解析设置并排队；`runNextExtraction()` 领取当前版本任务、复用缓存并发布页级文本。
  * 使用场景：`app.ts` 与目录入库队列派发，`worker.ts` 消费。
  */
+import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {runExternalCall} from '../external-call';
 import {ProjectDocumentExtractor,DocumentProviderError,type DocumentExtractor} from './document';
 import {invalidateMaterialResults} from './state';
@@ -46,6 +47,7 @@ export async function enqueueExtraction(pool: Pool, id: string, executionTarget:
   const attempt = crypto.randomUUID();
   await client.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,execution_target) SELECT $2,$1::uuid,2,COALESCE(max(attempt),0)+1,'waiting',jsonb_build_object('workflow_id',$1::text,'materials',$4::jsonb),$3,$5 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=2",[id,attempt,JSON.stringify(config),JSON.stringify(materials),executionTarget]);
   await client.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',error=NULL,result=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=2",[id]);
+  await registerLocalJob(client,attempt,'step','api','extract');
   await client.query('COMMIT'); return {id:attempt,reused:false};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }
@@ -56,12 +58,12 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
   await client.query('BEGIN');await client.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
   if(signal?.aborted){await client.query('ROLLBACK');return false;}
   // Recover interrupted attempts without claiming that partial work succeeded.
-  const stale=await client.query("SELECT a.id,a.workflow_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=2 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED",[executionTarget]);
+  const stale=await client.query(`SELECT a.id,a.workflow_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=2 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a',true)}  ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget]);
   for(const attempt of stale.rows){
    await client.query("UPDATE ai_distill.step_attempts SET status='failed',error='执行进程中断，可重试',finished_at=now() WHERE id=$1",[attempt.id]);
    {await client.query("UPDATE ai_distill.steps SET status='failed',error='执行进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=2 AND status='running'",[attempt.workflow_id]);await client.query("UPDATE ai_distill.steps SET status='failed',error='PDF文本提取中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[attempt.workflow_id]);}
   }
-  const selected=await client.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=2 AND a.execution_target=$2 AND a.status='waiting' AND ($1::uuid IS NULL OR a.workflow_id=$1::uuid) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1",[workflowId??null,executionTarget]);
+  const selected=await client.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=2 AND a.execution_target=$2 AND ${localWaitingSql('a')} AND ($1::uuid IS NULL OR a.workflow_id=$1::uuid) ${localClaimSql('a')} ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[workflowId??null,executionTarget]);
   job=selected.rows[0];if(!job){await client.query('COMMIT');return false;}
   await client.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await client.query("UPDATE ai_distill.steps SET status='running',started_at=now() WHERE workflow_id=$1 AND ordinal=2",[job.workflow_id]);
@@ -112,6 +114,7 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
    logEvent('attempt.completed',{level:publication.blocked?'error':'info',state:status});
   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  }catch(error){
+  deferLocalPublication(error);
   if(signal?.aborted){await requeueExtraction(pool,job);return true;}
   logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)});
   if (publication) {

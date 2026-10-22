@@ -10,3 +10,5 @@
 从仓库任意路径运行：`bash scripts/runtime/start.sh`。`start-iterm.sh` 可能在无运行任务时重启本项目 API/worker。部署示例：`AI_DISTILL_DEPLOY_HOST=<host> AI_DISTILL_DEPLOY_USER=root AI_DISTILL_DEPLOY_DIR=<absolute-path> ./scripts/runtime/deploy.sh`。部署会替换远端 `.env` 并更新服务，不能把它当作只传源码的操作；部署前核对本机配置确实应成为服务器配置，并按根 README 和仓库授权边界操作。
 
 - `ofd/`：经显式授权安装OFDRW本地运行依赖，提供OFD整页转PDF桥接；不随服务启动自动安装。详见[OFD工具](ofd/README.md)。
+
+`apply-local-queue-migration.ts`是047定向迁移工具：`bun scripts/runtime/apply-local-queue-migration.ts`默认只列全部未登记迁移与在途计数；显式`--apply`只应用047，拒绝其他必要迁移未齐；允许未归属在途任务继续，DDL仅等待短事务锁且超时回滚。不调用全量迁移器、不启动服务、不转移旧队列。旧消费者可以收尾未归属任务，但不会领取已归属任务；全部旧队列退役仍须逐机核对。队列启用与恢复见`server/execution-queue/README.md`。

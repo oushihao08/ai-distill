@@ -1,0 +1,44 @@
+# 每机执行队列
+
+面向维护者。API与worker服务入口默认`EXECUTION_QUEUE_MODE=local`，启用每个运行目录独立的SQLite队列；显式`legacy`才保留旧消费者，用于受控升级。直接导入业务模块的测试/维护工具不自动切换进程模式。未知值拒绝启动。源码支持不等于业务环境已切换。切换前先完成047迁移和旧队列归属核对，不能仅修改环境变量。
+
+## 文件与职责
+
+| 文件 | 入口及职责 |
+| --- | --- |
+| `store.ts` | `LocalQueue`：本机身份、持久意图、原子领取/租约、取消、明确续跑代次、带摘要的调用结果；不连接PG、不执行业务。 |
+| `runtime.ts` | `registerLocalJob`在原业务事务内登记归属；确认本机意图、恢复提交、取消补交；AsyncLocalStorage限制明确ID的领取；不推导法律业务规则。 |
+| `worker.ts` | `runLocalQueueWorker`只消费本机队列，调用原出题/作答/评分/材料/Skill/钩子/远程组合操作执行器；各lane共享同机跨进程槽位。 |
+| `routes.ts` | `registerExecutionQueueRoutes`提供本机队列状态、指定旧任务认领及本机取消；由app挂载，不返回正文和结果检查点。 |
+| `store.test.ts`、`runtime.test.ts` | 临时SQLite及SQL替身验证独立领取、取消、结果复用和中断；不是实体双机验收。 |
+
+真实PostgreSQL/HTTP/材料路径隔离验证入口见`../../scripts/verification/verify-local-queue.ts`及其目录README。它使用专用临时数据库的完整迁移，不访问业务数据库或调用模型。
+
+## 状态与数据流
+
+API先在`<STORAGE_DIR>/runtime/queue.sqlite3`持久化pending_registration意图，再在原业务事务中写`execution_dispatches`归属；确认相同owner及generation已提交后转queued。云端steps/attempts继续作为业务状态与结果历史，不能据其waiting重建全库本地队列。派发复用原输入快照和业务防重锁。
+
+worker仅原子领取本机queued或可恢复的result_pending_commit，原runNext的SQL限制为明确ID；旧的全库失租恢复在local模式关闭。Agent/API/internal/钩子/远程编排使用独立lane与同机进程槽位，Agent/API上限读取现有配置。服务器/api模式只消费API/internal/远程任务，不启用Agent及本地脚本钩子。执行事务结束后才调用模型，不长时间持有SQLite写锁。
+
+外部调用由`runExternalCall`将返回值序列化到私有SQLite检查点并校验摘要。提交网络错误且返回值完整时保留result_pending_commit，重放原业务校验与发布路径时复用返回值；同ID同代同调用键不重复收费调用。结果未知则needs_review，不自动重放。收到云端成功但本机确认丢失时，只对账补记committed。已超过原材料预算或输入失效仍按原校验拒绝，不能借恢复延长模型预算。显式钩子重试由原入口校验副作用/检查点，再递增generation；回滚的代次不激活。
+
+本机取消先持久化并传播信号，随后同步云端。断网保留cancel_synced=0，恢复后只补交取消；取消请求不等于远端调用已停止。另一台电脑不能领取或回收本机任务。共享业务冲突及同一供应商账号限额仍可能跨机影响，队列独立不承诺业务库或上游服务完全离线。
+
+047迁移给五类业务任务登记归属并添加UPDATE保护。PG连接的`application_name`为本机执行身份；启动时实际核对，不从配置值推定有效。旧消费者更新已归属任务会被拒绝；明确业务失效/取消仍可通知。该身份是受信任程序的归属约束，不是数据库认证/权限系统，不能用它代替对外鉴权。
+
+SQLite使用WAL/FULL同步及短事务，目录0700、文件0600；不能放在网络共享盘或同步活动数据库文件。设备标记位于用户本机`.local/share/ai-distill/device-id`，运行目录身份与设备标记绑定，复制代码不能复制活动队列；发现不同设备标记时拒绝领取，不自动迁移。默认一机一个运行目录；多副本须显式共用同一目录才能共享槽位。
+
+## HTTP契约
+
+- `GET /api/system/execution-queue`：本机模式、executor_id和轻量队列状态；不返回结果BLOB、租约令牌或正文。
+- `POST /api/system/execution-queue/adopt`：`{jobs:[{id,kind}]}`，kind为step/skill/library/hook/remote；1–100个明确的旧waiting/queued任务。已属于其他执行器、正在运行或同步钩子拒绝。route/lane由业务记录解析，不接受客户端伪造。
+- `POST /api/system/execution-queue/:id/cancel`：只取消本机记录；返回cancel_requested与cloud_synced。其他机请求应通过明确业务取消入口通知，不能冒充本机已停止。
+- `GET /api/monitor`：local_execution_queue提供本机实际状态；活动任务过滤为本机正在执行，待登记/同步/核实单列；全局业务列表仍共享，不按本机队列隐藏其他机成果。
+
+CLI继续调用原HTTP派发入口，不直连SQLite或PG。新的本机队列管理尚无独立CLI命令，不能编造命令。
+
+## 切换与恢复边界
+
+先盘点旧waiting/queued与running。047可在未归属旧任务运行时定向应用：归属为空时触发器保留原行为，DDL锁超时则整笔回滚。只应用047，不盲跑业务库全部未登记迁移。本机API先启用local，新派发登记归属；旧worker可继续收尾未归属任务，数据库保护拒绝其领取新归属任务。本机新worker与旧worker使用同一运行目录及现有槽位，历史队列归零后停止旧worker。另一台同样启用；按明确ID分配未开始的旧任务，不能每台复制全部。模型/阈值/规则、题目快照、成绩和历史不随切换改变。
+
+业务环境尚未切换时，新旧代码的兼容测试不能替代实际双机验收。存在未同步结果或取消时不回退旧消费者，不删除SQLite“清空重来”。应先停止新派发、备份本机队列并按同ID对账；没有明确归属的旧任务保持未认领，而非自动猜测机器。

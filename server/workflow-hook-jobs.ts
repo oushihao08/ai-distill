@@ -3,6 +3,7 @@
  * 入口：freezeStageHooks() 用于派发；executeWithStageHooks() 包装阶段主操作；registerAsyncAfterHooks() 在成功事务内登记附加任务。
  * 无钩子时不查询新表；异步领取独立实现，不占用业务 ordinal。
  */
+import {registerLocalJob} from './execution-queue/runtime';
 import type {Pool,PoolClient} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
 import {canonicalJson,type WorkflowConfig} from '../shared/workflow-config';
@@ -48,6 +49,7 @@ async function record(context:StageHookContext,position:'before'|'after'|'main',
    ON CONFLICT(attempt_id,position,action_id) DO NOTHING RETURNING *`,[randomUUID(),context.workflow_id,context.attempt_id,context.stage,position,action_id,mode,digest,JSON.stringify(snapshot),idempotent])).rows[0]??await read();
  }
  if(!row)throw fail('主任务已失效，执行记录未创建');
+ if(mode==='async')await registerLocalJob(context.pool,row.id,'hook','hook','hook');
  if(row.binding_digest!==digest||row.mode!==mode||row.stage!==context.stage)throw fail('输入或脚本绑定不一致，不能复用检查点');
  if(row.status==='succeeded'&&mode!=='async'&&row.result_digest!==sha(row.result))throw fail('已保存结果指纹不一致，不能复用检查点');
  return row;

@@ -3,6 +3,8 @@
  * 关键方法与用途：进程入口注册公平轮转的持久队列消费者；新材料库任务领取前使用对应 worker/API/Agent 槽位。
  * 使用场景：通过 `bun run server/worker.ts` 单独启动；默认 `all` 保持既有本地行为。
  */
+import {localQueueEnabled} from './execution-queue/runtime';
+import {runLocalQueueWorker} from './execution-queue/worker';
 import {storageDirectory} from './paths';
 import { createPool } from './db';
 import {runNextAnswer} from './answer-models/jobs';
@@ -47,6 +49,8 @@ async function hasAgentQueueWork(pool:ReturnType<typeof createPool>,workflowIds?
  ) AS pending`);
  return result.rows[0]?.pending===true||await hasLibraryQueueWork(pool,'agent','local');
 }
+// 服务入口默认每机独立；仅显式 legacy 用于受控兼容。
+process.env.EXECUTION_QUEUE_MODE ??= 'local';
 const logger=configureLogger({root:storageDirectory(),service:'worker'});
 installFatalErrorLogging();
 const root = storageDirectory();
@@ -82,6 +86,7 @@ console.log(`后台任务进程已启动，模式 ${workerMode}${workflowIds?.le
 logEvent('service.started',{level:'info',component:'task_worker',pid:process.pid});
 try {
  await monitor.start();
+ if(localQueueEnabled()){await runLocalQueueWorker(pool,root,controller.signal,concurrency,monitor.beforeDispatch,workerMode);}else{
  const dispatchAgentQueue=createFairQueueHandler(workflowIds?.length?[
   ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,'all','local','codex',workflowIds),
   ()=>runNextAuthoring(pool,root,undefined,controller.signal,workflowIds),
@@ -176,5 +181,6 @@ try {
   ));
  }
  await Promise.all(pools);
+ }
 } catch(error) { logEvent('service.runtime_failed',{level:'error',component:'task_worker',...classifyLogError(error)});throw error; }
 finally { try { await monitor.stop(); } finally { if(agentConcurrencyGate)closeAgentConcurrencyGate(root);await pool.end();shutdown.dispose();logEvent('service.stopped',{level:'info'});await logger.close(); } }

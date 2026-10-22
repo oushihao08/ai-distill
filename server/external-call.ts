@@ -3,6 +3,7 @@
  * 关键方法：`runExternalCall()` 执行一次外部调用，不重试或访问数据库。
  * 使用场景：出题、作答、评分、材料提取和脱敏 worker 的普通任务。
  */
+import {cachedExternalCall} from './execution-queue/runtime';
 import {randomUUID} from 'node:crypto';
 import {classifyLogError,logEvent,withLogContext} from './logging';
 
@@ -22,7 +23,7 @@ export async function runExternalCall<T>(
  const hasAttempt=Boolean(context&&'attempt_id'in context),hasLibraryJob=Boolean(context&&'library_job_id'in context);
  if(hasAttempt===hasLibraryJob||hasAttempt&&(!context.attempt_id||!context.attempt_id.trim())||hasLibraryJob&&(!context.library_job_id||!context.library_job_id.trim()))throw new Error('外部调用必须且只能关联 attempt_id 或 library_job_id');
  const call_id=context.call_id??randomUUID();
- return withLogContext({...context,call_id},async()=>{
+ return cachedExternalCall(JSON.stringify([context.operation,context.material_id??context.library_file_id??null]),()=>withLogContext({...context,call_id},async()=>{
   const started=performance.now();
   logEvent('call.started',{level:'info'});
   try{
@@ -34,5 +35,5 @@ export async function runExternalCall<T>(
    logEvent('call.failed',{level:'error',elapsed_ms:Math.round(performance.now()-started),...classifyLogError(error)});
    throw error;
   }
- });
+ }));
 }

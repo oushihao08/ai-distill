@@ -3,6 +3,7 @@
  * 入口：resumeHookAttempt() 恢复原失败尝试；registerWorkflowHookRoutes() 装配 Hono 路由。
  * 约束：只恢复程序标记的钩子失败；不自动重复未知主模型调用，不读取或返回私有脚本快照。
  */
+import {rearmLocalJob,registerLocalJob} from './execution-queue/runtime';
 import type {Pool} from 'pg';
 import type {Hono} from 'hono';
 import {HTTPException} from 'hono/http-exception';
@@ -40,6 +41,8 @@ export async function resumeHookAttempt(pool:Pool,id:string,acknowledgeSideEffec
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='钩子续跑，下游当前结果失效',finished_at=now() WHERE workflow_id=$1 AND ordinal>$2 AND ordinal<=8 AND status IN ('waiting','running')",[row.workflow_id,row.ordinal]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[row.workflow_id]);
   await db.query("UPDATE ai_distill.project_exports SET status='stale',error='钩子续跑，当前结果待更新',finished_at=now() WHERE project_id=$1 AND status IN ('running','succeeded')",[row.project_id]);
+  await registerLocalJob(db,id,'step',row.ordinal===4||row.config?.provider==='codex'||row.ordinal===6&&row.config?.provider!=='api'?'agent':'api',({4:'authoring',5:'answer',6:'score'} as Record<number,string>)[row.ordinal]);
+  await rearmLocalJob(db,id);
   await db.query('COMMIT');return {id,reused:false};
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
@@ -56,6 +59,8 @@ export async function retryAsyncHook(pool:Pool,id:string,acknowledgeSideEffects:
   const saved=await db.query(`UPDATE ai_distill.hook_runs h SET history=history||jsonb_build_array(jsonb_build_object('status',status,'error',error,'started_at',started_at,'finished_at',finished_at)),status='waiting',error=NULL,finished_at=NULL
    WHERE h.id=$1 AND h.status IN ('failed','needs_review') AND ${activeHookParentSql()} RETURNING id`,[id]);
   if(!saved.rowCount)throw conflict('附加任务输入已失效');
+  await registerLocalJob(db,id,'hook','hook','hook');
+  await rearmLocalJob(db,id);
   await db.query('COMMIT');return {id,reused:false};
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

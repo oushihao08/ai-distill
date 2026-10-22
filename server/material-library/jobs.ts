@@ -3,6 +3,7 @@
  * 关键入口：`enqueueLibraryJob()` 冻结任务；`assertLibraryExtractionUsable()` 在派发和执行前检查提取完整性；`claimLibraryJob()` 在 worker 持有资源槽后领取；终态更新须匹配 lease_token。
  * 使用场景：材料库 routes 与现有 worker API/Agent/材料消费池；本模块不创建项目步骤或 step_attempt。
  */
+import {registerLocalJob,localClaimSql,localQueueEnabled,localCancellationRequested} from '../execution-queue/runtime';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {currentTaskSignal} from '../task-signal';
@@ -130,6 +131,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   if(active)throw conflict('该文件集合已有活动任务，请等待完成或取消后重试');
   const result=await db.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,previous_job_id,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
    VALUES($1,$2,$3,$4,'queued',$5,$6,$7,$8::jsonb,$9,$10::jsonb,$11,$12) RETURNING id,status,kind,executor_kind,execution_target,created_at`,[id,packageId,revisionId,request.kind,request.request_key,request.previous_job_id??null,inputDigest,JSON.stringify(inputSnapshot),configDigest,JSON.stringify(configSnapshot),executor,request.execution_target]);
+  await registerLocalJob(db,id,'library',executor,`library:${request.kind}`);
   await db.query('COMMIT');return{...result.rows[0],reused:false};
  }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务入队失败且回滚状态不确定');}throw error;}finally{db.release();}
 }
@@ -162,15 +164,15 @@ export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,tar
  try{
   await db.query('BEGIN');
   const values=onlyJobId?[executor,target,onlyJobId]:[executor,target];
-  await db.query("UPDATE ai_distill.library_jobs SET status='failed',error_code='worker_interrupted',error_message='执行进程租约过期，可创建新尝试',finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE executor_kind=$1 AND execution_target=$2 AND status='running' AND lease_expires_at<now()"+(onlyJobId?' AND id=$3::uuid':''),values);
+  await db.query("UPDATE ai_distill.library_jobs SET status='failed',error_code='worker_interrupted',error_message='执行进程租约过期，可创建新尝试',finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE executor_kind=$1 AND execution_target=$2 AND status='running' AND lease_expires_at<now()"+localClaimSql('library_jobs',true)+(onlyJobId?' AND id=$3::uuid':''),values);
   const job=(await db.query(`SELECT j.*,p.name AS package_name FROM ai_distill.library_jobs j JOIN ai_distill.library_packages p ON p.id=j.package_id
-   WHERE j.executor_kind=$1 AND j.execution_target=$2 AND j.status='queued' AND p.deleted_at IS NULL ${onlyJobId?'AND j.id=$3::uuid':''}
+   WHERE j.executor_kind=$1 AND j.execution_target=$2 AND ${localQueueEnabled()?"j.status IN ('queued','running')":"j.status='queued'"} ${localClaimSql('j')} AND p.deleted_at IS NULL ${onlyJobId?'AND j.id=$3::uuid':''}
    ORDER BY j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1`,values)).rows[0];
   if(!job){await db.query('COMMIT');return null;}
   const ceiling=job.config_snapshot?.redaction_template?.workflow==='codex_plan'?AGENT_REDACTION_MAX_MS:1800000;
   const leaseToken=randomUUID(),timeout=Math.max(1,Math.min(ceiling,Number(job.config_snapshot?.settings?.execution?.task_timeout_ms)||1200000));
-  const claimed=await db.query(`UPDATE ai_distill.library_jobs SET status='running',lease_token=$2,started_at=now(),deadline_at=now()+($3::text||' milliseconds')::interval,heartbeat_at=now(),lease_expires_at=now()+($4::text||' milliseconds')::interval,error_code=NULL,error_message=NULL
-   WHERE id=$1 AND status='queued' RETURNING *`,[job.id,leaseToken,timeout,LIBRARY_JOB_LEASE_MS]);
+  const claimed=await db.query(`UPDATE ai_distill.library_jobs SET status='running',lease_token=$2,started_at=now(),deadline_at=CASE WHEN status='running' THEN deadline_at ELSE now()+($3::text||' milliseconds')::interval END,heartbeat_at=now(),lease_expires_at=now()+($4::text||' milliseconds')::interval,error_code=NULL,error_message=NULL
+   WHERE id=$1 AND ${localQueueEnabled()?"status IN ('queued','running')":"status='queued'"} RETURNING *`,[job.id,leaseToken,timeout,LIBRARY_JOB_LEASE_MS]);
   if(!claimed.rowCount)throw conflict('材料任务已由其他 worker 领取');
   await db.query('COMMIT');return claimed.rows[0];
  }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务领取失败且回滚状态不确定');}throw error;}finally{db.release();}
@@ -183,7 +185,7 @@ export async function heartbeatLibraryJob(pool:Pool,jobId:string,leaseToken:stri
 }
 
 export async function finishLibraryJob(pool:Pool,jobId:string,leaseToken:string,resultSummary:Record<string,unknown>,publish:(db:import('pg').PoolClient)=>Promise<void>){
- const signal=currentTaskSignal();signal?.throwIfAborted();
+ const signal=currentTaskSignal();signal?.throwIfAborted();if(localCancellationRequested())throw new Error('本机任务已取消');
  const db=await pool.connect();
  try{
   await db.query('BEGIN');

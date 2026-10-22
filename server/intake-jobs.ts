@@ -3,6 +3,7 @@
  * 关键方法与用途：`enqueueIngestion()`／`enqueueIntake()` 创建或复用入库任务；`runNextIntake()` 领取目录材料并接续 PDF 提取。
  * 使用场景：`app.ts` 派发入库，`worker.ts` 消费持久化队列。
  */
+import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from './execution-queue/runtime';
 import type { Pool } from 'pg';
 import { HTTPException } from 'hono/http-exception';
 import { readFile } from 'node:fs/promises';
@@ -65,6 +66,7 @@ export async function enqueueIntake(pool: Pool, workflowId: string, executionTar
   const id = crypto.randomUUID();
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,execution_target) SELECT $1,$2::uuid,1,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$2::uuid AND ordinal=1", [id,workflowId,JSON.stringify({source_key:row.source_key,files:row.source_manifest}),executionTarget]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',error=NULL,result=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=1", [workflowId]);
+  await registerLocalJob(db,id,'step','internal','intake');
   await db.query('COMMIT'); withLogContext({component:'intake',workflow_id:workflowId,project_id:row.project_id,ordinal:1,attempt_id:id,operation:'intake'},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting',material_count:actual.files.length})); return { id,reused:false };
  } catch (error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
 }
@@ -78,13 +80,13 @@ export async function runNextIntake(pool: Pool, root: string, workflowId?: strin
  try {
   await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
   if(signal?.aborted){await db.query('ROLLBACK');return false;}
-  const stale = await db.query("SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=1 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' FOR UPDATE OF w,a SKIP LOCKED",[executionTarget]);
+  const stale = await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=1 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a',true)}  FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget]);
   for (const row of stale.rows) {
    const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='接收进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id", [row.id]);
    await db.query("UPDATE ai_distill.steps SET status='failed',error='接收进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=1", [row.workflow_id]);
    if(updated.rowCount)staleRows.push(row);
   }
-  job = (await db.query("SELECT a.*,w.project_id,w.title,w.source_key FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE a.ordinal=1 AND a.execution_target=$2 AND a.status='waiting' AND w.deleted_at IS NULL AND p.deleted_at IS NULL AND ($1::uuid IS NULL OR w.id=$1) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1", [workflowId??null,executionTarget])).rows[0];
+  job = (await db.query(`SELECT a.*,w.project_id,w.title,w.source_key FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE a.ordinal=1 AND a.execution_target=$2 AND ${localWaitingSql('a')} AND w.deleted_at IS NULL AND p.deleted_at IS NULL AND ($1::uuid IS NULL OR w.id=$1) ${localClaimSql('a',false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`, [workflowId??null,executionTarget])).rows[0];
   if (!job) { await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'intake',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:1,attempt_id:row.id,operation:'intake'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false; }
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1", [job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=1", [job.workflow_id]);

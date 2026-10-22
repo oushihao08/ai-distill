@@ -26,3 +26,5 @@
 | `verify-rule-versions.ts` | **历史脚本**：依赖已撤除的规则版本注册/冻结流程；源码头注明不要执行。 |
 
 部分脚本将运行结果写到 `docs/evidence/`；它只是脚本输出路径，不是当前规范或当前能力的权威来源。本任务不扫描或修改 `docs/`。临时 schema 隔离的是脚本中被改写的 SQL，并不表示其不会读取真实输入、调用外部模型或写其他路径；具体边界以源码为准。
+
+`verify-local-queue.ts`：`bun --no-env-file scripts/verification/verify-local-queue.ts --port <本机临时PG端口> --out <证据JSON>`；只接受127.0.0.1、queue_verify专用空库，顺序应用真实迁移并在finally删除schema，使用两份临时SQLite和两个PG执行身份验证归属、HTTP取消/认领、TXT入库提取及结果对账。不读取.env、不调用模型、不操作业务库，不能替代实体双机和真实模型验收。

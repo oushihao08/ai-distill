@@ -3,6 +3,8 @@
  * 关键方法与用途：`createApp()` 注册并组合项目、题目、配置、步骤、下载与报表路由。
  * 使用场景：由 `index.ts` 创建本地服务实例；路由处理器调用各业务模块完成读写。
  */
+import {registerExecutionQueueRoutes} from './execution-queue/routes';
+import {localQueueEnabled,localQueue,withLocalQueueRoot} from './execution-queue/runtime';
 import {answerModelSummaryProjection,stepResultProjection,readWorkflowAttempts,readProjectWorkflowViews,projectWorkflowViewsFromSnapshot,readWorkflowStepHistory} from './workflow-view';
 import {invalidateRedactionResults} from './materials/state';
 import {sameRedactionConfig} from './materials/redaction-config';
@@ -56,7 +58,7 @@ import {documentBlocksToText} from './materials/pdf';
 
 const repositoryRoot=resolve(fileURLToPath(new URL('../',import.meta.url)));
 // 空钩子沿用旧表；033仅在启用可执行钩子时需要，不能使既有文字流程的健康检查失败。
-const requiredMigrations=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql')&&name!=='033_workflow_hooks.sql').sort();
+const requiredMigrations=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql')&&name!=='033_workflow_hooks.sql'&&(name!=='047_local_execution_dispatch.sql'||localQueueEnabled())).sort();
 const projectExportsRoot=resolve(repositoryRoot,'assets/out');
 const projectPhaseLabel=(parentName:string,phaseName:string)=>phaseName?`${parentName} - ${phaseName}`:parentName;
 
@@ -66,6 +68,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  const concurrency=readConcurrencySettings(process.env,storageRoot);
  let agentConcurrencyGate:ReturnType<typeof getAgentConcurrencyGate>|undefined;
  const app = new Hono();
+ app.use('/api/*',(_c,next)=>withLocalQueueRoot(storageRoot,()=>next()));
  const materialMime=(name:string)=>{const ext=name.split('.').at(-1)?.toLowerCase();return ext==='pdf'?'application/pdf':ext==='docx'?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'text/plain';};
  const requestRoute=(c:Context)=>{const route=(c.req as any).routePath;return typeof route==='string'?route:'unmatched';};
  const requestFields=(c:Context)=>{
@@ -218,6 +221,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   }catch(error){if(error instanceof HTTPException)throw error;if(error instanceof AgentConcurrencyConfigurationError)throw new HTTPException(503,{message:'API 与 worker 的 AGENT_CONCURRENCY 配置不一致，请统一配置'});throw new HTTPException(502,{message:'Codex 连通性测试失败，请检查凭证路径、ChatGPT 登录和 Codex 服务状态'});}
   finally{await rm(directory,{recursive:true,force:true});}
  });
+ registerExecutionQueueRoutes(app,pool,storageRoot);
  app.get('/api/monitor', async c => { try {
   const [monitor,active_workflow_tasks,material_library,logging]=await Promise.all([
    readWorkerMonitor(storageRoot),
@@ -225,7 +229,9 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    readMaterialLibraryQueue(pool),
    loggerHealth(),
   ]);
-  return c.json({...monitor,active_workflow_tasks,material_library,logging});
+  const local_execution_queue=localQueueEnabled()?{executor_id:localQueue(storageRoot).executorId,items:localQueue(storageRoot).list().map(({id,kind,lane,state,cancel_requested})=>({id,kind,lane,state,cancel_requested}))}:null;
+  if(local_execution_queue){const own=new Set(local_execution_queue.items.map(j=>j.id));const running=new Set(local_execution_queue.items.filter(j=>j.state==='running').map(j=>j.id));active_workflow_tasks.items=active_workflow_tasks.items.filter(j=>running.has(j.attempt_id));if(material_library.status==='known'){material_library.items=material_library.items.filter(j=>own.has(j.job_id));material_library.totals={...material_library.totals,queued:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='queued').length,running:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='running').length,succeeded:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='committed').length,failed:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='failed').length,cancelled:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='cancelled').length};}}
+  return c.json({...monitor,active_workflow_tasks,material_library,logging,local_execution_queue});
  } catch(error) { throw error; } });
  app.get('/api/health', async c => {
    try {

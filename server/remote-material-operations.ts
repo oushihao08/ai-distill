@@ -3,6 +3,7 @@
  * 关键入口：createRemoteMaterialOperation、readRemoteMaterialOperation、runNextRemoteMaterialOperation。
  * 使用场景：本机 CLI 经受限 API 发起一次组合操作，即使客户端断线仍由服务器继续处理。
  */
+import {registerLocalJob,localClaimSql,localQueueEnabled} from './execution-queue/runtime';
 import {createHash,randomUUID} from 'node:crypto';
 import {HTTPException} from 'hono/http-exception';
 import type {Pool} from 'pg';
@@ -51,11 +52,14 @@ export async function createRemoteMaterialOperation(pool:Pool,workflowId:string,
  const sourceDigest=digestSourceManifest(workflow.source_manifest);
  const stage=mode==='redact'?'redact':'intake';
  const initialMaterialDigest=mode==='redact'?await currentMaterialDigest(pool,workflowId):null;
- let created:any;
+ let created:any;const registration=await pool.connect();
  try{
-  created=(await pool.query(`INSERT INTO ai_distill.remote_material_operations(id,workflow_id,mode,request_key,source_digest,stage,material_digest,redaction_config_digest)
+  await registration.query('BEGIN');
+  created=(await registration.query(`INSERT INTO ai_distill.remote_material_operations(id,workflow_id,mode,request_key,source_digest,stage,material_digest,redaction_config_digest)
   VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(workflow_id,request_key) DO NOTHING RETURNING *`,[randomUUID(),workflowId,mode,requestKey,sourceDigest,stage,initialMaterialDigest,redactionConfig?.digest??null])).rows[0];
- }catch(error){if((error as {code?:string}).code==='23505')throw new HTTPException(409,{message:'这道题已有进行中的远程材料操作'});throw error;}
+  if(created)await registerLocalJob(registration,created.id,'remote','remote','remote');
+  await registration.query('COMMIT');
+ }catch(error){await registration.query('ROLLBACK');if((error as {code?:string}).code==='23505')throw new HTTPException(409,{message:'这道题已有进行中的远程材料操作'});throw error;}finally{registration.release();}
  if(created)return created;
  const concurrent=(await pool.query('SELECT * FROM ai_distill.remote_material_operations WHERE workflow_id=$1 AND request_key=$2',[workflowId,requestKey])).rows[0];
  if(concurrent?.mode!==mode||concurrent?.source_digest!==sourceDigest)throw new HTTPException(409,{message:'请求标识对应的材料版本已变化'});
@@ -79,7 +83,7 @@ async function update(pool:Pool,id:string,claimToken:string,values:{status?:stri
 export async function runNextRemoteMaterialOperation(pool:Pool){
  const claimToken=randomUUID();
  const op=(await pool.query(`UPDATE ai_distill.remote_material_operations SET status='running',claim_token=$1,updated_at=now()
-  WHERE id=(SELECT id FROM ai_distill.remote_material_operations WHERE status='waiting' OR (status='running' AND updated_at<now()-interval '30 seconds') ORDER BY updated_at,id FOR UPDATE SKIP LOCKED LIMIT 1)
+  WHERE id=(SELECT id FROM ai_distill.remote_material_operations WHERE (status='waiting' OR (status='running' AND (updated_at<now()-interval '30 seconds' OR ${localQueueEnabled()?'TRUE':'FALSE'}))) ${localClaimSql('remote_material_operations')} ORDER BY updated_at,id FOR UPDATE SKIP LOCKED LIMIT 1)
   RETURNING *`,[claimToken])).rows[0];
  if(!op)return false;
  const advance=(values:Parameters<typeof update>[3])=>update(pool,op.id,claimToken,values);

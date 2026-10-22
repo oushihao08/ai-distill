@@ -7,10 +7,10 @@ test('Work草稿不能显示为作答就绪',()=>{
  const value=workflowStepReadiness(5,states({content_contract:'work_legal_v1',content_status:{status:'draft'},task_requirements:{input_mode:'text',output_mode:'text',tools:[]}}));
  expect(value).toEqual({ready:false,reason:'Work题目仍为草稿，不能作答'});
 });
-test('文字材料的文件成果可文字作答，旧文字题保持就绪',()=>{
+test('文字呈现沿用现有就绪策略，不因题面工具声明新增派发拦截',()=>{
  const work={content_contract:'work_legal_v1',content_status:{status:'complete'},task_requirements:{input_mode:'text',output_mode:'file',tools:[]}};
  expect(workflowStepReadiness(5,states(work))).toEqual({ready:true});
- expect(workflowStepReadiness(5,states({...work,task_requirements:{input_mode:'text',output_mode:'text',tools:['web_search']}}))).toEqual({ready:false,reason:'当前作答器不支持题目要求的工具'});
+ expect(workflowStepReadiness(5,states({...work,task_requirements:{input_mode:'text',output_mode:'text',tools:['web_search']}}))).toEqual({ready:true});
  expect(workflowStepReadiness(5,states({question:'旧文字题'}))).toEqual({ready:true});
  expect(workflowStepReadiness(5,states({...work,task_requirements:{input_mode:'text',output_mode:'text',tools:[]}}))).toEqual({ready:true});
 });

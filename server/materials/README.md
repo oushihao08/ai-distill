@@ -99,3 +99,5 @@ DOCX渲染版本为redacted-structure-docx-v3，版本参与缓存索引；连�
 ## 显式材料上传预处理
 
 `prepare-library-files.ts`的`prepareLibraryFiles()`由CLI `library files prepare`调用：只读本机清单，OFD通过显式安装的本地OFDRW转PDF，PDF复用`splitLargePdf()`按大小/页数拆片，核对页数后生成新目录中的`manifest.json`及`provenance.json`。不自动上传、不修改来源、不派任务；原材料库HTTP接口的格式集合不变。失败保留`failed.json`但不发布manifest。OFD转换件须页面抽查，数字签名验证不能从原件继承。安装入口见`scripts/runtime/ofd/README.md`。
+
+本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。

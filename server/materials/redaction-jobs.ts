@@ -3,6 +3,7 @@
  * 关键方法与用途：`enqueueRedaction()` 冻结原文与模型配置；`runNextRedaction()` 消费任务并保存当前版本清洁附件；摘要函数固定输入。
  * 使用场景：`app.ts` 派发，`worker.ts` 执行；不会改写来源文件。
  */
+import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {runExternalCall} from '../external-call';
 import {runAgent} from '../agent';
 import {createModelApiClient} from '../llm-api';
@@ -88,6 +89,7 @@ export async function enqueueRedaction(pool:Pool,id:string,executionTarget:'loca
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal IN (4,5,6,7,8,10)",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='脱敏输入或设置变化，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal IN (4,5,6,7,8,10) AND status IN ('waiting','running')",[id]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[id]);
+  await registerLocalJob(db,attempt,'step',config.provider==='codex'?'agent':'api','redact');
   await db.query('COMMIT');withLogContext({component:'redaction',workflow_id:id,project_id:workflow.project_id,ordinal:9,attempt_id:attempt,operation:'redaction_enqueue'},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting',material_count:sources.length}));return{id:attempt,reused:false};
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
@@ -115,9 +117,9 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
   // 派发锁只保护领取事务；锁争用不得让存活且有心跳的消费者永久停止领取。
   await db.query("SET LOCAL lock_timeout='5s'");
   await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  const stale=await db.query("SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=9 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' FOR UPDATE OF w,a SKIP LOCKED",[executionTarget]);
+  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=9 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a',true)}  FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget]);
   for(const row of stale.rows){const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='脱敏进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='脱敏进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=9 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)",[row.workflow_id]);if(updated.rowCount)staleRows.push(row);}
-  job=(await db.query("SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 AND s.enabled WHERE a.ordinal=9 AND a.execution_target=$2 AND a.status='waiting' AND w.deleted_at IS NULL AND ($1::boolean IS NULL OR (COALESCE(a.config->>'provider','codex')='codex')=$1) ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1",[backend===undefined?null:backend==='codex',executionTarget])).rows[0];
+  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 AND s.enabled WHERE a.ordinal=9 AND a.execution_target=$2 AND ${localWaitingSql('a')} AND w.deleted_at IS NULL AND ($1::boolean IS NULL OR (COALESCE(a.config->>'provider','codex')='codex')=$1) ${localClaimSql('a',false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[backend===undefined?null:backend==='codex',executionTarget])).rows[0];
   if(!job){await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'redaction',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:9,attempt_id:row.id,operation:'redaction'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false;}
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=9",[job.workflow_id]);
@@ -219,6 +221,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
    if(output.checkpoint_path)try{await rm(output.checkpoint_path,{force:true});}catch(cleanupError){withLogContext(taskContext,()=>logEvent('file.cleanup_or_commit_check_failed',{level:'warn',file_kind:'redaction_checkpoint',...classifyLogError(cleanupError)}));}
   }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
  }catch(error){
+  deferLocalPublication(error);
   if(latestProgress){latestProgress={...latestProgress,phase:'failed'};}
   const classified=classifyLogError(error),effectiveFailurePhase=classified.error_kind==='invalid_response'?'output_validation':failurePhase;
   withLogContext(taskContext,()=>logEvent('attempt.failed',{level:'error',state:'failed',...classified,failure_phase:effectiveFailurePhase}));

@@ -7,7 +7,7 @@
 import { useResource } from '@/composables/useResource';
 import { dateLabel, fileSize } from '@/utils/format';
 import type { MaterialLibraryQueueStatus,WorkerMonitorStatus } from '@server/monitoring/worker-monitor';
-type MonitorResponse=WorkerMonitorStatus&{active_workflow_tasks:{status:'known'|'unavailable';items:{attempt_id:string;project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;channel:'agent'|'api'|'unknown';state:'running';started_at:string|null}[]};material_library:MaterialLibraryQueueStatus};
+type MonitorResponse=WorkerMonitorStatus&{active_workflow_tasks:{status:'known'|'unavailable';items:{attempt_id:string;project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;channel:'agent'|'api'|'unknown';state:'running';started_at:string|null}[]};material_library:MaterialLibraryQueueStatus;local_execution_queue?:{executor_id:string;items:{id:string;kind:string;lane:string;state:string;cancel_requested:number}[]}|null};
 const {data,error,loading,refresh}=useResource<MonitorResponse>('/monitor');
 let timer:ReturnType<typeof setInterval>|undefined;
 onMounted(()=>{timer=setInterval(()=>{if(!loading.value&&!document.hidden)void refresh();},10000);});
@@ -21,6 +21,8 @@ const libraryJobs=computed(()=>data.value?.material_library.status==='known'?dat
 const libraryTotals=computed(()=>data.value?.material_library.status==='known'?data.value.material_library.totals:null);
 const libraryKindLabel={intake:'入库核验',extract:'文本提取',redact:'脱敏'};
 const libraryStateLabel={queued:'排队',running:'运行'};
+const localQueue=computed(()=>data.value?.local_execution_queue);
+const queueCounts=computed(()=>{const items=localQueue.value?.items??[];const count=(lane:string,state:string)=>items.filter(i=>i.lane===lane&&i.state===state).length;return{agentQueued:count('agent','queued'),agentRunning:count('agent','running'),apiQueued:count('api','queued'),apiRunning:count('api','running'),pending:items.filter(i=>['pending_registration','result_pending_commit'].includes(i.state)).length,review:items.filter(i=>i.state==='needs_review').length};});
 </script>
 <template><Column class="surface-card p-16" :gap="12">
  <Row x="between" wrap :gap="8"><h2 class="section-title">执行器监控</h2><span class="text-sm text-muted">{{ data ? labels[data.status] : '正在读取…' }}</span></Row>
@@ -29,7 +31,13 @@ const libraryStateLabel={queued:'排队',running:'运行'};
  <Row v-if="current" wrap :gap="16" class="text-sm text-muted">
   <span>可用内存：{{ current.system.status==='known' ? `${current.system.value.available_percent}%（估算）` : '未知，沿用派发策略' }}</span>
   <span>Worker 内存：{{ rss?.status==='known' ? fileSize(rss.value) : '未知' }}</span>
-  <span>任务：{{ current.tasks.status==='known' ? `${current.tasks.value.states.waiting} 等待 / ${current.tasks.value.running} 运行` : '未知' }}</span>
+  <span v-if="!localQueue">任务：{{ current.tasks.status==='known' ? `${current.tasks.value.states.waiting} 等待 / ${current.tasks.value.running} 运行` : '未知' }}</span>
+ </Row>
+ <Row v-if="localQueue" wrap :gap="12" class="text-sm text-muted">
+  <span>本机执行器：{{ localQueue.executor_id.slice(0,8) }}</span>
+  <span>Agent：{{ queueCounts.agentQueued }} 排队 / {{ queueCounts.agentRunning }} 运行</span>
+  <span>API：{{ queueCounts.apiQueued }} 排队 / {{ queueCounts.apiRunning }} 运行</span>
+  <span>待同步 {{ queueCounts.pending }} · 待核实 {{ queueCounts.review }}</span>
  </Row>
  <ActiveWorkflowTasks :status="activeTasksStatus" :tasks="activeTasks" />
  <section class="border border-subtle rounded-md p-12">

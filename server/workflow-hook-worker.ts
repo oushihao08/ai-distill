@@ -3,6 +3,7 @@
  * 入口：runNextHook() 供 local/all worker 轮询；API worker 不领取本地脚本。
  * 行为：失效输入取消，失联幂等动作可恢复，非幂等未知副作用转待核；未迁移时保持旧队列可用。
  */
+import {localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall} from './execution-queue/runtime';
 import type {Pool} from 'pg';
 import {runHookScript} from './workflow-hooks';
 import {classifyLogError,logEvent,withLogContext} from './logging';
@@ -34,11 +35,11 @@ export async function runNextHook(pool:Pool,signal?:AbortSignal,mode:'api'|'loca
  const active=activeHookParentSql(),db=await pool.connect();let job:any,changed=false;
  try{
   await db.query('BEGIN');
-  const cancelled=await db.query(`UPDATE ai_distill.hook_runs h SET status='cancelled',error='主任务或输入已失效',finished_at=now() WHERE h.mode='async' AND h.status IN ('waiting','running') AND NOT ${active}`);
-  const recovered=await db.query(`UPDATE ai_distill.hook_runs h SET status=CASE WHEN idempotent THEN 'waiting' ELSE 'needs_review' END,error=CASE WHEN idempotent THEN '幂等钩子中断，等待恢复' ELSE '钩子副作用状态未知，等待人工核实' END,finished_at=CASE WHEN idempotent THEN NULL ELSE now() END WHERE h.mode='async' AND h.status='running' AND COALESCE(h.heartbeat_at,h.started_at)<now()-interval '5 minutes' AND ${active}`);
+  const cancelled=await db.query(`UPDATE ai_distill.hook_runs h SET status='cancelled',error='主任务或输入已失效',finished_at=now() WHERE h.mode='async' AND h.status IN ('waiting','running') AND NOT ${active} ${localClaimSql('h')}`);
+  const recovered=await db.query(`UPDATE ai_distill.hook_runs h SET status=CASE WHEN idempotent THEN 'waiting' ELSE 'needs_review' END,error=CASE WHEN idempotent THEN '幂等钩子中断，等待恢复' ELSE '钩子副作用状态未知，等待人工核实' END,finished_at=CASE WHEN idempotent THEN NULL ELSE now() END WHERE h.mode='async' AND h.status='running' AND COALESCE(h.heartbeat_at,h.started_at)<now()-interval '5 minutes' AND ${active} ${localClaimSql('h',true)}`);
   changed=!!cancelled.rowCount||!!recovered.rowCount;
-  job=(await db.query(`SELECT h.* FROM ai_distill.hook_runs h WHERE h.mode='async' AND h.status='waiting' AND ${active} ORDER BY h.created_at,h.id FOR UPDATE OF h SKIP LOCKED LIMIT 1`)).rows[0];
-  if(job)await db.query("UPDATE ai_distill.hook_runs SET status='running',started_at=now(),heartbeat_at=now(),error=NULL WHERE id=$1 AND status='waiting' RETURNING id",[job.id]);
+  job=(await db.query(`SELECT h.* FROM ai_distill.hook_runs h WHERE h.mode='async' AND ${localWaitingSql('h')} AND ${active} ${localClaimSql('h')} ORDER BY h.created_at,h.id FOR UPDATE OF h SKIP LOCKED LIMIT 1`)).rows[0];
+  if(job)await db.query("UPDATE ai_distill.hook_runs SET status='running',started_at=now(),heartbeat_at=now(),error=NULL WHERE id=$1 AND status IN ('waiting','running') RETURNING id",[job.id]);
   await db.query('COMMIT');
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  if(!job)return changed;
@@ -49,10 +50,11 @@ export async function runNextHook(pool:Pool,signal?:AbortSignal,mode:'api'|'loca
   pool.query(`UPDATE ai_distill.hook_runs h SET heartbeat_at=now() WHERE h.id=$1 AND h.status='running' AND ${active} RETURNING id`,[job.id]).then(result=>{if(!result.rowCount)controller.abort();}).catch(error=>{controller.abort();withLogContext({component:'workflow_hooks',attempt_id:job.attempt_id,workflow_id:job.workflow_id},()=>logEvent('hook.heartbeat_failed',{level:'error',...classifyLogError(error)}));}).finally(()=>{checking=false;});
  },3000);
  try{
-  const result=await execute(job.snapshot.hook,job.snapshot.payload,{signal:controller.signal});
+  const result=await cachedExternalCall('async_hook',()=>execute(job.snapshot.hook,job.snapshot.payload,{signal:controller.signal}));
   if(controller.signal.aborted)throw new Error('hook cancelled');
   await pool.query(`UPDATE ai_distill.hook_runs h SET status=$2,result=$3,error=NULL,finished_at=now() WHERE h.id=$1 AND h.status='running' AND ${active} RETURNING id`,[job.id,'succeeded',JSON.stringify(result)]);
  }catch(error){
+  deferLocalPublication(error);
   // 服务退出不等于业务取消；保留可恢复动作，未知副作用仍需人工核实。
   const status=signal?.aborted?(job.idempotent?'waiting':'needs_review'):controller.signal.aborted?'cancelled':job.idempotent?'failed':'needs_review';
   await pool.query("UPDATE ai_distill.hook_runs h SET status=$2,result=$3,error='项目钩子执行失败或中断',finished_at=now() WHERE h.id=$1 AND h.status='running' RETURNING id",[job.id,status,null]);

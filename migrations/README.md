@@ -58,3 +58,5 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 执行前核对目标数据库、已登记文件和全部未执行 SQL。`024_remove_automation_control.sql` 删除旧自动批次、成员、阻断表、派发函数及项目暂停字段，不能为修复 Codex 设置顺便执行。数据库迁移、服务重启和真实接口核对是不同操作，均遵守根 [AGENTS.md](../AGENTS.md) 的授权约束。
 
 不能从本目录存在文件推断当前数据库已应用它。不要删除旧文件、改名或重新编号来“整理”历史。
+
+`047_local_execution_dispatch.sql`新增执行器归属/代次登记和五类任务UPDATE保护；不迁移历史记录、不自动认领旧队列。配套客户端以实际PG application_name声明执行归属。启用和切换见`server/execution-queue/README.md`。
