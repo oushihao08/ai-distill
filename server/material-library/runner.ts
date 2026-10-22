@@ -3,13 +3,12 @@
  * 关键入口：`runNextLibraryJob()` 领取匹配任务；默认Agent按语义计划整包脱敏，显式旧模板继续字段映射。
  * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
-import {mkdir,rm,writeFile} from 'node:fs/promises';
+import {mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import type {LibraryExecutionTarget,LibraryExecutorKind} from '../../shared/material-library';
-import type {Page} from '../materials/pdf';
-import {extractLocalDocument,ProjectDocumentExtractor} from '../materials/document';
+import {type DocumentExtractor,extractLocalDocument,ProjectDocumentExtractor} from '../materials/document';
 import {MineruCliPdfExtractor} from '../materials/pdf-extraction/mineru-cli';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor} from '../materials/pdf-extraction/mineru-api';
 import {runExternalCall} from '../external-call';
@@ -19,6 +18,8 @@ import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob} fro
 import {readLibraryBlob,insertLibraryTextBlob} from './storage';
 import {hash,jobDirectory,ensurePages} from './execution-shared';
 import {executeRedaction} from './redaction-runner';
+import {withTaskSignal} from '../task-signal';
+import {cleanupExtractionArtifacts,readExtractionCheckpoint,writeExtractionCheckpoint} from './extraction-checkpoint';
 import {AGENT_REDACTION_MAX_MS} from '../../shared/redaction-templates';
 
 
@@ -58,29 +59,34 @@ async function documentExtractor(root:string,jobId:string,provider:unknown){
  return{directory,extractor};
 }
 
-async function executeExtraction(pool:Pool,root:string,job:any,signal:AbortSignal){
+export async function executeExtraction(pool:Pool,root:string,job:any,signal:AbortSignal,extractorOverride?:DocumentExtractor){
  const files=job.input_snapshot.files as any[],results:{item:any;document:ReturnType<typeof ensurePages>;issues:Record<string,unknown>[];textSha:string;content:string}[]=[];
- const apiFiles=files.filter(item=>['pdf','docx'].includes(item.format));
- const extraction=apiFiles.length?await documentExtractor(root,job.id,job.config_snapshot.pdf_provider):null;
+ let extraction:{directory:string;extractor:DocumentExtractor}|null=null;
  for(const [index,item] of files.entries()){
   if(signal.aborted)throw new Error('材料任务已取消');
-  const bytes=await sourceBytes(root,item);let document:ReturnType<typeof ensurePages>;
-  if(item.format==='txt'||item.format==='md')document=ensurePages(extractLocalDocument(bytes,item.format).pages,item.source_sha256);
-  else{
-   if(!extraction)throw new Error('PDF/DOCX提取器未初始化');
+  const bytes=await sourceBytes(root,item);const cached=await readExtractionCheckpoint(root,job,item);let document=cached?.document,actualProvider=cached?.provider??'local';
+  if(!document&&(item.format==='txt'||item.format==='md'))document=ensurePages(extractLocalDocument(bytes,item.format).pages,item.source_sha256);
+  else if(!document){
+   if(!extraction){
+    if(extractorOverride){const directory=join(jobDirectory(root,job.id),'source');await mkdir(directory,{recursive:true,mode:0o700});extraction={directory,extractor:extractorOverride};}
+    else extraction=await documentExtractor(root,job.id,job.config_snapshot.pdf_provider);
+   }
    const path=join(extraction.directory,`${item.file_id}.${item.format}`),fileBuffer=new ArrayBuffer(bytes.byteLength);new Uint8Array(fileBuffer).set(bytes);
    await writeFile(path,Buffer.from(bytes),{mode:0o600,flag:'wx'});
-   const extracted=await runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,library_file_id:item.file_id,operation:'library_document_extract'},async()=>extraction.extractor.extract(path,signal));
+   const extractor=extraction.extractor;
+   const extracted=await runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,library_file_id:item.file_id,operation:'library_document_extract'},async()=>extractor.extract(path,signal));
    if(extracted.sha256!==item.source_sha256||extracted.format!==item.format)throw new Error('文本提取结果与原件摘要不匹配');
-   document=ensurePages(extracted.pages,item.source_sha256);
+   document=ensurePages(extracted.pages,item.source_sha256);actualProvider=extracted.provider;
   }
+  if(signal.aborted)throw signal.reason;
+  await writeExtractionCheckpoint(root,job,item,document,actualProvider);
   const content=JSON.stringify(document),text= document.pages.map(page=>page.text).join('\n'),issues=document.pages.flatMap(page=>[
    ...(page.issues??[]).map(kind=>({page:page.page,kind})),
    ...(!page.text.trim()?[{page:page.page,kind:'empty_page'}]:[]),
    ...(/无法辨认|�/.test(page.text)?[{page:page.page,kind:'unreadable'}]:[]),
   ]);
   results.push({item,document,issues,textSha:hash(text),content});
-  await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'extract',completed_files:index+1,total_files:files.length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)});
+  if(!await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'extract',completed_files:index+1,total_files:files.length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)}))throw stopReason(await libraryStopReason(pool,job)??'lease_lost');
  }
  const summaries=await finishLibraryJob(pool,job.id,job.lease_token,{file_count:results.length,page_count:results.reduce((sum,result)=>sum+result.document.pages.length,0),issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)},async db=>{
   for(const result of results){
@@ -89,31 +95,70 @@ async function executeExtraction(pool:Pool,root:string,job:any,signal:AbortSigna
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[crypto.randomUUID(),job.revision_id,result.item.file_id,job.id,blob.id,result.item.source_sha256,result.textSha,result.document.pages.length,JSON.stringify(result.issues)]);
   }
  });
- if(summaries)await rm(jobDirectory(root,job.id),{recursive:true,force:true});
+ if(summaries)await cleanupExtractionArtifacts(root,job.id);
 }
 
 
-async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSignal){
+/** 仅使用受控原因；数据库仍是用户取消与租约所有权的权威来源。 */
+function stopReason(reason_code:string){return Object.assign(new Error(reason_code),{reason_code});}
+async function libraryStopReason(pool:Pool,job:any):Promise<string|undefined>{
+ const row=(await pool.query('SELECT status,cancel_requested_at,lease_token,lease_expires_at,deadline_at FROM ai_distill.library_jobs WHERE id=$1',[job.id])).rows[0];
+ if(row?.status==='succeeded')return 'already_succeeded';
+ if(!row||row.lease_token!==job.lease_token||row.status!=='running')return 'lease_lost';
+ if(row.cancel_requested_at)return 'user_cancelled';
+ if(new Date(row.deadline_at).getTime()<=Date.now())return 'deadline_exceeded';
+ if(new Date(row.lease_expires_at).getTime()<=Date.now())return 'lease_lost';
+ return undefined;
+}
+
+export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSignal,heartbeatMs=15000){
  const context={component:'material_library',operation:`library_${job.kind}`,library_package_id:job.package_id,library_revision_id:job.revision_id,library_job_id:job.id};
- const restore=enterLogContext(context);const local=new AbortController(),abort=()=>local.abort(signal.reason);signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
+ const restore=enterLogContext(context);const local=new AbortController(),abort=()=>local.abort(stopReason('worker_shutdown'));signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
  const agentPlan=job.config_snapshot?.redaction_template?.workflow==='codex_plan';
- const deadlineTimer=agentPlan?setTimeout(()=>local.abort(Object.assign(new Error('Agent脱敏执行预算到限'),{reason_code:'agent_redaction_timeout'})),Math.max(0,Math.min(AGENT_REDACTION_MAX_MS,new Date(job.deadline_at).getTime()-Date.now()))):undefined;
- let heartbeatRunning=false;
- const heartbeat=setInterval(()=>{if(heartbeatRunning)return;heartbeatRunning=true;void heartbeatLibraryJob(pool,job.id,job.lease_token).then(active=>{if(!active)local.abort(Object.assign(new Error('材料任务租约、取消或期限校验失败'),{reason_code:'library_job_inactive'}));}).catch(error=>{logEvent('heartbeat.write_failed',{level:'error',...classifyLogError(error)});local.abort(error);}).finally(()=>{heartbeatRunning=false;});},15000);
+ const deadline=Math.min(new Date(job.deadline_at).getTime(),Date.now()+(agentPlan?AGENT_REDACTION_MAX_MS:1800000));
+ const deadlineTimer=setTimeout(()=>local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded')),Math.max(0,deadline-Date.now()));
+ if(deadline<=Date.now())local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded'));
+ let heartbeatRunning=false,settled=false;
+ const heartbeat=setInterval(()=>{
+  if(heartbeatRunning||settled)return;
+  heartbeatRunning=true;
+  void heartbeatLibraryJob(pool,job.id,job.lease_token).then(async active=>{
+   if(!active&&!settled){
+    const state=await libraryStopReason(pool,job);
+    if(!settled)local.abort(stopReason(state??'lease_lost'));
+   }
+  }).catch(error=>{
+   if(settled)return;
+   logEvent('heartbeat.write_failed',{level:'error',...classifyLogError(error)});
+   local.abort(stopReason('heartbeat_unavailable'));
+  }).finally(()=>{heartbeatRunning=false;});
+ },heartbeatMs);
  try{
   logEvent('library_job.started',{level:'info',state:'running',provider:job.executor_kind==='api'?job.config_snapshot.settings?.redaction?.api?.provider:job.executor_kind==='agent'?'codex':undefined,material_count:job.input_snapshot.files?.length??0});
-  if(job.kind==='intake')await executeIntake(pool,root,job,local.signal);
-  else if(job.kind==='extract')await executeExtraction(pool,root,job,local.signal);
-  else await executeRedaction(pool,root,job,local.signal);
+  if(local.signal.aborted)throw local.signal.reason;
+  await withTaskSignal(local.signal,async()=>{
+   if(job.kind==='intake')await executeIntake(pool,root,job,local.signal);
+   else if(job.kind==='extract')await executeExtraction(pool,root,job,local.signal);
+   else await executeRedaction(pool,root,job,local.signal);
+  });
   logEvent('library_job.completed',{level:'info',state:'succeeded'});
  }catch(error){
-  const timedOut=agentPlan&&((local.signal.reason as any)?.reason_code==='agent_redaction_timeout'||(error as any)?.reason_code==='agent_redaction_timeout');
-  const cancelled=!timedOut&&(local.signal.aborted||signal.aborted),classified=classifyLogError(error),code=timedOut?'agent_redaction_timeout':cancelled?'cancelled':(error&&typeof error==='object'&&'reason_code'in error&&typeof error.reason_code==='string'?error.reason_code:classified.reason_code??classified.error_kind??'library_job_failed');
-  const message=timedOut?'Agent脱敏达到执行预算（最多10分钟），已停止并保留私有进度；请调整处理安排后显式继续':cancelled?'材料任务已取消或 worker 已停止':code==='library_extraction_not_usable'?'提取结果缺少有效文件、页数或正文，请先完成文本识别':code==='configuration'?'材料处理配置无效':code==='worker_interrupted'?'材料处理进程中断，可创建新尝试':'材料任务执行失败，请检查处理记录和服务配置';
-  await failLibraryJob(pool,job.id,job.lease_token,code,message,cancelled?'cancelled':'failed');
+  const classified=classifyLogError(error);
+  const reason=local.signal.aborted?local.signal.reason:error;
+  const hasReasonCode=reason&&typeof reason==='object'&&typeof reason.reason_code==='string';
+  let code=hasReasonCode?reason.reason_code:classified.reason_code??classified.error_kind??'library_job_failed';
+  if(!local.signal.aborted&&!hasReasonCode){
+   try{code=await libraryStopReason(pool,job)??code;}catch(readError){logEvent('library_job.stop_state_unavailable',{level:'error',...classifyLogError(readError)});}
+  }
+  if(code==='already_succeeded'){logEvent('library_job.completion_confirmed',{level:'info',state:'succeeded'});return;}
+  if(!/^[a-z][a-z0-9_]{0,79}$/.test(code))code='library_job_failed';
+  const cancelled=code==='user_cancelled'||code==='worker_shutdown';
+  const message=code==='agent_redaction_timeout'?'Agent脱敏达到执行预算（最多10分钟），已停止并保留私有进度':cancelled?'材料任务已取消或 worker 已停止':code==='deadline_exceeded'?'材料任务达到本次执行期限':code==='heartbeat_unavailable'?'材料任务心跳不可用，已停止发布':'材料任务执行失败，请检查处理记录和服务配置';
+  const saved=await failLibraryJob(pool,job.id,job.lease_token,code,message,cancelled?'cancelled':'failed');
+  if(!saved){logEvent('library_job.terminal_not_written',{level:'error',reason_code:code,state:'unknown'});return;}
   logEvent(cancelled?'library_job.cancelled':'library_job.failed',{level:cancelled?'info':'error',state:cancelled?'cancelled':'failed',error_kind:classified.error_kind,reason_code:code,retryable:classified.retryable});
   if(cancelled)console.info('材料库任务已取消或 worker 已停止');else console.error('材料库任务失败；未输出原文、提示词或凭证');
- }finally{clearInterval(heartbeat);clearTimeout(deadlineTimer);signal.removeEventListener('abort',abort);restore();}
+ }finally{settled=true;clearInterval(heartbeat);clearTimeout(deadlineTimer);signal.removeEventListener('abort',abort);restore();}
 }
 
 /** runWorkerPool 的并发循环先取得槽位，再调用本函数领取任务。 */

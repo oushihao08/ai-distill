@@ -1,6 +1,15 @@
 /** 验证材料库任务参数、消费 lane、租约领取、取消和终态写入边界。 */
 import {test,expect} from 'bun:test';
 import {assertLibraryExtractionUsable,validateLibraryJobRequest,chooseLibraryExecutor,hasLibraryQueueWork,claimLibraryJob,enqueueLibraryJob,failLibraryJob,finishLibraryJob} from './jobs';
+import {withTaskSignal} from '../task-signal';
+
+test('worker stop during publication rolls back without COMMIT or a successful terminal update',async()=>{
+ const c=new AbortController(),queries:string[]=[];
+ const client={query:async(sql:string)=>{queries.push(sql);return{rows:[{id:'job'}],rowCount:1};},release(){}};
+ const pool={connect:async()=>client} as any;
+ await expect(withTaskSignal(c.signal,()=>finishLibraryJob(pool,'job','lease',{},async()=>{c.abort(new Error('worker-stop'));}))).rejects.toThrow('worker-stop');
+ expect(queries).toContain('ROLLBACK');expect(queries).not.toContain('COMMIT');expect(queries.some(x=>x.includes("status='succeeded'"))).toBe(false);
+});
 
 test('redaction retains OCR warnings without treating them as redaction content loss',()=>{
  const documents=[{page_count:1,issues:[{page:1,kind:'image_without_text'}],pages:[{text:'借款本金10000元，2023年1月1日。'}]}];
@@ -76,7 +85,9 @@ test('running cancellation is persisted as cancelled rather than failed',async()
  expect(await failLibraryJob(pool,'job','lease','cancelled','材料任务已取消','cancelled')).toBe(true);
  expect(saved?.sql).toContain("status=CASE WHEN $3='cancelled' OR cancel_requested_at IS NOT NULL THEN 'cancelled' ELSE 'failed' END");
  expect(saved?.sql).toContain("error_code=CASE WHEN $3='cancelled' OR cancel_requested_at IS NOT NULL THEN NULL ELSE $4 END");
- expect(saved?.values).toEqual(['job','lease','cancelled','cancelled','材料任务已取消']);
+ expect(saved?.values.slice(0,5)).toEqual(['job','lease','cancelled','cancelled','材料任务已取消']);
+ expect(JSON.parse(saved!.values[5] as string).reason_code).toBe('cancelled');
+ expect(saved?.sql).toContain("COALESCE(result_summary,'{}'::jsonb)");
 });
 
 test('expired leases become failed attempts and are never put back into running or queued state',async()=>{

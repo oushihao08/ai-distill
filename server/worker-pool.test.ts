@@ -1,6 +1,34 @@
 /** 验证 worker 池并发/空闲间隔/停止与公平轮转；任务处理器和资源门禁均为测试回调，不连接数据库或调用外部服务。 */
 import { expect, test } from 'bun:test';
-import { createFairQueueHandler,createSharedQueueProbe,runWorkerPool } from './worker-pool';
+import { createFairQueueHandler,createSharedQueueProbe,createWorkerShutdown,runWorkerPool } from './worker-pool';
+import {mkdtemp,readFile,readdir,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+
+test('isolated worker receives SIGTERM, drains cooperative work and persists stopped after request',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'worker-signal-'));
+ const moduleUrl=new URL('./worker-pool.ts',import.meta.url).href,loggerUrl=new URL('./logging.ts',import.meta.url).href;
+ const source=`import {createWorkerShutdown,runWorkerPool} from ${JSON.stringify(moduleUrl)};import {configureLogger} from ${JSON.stringify(loggerUrl)};const logger=configureLogger({root:${JSON.stringify(root)},service:'worker'}),c=new AbortController(),shutdown=createWorkerShutdown(c);process.on('SIGTERM',()=>shutdown.request('SIGTERM'));await runWorkerPool(async()=>{console.log('ready');await new Promise(resolve=>c.signal.addEventListener('abort',resolve,{once:true}));return true;},{concurrency:1,signal:c.signal,idleMs:1});shutdown.dispose();logger.log('service.stopped',{level:'info'});await logger.close();`;
+ const child=Bun.spawn([process.execPath,'-e',source],{stdout:'pipe',stderr:'pipe'}),reader=child.stdout.getReader();
+ try{
+  const ready=await reader.read();expect(new TextDecoder().decode(ready.value)).toContain('ready');child.kill('SIGTERM');expect(await child.exited).toBe(0);
+  const directory=join(root,'logs',new Date().toISOString().slice(0,10)),files=await readdir(directory);
+  const records=(await readFile(join(directory,files[0]),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+  expect(records.map(x=>x.event)).toEqual(['service.shutdown_requested','service.stopped']);
+ }finally{child.kill();await child.exited;await reader.cancel();await rm(root,{recursive:true,force:true});}
+},3000);
+
+test('stop during fair queue lookup prevents probing the next queue',async()=>{
+ const controller=new AbortController();let second=0;
+ const dispatch=createFairQueueHandler([async()=>{controller.abort();return false;},async()=>{second++;return true;}],controller.signal);
+ expect(await dispatch()).toBe(false);expect(second).toBe(0);
+});
+
+test('shutdown preserves its first reason and is idempotent',()=>{
+ const controller=new AbortController(),shutdown=createWorkerShutdown(controller,1000);
+ try{shutdown.request('SIGTERM');const reason=controller.signal.reason;shutdown.request('SIGINT');expect(controller.signal.reason).toBe(reason);expect(reason.reason_code).toBe('worker_shutdown');}
+ finally{shutdown.dispose();}
+});
 
 test('worker pool runs up to the configured concurrency and drains on abort', async () => {
   const controller = new AbortController();

@@ -9,7 +9,20 @@ import {mkdir,mkdtemp,readFile,readdir,rm,unlink,writeFile} from 'node:fs/promis
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {REDACTION_PROTOCOL_VERSION} from './materials/redaction';
+import {createWorkerShutdown} from './worker-pool';
 import {classifyLogError,configureLogger,createStructuredLogger,currentLogger,installFatalErrorLogging,sanitizeLogRecord,withLogContext} from './logging';
+
+test('shutdown events are durable, ordered and idempotent without enabling progress noise',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'worker-stop-log-')),logger=configureLogger({root,service:'worker'}),controller=new AbortController(),shutdown=createWorkerShutdown(controller,10);
+ try{
+  shutdown.request('SIGTERM');shutdown.request('SIGTERM');logger.log('worker.progress',{level:'info'});
+  await Bun.sleep(20);shutdown.dispose();logger.log('service.stopped',{level:'info',prompt:'PRIVATE'});await logger.flush();
+  const directory=join(root,'logs',new Date().toISOString().slice(0,10));
+  const records=(await Promise.all((await readdir(directory)).map(file=>readFile(join(directory,file),'utf8')))).join('').trim().split('\n').map(line=>JSON.parse(line));
+  expect(records.map(x=>x.event)).toEqual(['service.shutdown_requested','service.shutdown_incomplete','service.stopped']);
+  expect(records[0].signal).toBe('SIGTERM');expect(JSON.stringify(records)).not.toContain('PRIVATE');
+ }finally{shutdown.dispose();await logger.close();await rm(root,{recursive:true,force:true});}
+});
 
 test('writes ordered, correlated JSONL events and drops unapproved private fields',async()=>{
  const root=await mkdtemp(join(tmpdir(),'ai-distill-logs-'));

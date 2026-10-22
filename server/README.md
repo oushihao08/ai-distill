@@ -31,7 +31,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `migrate.ts` | 人工迁移入口：互斥事务内按完整文件名执行所有未登记SQL；API健康检查不执行迁移 |
 | `concurrency.ts` | `readConcurrencySettings()` / `saveWorkerConcurrencySettings()` 管理本机持久并发；`AgentConcurrencyGate` 协调同一STORAGE_DIR下的Agent槽位 |
 | `worker.ts` | 进程入口：按模式、执行端和任务provider注册材料/API/Agent及钩子消费者，传播停止信号 |
-| `worker-pool.ts` | `runWorkerPool()` 控制循环并发、空闲/失败退避；`createFairQueueHandler()` 公平轮转业务队列 |
+| `worker-pool.ts` | `runWorkerPool()` 控制循环并发、空闲/失败退避；`createFairQueueHandler()` 公平轮转业务队列并在轮转间检查停止；`createWorkerShutdown()` 一次性广播停止、记录请求及10秒未完成诊断，不强杀进程 |
 | `task-signal.ts` | `watchTaskCancellation()` 合并查询持久任务状态并取消失效执行；`withTaskSignal()` 传递调用链信号 |
 | `external-call.ts` | `runExternalCall()` 将一次调用关联到attempt或library_job及call_id，传递安全日志；不重试收费请求 |
 | `logging.ts` | `createStructuredLogger()`、`logEvent()` 与上下文入口：安全字段投影、JSONL轮转保留、健康及致命错误记录 |
@@ -119,7 +119,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 
 首屏列表/状态使用服务端白名单和批量快照；正文、历史及材料版本按需读取。`GET /api/attempts/:id?view=status`不读取结果正文，CLI等待默认使用该视图；完整内容由show/full显式读取。普通文件下载不证明内容质量或平台成功。
 
-共用安全日志入口为 `logging.ts`，默认位于 `<STORAGE_DIR>/logs/<UTC日期>/`。请求通过 `X-Request-ID`、attempt/job/call ID关联。普通JSONL只落盘错误及指定数据库慢查询/连接等待告警；不记录材料、题面、提示词、答案、SQL参数或凭证。Codex私有事件和业务报告不是普通日志。命令和限制见 [诊断脚本](../scripts/diagnostics/README.md)；健康和`/api/monitor`状态不能证明供应商仍在生成。
+共用安全日志入口为 `logging.ts`，默认位于 `<STORAGE_DIR>/logs/<UTC日期>/`。请求通过 `X-Request-ID`、attempt/job/call ID关联。普通JSONL落盘错误、指定数据库慢查询/连接等待告警，以及精确白名单中的停止生命周期、材料取消和恢复降级事件；其他成功/进度日志仍不落盘；不记录材料、题面、提示词、答案、SQL参数或凭证。Codex私有事件和业务报告不是普通日志。命令和限制见 [诊断脚本](../scripts/diagnostics/README.md)；健康和`/api/monitor`状态不能证明供应商仍在生成。
 
 修改公共契约同时核对前端、CLI、路由、任务输入快照及历史兼容。文档中的配置/迁移/启动命令是参考，授权边界见 [AGENTS.md](../AGENTS.md)。本文件不声明某次数据库、真实模型或外部平台验收已完成；历史证据按其时间和范围单独阅读。
 

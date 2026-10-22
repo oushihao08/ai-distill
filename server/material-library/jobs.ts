@@ -5,6 +5,7 @@
  */
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
+import {currentTaskSignal} from '../task-signal';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
 import type {CreateLibraryJobRequest,LibraryExecutionTarget,LibraryExecutorKind,LibraryJobKind} from '../../shared/material-library';
@@ -147,8 +148,8 @@ export async function cancelLibraryJob(pool:Pool,id:string){
   await db.query('BEGIN');
   const job=(await db.query('SELECT id,status FROM ai_distill.library_jobs WHERE id=$1 FOR UPDATE',[id])).rows[0];
   if(!job)throw new HTTPException(404,{message:'材料处理任务不存在'});
-  if(job.status==='queued')await db.query("UPDATE ai_distill.library_jobs SET status='cancelled',finished_at=now() WHERE id=$1 AND status='queued'",[id]);
-  else if(job.status==='running')await db.query('UPDATE ai_distill.library_jobs SET cancel_requested_at=COALESCE(cancel_requested_at,now()) WHERE id=$1 AND status=\'running\'',[id]);
+  if(job.status==='queued')await db.query("UPDATE ai_distill.library_jobs SET status='cancelled',finished_at=now(),result_summary=COALESCE(result_summary,'{}'::jsonb)||jsonb_build_object('execution_stop',jsonb_build_object('reason_code','user_cancelled','observed_at',now())) WHERE id=$1 AND status='queued'",[id]);
+  else if(job.status==='running')await db.query("UPDATE ai_distill.library_jobs SET cancel_requested_at=COALESCE(cancel_requested_at,now()),result_summary=COALESCE(result_summary,'{}'::jsonb)||jsonb_build_object('execution_stop',jsonb_build_object('reason_code','user_cancelled','observed_at',COALESCE(cancel_requested_at,now()))) WHERE id=$1 AND status='running'",[id]);
   await db.query('COMMIT');return readLibraryJob(pool,id);
  }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务取消失败且回滚状态不确定');}throw error;}finally{db.release();}
 }
@@ -182,19 +183,24 @@ export async function heartbeatLibraryJob(pool:Pool,jobId:string,leaseToken:stri
 }
 
 export async function finishLibraryJob(pool:Pool,jobId:string,leaseToken:string,resultSummary:Record<string,unknown>,publish:(db:import('pg').PoolClient)=>Promise<void>){
+ const signal=currentTaskSignal();signal?.throwIfAborted();
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
   const job=(await db.query("SELECT id,revision_id FROM ai_distill.library_jobs WHERE id=$1 AND lease_token=$2 AND status='running' AND cancel_requested_at IS NULL AND lease_expires_at>now() AND deadline_at>now() FOR UPDATE",[jobId,leaseToken])).rows[0];
   if(!job)throw conflict('材料任务已取消、失租或超过执行期限，结果未发布');
+  signal?.throwIfAborted();
   await publish(db);
+  signal?.throwIfAborted();
   const saved=await db.query("UPDATE ai_distill.library_jobs SET status='succeeded',result_summary=$3::jsonb,finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1 AND lease_token=$2 AND status='running' RETURNING id",[jobId,leaseToken,JSON.stringify(resultSummary)]);
   if(saved.rowCount!==1)throw conflict('材料任务提交权已失效，结果未发布');
+  signal?.throwIfAborted();
   await db.query('COMMIT');return true;
  }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务结果提交失败且回滚状态不确定');}throw error;}finally{db.release();}
 }
 
 export async function failLibraryJob(pool:Pool,jobId:string,leaseToken:string,code:string,message:string,status:'failed'|'cancelled'='failed'){
- const result=await pool.query("UPDATE ai_distill.library_jobs SET status=CASE WHEN $3='cancelled' OR cancel_requested_at IS NOT NULL THEN 'cancelled' ELSE 'failed' END,error_code=CASE WHEN $3='cancelled' OR cancel_requested_at IS NOT NULL THEN NULL ELSE $4 END,error_message=$5,finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1 AND lease_token=$2 AND status='running' RETURNING id",[jobId,leaseToken,status,code.slice(0,100),message.slice(0,1000)]);
+ const stop={reason_code:code,observed_at:new Date().toISOString()};
+ const result=await pool.query("UPDATE ai_distill.library_jobs SET status=CASE WHEN $3='cancelled' OR cancel_requested_at IS NOT NULL THEN 'cancelled' ELSE 'failed' END,error_code=CASE WHEN $3='cancelled' OR cancel_requested_at IS NOT NULL THEN NULL ELSE $4 END,error_message=$5,result_summary=COALESCE(result_summary,'{}'::jsonb)||jsonb_build_object('execution_stop',$6::jsonb||CASE WHEN cancel_requested_at IS NOT NULL THEN jsonb_build_object('reason_code','user_cancelled','local_reason_code',$4::text) ELSE '{}'::jsonb END),finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1 AND lease_token=$2 AND status='running' RETURNING id",[jobId,leaseToken,status,code.slice(0,100),message.slice(0,1000),JSON.stringify(stop)]);
  return result.rowCount===1;
 }

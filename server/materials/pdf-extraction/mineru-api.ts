@@ -70,12 +70,33 @@ async function checkedJson(response: Response, stage: string): Promise<unknown> 
  catch { throw new Error(`MinerU API ${stage}返回无效JSON`); }
 }
 
-async function runUnzip(args: string[], maxBytes: number): Promise<Uint8Array> {
+export async function runUnzip(args: string[], maxBytes: number,signal?:AbortSignal): Promise<Uint8Array> {
+ if(signal?.aborted)throw signal.reason;
  const child = Bun.spawn(['unzip', ...args], { stdout: 'pipe', stderr: 'ignore' });
- const output = await new Response(child.stdout).arrayBuffer();
- const exitCode = await child.exited;
- if (exitCode !== 0 || output.byteLength > maxBytes) throw new Error('MinerU API结果包结构无效');
- return new Uint8Array(output);
+ const abort=()=>child.kill();signal?.addEventListener('abort',abort,{once:true});
+ if(signal?.aborted)abort();
+ const reader=child.stdout.getReader(),chunks:Uint8Array[]=[];
+ let size=0;
+ try{
+  while(true){
+   const {done,value}=await reader.read();if(done)break;
+   if(signal?.aborted)throw signal.reason;
+   size+=value.byteLength;
+   if(size>maxBytes)throw new Error('MinerU API结果包超过输出限制');
+   chunks.push(value);
+  }
+  const exitCode=await child.exited;
+  if(signal?.aborted)throw signal.reason;
+  if(exitCode!==0)throw new Error('MinerU API结果包结构无效');
+  const output=new Uint8Array(size);let offset=0;
+  for(const chunk of chunks){output.set(chunk,offset);offset+=chunk.byteLength;}
+  return output;
+ }finally{
+  signal?.removeEventListener('abort',abort);
+  child.kill();
+  await reader.cancel().catch(()=>{logEvent('extraction.unzip.cleanup_failed',{level:'error',reason_code:'stream_cleanup_failed'});});
+  await child.exited;
+ }
 }
 
 function resultZipUrl(data: Record<string, unknown>): string {
@@ -159,11 +180,11 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    await mkdir(diagnosticDirectory, { recursive: true, mode: 0o700 });
    tempZipPath = resolve(diagnosticDirectory, 'result.zip');
    await writeFile(tempZipPath, zipBytes, { mode: 0o600, flag: 'wx' });
-   const listingBytes = await runUnzip(['-Z1', tempZipPath], 2 * 1024 * 1024);
+   const listingBytes = await runUnzip(['-Z1', tempZipPath], 2 * 1024 * 1024,controller.signal);
    const entries = new TextDecoder().decode(listingBytes).split(/\r?\n/).filter(Boolean);
    const contentList = entries.find(entry => /(?:^|\/)content_list\.json$/i.test(entry) || /_content_list\.json$/i.test(entry));
    if (!contentList || contentList.split('/').includes('..')) throw new Error('MinerU API结果包缺少content_list.json');
-   const content = await runUnzip(['-p', tempZipPath, contentList], 64 * 1024 * 1024);
+   const content = await runUnzip(['-p', tempZipPath, contentList], 64 * 1024 * 1024,controller.signal);
    await writeFile(resolve(diagnosticDirectory, 'response.json'),content,{mode:0o600,flag:'wx'});
    let raw: unknown;
    try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content)); }
@@ -174,6 +195,7 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    return { pages, sha256, provider: this.id };
   } catch (error) {
    logEvent('extraction.api.failed', { level: 'error', provider: this.id, reason: safeFailureReason(error) });
+   if(controller.signal.aborted&&!signal?.aborted)throw Object.assign(new Error('MinerU API任务超过30分钟'),{reason_code:'provider_timeout'});
    throw error;
   } finally {
    clearTimeout(timer);

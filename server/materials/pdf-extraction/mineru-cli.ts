@@ -194,6 +194,7 @@ export class MineruCliPdfExtractor implements PdfExtractionProvider {
   });
   const abort = () => child.kill();
   signal?.addEventListener('abort', abort, { once: true });
+  if(signal?.aborted)abort();
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; abort(); }, 30 * 60 * 1000);
   try {
@@ -209,7 +210,7 @@ export class MineruCliPdfExtractor implements PdfExtractionProvider {
    await writeFile(resolve(diagnosticDirectory, 'metadata.json'), JSON.stringify({ source_sha256: sha256, page_count: pageCount, ocr_version: MINERU_OCR_VERSION, exit_code: exitCode, timed_out: timedOut, cancelled: signal?.aborted ?? false }), { mode: 0o600 });
    logEvent('extraction.diagnostics_saved', { level: exitCode === 0 && !timedOut && !signal?.aborted ? 'info' : 'warn', diagnostic_id: diagnosticId, page_count: pageCount, exit_code: exitCode, provider: this.id });
    if (signal?.aborted) throw new Error(`PDF提取已取消（诊断 ${diagnosticId}）`);
-   if (timedOut) throw new Error(`MinerU CLI执行超过30分钟（诊断 ${diagnosticId}）`);
+   if (timedOut) throw Object.assign(new Error(`MinerU CLI执行超过30分钟（诊断 ${diagnosticId}）`),{reason_code:'provider_timeout'});
    if (exitCode !== 0) throw new Error(`MinerU CLI执行失败（退出码 ${exitCode}），诊断 ${diagnosticId}`);
    let result: unknown;
    try { result = JSON.parse(stdout); }

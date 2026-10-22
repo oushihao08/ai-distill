@@ -34,5 +34,50 @@
     "storage_root": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage",
     "started_at": "2026-10-22T10:05:27.834Z",
     "returned_at": "2026-10-22T10:25:33.943Z"
+  },
+  {
+    "number": 24,
+    "job_id": "afc79b72-0572-4c05-bfdf-4005bdfa240b",
+    "claimed_on_this_machine": true,
+    "pid": 22779,
+    "storage_root": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage",
+    "started_at": "2026-10-22T10:25:33.944Z",
+    "returned_at": "2026-10-22T10:45:39.643Z"
+  },
+  {
+    "number": 26,
+    "job_id": "a62d0f54-e957-44ce-b86d-cfd0717c5021",
+    "claimed_on_this_machine": false,
+    "pid": 22779,
+    "storage_root": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage",
+    "started_at": "2026-10-22T10:45:39.643Z",
+    "returned_at": "2026-10-22T10:45:41.427Z"
+  },
+  {
+    "number": 29,
+    "job_id": "94ef530a-8d70-40de-af06-3c9ed2273cf4",
+    "claimed_on_this_machine": true,
+    "pid": 22779,
+    "storage_root": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage",
+    "started_at": "2026-10-22T10:45:41.427Z",
+    "returned_at": "2026-10-22T11:05:47.104Z"
+  },
+  {
+    "number": 31,
+    "job_id": "f3975849-7999-4f00-943c-34f2001b6528",
+    "claimed_on_this_machine": true,
+    "pid": 22779,
+    "storage_root": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage",
+    "started_at": "2026-10-22T11:05:47.106Z",
+    "returned_at": "2026-10-22T11:05:49.752Z"
+  },
+  {
+    "number": 32,
+    "job_id": "ddf2498f-5361-4d2b-b70b-69263acd870b",
+    "claimed_on_this_machine": true,
+    "pid": 22779,
+    "storage_root": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage",
+    "started_at": "2026-10-22T11:05:49.752Z",
+    "returned_at": "2026-10-22T11:25:55.300Z"
   }
 ]

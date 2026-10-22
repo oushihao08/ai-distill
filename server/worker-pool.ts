@@ -4,6 +4,7 @@
  * 使用场景：由 `worker.ts` 注册业务 handler；本模块不决定各业务阶段规则。
  */
 import {classifyLogError,logEvent,withLogContext} from './logging';
+const activeHandlers=new Map<symbol,{component:string;started:number}>();
 export interface WorkerPoolOptions {
   concurrency: number;
   signal: AbortSignal;
@@ -29,11 +30,12 @@ export function createSharedQueueProbe(probe:()=>Promise<boolean>,emptyMs=3000,n
 }
 
 /** 按轮转顺序探测队列；成功消费后从下一类开始，避免持续繁忙的前置队列饿死后续队列。 */
-export function createFairQueueHandler(queues:readonly (()=>Promise<boolean>)[]){
+export function createFairQueueHandler(queues:readonly (()=>Promise<boolean>)[],signal?:AbortSignal){
   if(!queues.length)throw new RangeError('at least one worker queue is required');
   let cursor=0;
   return async()=>{
     for(let offset=0;offset<queues.length;offset++){
+      if(signal?.aborted)return false;
       const index=(cursor+offset)%queues.length;
       if(await queues[index]!()){
         cursor=(index+1)%queues.length;
@@ -42,6 +44,25 @@ export function createFairQueueHandler(queues:readonly (()=>Promise<boolean>)[])
     }
     cursor=(cursor+1)%queues.length;
     return false;
+  };
+}
+
+/** worker入口使用的一次性停止请求；宽限结束只报告未完成，不强杀或提前宣布退出。 */
+export function createWorkerShutdown(controller:AbortController,graceMs=10000){
+  let requested=false,timer:ReturnType<typeof setTimeout>|undefined;
+  return{
+    request(signal:'SIGINT'|'SIGTERM'){
+      if(requested)return;
+      requested=true;
+      logEvent('service.shutdown_requested',{level:'info',signal});
+      controller.abort(Object.assign(new Error('worker停止'),{reason_code:'worker_shutdown'}));
+      timer=setTimeout(()=>{
+        logEvent('service.shutdown_incomplete',{level:'error',reason_code:'shutdown_incomplete',elapsed_ms:graceMs});
+        for(const active of activeHandlers.values())logEvent('worker.dispatch.stopping',{level:'error',component:active.component,process_state:'handler_pending',elapsed_ms:Math.round(performance.now()-active.started)});
+      },graceMs);
+      timer.unref();
+    },
+    dispose(){clearTimeout(timer);},
   };
 }
 
@@ -80,7 +101,10 @@ export async function runWorkerPool(
           continue;
         }
         if (options.signal.aborted) break;
-        worked = await withLogContext({component:options.component??'worker_pool'},()=>runOne(worker));
+        const token=Symbol(),component=options.component??'worker_pool';
+        activeHandlers.set(token,{component,started:performance.now()});
+        try{worked = await withLogContext({component},()=>runOne(worker));}
+        finally{activeHandlers.delete(token);}
         previousFailure=undefined;
       } catch (error) {
         failed = true;

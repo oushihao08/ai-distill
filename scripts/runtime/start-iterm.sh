@@ -102,17 +102,24 @@ check_worker_freshness() {
 }
 
 # Only restart project-owned processes, and only when the persisted monitor
-# confirms there is no running task. A queued task remains safe for the worker.
+# confirms there are no running workflow or material-library jobs. Queued work
+# remains safe for the worker.
 check_service_freshness 3700 后端 'bun server/index.ts' "$ROOT_DIR"
 check_worker_freshness
 if (( ${#STALE_SERVICE_PIDS[@]} > 0 )); then
   MONITOR_JSON="$(curl -fsS --max-time 3 http://127.0.0.1:3700/api/monitor 2>/dev/null || true)"
-  if [[ -z "$MONITOR_JSON" ]] || ! RUNNING_TASKS="$(printf '%s' "$MONITOR_JSON" | "$BUN_BIN" -e 'const record=JSON.parse(await Bun.stdin.text());const tasks=record.snapshot?.tasks;const heartbeat=Date.parse(record.heartbeat_at);if(!["running","paused"].includes(record.status)||!Number.isFinite(heartbeat)||Date.now()-heartbeat>30000||heartbeat-Date.now()>5000||tasks?.status!=="known"||!Number.isSafeInteger(tasks.value?.running)||tasks.value.running<0)process.exit(2);console.log(tasks.value.running)' 2>/dev/null)"; then
+  if [[ -z "$MONITOR_JSON" ]] || ! MONITOR_COUNTS="$(printf '%s' "$MONITOR_JSON" | "$BUN_BIN" -e 'const record=JSON.parse(await Bun.stdin.text());const tasks=record.snapshot?.tasks;const library=record.material_library;const heartbeat=Date.parse(record.heartbeat_at);if(!["running","paused"].includes(record.status)||!Number.isFinite(heartbeat)||Date.now()-heartbeat>30000||heartbeat-Date.now()>5000||tasks?.status!=="known"||!Number.isSafeInteger(tasks.value?.running)||tasks.value.running<0||library?.status!=="known"||!Number.isSafeInteger(library.totals?.running)||library.totals.running<0)process.exit(2);console.log(`${tasks.value.running},${library.totals.running}`)' 2>/dev/null)"; then
     printf '检测到服务代码已更新，但无法确认是否有任务正在运行；为避免中断任务，本次未重启任何服务。请检查运行状态后再启动。\n' >&2
     exit 1
   fi
+  RUNNING_TASKS="${MONITOR_COUNTS%%,*}"
+  RUNNING_LIBRARY_JOBS="${MONITOR_COUNTS#*,}"
   if (( RUNNING_TASKS > 0 )); then
     printf '检测到服务代码已更新，当前有 %s 个运行中任务；为避免中断，本次未重启任何服务。任务结束后重新运行启动命令即可自动更新。\n' "$RUNNING_TASKS" >&2
+    exit 1
+  fi
+  if (( RUNNING_LIBRARY_JOBS > 0 )); then
+    printf '检测到服务代码已更新，当前有 %s 个运行中的材料库任务；为避免中断，本次未重启任何服务。任务结束后重新运行启动命令即可自动更新。\n' "$RUNNING_LIBRARY_JOBS" >&2
     exit 1
   fi
   for pid in "${STALE_SERVICE_PIDS[@]}"; do kill -TERM "$pid"; done

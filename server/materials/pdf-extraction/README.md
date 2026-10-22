@@ -39,8 +39,10 @@ types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtrac
 
 API下载结果后暂存`result.zip`及`response.json`；成功返回会删除本次API诊断目录，失败可保留已有文件。CLI正常返回后保存stdout/stderr/metadata并保留，启动前失败未必有完整诊断。不能声称所有成功API都保留原始响应，或将CLI诊断字段套给API。
 
-API的上传/轮询/下载由30分钟AbortSignal与轮询截止控制；`unzip`子进程当前没有独立超时/取消，输出上限在读取完整stdout后检查，不是流式内存硬上限。CLI自身及本地外层均设置30分钟；PDF预检还依赖Poppler。文档中的时限不保证所有子进程总耗时严格封顶。
+API的上传/轮询/下载由30分钟AbortSignal与轮询截止控制；`runUnzip`子进程接入API同一取消/截止信号，读取时累计检查输出上限，超限回收本次子进程；没有额外放宽时限。CLI自身及本地外层均设置30分钟；PDF预检还依赖Poppler。文档中的时限不保证所有子进程总耗时严格封顶。
 
 API优先的回退资格按`permitsCliFallback()`分类（HTTP5xx、TypeError、指定超时/中止异常等），且外部取消时不回退；认证、无效JSON、结构解析或业务任务失败不靠CLI重传修复。DOCX直接API，不走PDF回退。
 
 PDF分片属于上层旧目录同步`../pdf-split.ts`，不是本模块自动给所有上传拆片。其缓存键绑定输入和限制，但已有分片复用仅检查文件列表/大小，不逐个重新计算内容摘要或页数；后续材料入库仍独立校验所选文件。
+
+`mineru-cancellation.test.ts`在临时目录用FIFO、ZIP和自有子进程验证解压取消/流式大小边界及命令上下文取消；不调用真实MinerU。

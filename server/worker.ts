@@ -10,7 +10,7 @@ import {createAnswerClient} from './answer-models/dispatch';
 import { runNextExtraction } from './materials/jobs';
 import { runNextRedaction } from './materials/redaction-jobs';
 import { runNextIntake } from './intake-jobs';
-import { createFairQueueHandler,createSharedQueueProbe,runWorkerPool } from './worker-pool';
+import { createFairQueueHandler,createSharedQueueProbe,createWorkerShutdown,runWorkerPool } from './worker-pool';
 import { createWorkerMonitor } from './monitoring/worker-monitor';
 import {runNextScore} from './scoring/jobs';
 import {runIndependentApiScore} from './scoring/executor';
@@ -64,7 +64,8 @@ let pool:ReturnType<typeof createPool>;
 try{pool=createPool();}catch(error){logEvent('service.start_failed',{level:'error',component:'task_worker',...classifyLogError(error)});await logger.close();throw error;}
  configureAgentCredentialHome(()=>readAgentCredentialHome(pool));
 const controller = new AbortController();
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => controller.abort());
+const shutdown=createWorkerShutdown(controller);
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => shutdown.request(signal));
 const monitor = createWorkerMonitor(pool, root, {min_available_percent:Number(process.env.WORKER_MIN_AVAILABLE_PERCENT ?? 10)});
 const probeApi=createSharedQueueProbe(()=>hasModelApiQueueWork(pool,workerMode as StageWorkerMode,materialExecutionTarget as 'local'|'server',workflowIds));
 const probeAgent=createSharedQueueProbe(()=>hasAgentQueueWork(pool,workflowIds));
@@ -92,7 +93,7 @@ try {
   ()=>runNextRedaction(pool,root,controller.signal,undefined,'codex','local'),
   ()=>runNextAuthoring(pool,root,undefined,controller.signal),
   ()=>runNextScore(pool,root,undefined,controller.signal),
- ]);
+ ],controller.signal);
  const dispatchApiQueue=createFairQueueHandler(workflowIds?.length?[
   ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,workerMode as StageWorkerMode,materialExecutionTarget as 'local'|'server','api',workflowIds),
   ()=>runNextScore(pool,root,runIndependentApiScore,controller.signal,undefined,'api',workerMode as StageWorkerMode,workflowIds),
@@ -100,16 +101,16 @@ try {
   ()=>runNextLibraryJob(pool,root,'api',materialExecutionTarget as 'local'|'server',controller.signal),
   ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,workerMode as StageWorkerMode,materialExecutionTarget as 'local'|'server','api'),
   ()=>runNextScore(pool,root,runIndependentApiScore,controller.signal,undefined,'api',workerMode as StageWorkerMode),
- ]);
+ ],controller.signal);
  const dispatchMaterialQueue=createFairQueueHandler([
   ()=>runNextIntake(pool,root,undefined,controller.signal,materialExecutionTarget as 'local'|'server'),
   ()=>runNextExtraction(pool,root,undefined,undefined,controller.signal,materialExecutionTarget as 'local'|'server'),
   ()=>runNextLibraryJob(pool,root,'internal',materialExecutionTarget as 'local'|'server',controller.signal),
- ]);
+ ],controller.signal);
  const dispatchServerRedactionApiQueue=createFairQueueHandler([
   ()=>runNextRedaction(pool,root,controller.signal,undefined,'api','server'),
   ()=>runNextLibraryJob(pool,root,'api','server',controller.signal),
- ]);
+ ],controller.signal);
  const pools:Promise<void>[]=[];
  if(!workflowIds?.length&&(workerMode==='all'||workerMode==='local'))pools.push(runWorkerPool(
   async()=>{try{return await runNextHook(pool,controller.signal,workerMode as 'local'|'all');}catch(error){throw error;}},
@@ -176,4 +177,4 @@ try {
  }
  await Promise.all(pools);
 } catch(error) { logEvent('service.runtime_failed',{level:'error',component:'task_worker',...classifyLogError(error)});throw error; }
-finally { logEvent('service.shutdown_requested',{level:'info'});try { await monitor.stop(); } finally { if(agentConcurrencyGate)closeAgentConcurrencyGate(root);await pool.end();logEvent('service.stopped',{level:'info'});await logger.close(); } }
+finally { try { await monitor.stop(); } finally { if(agentConcurrencyGate)closeAgentConcurrencyGate(root);await pool.end();shutdown.dispose();logEvent('service.stopped',{level:'info'});await logger.close(); } }
