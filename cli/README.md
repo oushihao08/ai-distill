@@ -248,3 +248,9 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/remote-materials.test
 ### 期次材料处理模式
 
 `project configure`的`steps.author_question.material_processing_mode`支持`aliases`（默认化名）、`mask`（API遮挡）和`original`（不脱敏）；与旧`material_source_mode`同时提交时必须一致。配置仍经现有步骤API保存到数据库。`library job start --project <期次UUID>`把期次上下文交给服务器选择处理流程，不用提示词指示改流程；原文模式无需redact任务。CLI只调用API，不实现脱敏，也不把阶段文件当作已入库。模式、来源冻结与恢复边界见[材料库说明](../server/material-library/README.md#期次三种处理模式)。
+
+## OFD与超限PDF上传前准备
+
+显式本机文件操作：`bun run ai-distill library files prepare --manifest /绝对路径/原件清单.json --out /绝对路径/新输出目录`。清单仍为`{"files":[{"path":"原件.ofd","redaction_mode":"model"}]}`，相对路径以清单目录为基准。输出目录必须不存在；保留原件，生成PDF/分片、可供`library revision create --manifest`使用的清单和逐文件来源摘要。不自动上传或启动提取/脱敏；redaction_mode为兼容声明，不意味着运行脱敏。
+
+OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；预处理不会自动安装。页数检查成功不证明视觉一致，须抽查转换页面。原OFD保留在源路径，上传清单使用转换件；来源审计只在本地provenance保存，当前数据库不新增OFD原件到PDF的来源字段。重复上传仍按版本与request-key契约处理，不得用新键盲重试。

@@ -1,0 +1,90 @@
+{
+  "pid": 81665,
+  "updated_at": "2026-10-22T10:29:32.381Z",
+  "items": [
+    {
+      "number": 16,
+      "job_id": "45a41a7d-3c8f-49c6-9a81-54a8c88f5593",
+      "started_at": "2026-10-22T09:49:09.050Z",
+      "error": "{\"error\":\"材料处理任务参数无效\"}",
+      "finished_at": "2026-10-22T09:49:12.274Z"
+    },
+    {
+      "number": 17,
+      "job_id": "7433d805-d630-414c-813e-d5d9bfc0ba58",
+      "started_at": "2026-10-22T09:49:09.050Z",
+      "error": "{\"error\":\"材料处理任务参数无效\"}",
+      "finished_at": "2026-10-22T09:49:12.156Z"
+    },
+    {
+      "number": 18,
+      "job_id": "459feff9-8b74-4a52-b31b-02057e7e3d23",
+      "started_at": "2026-10-22T09:49:12.158Z",
+      "status": "running",
+      "error": null,
+      "finished_at": "2026-10-22T09:49:13.333Z"
+    },
+    {
+      "number": 19,
+      "job_id": "cba6d17a-7d27-4fb7-ab32-9c698ddeea90",
+      "started_at": "2026-10-22T09:49:12.274Z",
+      "claimed_here": true,
+      "status": "cancelled",
+      "error": "材料任务已取消或 worker 已停止",
+      "finished_at": "2026-10-22T10:09:22.036Z"
+    },
+    {
+      "number": 20,
+      "job_id": "2de1383d-db34-4be9-9c97-814fc7c807ff",
+      "started_at": "2026-10-22T09:49:13.333Z",
+      "claimed_here": true,
+      "status": "cancelled",
+      "error": "材料任务已取消或 worker 已停止",
+      "finished_at": "2026-10-22T10:09:22.221Z"
+    },
+    {
+      "number": 21,
+      "job_id": "f46cf018-1200-410a-9b27-3b7f590e3bee",
+      "started_at": "2026-10-22T10:09:22.037Z",
+      "claimed_here": true,
+      "status": "cancelled",
+      "error": "材料任务已取消或 worker 已停止",
+      "finished_at": "2026-10-22T10:29:28.508Z"
+    },
+    {
+      "number": 22,
+      "job_id": "82e45b72-7750-43c4-9770-b152d26fe9cb",
+      "started_at": "2026-10-22T10:09:22.222Z",
+      "status": "running",
+      "error": null,
+      "finished_at": "2026-10-22T10:09:23.267Z"
+    },
+    {
+      "number": 23,
+      "job_id": "f3a68f98-1d93-4581-9169-b62efba5d418",
+      "started_at": "2026-10-22T10:09:23.267Z",
+      "claimed_here": true,
+      "status": "cancelled",
+      "error": "材料任务已取消或 worker 已停止",
+      "finished_at": "2026-10-22T10:29:32.014Z"
+    },
+    {
+      "number": 24,
+      "job_id": "afc79b72-0572-4c05-bfdf-4005bdfa240b",
+      "started_at": "2026-10-22T10:29:28.508Z",
+      "status": "running",
+      "error": null,
+      "finished_at": "2026-10-22T10:29:30.045Z"
+    },
+    {
+      "number": 25,
+      "job_id": "e53b08ca-7ded-48c0-8d7b-351fa188a3dc",
+      "started_at": "2026-10-22T10:29:30.045Z"
+    },
+    {
+      "number": 26,
+      "job_id": "a62d0f54-e957-44ce-b86d-cfd0717c5021",
+      "started_at": "2026-10-22T10:29:32.014Z"
+    }
+  ]
+}

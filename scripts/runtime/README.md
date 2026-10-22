@@ -8,3 +8,5 @@
 | `deploy.sh`、`deploy-server.sh` | 从干净的 `main` 工作树部署与 `origin/main` 相同的提交；需要环境变量 `AI_DISTILL_DEPLOY_HOST`、`AI_DISTILL_DEPLOY_USER`、`AI_DISTILL_DEPLOY_DIR`、SSH 和生产操作授权。每次将本机 `.env` 经 SSH 传到服务器并替换服务器 `.env`（保留回滚副本）；SSH 用户必须是 root，服务器需 Docker Swarm。脚本会构建镜像、更新 API/worker 服务及调整存储目录权限；部署前检查 worker 空闲，不运行数据库迁移。成功后会显示本地访问用 SSH 隧道命令。 |
 
 从仓库任意路径运行：`bash scripts/runtime/start.sh`。`start-iterm.sh` 可能在无运行任务时重启本项目 API/worker。部署示例：`AI_DISTILL_DEPLOY_HOST=<host> AI_DISTILL_DEPLOY_USER=root AI_DISTILL_DEPLOY_DIR=<absolute-path> ./scripts/runtime/deploy.sh`。部署会替换远端 `.env` 并更新服务，不能把它当作只传源码的操作；部署前核对本机配置确实应成为服务器配置，并按根 README 和仓库授权边界操作。
+
+- `ofd/`：经显式授权安装OFDRW本地运行依赖，提供OFD整页转PDF桥接；不随服务启动自动安装。详见[OFD工具](ofd/README.md)。

@@ -1,0 +1,813 @@
+[
+  {
+    "number": 16,
+    "name": "L5-舒全中-买卖合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extraction_failed",
+    "upload_key": "6a50928a-1298-401d-972a-e6cbf869ffb9",
+    "intake_key": "492cd40d-df38-45bb-b930-33d5cd314e6b",
+    "extract_key": "94581add-b36d-4943-a64a-9fcda792bae0",
+    "package_id": "1e41b98b-2d93-44c3-b8c8-925ed7008993",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "7e035e02-9f4a-4cad-8a9c-f6468a107767",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "43aca1015b003e46c3c3992c800b4960e3b016391e9ed70e7c2a5459c8b9652b",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "执行档案.pdf",
+            "position": 1,
+            "sha256": "399d06ed2efd1ca1253d0ffc778e74140f614cc62eba1d2270b7675c1f44b5fa",
+            "size_bytes": 8812130,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "诉讼档案.pdf",
+            "position": 2,
+            "sha256": "fec5ff259f7b97c6cd6ddf985813e424627756d78afcc83dbe17df4247458fd4",
+            "size_bytes": 24350041,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "7e035e02-9f4a-4cad-8a9c-f6468a107767",
+    "intake_job": "5e4ae374-edaa-4af4-ab27-5ee8938bc2a1",
+    "intake_response": {
+      "id": "5e4ae374-edaa-4af4-ab27-5ee8938bc2a1",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:58:22.735Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "f3a6203d-2ff7-4b81-bf86-9fb63085918e",
+    "extraction_status": "queued",
+    "reason": "材料任务已取消或 worker 已停止",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    },
+    "extract_history": [
+      "45a41a7d-3c8f-49c6-9a81-54a8c88f5593"
+    ]
+  },
+  {
+    "number": 17,
+    "name": "L5-伯为权-劳务合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "35fe7d9e-db52-44c0-aee4-0b0624757153",
+    "intake_key": "c1a21cb9-904b-492f-a118-d4a4b0840a91",
+    "extract_key": "a7cab1e7-32c1-41bb-9302-99bcafbef7b4",
+    "package_id": "2df65d4a-6036-4ebf-a9ec-115a73185e7d",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "97df5f28-dffe-439d-9ebe-ee0caae0b049",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "d804dd77d38c5a1930b21e23e598b8696c97428f1eba6bb3b306c9382993a5e5",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "1、(2025)渝0105执7616号_正卷第1册.pdf",
+            "position": 1,
+            "sha256": "8d1f496e465888a168e15d8091f9e20b38e0fa4e6b75284169b4d8517dc3929e",
+            "size_bytes": 12990867,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "电子档案.pdf",
+            "position": 2,
+            "sha256": "944890c6e4d7456b1e40c03853ee4f56d04f42fde04bc47e2ed1102629fbfd2f",
+            "size_bytes": 32980443,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "97df5f28-dffe-439d-9ebe-ee0caae0b049",
+    "intake_job": "1544135d-bf13-4f82-93c7-4de481cb0903",
+    "intake_response": {
+      "id": "1544135d-bf13-4f82-93c7-4de481cb0903",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:58:30.929Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "019688fe-d9e8-4905-9599-ff9658fe46d4",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    },
+    "extract_history": [
+      "7433d805-d630-414c-813e-d5d9bfc0ba58"
+    ]
+  },
+  {
+    "number": 18,
+    "name": "L5-知雨云文化传播-民间借贷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "a8d921f9-8707-49b6-a563-b5ee595871e6",
+    "intake_key": "a58e0926-6954-4f9e-a427-97c300084f80",
+    "extract_key": "9dd23d1d-7e3e-51be-b39f-21acf0b41c25",
+    "package_id": "1b796315-895c-4f60-a912-fe22473702cb",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "4d34a13d-02c7-4038-aa63-5ac76689b026",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "446a752ed9890d2685b3f9a527d812799a489fa8762b9529461d96cc4e6f3aa8",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "执行档案.pdf",
+            "position": 1,
+            "sha256": "b24110a50cad229b6c146a455899267331756858088ea64775dd00928180c266",
+            "size_bytes": 14114834,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "诉讼档案.pdf",
+            "position": 2,
+            "sha256": "64dcb216b74c469fbd215cf425965dd722ed177cb703b7138e6a3fd2efd3383c",
+            "size_bytes": 25602207,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "4d34a13d-02c7-4038-aa63-5ac76689b026",
+    "intake_job": "6b0f7645-977a-46fb-b516-89e76a9444b1",
+    "intake_response": {
+      "id": "6b0f7645-977a-46fb-b516-89e76a9444b1",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:58:38.990Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "0d942402-4c17-4efb-adf3-8c51f08d0d7c",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    },
+    "extract_history": [
+      "459feff9-8b74-4a52-b31b-02057e7e3d23"
+    ]
+  },
+  {
+    "number": 19,
+    "name": "L5-白亮-损害公司债权人利益责任纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "1ed28b2d-a77b-466d-b431-803b0c35f57d",
+    "intake_key": "5616874a-ca62-4347-8e87-703ebc113103",
+    "extract_key": "1086eb1d-fd7c-4483-9065-b200d0db3267",
+    "package_id": "f06d5912-551c-47bf-a8f3-2814c37de999",
+    "lock_version": 1,
+    "split_upload_key": "8ae3bc1b-7817-4404-adc9-f337be94ebdb",
+    "revision_id": "10634d1a-7353-436c-a829-fd71945744bb",
+    "split_part_count": 3,
+    "split_verified": true,
+    "intake_job": "b57a478e-63f7-451b-9c69-98e879841009",
+    "intake_status": "succeeded",
+    "extract_job": "cba6d17a-7d27-4fb7-ab32-9c698ddeea90",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 20,
+    "name": "L5-何超-借款合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "f93a2ff5-b696-40a2-a340-bedfde933d55",
+    "intake_key": "c629eb51-5325-4dcc-94df-b495fe1d1dd2",
+    "extract_key": "b0778233-501a-4a39-bb98-f2a4d0e4687e",
+    "package_id": "ec75ba11-f268-4bee-a19d-4e2c3fb71468",
+    "lock_version": 1,
+    "split_upload_key": "bb29dffa-0acb-4239-8caa-9f09bda6703e",
+    "revision_id": "166bc313-605f-49d9-ae70-378c3fb6f131",
+    "split_part_count": 3,
+    "split_verified": true,
+    "intake_job": "7d5cb586-aeaf-452c-a42d-2db9a30e4e04",
+    "intake_status": "succeeded",
+    "extract_job": "2de1383d-db34-4be9-9c97-814fc7c807ff",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 21,
+    "name": "L5-肖焕斌-合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "ae2467f3-aafb-4949-9c4d-9913201e8714",
+    "intake_key": "4a4e4da3-d8c5-466f-a02c-796ccae850fd",
+    "extract_key": "8bde2aef-eba6-4260-8617-8cbfbb2378af",
+    "package_id": "99eb293a-9a28-41df-ad4c-44bab2e2e009",
+    "lock_version": 1,
+    "prepared_upload_key": "0962305e-c783-4a5d-9e51-cecba487390e",
+    "revision_id": "6cf03470-2e56-43e5-8c9e-36fe0c3227d0",
+    "prepared_manifest": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage/l5-ofd-prepared/21-final/manifest.json",
+    "provenance": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage/l5-ofd-prepared/21-final/provenance.json",
+    "intake_job": "d321467f-85dd-40c0-93ef-1f8c69c4818a",
+    "intake_status": "succeeded",
+    "extract_job": "f46cf018-1200-410a-9b27-3b7f590e3bee",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 22,
+    "name": "L5-杨洪涛-劳动争议",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "8e063f58-e943-4f0f-ae2c-880e0870d52a",
+    "intake_key": "19501cef-a49b-4c43-aa27-f862e61dff71",
+    "extract_key": "382c9495-8884-41aa-be44-6ffcf29c0efe",
+    "package_id": "d1cfe2ee-d760-44d2-9cfe-da46f83e0a25",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "86a8b06c-aa26-4bb3-bdc7-e9b9dc6bdf80",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "22691df575bb85edb1f7404ba6b96d01c09e783756dea8085a9cf63da67fdd61",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "1、(2025)渝0105执5417号_正卷第1册.pdf",
+            "position": 1,
+            "sha256": "97974d01037303e8fdbadb14bc9305b6d15aecb29b0f3fd693a37e17b263a24b",
+            "size_bytes": 19625642,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "诉讼档案.pdf",
+            "position": 2,
+            "sha256": "50f6aa21fd2552d8e6d2b728ff00b007e0b29f645b28cd57a511d4a6c7ae67e2",
+            "size_bytes": 30649249,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "86a8b06c-aa26-4bb3-bdc7-e9b9dc6bdf80",
+    "intake_job": "d5eeaddf-da56-410f-b79e-f330f80ba321",
+    "intake_response": {
+      "id": "d5eeaddf-da56-410f-b79e-f330f80ba321",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:58:50.529Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "82e45b72-7750-43c4-9770-b152d26fe9cb",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 23,
+    "name": "L5-刘静-合伙合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "d8dda4a1-0c2f-4c31-82c4-a0331ccf7f2d",
+    "intake_key": "52b2e0ef-14a3-482b-937e-a4bec4a7f49d",
+    "extract_key": "790fbb11-e228-42cd-a3e0-870f8429cb27",
+    "package_id": "46b2990b-a9c5-4057-b6f5-6b47aa6fb18a",
+    "lock_version": 1,
+    "split_upload_key": "068ef567-f851-471f-af1b-35174c00779d",
+    "revision_id": "fd5be393-7b48-4c52-8549-57ac49661c8a",
+    "split_part_count": 3,
+    "split_verified": true,
+    "intake_job": "d7f62e13-bc04-47fe-bfb1-944a216c83c4",
+    "intake_status": "succeeded",
+    "extract_job": "f3a68f98-1d93-4581-9169-b62efba5d418",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 24,
+    "name": "L5-袁园满工程机械租赁-机械租赁合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 3,
+    "status": "extract_queued",
+    "upload_key": "46973f97-1997-4ffa-90ba-3652ca12327a",
+    "intake_key": "3dd1912a-96f2-4625-9493-5ceb86a5fdf5",
+    "extract_key": "230e7031-b48a-4a2b-87a6-f0d23b0ac74e",
+    "package_id": "b1dee957-cbd6-4a84-8bbc-8fb468c5271a",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "ecd16173-3d8a-4750-b782-1ca0cef5ff4c",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "8f5930ec92c84337b984fca7e8abae8c816c2e2f1bbf88408912bca7e05d34d5",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "(2021)渝0112执15776号.pdf",
+            "position": 1,
+            "sha256": "6208a68e1b460f10592102d93eec3cb9e5d02e9b59b1d80fa890748d4d4ae82e",
+            "size_bytes": 11704039,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "(2021)渝0112民初3752号.pdf",
+            "position": 2,
+            "sha256": "b28e359da773ebb41ef2f96a2c4523af328fddf31fa1d41687e0ceba7b627a36",
+            "size_bytes": 10813484,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "一债会手册盖章版.1761289817398.pdf",
+            "position": 3,
+            "sha256": "461a8f6771ef5bc6eb5328b468b236777c4b09fe7921228d38460e4951bc01dd",
+            "size_bytes": 25471232,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "ecd16173-3d8a-4750-b782-1ca0cef5ff4c",
+    "intake_job": "a98d40b5-6f03-4a53-b605-466c52225b55",
+    "intake_response": {
+      "id": "a98d40b5-6f03-4a53-b605-466c52225b55",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:59:00.301Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "afc79b72-0572-4c05-bfdf-4005bdfa240b",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 25,
+    "name": "L5-广界房地产营销策划-诉讼执行与工商档案",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 13,
+    "status": "extract_queued",
+    "upload_key": "f0fa201f-a1bf-497d-ae7a-38f53fa67b3a",
+    "intake_key": "1525869a-01ea-4a20-95e8-44b9222e3def",
+    "extract_key": "755267a8-33e6-4756-b5f3-7140f60b45ef",
+    "package_id": "5e0e1703-e570-47cd-98aa-3252be17aabf",
+    "prepared_upload_key": "aea1f024-4b3c-4d5d-8238-b072ddefedee",
+    "revision_id": "f45669f1-3fa6-4c2c-acf6-70db1cf275a7",
+    "prepared_manifest": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage/l5-ofd-prepared/25-itext/manifest.json",
+    "provenance": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage/l5-ofd-prepared/25-itext/provenance.json",
+    "intake_job": "8a848a3e-e8b8-4c3c-af6f-2a3f859210cc",
+    "intake_status": "succeeded",
+    "extract_job": "e53b08ca-7ded-48c0-8d7b-351fa188a3dc",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 26,
+    "name": "L5-丽云装饰工程-诉讼执行与工商档案",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 13,
+    "status": "extract_queued",
+    "upload_key": "34d906e6-7a2d-43f1-8ba9-bd0942301445",
+    "intake_key": "66792af5-4761-4093-a3e5-025893eae01b",
+    "extract_key": "7677ef2b-efc2-4e00-821a-ee4186c776e3",
+    "package_id": "bafcd89f-af2e-403f-aaee-665316aaef5a",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "26e9a4ce-f786-4024-8007-fd8476f5f409",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "1c72d4cebc9af928fa8c5fff422a353ada5326c42c9c6ed6862edf2c8e724754",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "(2016)渝0103民初9278号.pdf",
+            "position": 1,
+            "sha256": "a394dacf853c9e00710c1e9bcdb5c2a0f855dc1ca9ab875cb65a9830648d357f",
+            "size_bytes": 23926463,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "(2019)渝0103执2684号.pdf",
+            "position": 2,
+            "sha256": "f313d098028d43641d5d63357be9af7777ec3fcf8e8272c2fc9adf6b7636ef46",
+            "size_bytes": 11042158,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "基本信息.pdf",
+            "position": 3,
+            "sha256": "68b85b7e05b331126dd4686ab2ba4bc77729c49efde0f7e73c771feff14b5f70",
+            "size_bytes": 106375,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化2009年检(有纸化)2009.pdf",
+            "position": 4,
+            "sha256": "7466939f3a77c27498cbe901f1c4fd24b524731533ab81ed49835380e6999fd9",
+            "size_bytes": 999390,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化2010年检(有纸化)2010.pdf",
+            "position": 5,
+            "sha256": "9d5f48c82003b1a3ae823617822fd9668cf3d260af84ca54accc3e858995951f",
+            "size_bytes": 1913600,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化2011年检(有纸化)2011.pdf",
+            "position": 6,
+            "sha256": "36db7f04621de3dd2b110e4757f7f49660e2faee66ea4bcc8706c396c5624e2b",
+            "size_bytes": 357157,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化2012年检(有纸化)2012.pdf",
+            "position": 7,
+            "sha256": "f6da621f84e53173c4a2d2da553741df60225fd9e02d0eb0d4338e3d27d112e7",
+            "size_bytes": 1040019,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化第一次变更(有纸化)002.pdf",
+            "position": 8,
+            "sha256": "45aa582aa83733037d50691893c3179b92ca94db45d9b25ac1343ed818017d20",
+            "size_bytes": 1298820,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化第三次变更(有纸化)004.pdf",
+            "position": 9,
+            "sha256": "c65e9cdeb30a26f214416171179161a59112dd071bd132b5522243916196882a",
+            "size_bytes": 175600,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化第二次变更(有纸化)003.pdf",
+            "position": 10,
+            "sha256": "3aa898f25b2ccfa1f7401934ecd7c7db93647c1a9b8c0dd87462a91e2e6e7e5b",
+            "size_bytes": 1390952,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化第五次变更(有纸化)006.pdf",
+            "position": 11,
+            "sha256": "ceb924d89baee2f9e297e7871f53a0b8f649e610767b7e1a643666e9322a87f4",
+            "size_bytes": 1778620,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化第四次变更(有纸化)005.pdf",
+            "position": 12,
+            "sha256": "71ff2c7b802c39c497b8578e64b49321148f300ef662736e14d14fbc3e8e57f8",
+            "size_bytes": 3536351,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化设立(有纸化)001.pdf",
+            "position": 13,
+            "sha256": "77bf127e6f03229a321768f4fbfc8ace35dc98beeb2f7971fe23d3cbc97dd05e",
+            "size_bytes": 1499936,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "26e9a4ce-f786-4024-8007-fd8476f5f409",
+    "intake_job": "ec583cd6-5349-494b-a777-46019114916a",
+    "intake_response": {
+      "id": "ec583cd6-5349-494b-a777-46019114916a",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:59:16.235Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "a62d0f54-e957-44ce-b86d-cfd0717c5021",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 27,
+    "name": "L5-向昭华-侵权责任纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 10,
+    "status": "extract_queued",
+    "upload_key": "9a236f38-a5b4-48e9-981e-8ed7e717cbd1",
+    "intake_key": "17bd5da2-56ad-45c7-b2d3-ea85fbe1690e",
+    "extract_key": "deac7f80-779e-41e5-abf0-82da6aae0a4d",
+    "package_id": "178272f4-ab21-4025-bf8a-fd01a80d794b",
+    "prepared_upload_key": "942faade-e941-4a57-befc-2d8d416c29ed",
+    "revision_id": "d412581f-f18a-44b5-a03a-b0b1dc9e1d69",
+    "prepared_manifest": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage/l5-ofd-prepared/27-itext/manifest.json",
+    "provenance": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage/l5-ofd-prepared/27-itext/provenance.json",
+    "intake_job": "7c176a8f-804a-46d2-9e01-b3ed357f8837",
+    "intake_status": "succeeded",
+    "extract_job": "a7464f8c-03d0-4491-9fa0-f2ccb6ca3460",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 28,
+    "name": "L5-陈明华-借款合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 3,
+    "status": "extract_queued",
+    "upload_key": "ad4da859-1a96-4ac7-82c4-bc10875c8f3d",
+    "intake_key": "0fe42145-319e-4d96-b6ae-c74efdadbfa3",
+    "extract_key": "74548373-bdac-4ba5-b067-e68775089f68",
+    "package_id": "4401e8ee-731d-4853-8f4a-51989723dd4a",
+    "prepared_upload_key": "77150a20-2e6c-4978-acbe-7f71c5dc3a72",
+    "revision_id": "c90eaf17-e95a-438a-8984-a66590d4ddfd",
+    "prepared_manifest": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage/l5-ofd-prepared/28-final/manifest.json",
+    "provenance": "/Users/jack/Documents/codes/lvgou/ai-distill/.storage/l5-ofd-prepared/28-final/provenance.json",
+    "intake_job": "02c6a1bd-96e1-4bc2-8878-c4a16b16afc4",
+    "intake_status": "succeeded",
+    "extract_job": "f4f52792-09cd-49b0-914e-e12da95b63cf",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 29,
+    "name": "L5-刘富华-工伤保险待遇纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "6fa9a64b-8368-4961-90a9-d0f7f230be2d",
+    "intake_key": "eb269e2a-7342-4e86-9978-2eba57fadd6c",
+    "extract_key": "090f5505-e87b-4b2d-93e0-016c3ea0c6b7",
+    "package_id": "e99e6e45-1d2f-4697-a54d-cf2ce0934712",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "356ccb42-ff8c-4904-a8fe-3748bac1f46d",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "c3e73bce394a5d3784104677d39d2e4144f4a4869a5bb49c3c4a02fa679dae6f",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "(2017)渝0103民初2275号.pdf",
+            "position": 1,
+            "sha256": "5187b402a92c89a0eccfcf123ff03eef05161173423c383415c49425bbc020cf",
+            "size_bytes": 24705499,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "(2018)渝0103执2913号.pdf",
+            "position": 2,
+            "sha256": "42b6ef745683e3e6f2cb5dba1973e48bd9d097a3b2844232602c4a97882d3408",
+            "size_bytes": 12875005,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "356ccb42-ff8c-4904-a8fe-3748bac1f46d",
+    "intake_job": "e598c20b-26c1-403e-9b03-9c91bc315196",
+    "intake_response": {
+      "id": "e598c20b-26c1-403e-9b03-9c91bc315196",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:59:25.647Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "94ef530a-8d70-40de-af06-3c9ed2273cf4",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 30,
+    "name": "L5-待补材料-原目录30为空",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 0,
+    "status": "blocked",
+    "upload_key": "7f81a7ec-9b2e-483c-8019-5d7b3407ad9f",
+    "intake_key": "078c363a-6d31-4f4e-992a-2d29b1bf8c83",
+    "extract_key": "c92a4b53-e7ea-4adc-aaa5-ff756b9b4ac6",
+    "reason": "空目录"
+  },
+  {
+    "number": 31,
+    "name": "L5-黄生勇-提供劳务者受害责任纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "bc3e94e1-f178-4722-bbc4-37219214e1a3",
+    "intake_key": "9b6f1adc-633a-4134-b9a0-3b4021b79ecc",
+    "extract_key": "b24fd654-35a6-4979-bad5-4dc3404dac61",
+    "package_id": "6bbfdf0e-d569-4b3f-a090-d63448dafd67",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "e359a9a7-6ddc-470d-9e73-c9026d586570",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "0d5fe5710fb1316281c27ad37c39a7b5429efad0b5de7269bcffe4452cf59848",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "(2018)渝0103民初3889号.pdf",
+            "position": 1,
+            "sha256": "f236f37273a5352a5d8a575ee4e491f60a2d2df6844a5532ce83c3f5f69615ee",
+            "size_bytes": 43442242,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "(2019)渝0103执3629号.pdf",
+            "position": 2,
+            "sha256": "99521df50bd02d95e97e6d771b82deb65e11a1c490986df9fe0e7c848aea883d",
+            "size_bytes": 9935036,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "e359a9a7-6ddc-470d-9e73-c9026d586570",
+    "intake_job": "e6b21a79-af65-4767-9292-d53d200d17b2",
+    "intake_response": {
+      "id": "e6b21a79-af65-4767-9292-d53d200d17b2",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:59:33.885Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "f3975849-7999-4f00-943c-34f2001b6528",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 32,
+    "name": "L5-新浩男物业管理-买卖合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 5,
+    "status": "extract_queued",
+    "upload_key": "97d189cd-dc17-406a-b1da-d23964383f35",
+    "intake_key": "656eaf82-e48e-45a1-a309-b6cc95f2282e",
+    "extract_key": "df21b561-2fb1-415c-8844-c60bf489d4c0",
+    "package_id": "a3d464db-dd04-48bc-a9f0-f7946b12ec50",
+    "lock_version": 1,
+    "upload_response": {
+      "id": "5da00814-35ab-4814-9344-01d685524ddb",
+      "reused": false,
+      "lock_version": "2",
+      "manifest_sha256": "30f7f4965d3113e2e6dd7cc2b9c49fd1056e7131c7979d9b4e99b7db4ba34511",
+      "manifest": {
+        "version": 1,
+        "files": [
+          {
+            "original_name": "(2021)渝0103民初19869号.pdf",
+            "position": 1,
+            "sha256": "932abda6ac5573b3288cdb9ca3e33fdc83556cc1ea97ae0af3b92881a7479869",
+            "size_bytes": 22692429,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "(2022)渝0103执10367号.pdf",
+            "position": 2,
+            "sha256": "fcab1c58f9b570f51e3e6807182afff75c7708bc53c9c33853aaa3cfb028132a",
+            "size_bytes": 12479495,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "基本信息.pdf",
+            "position": 3,
+            "sha256": "250a2533fd4780b4a2ee7255c8f2a36f7bbfb2c72bfca170964c437be03625c3",
+            "size_bytes": 125168,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化股权冻结(有纸化)H.pdf",
+            "position": 4,
+            "sha256": "66d564e7b8a8ba48cd314505cc68660384f84e23444c0352e1fb80b35cd0457f",
+            "size_bytes": 1420830,
+            "redaction_mode": "model"
+          },
+          {
+            "original_name": "纸质化设立(有纸化)001.pdf",
+            "position": 5,
+            "sha256": "a593e077cf677a6560525fed7a0c2ae8dbec4fa950dd05efa95086b44274dc83",
+            "size_bytes": 3708017,
+            "redaction_mode": "model"
+          }
+        ]
+      }
+    },
+    "revision_id": "5da00814-35ab-4814-9344-01d685524ddb",
+    "intake_job": "48939207-d72d-4296-a17b-68f8f0e29a98",
+    "intake_response": {
+      "id": "48939207-d72d-4296-a17b-68f8f0e29a98",
+      "status": "queued",
+      "kind": "intake",
+      "executor_kind": "internal",
+      "execution_target": "local",
+      "created_at": "2026-10-22T08:59:44.195Z",
+      "reused": false
+    },
+    "intake_status": "succeeded",
+    "extract_job": "ddf2498f-5361-4d2b-b70b-69263acd870b",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  },
+  {
+    "number": 33,
+    "name": "L5-刘燕邓君臣-房屋租赁合同纠纷",
+    "project_id": "db617d63-cdc5-4c0a-a791-ec530e2fe625",
+    "mode": "original",
+    "files": 2,
+    "status": "extract_queued",
+    "upload_key": "c8ff43ee-e150-4532-a9bb-25dc632f58ee",
+    "intake_key": "f9081d9c-0359-47bb-9561-2bba134fefc1",
+    "extract_key": "931dd5ae-c964-4382-a40e-db2030cf7294",
+    "package_id": "bd95457e-9083-434d-bef8-4dd4b8a2db7c",
+    "lock_version": 1,
+    "split_upload_key": "b577e0a8-7943-40b4-a178-e8c30cea1b00",
+    "revision_id": "64d31a8c-c34a-4256-81b6-2a33bf16fb97",
+    "split_part_count": 3,
+    "split_verified": true,
+    "intake_job": "0c1bb1e6-d50e-43e8-a497-9aed6736a803",
+    "intake_status": "succeeded",
+    "extract_job": "751ab7ea-c81b-4cd2-b9d0-0c4a9a6e14e1",
+    "extraction_status": "queued",
+    "load_error": {
+      "error": "所选材料版本没有完整成功的文本提取结果"
+    }
+  }
+]

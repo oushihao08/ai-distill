@@ -1,0 +1,1 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>local.ai.distill</groupId><artifactId>ofd-runtime</artifactId><version>1</version><dependencies><dependency><groupId>org.ofdrw</groupId><artifactId>ofdrw-converter</artifactId><version>2.4.0</version></dependency></dependencies></project>

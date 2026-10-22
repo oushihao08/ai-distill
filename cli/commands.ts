@@ -3,6 +3,7 @@
  * 关键入口：`runCommand()` 供 `cli/index.ts` 分派；`waitAttempts()` 只读恢复 attempt；项目业务判定由服务端返回。
  * 使用场景：Agent/维护者通过 CLI 读取并操作现有项目；旧目录/旧材料包接口继续兼容，不在本层连接数据库或运行模型。
  */
+import {prepareLibraryFiles} from '../server/materials/prepare-library-files';
 import {readFile,writeFile} from 'node:fs/promises';
 import {basename,dirname,resolve} from 'node:path';
 import {getStepDefinition, STEP_REGISTRY} from '../shared/step-registry';
@@ -50,6 +51,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   project-group rename|archive|restore --group UUID [--name 主项目名称]
   library package create --name 名称 [--description 说明] [--tags a,b]
   library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
+  library files prepare --manifest JSON --out 新输出目录（本地OFD转PDF及PDF切割；不上传、不调用模型）
   library revision create --package UUID --version N --request-key UUID --manifest JSON
   library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID]
   library job cancel --job UUID
@@ -148,6 +150,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'library package list':['q','page','page-size','ready-only','redaction-state','archived-only','project'],'library package show':['package'],
       'library package usage':['package'],'library package revisions':['package'],'library package create':['name','description','tags'],
       'library package update':['package','version','file'],'library package archive':['package','version'],'library package restore':['package','version'],
+      'library files prepare':['manifest','out'],
       'library revision create':['package','version','request-key','manifest'],
       'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project'],
       'library job show':['job'],'library job cancel':['job'],
@@ -343,6 +346,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       }
       case 'library package archive': data=await versioned(`/api/material-library/packages/${uuid('package')}`,'DELETE',required('version'));break;
       case 'library package restore': data=await versioned(`/api/material-library/packages/${uuid('package')}/restore`,'POST',required('version'));break;
+      case 'library files prepare': {try{data=await prepareLibraryFiles(required('manifest'),required('out'),signal);}catch(error){throw new CliError(error instanceof Error?error.message:'材料预处理失败',{kind:'file_error'});}break;}
       case 'library revision create': data=await createLibraryRevision(uuid('package'));break;
       case 'library template list': data=await get('/api/material-library/redaction-templates');break;
       case 'library template show': {const catalog=await get('/api/material-library/redaction-templates');data=catalog.items.find((t:any)=>t.id===required('template'));if(!data)throw new CliError('脱敏模板不存在');break;}

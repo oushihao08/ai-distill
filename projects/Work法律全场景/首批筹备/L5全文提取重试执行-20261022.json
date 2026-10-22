@@ -1,0 +1,24 @@
+{
+  "pid": 82174,
+  "updated_at": "2026-10-22T10:30:29.448Z",
+  "items": [
+    {
+      "number": 16,
+      "job_id": "f3a6203d-2ff7-4b81-bf86-9fb63085918e",
+      "started_at": "2026-10-22T09:50:09.840Z",
+      "claimed_here": true,
+      "status": "cancelled",
+      "error": "材料任务已取消或 worker 已停止",
+      "finished_at": "2026-10-22T10:10:19.156Z"
+    },
+    {
+      "number": 17,
+      "job_id": "019688fe-d9e8-4905-9599-ff9658fe46d4",
+      "started_at": "2026-10-22T10:10:19.157Z",
+      "claimed_here": true,
+      "status": "cancelled",
+      "error": "材料任务已取消或 worker 已停止",
+      "finished_at": "2026-10-22T10:30:29.447Z"
+    }
+  ]
+}

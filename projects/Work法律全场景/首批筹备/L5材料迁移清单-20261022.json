@@ -1,0 +1,490 @@
+[
+  {
+    "number": 16,
+    "source": "/Users/jack/Downloads/16-24/16买卖合同+阿里",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-舒全中-买卖合同纠纷",
+    "files": [
+      {
+        "relative_path": "执行档案.pdf",
+        "bytes": 8812130,
+        "sha256": "399d06ed2efd1ca1253d0ffc778e74140f614cc62eba1d2270b7675c1f44b5fa"
+      },
+      {
+        "relative_path": "诉讼档案.pdf",
+        "bytes": 24350041,
+        "sha256": "fec5ff259f7b97c6cd6ddf985813e424627756d78afcc83dbe17df4247458fd4"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 17,
+    "source": "/Users/jack/Downloads/16-24/17劳务合同纠纷+阿里",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-伯为权-劳务合同纠纷",
+    "files": [
+      {
+        "relative_path": "1、(2025)渝0105执7616号_正卷第1册.pdf",
+        "bytes": 12990867,
+        "sha256": "8d1f496e465888a168e15d8091f9e20b38e0fa4e6b75284169b4d8517dc3929e"
+      },
+      {
+        "relative_path": "电子档案.pdf",
+        "bytes": 32980443,
+        "sha256": "944890c6e4d7456b1e40c03853ee4f56d04f42fde04bc47e2ed1102629fbfd2f"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 18,
+    "source": "/Users/jack/Downloads/16-24/18民间借贷—阿里",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-知雨云文化传播-民间借贷",
+    "files": [
+      {
+        "relative_path": "执行档案.pdf",
+        "bytes": 14114834,
+        "sha256": "b24110a50cad229b6c146a455899267331756858088ea64775dd00928180c266"
+      },
+      {
+        "relative_path": "诉讼档案.pdf",
+        "bytes": 25602207,
+        "sha256": "64dcb216b74c469fbd215cf425965dd722ed177cb703b7138e6a3fd2efd3383c"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 19,
+    "source": "/Users/jack/Downloads/16-24/19损害公司债权人利益责任纠纷+阿里",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-白亮-损害公司债权人利益责任纠纷",
+    "files": [
+      {
+        "relative_path": "1、(2025)渝0105民初11054号_正卷第1册.pdf",
+        "bytes": 77668122,
+        "sha256": "7f1d5293cc02a7209008b3471d90e4acec48ef0df561295b4556e931ec591c38"
+      },
+      {
+        "relative_path": "1、（2025）渝0105执21590号_正卷第1册.pdf",
+        "bytes": 11174538,
+        "sha256": "5e9a0136bfe761e3aaf11aafafb44c3d18e7f9e8d235bf15cbee132c011ed85a"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 20,
+    "source": "/Users/jack/Downloads/16-24/20借款合同+阿里",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-何超-借款合同纠纷",
+    "files": [
+      {
+        "relative_path": "电子档案 (3).pdf",
+        "bytes": 66988704,
+        "sha256": "0d33c678000949a2d84fd4e125079feb1f312561476f331a97732fe1f605a50c"
+      },
+      {
+        "relative_path": "电子档案 (4).pdf",
+        "bytes": 22832080,
+        "sha256": "fa75c1d0f551f1a200e32f81223d584a3e1c7acd87798ba2210806e86b53ba8a"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 21,
+    "source": "/Users/jack/Downloads/16-24/21合同纠纷+阿里",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-肖焕斌-合同纠纷",
+    "files": [
+      {
+        "relative_path": "1、(2024)渝0105民初38610号_正卷第1册.pdf",
+        "bytes": 57919025,
+        "sha256": "5539569d8d486b86c069c73061b7f509576762d895fc65c0eaaa249d5dc3499b"
+      },
+      {
+        "relative_path": "1、（2025）渝0105执21047号_正卷第1册.pdf",
+        "bytes": 16959096,
+        "sha256": "c00c0c3e6f45b10eb8912a2b64e14864cf1c76ec948730ab9c12de9ba631fa55"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 22,
+    "source": "/Users/jack/Downloads/16-24/22劳动纠纷+阿里",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-杨洪涛-劳动争议",
+    "files": [
+      {
+        "relative_path": "1、(2025)渝0105执5417号_正卷第1册.pdf",
+        "bytes": 19625642,
+        "sha256": "97974d01037303e8fdbadb14bc9305b6d15aecb29b0f3fd693a37e17b263a24b"
+      },
+      {
+        "relative_path": "诉讼档案.pdf",
+        "bytes": 30649249,
+        "sha256": "50f6aa21fd2552d8e6d2b728ff00b007e0b29f645b28cd57a511d4a6c7ae67e2"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 23,
+    "source": "/Users/jack/Downloads/16-24/23合伙合同纠纷+阿里",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-刘静-合伙合同纠纷",
+    "files": [
+      {
+        "relative_path": "1、(2025)渝0105执9115号_正卷第1册.pdf",
+        "bytes": 19946962,
+        "sha256": "b393d74089d99e305facde5f1702bd6138dfbd0a4e38c9209d92354da128403b"
+      },
+      {
+        "relative_path": "电子档案.pdf",
+        "bytes": 56768631,
+        "sha256": "d387b3d5e42992fe8f57da0ab10f22e11edb9ce95ceb96cad2519cf740d838f4"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 24,
+    "source": "/Users/jack/Downloads/16-24/24",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-袁园满工程机械租赁-机械租赁合同纠纷",
+    "files": [
+      {
+        "relative_path": "(2021)渝0112执15776号.pdf",
+        "bytes": 11704039,
+        "sha256": "6208a68e1b460f10592102d93eec3cb9e5d02e9b59b1d80fa890748d4d4ae82e"
+      },
+      {
+        "relative_path": "(2021)渝0112民初3752号.pdf",
+        "bytes": 10813484,
+        "sha256": "b28e359da773ebb41ef2f96a2c4523af328fddf31fa1d41687e0ceba7b627a36"
+      },
+      {
+        "relative_path": "一债会手册盖章版.1761289817398.pdf",
+        "bytes": 25471232,
+        "sha256": "461a8f6771ef5bc6eb5328b468b236777c4b09fe7921228d38460e4951bc01dd"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 25,
+    "source": "/Users/jack/Downloads/25-33/25",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-广界房地产营销策划-诉讼执行与工商档案",
+    "files": [
+      {
+        "relative_path": "(2023)渝0103民初10292号.ofd",
+        "bytes": 25925855,
+        "sha256": "cc4b7b9d6ad7ecb341f771e1087f2d68670e592bda961190f1c316b3b72d4f21"
+      },
+      {
+        "relative_path": "(2024)渝0103执160号.ofd",
+        "bytes": 11541660,
+        "sha256": "a78c7ad9dbf5e3b8aa774dc98930c449baba787ab1a7f6b53256ddc40e3083e0"
+      },
+      {
+        "relative_path": "基本信息.pdf",
+        "bytes": 117856,
+        "sha256": "5ef517457c039b610476fd94a7094ba63e79ad5d2595310ffd46c001a981def4"
+      },
+      {
+        "relative_path": "无纸化2021-07-22变更.pdf",
+        "bytes": 1393719,
+        "sha256": "401511a229fc09660779c214d41d5ec13f4f72ea78aeb8fc27025d69cd3777ed"
+      },
+      {
+        "relative_path": "无纸化2021-08-06变更.pdf",
+        "bytes": 1562243,
+        "sha256": "0e3a46a5bf957c8e73371dabd174bd0970d3d9511d62036574de959dbcf4e296"
+      },
+      {
+        "relative_path": "无纸化2021-12-06变更.pdf",
+        "bytes": 2204711,
+        "sha256": "c5ecd9e000b2bababfde5157279468db266c1496eb5e52466152811e0eeae9f3"
+      },
+      {
+        "relative_path": "无纸化2023-05-22变更.pdf",
+        "bytes": 3708740,
+        "sha256": "a769034e0eede62dae7a8ccd9d262ff19ae351dff706d4b5861cc3521819f99c"
+      },
+      {
+        "relative_path": "纸质化第一次变更(有纸化)002.pdf",
+        "bytes": 1899365,
+        "sha256": "7a984a8a6c49a9957ace077971ab4bd08cb1bba79d0fe0bd509e02b7d5f1f2e6"
+      },
+      {
+        "relative_path": "纸质化第三次变更(有纸化)004.pdf",
+        "bytes": 1130562,
+        "sha256": "2399fceaf679a2e6ee8cdcf4e5256ff29a8bc2171d0c5236cd796b1d725efd11"
+      },
+      {
+        "relative_path": "纸质化第二次变更(有纸化)003.pdf",
+        "bytes": 651316,
+        "sha256": "893669eea2445bc975d6d1bd2954b929106629d2be2a036cf2041264cf557b2e"
+      },
+      {
+        "relative_path": "纸质化第五次变更(有纸化)006.pdf",
+        "bytes": 729065,
+        "sha256": "5a9b85facf291eed57b15008f75f58004790719fa394ecc0d461c30e051bb28f"
+      },
+      {
+        "relative_path": "纸质化第四次变更(有纸化)005.pdf",
+        "bytes": 1657286,
+        "sha256": "b6ca47d4ef535466ab7ef5d497b01240399ee87661a0dc6337eeb70a5af3807e"
+      },
+      {
+        "relative_path": "纸质化设立(有纸化)001.pdf",
+        "bytes": 1810065,
+        "sha256": "eeb5ad6cf714d564a2c95c4e077da0613ebf8db16230624095c97579fcfbf14c"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 26,
+    "source": "/Users/jack/Downloads/25-33/26",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-丽云装饰工程-诉讼执行与工商档案",
+    "files": [
+      {
+        "relative_path": "(2016)渝0103民初9278号.pdf",
+        "bytes": 23926463,
+        "sha256": "a394dacf853c9e00710c1e9bcdb5c2a0f855dc1ca9ab875cb65a9830648d357f"
+      },
+      {
+        "relative_path": "(2019)渝0103执2684号.pdf",
+        "bytes": 11042158,
+        "sha256": "f313d098028d43641d5d63357be9af7777ec3fcf8e8272c2fc9adf6b7636ef46"
+      },
+      {
+        "relative_path": "基本信息.pdf",
+        "bytes": 106375,
+        "sha256": "68b85b7e05b331126dd4686ab2ba4bc77729c49efde0f7e73c771feff14b5f70"
+      },
+      {
+        "relative_path": "纸质化2009年检(有纸化)2009.pdf",
+        "bytes": 999390,
+        "sha256": "7466939f3a77c27498cbe901f1c4fd24b524731533ab81ed49835380e6999fd9"
+      },
+      {
+        "relative_path": "纸质化2010年检(有纸化)2010.pdf",
+        "bytes": 1913600,
+        "sha256": "9d5f48c82003b1a3ae823617822fd9668cf3d260af84ca54accc3e858995951f"
+      },
+      {
+        "relative_path": "纸质化2011年检(有纸化)2011.pdf",
+        "bytes": 357157,
+        "sha256": "36db7f04621de3dd2b110e4757f7f49660e2faee66ea4bcc8706c396c5624e2b"
+      },
+      {
+        "relative_path": "纸质化2012年检(有纸化)2012.pdf",
+        "bytes": 1040019,
+        "sha256": "f6da621f84e53173c4a2d2da553741df60225fd9e02d0eb0d4338e3d27d112e7"
+      },
+      {
+        "relative_path": "纸质化第一次变更(有纸化)002.pdf",
+        "bytes": 1298820,
+        "sha256": "45aa582aa83733037d50691893c3179b92ca94db45d9b25ac1343ed818017d20"
+      },
+      {
+        "relative_path": "纸质化第三次变更(有纸化)004.pdf",
+        "bytes": 175600,
+        "sha256": "c65e9cdeb30a26f214416171179161a59112dd071bd132b5522243916196882a"
+      },
+      {
+        "relative_path": "纸质化第二次变更(有纸化)003.pdf",
+        "bytes": 1390952,
+        "sha256": "3aa898f25b2ccfa1f7401934ecd7c7db93647c1a9b8c0dd87462a91e2e6e7e5b"
+      },
+      {
+        "relative_path": "纸质化第五次变更(有纸化)006.pdf",
+        "bytes": 1778620,
+        "sha256": "ceb924d89baee2f9e297e7871f53a0b8f649e610767b7e1a643666e9322a87f4"
+      },
+      {
+        "relative_path": "纸质化第四次变更(有纸化)005.pdf",
+        "bytes": 3536351,
+        "sha256": "71ff2c7b802c39c497b8578e64b49321148f300ef662736e14d14fbc3e8e57f8"
+      },
+      {
+        "relative_path": "纸质化设立(有纸化)001.pdf",
+        "bytes": 1499936,
+        "sha256": "77bf127e6f03229a321768f4fbfc8ace35dc98beeb2f7971fe23d3cbc97dd05e"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 27,
+    "source": "/Users/jack/Downloads/25-33/27",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-向昭华-侵权责任纠纷",
+    "files": [
+      {
+        "relative_path": "(2022)渝0103民初10491号.pdf",
+        "bytes": 17317312,
+        "sha256": "508769f072500c12f4e0f520380fea343f4222fb3edc441994170f0de7fa1cc6"
+      },
+      {
+        "relative_path": "(2023)渝0103执5697号.ofd",
+        "bytes": 22286816,
+        "sha256": "2ec3a9ddbe4ba2721b7a1ff54bad1c6495567d705a7e198c5f0c046f5ae55b76"
+      },
+      {
+        "relative_path": "向昭华-李露露和解协议  20250827.docx",
+        "bytes": 19941,
+        "sha256": "7fada27587f5cb05486d1bb146570dff29a0cdc11a73cd361e8ed88eb5efbdcc"
+      },
+      {
+        "relative_path": "恢复申请何明书.docx",
+        "bytes": 14409,
+        "sha256": "e13aa287e7bbdd83a938dd997b6ff392e576a7ad4c22341912caef3f767b705c"
+      },
+      {
+        "relative_path": "恢复申请向昭华-有误.docx",
+        "bytes": 14409,
+        "sha256": "e13aa287e7bbdd83a938dd997b6ff392e576a7ad4c22341912caef3f767b705c"
+      },
+      {
+        "relative_path": "所函（民事、行政）.docx",
+        "bytes": 46517,
+        "sha256": "8d20456df6197482caa642a9cb3c4c3d1de27612e4b52dcb062b8785b81f3590"
+      },
+      {
+        "relative_path": "继续查封申请书（ 李露露 车辆）.docx",
+        "bytes": 13591,
+        "sha256": "626463a93a447553a61db8620f1a7a838526e969bb53e7ab1d65d2d7bf6287f2"
+      },
+      {
+        "relative_path": "解除限制消费措施申请.docx",
+        "bytes": 11218,
+        "sha256": "3cd010caccf4f0e9f4ae83262c82f36f85f6777373e9de2280f149f10b2d4798"
+      },
+      {
+        "relative_path": "调查令申请（电话、宽带）-李露露.docx",
+        "bytes": 13771,
+        "sha256": "299b54fd83f427d666b16f1be6a60f9336071cc18896b26360af6c4da8c570f3"
+      },
+      {
+        "relative_path": "调查令申请（社保）-李露露.docx",
+        "bytes": 13909,
+        "sha256": "85ebc988ea8f9c7634f3a6a62dcb6982c2cdbd516f11fe9ec6aebf1e412a1450"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 28,
+    "source": "/Users/jack/Downloads/25-33/28",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-陈明华-借款合同纠纷",
+    "files": [
+      {
+        "relative_path": "(2023)渝0103执保1234号.ofd",
+        "bytes": 9395367,
+        "sha256": "4618fef697c0591f45b26aae05f7644d1713de96c0fa69d0c0657e53cd2fff7e"
+      },
+      {
+        "relative_path": "(2023)渝0103民初18294号.ofd",
+        "bytes": 58489237,
+        "sha256": "33f06f7179c11fa761d10cba066ecd53656b589e7d7da97667261accf2f59314"
+      },
+      {
+        "relative_path": "(2024)渝0103执7046号.ofd",
+        "bytes": 9574638,
+        "sha256": "a7a5de60053a4b83c82ac973d4f7dd97144df3f17e3e41d3744163464fab645b"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 29,
+    "source": "/Users/jack/Downloads/25-33/29",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-刘富华-工伤保险待遇纠纷",
+    "files": [
+      {
+        "relative_path": "(2017)渝0103民初2275号.pdf",
+        "bytes": 24705499,
+        "sha256": "5187b402a92c89a0eccfcf123ff03eef05161173423c383415c49425bbc020cf"
+      },
+      {
+        "relative_path": "(2018)渝0103执2913号.pdf",
+        "bytes": 12875005,
+        "sha256": "42b6ef745683e3e6f2cb5dba1973e48bd9d097a3b2844232602c4a97882d3408"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 30,
+    "source": "/Users/jack/Downloads/25-33/30",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-待补材料-原目录30为空",
+    "files": [],
+    "status": "已迁移并核验；空目录待补"
+  },
+  {
+    "number": 31,
+    "source": "/Users/jack/Downloads/25-33/31",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-黄生勇-提供劳务者受害责任纠纷",
+    "files": [
+      {
+        "relative_path": "(2018)渝0103民初3889号.pdf",
+        "bytes": 43442242,
+        "sha256": "f236f37273a5352a5d8a575ee4e491f60a2d2df6844a5532ce83c3f5f69615ee"
+      },
+      {
+        "relative_path": "(2019)渝0103执3629号.pdf",
+        "bytes": 9935036,
+        "sha256": "99521df50bd02d95e97e6d771b82deb65e11a1c490986df9fe0e7c848aea883d"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 32,
+    "source": "/Users/jack/Downloads/25-33/32",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-新浩男物业管理-买卖合同纠纷",
+    "files": [
+      {
+        "relative_path": "(2021)渝0103民初19869号.pdf",
+        "bytes": 22692429,
+        "sha256": "932abda6ac5573b3288cdb9ca3e33fdc83556cc1ea97ae0af3b92881a7479869"
+      },
+      {
+        "relative_path": "(2022)渝0103执10367号.pdf",
+        "bytes": 12479495,
+        "sha256": "fcab1c58f9b570f51e3e6807182afff75c7708bc53c9c33853aaa3cfb028132a"
+      },
+      {
+        "relative_path": "基本信息.pdf",
+        "bytes": 125168,
+        "sha256": "250a2533fd4780b4a2ee7255c8f2a36f7bbfb2c72bfca170964c437be03625c3"
+      },
+      {
+        "relative_path": "纸质化股权冻结(有纸化)H.pdf",
+        "bytes": 1420830,
+        "sha256": "66d564e7b8a8ba48cd314505cc68660384f84e23444c0352e1fb80b35cd0457f"
+      },
+      {
+        "relative_path": "纸质化设立(有纸化)001.pdf",
+        "bytes": 3708017,
+        "sha256": "a593e077cf677a6560525fed7a0c2ae8dbec4fa950dd05efa95086b44274dc83"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  },
+  {
+    "number": 33,
+    "source": "/Users/jack/Downloads/25-33/33",
+    "destination": "/Users/jack/Documents/codes/lvgou/ai-distill/projects/Work法律全场景/首批筹备/questions/L5-刘燕邓君臣-房屋租赁合同纠纷",
+    "files": [
+      {
+        "relative_path": "(2022)渝0103民初429号.pdf",
+        "bytes": 83237322,
+        "sha256": "72ba7a0246700b3ef174ad9828a4c366cce34413b5e8728e69d5b1e39733fcce"
+      },
+      {
+        "relative_path": "(2023)渝0103执787号.pdf",
+        "bytes": 14209989,
+        "sha256": "c9aa1feb6d02f51c5709abf52f8e4a0c274ba71890850655e5956c6d6cf911b3"
+      }
+    ],
+    "status": "已迁移并核验；未入库"
+  }
+]

@@ -10,7 +10,7 @@
 | `jobs.ts` | 旧步骤2入队、冻结MinerU配置/转换版本、按执行端领取/缓存/发布；更新步骤1处理状态，非全局库队列。 |
 | `process.ts` | `processMaterials()`核对原件/缓存，生成逐材料私有页结构；问题OCR页重新提取一次，仅替换问题页，保留issues。`clearExtractionCheckpoints()`是旧Vision检查点兼容。 |
 | `pdf.ts` | 当前共享Page/DocumentBlock和确定性`documentBlocksToText()`；`command()`封装Poppler；`extractPdf()`是旧Vision页级路径，非当前MinerU主入口。 |
-| `pdf-split.ts` | `splitLargePdf()`供旧目录同步，按页/大小拆至受管缓存，不修改来源；不是所有全局库上传的自动拆片器。 |
+| `pdf-split.ts` | `splitLargePdf()`供旧目录同步，按页/大小拆至受管缓存，不修改来源；不是所有全局库上传的自动拆片器；有qpdf时按范围导出并清除未引用资源，避免共享资源被逐页重复携带，无qpdf仍用Poppler兼容路径。 |
 | `pdf-extraction/` | MinerU API/CLI与结构转换，详见本目录README。 |
 | `config.ts` | `loadExtractionConfig()`读JSON兼容识别配置，仅用EXTRACTION_CONFIG_PATH选文件；不是当前MinerU逐字段环境配置合并器。 |
 | `vision.ts` | 旧智谱OCR/实体客户端，保留调查与测试路径；当前MinerU队列不调用。 |
@@ -95,3 +95,7 @@ DOCX可声明declared_redacted，仍完整提取，声明内容原样进入正�
 操作授权和敏感信息边界遵循根AGENTS.md；本说明为源码核对结果，不证明当前worker已加载、真实OCR/脱敏质量或完整业务验收。
 
 DOCX渲染版本为redacted-structure-docx-v3，版本参与缓存索引；连续排版不执行脱敏清理；公共渲染器只在显示副本隐藏独立“（此页无正文）”分页提示，对异常OCR表格网格保留非空文字顺序做单列显示降级，正常表格保留合并关系。来源记录不变。旧题的垃圾扫描标记如需处理，先显式生成清理副本或新脱敏版本；不能在导出时静默改写原文来源或历史冻结数据。
+
+## 显式材料上传预处理
+
+`prepare-library-files.ts`的`prepareLibraryFiles()`由CLI `library files prepare`调用：只读本机清单，OFD通过显式安装的本地OFDRW转PDF，PDF复用`splitLargePdf()`按大小/页数拆片，核对页数后生成新目录中的`manifest.json`及`provenance.json`。不自动上传、不修改来源、不派任务；原材料库HTTP接口的格式集合不变。失败保留`failed.json`但不发布manifest。OFD转换件须页面抽查，数字签名验证不能从原件继承。安装入口见`scripts/runtime/ofd/README.md`。
