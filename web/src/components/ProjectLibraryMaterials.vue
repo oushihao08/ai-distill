@@ -21,6 +21,11 @@ const loaded=shallowRef<LoadedPackage[]>([]),materialUses=shallowRef<MaterialUse
 const activeLinks=computed(()=>loaded.value.filter(item=>!item.removed_at));
 const removedLinks=computed(()=>loaded.value.filter(item=>!!item.removed_at));
 const useByPackage=computed(()=>Object.fromEntries(materialUses.value.map(item=>[item.package_id,item])));
+const phasePage=shallowRef(1),phasePageSize=20;
+const phasePageCount=computed(()=>Math.max(1,Math.ceil(activeLinks.value.length/phasePageSize)));
+const visibleActiveLinks=computed(()=>activeLinks.value.slice((phasePage.value-1)*phasePageSize,phasePage.value*phasePageSize));
+const submittedPackageCount=computed(()=>activeLinks.value.filter(link=>(useByPackage.value[link.package_id]?.status??link.usage_status)==='submitted').length);
+const inUsePackageCount=computed(()=>activeLinks.value.length-submittedPackageCount.value);
 const redactionsByPackage=reactive<Record<string,{title:string;value:string}[]>>({});
 const revisionsByPackage=reactive<Record<string,{title:string;value:string}[]>>({});
 const loadedVersionIds=new Set<string>(),loadingVersionIds=new Set<string>();
@@ -43,6 +48,7 @@ async function refresh(){
    api<{items:MaterialUseRecord[]}>(`/projects/${props.projectId}/material-uses`),
   ]);
   loaded.value=projectMaterials.items;materialUses.value=uses.items;loadedVersionIds.clear();
+  if(phasePage.value>phasePageCount.value)phasePage.value=phasePageCount.value;
   for(const link of loaded.value)if(link.selected_redaction_id&&!redactionsByPackage[link.package_id])redactionsByPackage[link.package_id]=[{title:'当前选用的脱敏版本',value:link.selected_redaction_id}];
  }catch(cause){error.value=cause instanceof Error?cause.message:'本期材料加载失败';}
 }
@@ -121,21 +127,22 @@ async function createQuestion(){
  finally{busy.value=false;}
 }
 watch(()=>props.materialProcessingMode,()=>{loadedVersionIds.clear();for(const key of Object.keys(redactionsByPackage))delete redactionsByPackage[key];void refresh();});
-watch(()=>props.projectId,()=>{void refresh();},{immediate:true});
+watch(()=>props.projectId,()=>{phasePage.value=1;void refresh();},{immediate:true});
 onBeforeUnmount(()=>{if(searchTimer)clearTimeout(searchTimer);});
 </script>
 
 <template><section class="surface-card p-16"><Column :gap="14">
- <Row x="between" wrap y="center" :gap="8"><Column :gap="4"><h2 class="section-title">本期材料</h2><p class="text-xs text-muted">材料包来自全局材料库。本期只管理加载版本、题目设置和提交状态；移除引用不会释放主项目的材料占用。</p></Column><Row :gap="8"><v-btn size="small" variant="outlined" :loading="busy" @click="refresh">刷新</v-btn><v-btn size="small" color="primary" @click="openLoadDialog">加载材料包</v-btn></Row></Row>
+ <Row x="between" wrap y="center" :gap="8"><Column :gap="4"><h2 class="section-title">本期材料</h2></Column><Row :gap="8"><v-btn size="small" variant="outlined" :loading="busy" @click="refresh">刷新</v-btn><v-btn size="small" color="primary" @click="openLoadDialog">加载材料包</v-btn></Row></Row>
  <v-alert v-if="error" type="error" density="compact" role="alert">{{ error }}</v-alert><v-alert v-if="notice" type="success" density="compact" role="status">{{ notice }}</v-alert>
+ <Row v-if="activeLinks.length" wrap y="center" :gap="8" class="text-sm"><v-chip size="small" variant="tonal">材料包 {{ activeLinks.length }}</v-chip><v-chip size="small" color="primary" variant="tonal">使用中 {{ inUsePackageCount }}</v-chip><v-chip size="small" color="success" variant="tonal">已提交 {{ submittedPackageCount }}</v-chip></Row>
  <p v-if="!activeLinks.length" class="text-sm text-muted">本期尚未加载材料包。</p>
  <Column v-else class="w-full overflow-x-auto" :gap="0"><v-table density="comfortable" class="min-w-1000px" aria-label="本期已加载材料包"><thead><tr><th scope="col">材料包</th><th scope="col">主项目状态</th><th scope="col">本期材料版本</th><th scope="col">题目设置</th><th scope="col">操作</th></tr></thead><tbody>
-  <tr v-for="link in activeLinks" :key="link.id"><td class="min-w-220"><Column :gap="4"><RouterLink :to="{path:`/materials/${link.package_id}`,query:{projectId:props.projectId}}" class="link-text font-medium">{{ link.package_name }} · 材料详情</RouterLink><span class="text-xs text-muted">版本 {{ link.selected_revision_id?.slice(0,8)??'未选择' }}</span></Column></td>
+  <tr v-for="link in visibleActiveLinks" :key="link.id"><td class="min-w-220"><Column :gap="4"><RouterLink :to="{path:`/materials/${link.package_id}`,query:{projectId:props.projectId}}" class="link-text font-medium">{{ link.package_name }} · 材料详情</RouterLink><span class="text-xs text-muted">版本 {{ link.selected_revision_id?.slice(0,8)??'未选择' }}</span></Column></td>
    <td class="min-w-180"><MaterialUsePanel v-if="useByPackage[link.package_id]" :project-id="projectId" :item="useByPackage[link.package_id]!" @updated="refresh"/><v-chip v-else color="primary">使用中</v-chip></td>
    <td class="min-w-230"><v-select v-if="props.materialSourceMode==='original'" :model-value="link.selected_revision_id" :items="revisionsByPackage[link.package_id]??(link.selected_revision_id?[{title:`当前版本 ${link.selected_revision_id.slice(0,8)}`,value:link.selected_revision_id}]:[])" label="未脱敏提取版本" item-title="title" item-value="value" density="compact" hide-details :disabled="busy||link.usage_status==='submitted'" @update:menu="open=>{if(open)void inspectLoadedPackage(link.package_id)}" @update:model-value="id=>chooseRevision(link,id)"/><v-select v-else :model-value="link.selected_redaction_id" :items="redactionsByPackage[link.package_id]??[]" label="脱敏版本" item-title="title" item-value="value" density="compact" hide-details :disabled="busy||link.usage_status==='submitted'" @update:menu="open=>{if(open)void inspectLoadedPackage(link.package_id)}" @update:model-value="id=>chooseRedaction(link,id)"/></td>
    <td><v-btn v-if="props.materialProcessingMode!=='original'" size="small" variant="text" :to="{path:`/materials/${link.package_id}`,query:{projectId:props.projectId}}">处理材料</v-btn><v-btn v-if="props.materialSourceMode==='original'&&link.selected_redaction_id&&link.selected_revision_id" size="small" variant="text" @click="chooseRevision(link,link.selected_revision_id)">使用原文</v-btn><v-btn size="small" variant="outlined" :disabled="busy||!canCreateQuestion(link)" @click="openQuestionDialog(link)">创建题目</v-btn></td>
    <td><v-btn size="small" color="error" variant="text" :disabled="busy" @click="removePackage(link)">移除引用</v-btn></td></tr>
- </tbody></v-table></Column>
+ </tbody></v-table><Row v-if="phasePageCount>1" wrap x="between" y="center" class="px-12 py-8"><span class="text-xs text-muted">第 {{ phasePage }} / {{ phasePageCount }} 页，每页最多 {{ phasePageSize }} 条</span><v-pagination v-model="phasePage" :length="phasePageCount" :total-visible="5" density="compact" aria-label="本期材料分页"/></Row></Column>
  <details v-if="removedLinks.length"><summary class="text-sm text-muted cursor-pointer">已移除的本期引用（{{ removedLinks.length }}）</summary><v-table density="compact" class="min-w-700"><thead><tr><th scope="col">材料包</th><th scope="col">提交状态</th><th scope="col">操作</th></tr></thead><tbody><tr v-for="link in removedLinks" :key="link.id"><td><RouterLink :to="{path:`/materials/${link.package_id}`,query:{projectId:props.projectId}}" class="link-text">{{ link.package_name }}</RouterLink></td><td><MaterialUsePanel v-if="useByPackage[link.package_id]" :project-id="projectId" :item="useByPackage[link.package_id]!" @updated="refresh"/><span v-else class="text-muted">使用中</span></td><td><v-btn size="small" variant="text" :disabled="busy" @click="restorePackage(link)">恢复引用</v-btn></td></tr></tbody></v-table></details>
  <v-dialog v-model="loadDialog" max-width="980" scrollable><Column class="surface-card p-20" :gap="14"><Row x="between" y="center" :gap="8"><Column :gap="4"><h2 class="section-title">加载全局材料包</h2><p class="text-xs text-muted">按本期设置只显示有可用{{ props.materialSourceMode==='original'?'MinerU提取原文':'脱敏结果' }}的材料包；同主项目已使用的材料不能再次加载。</p></Column><v-btn icon="$close" variant="text" aria-label="关闭" @click="loadDialog=false"/></Row>
   <v-text-field v-model="candidateQuery" label="搜索材料包" placeholder="输入材料名称" prepend-inner-icon="$search" hide-details clearable @keyup.enter="loadCandidates"/>
