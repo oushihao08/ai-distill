@@ -82,7 +82,7 @@
 - `LibraryFileReader`：原PDF/DOCX（本地PDF副本）/文本、识别原文、单文件脱敏文本及逐页对照；查看模式和脱敏版本由父级工具栏控制，对照锁定所选脱敏版本实际引用的提取任务，切换文件或版本会取消旧读取。
 - `LibraryUsageSummary`：材料详情展示主项目跨期使用状态与提交/返修事件、项目加载关系及题目归档/撤回时间线；不把当前状态重复标在每次历史操作上。
 
-材料库共用设置支持编辑多个独立脱敏模板；材料包工作区选择模板后只派发field_mapping，codex_plan显示CLI整包审阅入口，不伪装已派发。省略模板仍按旧mask执行。
+材料库共用设置支持编辑多个独立脱敏模板；所选模板的完整提示词在自适应多行编辑框中显示，长内容由设置面板滚动查看。材料包工作区选择模板后只派发field_mapping，codex_plan显示CLI整包审阅入口，不伪装已派发。省略模板仍按旧mask执行。
 
 材料处理三模式由`StepSettings.vue`保存到期次步骤4的`material_processing_mode`。`ProjectLibraryMaterials.vue`按模式过滤结果、允许先加载待处理版本，并把期次上下文传给材料详情；`LibraryPackageWorkspace.vue`在该上下文锁定处理方式。前端不执行脱敏、不替代后端模式核验；已有题目的来源不随设置改变。
 

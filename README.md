@@ -47,7 +47,7 @@ bun run worker
 bun run dev
 ```
 
-后台处理需要相应 worker。`WORKER_MODE` 决定领取队列，未配置时为 `all`；环境模板使用 `local`。Agent 与 API 并发来自持久配置，未保存才读取环境默认值；具体槽位、跨进程范围和重启要求见 [服务端说明](server/README.md)。不能用进程数量、`waiting` 或心跳单独判断任务正在执行。
+后台处理需要相应 worker。`WORKER_MODE` 决定领取队列，未配置时为 `all`；环境模板使用 `local`。Agent 与 API 并发逐项优先读取 `.env`／进程环境中的 `AGENT_CONCURRENCY`、`LLM_API_CONCURRENCY`，未配置或留空才读取持久配置，均缺失时默认 Agent 2、API 8；具体槽位、跨进程范围和重启要求见 [服务端说明](server/README.md)。不能用进程数量、`waiting` 或心跳单独判断任务正在执行。
 
 远程材料/作答仅通过已有 [远程 CLI](skill/REMOTE.md) 及 SSH 隧道使用；当前共享材料库 job 与旧远程组合操作是不同接口，不能用同一种 ID 混发。发布入口和副作用见 [运行脚本](scripts/runtime/README.md)，不会因阅读本文自动获准部署。
 

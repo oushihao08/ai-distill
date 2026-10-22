@@ -8,7 +8,7 @@ import {existsSync,constants} from 'node:fs';
 import {appendFile} from 'node:fs/promises';
 import {cp,mkdtemp,mkdir,open,readFile,writeFile,rm,realpath} from 'node:fs/promises';
 import {tmpdir,homedir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {dirname,join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {classifyLogError,logEvent,withLogContext} from '../logging';
 export interface CodexOptions<T> {binary?:string;directory:string;execution_profile?:'fresh_authoring'|'project_delivery';working_directory?:string;prompt:string;model:string;reasoning_effort:string;schema?:Record<string,unknown>;output_format?:'text';input_files?:{name:string;text:string}[];validate:(value:unknown)=>T;timeout_ms?:number;signal?:AbortSignal;credentialsHome?:string;developer_instructions?:string;call_id?:string;onProcess?:(pid:number|null)=>void;isolate_context?:boolean}
@@ -22,10 +22,13 @@ export const SCORE_ISOLATION_CONFIG={
  'project_doc_max_bytes':0,'mcp_servers':{},'web_search':'disabled',
 };
 const bundledCodex='/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
-const defaultBinary=process.env.CODEX_BIN??(process.platform==='darwin'&&existsSync(bundledCodex)?bundledCodex:'codex');
+const defaultBinary=process.env.CODEX_BIN??(process.platform==='darwin'&&existsSync(bundledCodex)?bundledCodex:process.platform==='win32'?'codex.exe':'codex');
 let credentialsHomeProvider:(()=>Promise<string|undefined>)|undefined;
 export function configureCodexCredentialsHome(provider:()=>Promise<string|undefined>){credentialsHomeProvider=provider;}
-function environment(credentialsHome?:string){const env=Object.fromEntries(['HOME','PATH','LANG','TMPDIR','CODEX_HOME','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','http_proxy','https_proxy','all_proxy','no_proxy'].flatMap(key=>process.env[key]===undefined?[]:[[key,process.env[key]!]]));if(credentialsHome)env.CODEX_HOME=credentialsHome;return env;}
+function environment(credentialsHome?:string){
+ const keys=['HOME','PATH','LANG','TMPDIR','CODEX_HOME','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY','http_proxy','https_proxy','all_proxy','no_proxy',...(process.platform==='win32'?['SystemRoot','WINDIR','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP','COMSPEC','PATHEXT']:[])];
+ const env=Object.fromEntries(keys.flatMap(key=>process.env[key]===undefined?[]:[[key,process.env[key]!] ]));if(credentialsHome)env.CODEX_HOME=credentialsHome;return env;
+}
 function resultError(reason_code:string){return Object.assign(new Error('Codex结果无效'),{kind:'invalid_response' as const,reason_code});}
 async function execute(binary:string,args:string[],options:{directory?:string;prompt?:string;timeout:number;signal?:AbortSignal;credentialsHome?:string;onStdout?:(chunk:string)=>void|Promise<void>;captureStdout?:boolean;call_id?:string;onProcess?:(pid:number|null)=>void}){
  if(options.signal?.aborted)throw new Error(options.signal.reason instanceof Error&&options.signal.reason.message==='Codex执行超时'?'Codex执行超时':'Codex执行已取消');
@@ -112,9 +115,12 @@ async function runCodexInternal<T>(options:CodexOptions<T>):Promise<{result:T;se
   try{if(stagingRoot)await rm(stagingRoot,{recursive:true,force:true});}catch(cleanupError){withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('codex.workspace_cleanup_failed',{level:'error',...classifyLogError(cleanupError)}));}
   withLogContext({call_id,provider:'codex',model,reasoning_effort},()=>logEvent('call.failed',{level:'error',operation:'codex_exec',reason_code:'workspace_setup_failed',...classifyLogError(error)}));throw Object.assign(new Error('Codex执行准备失败'),{kind:'configuration',reason_code:'workspace_setup_failed'});
  }
- const filesystem={':root':'deny',':minimal':'read',[directory]:'read',[output]:'write'};
+ const filesystem:Record<string,string>={':root':'deny',':minimal':'read',[directory]:'read',[output]:'write'};
+ // :minimal不包含安装在用户目录中的PowerShell/Bun/Node，显式开放运行时只读，业务文件仍限于本次工作区。
+ if(process.platform==='win32')for(const runtime of [process.execPath,Bun.which('pwsh.exe'),Bun.which('node.exe')])if(runtime)filesystem[dirname(runtime)]??='read';
  const table=`{${Object.entries(filesystem).map(([key,value])=>`${JSON.stringify(key)}=${JSON.stringify(value)}`).join(',')}}`;
- const isolationArgs=options.isolate_context?Object.entries(SCORE_ISOLATION_CONFIG).flatMap(([key,value])=>['-c',`${key}=${JSON.stringify(value)}`]):[];
+ // Windows旧沙箱不能执行:root deny的分离读取权限；MXC保留同一目录/网络边界，能力不足时由CLI明确失败。
+ const isolationArgs=[...(!fresh&&process.platform==='win32'?['-c','windows.sandbox="mxc"']:[]),...(options.isolate_context?Object.entries(SCORE_ISOLATION_CONFIG).flatMap(([key,value])=>['-c',`${key}=${JSON.stringify(value)}`]):[])];
  const args=['exec',...(fresh?['--dangerously-bypass-approvals-and-sandbox']:['--ignore-user-config','--ignore-rules']),'--ephemeral','--skip-git-repo-check','--cd',directory,'--model',options.model,'--json','--color','never',...(fresh||options.output_format==='text'?[]:['--output-schema',schemaPath]),'--output-last-message',cliResultPath,...(fresh?[]:['-c','default_permissions="distill_role"','-c',`permissions.distill_role.filesystem=${table}`,'-c','permissions.distill_role.network.enabled=false','-c','approval_policy="never"']),...(projectDelivery?['-c','web_search="live"']:[]),'-c','features.memories=false','-c',`model_reasoning_effort=${JSON.stringify(options.reasoning_effort)}`,...isolationArgs,...(options.developer_instructions?['-c',`developer_instructions=${JSON.stringify(options.developer_instructions)}`]:[]),'-'];
  let eventBuffer='',session_id:string|undefined,completed:Record<string,any>|undefined,malformedEvent=false,failedEvent=false;
  const parseEvent=(line:string)=>{

@@ -1,6 +1,6 @@
 /** 职责：验证重复扫描噪声的精确删除范围及业务数字/日期/表格保留边界；不调用数据库或模型。 */
 import {expect,test} from 'bun:test';
-import {cleanScanNoisePages,type ScanNoisePage} from './scan-noise';
+import {cleanRedactionText,cleanScanNoisePages,type ScanNoisePage} from './scan-noise';
 import {documentBlocksToText} from './document-structure';
 const page=(n:number,texts:string[]):ScanNoisePage=>({file_id:'f',page:n,blocks:texts.map((text,i)=>({id:`p${n}-${i}`,kind:'paragraph',text}))});
 test('cleans repeated scanner signatures and adjacent page-corner fragments, retaining business date prefix',()=>{
@@ -9,16 +9,18 @@ test('cleans repeated scanner signatures and adjacent page-corner fragments, ret
  expect(text).not.toContain('15:27');expect(text).not.toContain('00!');expect(text).toContain('款项18836元，2025-03-26');expect(text).toContain('2022/2/9');expect(JSON.stringify(pages)).toBe(before);
  for(const edit of out.edits){const original=pages.find(p=>p.page===edit.page)!;expect(documentBlocksToText(original.blocks).slice(edit.start,edit.end)).toBe(edit.source_text);}
 });
-test('isolated dates, counters without sequence, prose and table values remain unchanged',()=>{
+test('removes standalone number lines and explicit watermarks but preserves business prose and table values',()=>{
  const pages=[page(1,['2025-03-26 15:27:50','8836_2025-03-26 15:27:50','1','10000']),page(2,['记录8836_2025-03-26 15:27:51作为业务流水号','2'])];
  pages[1]!.blocks.push({id:'table',kind:'table',rows:[{cells:[{text:'8836_2025-03-26 15:27:51'},{text:'2'}]}]});
- expect(cleanScanNoisePages(pages).edits).toHaveLength(0);
+ const out=cleanScanNoisePages(pages),text=out.pages.map(p=>documentBlocksToText(p.blocks)).join('\n');
+ expect(text).toContain('2025-03-26 15:27:50');expect(text).toContain('记录8836_2025-03-26 15:27:51作为业务流水号');
+ expect(text).not.toMatch(/^10000$/m);expect((out.pages[1]!.blocks.at(-1) as any).rows[0].cells[1].text).toBe('2');
 });
-test('only confirmed margin counters are removed; original numeric business blocks and distinct IDs survive',()=>{
+test('standalone numeric noise is removed while a labelled amount remains unchanged',()=>{
  const pages=[1,2,3].map(n=>page(n,['12345','付款金额','1000',String(n).padStart(3,'0')]));
  for(const p of pages)p.blocks.unshift({id:'stamp',kind:'paragraph',text:`8836_2025-03-26 15:27:5${p.page}`});
- const out=cleanScanNoisePages(pages);expect(out.edits).toHaveLength(6);
- for(const p of out.pages){expect(documentBlocksToText(p.blocks)).toContain('12345\n付款金额\n1000');}
+ const out=cleanScanNoisePages(pages);expect(out.edits).toHaveLength(9);
+ for(const p of out.pages){expect(documentBlocksToText(p.blocks)).toContain('付款金额\n1000');expect(documentBlocksToText(p.blocks)).not.toContain('12345');}
 });
 
 
@@ -26,4 +28,24 @@ test('recognizes truncated scan times and removes overlay prefix only, preservin
  const pages=[page(1,['8836_2025-03-26 15:27','正文']),page(2,['8836_2025-03-26 15:27:51 EMS邮政记录','正文'])];
  const out=cleanScanNoisePages(pages);
  expect(out.edits).toHaveLength(2);expect(documentBlocksToText(out.pages[1]!.blocks)).toContain('EMS邮政记录');expect(documentBlocksToText(out.pages[0]!.blocks)).not.toContain('2025-03-26');
+});
+test('removes explicit OCR placeholders in paragraphs and tables without deleting business text',()=>{
+ const pages=[page(1,['正文[QR Code]继续','[Image]','无法识别','法院说明无法识别原因，金额334666元，日期2025-05-23。'])];
+ pages[0]!.blocks.push({id:'table',kind:'table',rows:[{cells:[{text:'[Barcode] [Bar Code]'},{text:'无法识别'},{text:'10000元'}]}]});
+ const text=cleanScanNoisePages(pages).pages.map(p=>documentBlocksToText(p.blocks)).join('\n');
+ expect(text).not.toMatch(/\[(?:QR Code|Image|Barcode|Bar Code)\]/);expect(text).toContain('正文继续');
+ expect(text).toContain('法院说明无法识别原因，金额334666元，日期2025-05-23。');expect(text).toContain('10000元');
+ expect(text.match(/无法识别/g)).toHaveLength(1);
+});
+test('post-AI regex cleanup deletes fixed placeholders and number-only lines, preserving line breaks and real content',()=>{
+ const text='正文[NO TEXT][NO_TEXT][No text detected][UNREADABLE]\r\n1\r\n234\r\n221\r\n-1-\r\n-22-\r\n[证据1] 334666元\r\n本金：\r\n334666\r\n1、请求\r\n-1.5元\r\n43****33';
+ const cleaned=cleanRedactionText(text);
+ expect(cleaned).toBe('正文\r\n\r\n\r\n\r\n\r\n\r\n[证据1] 334666元\r\n本金：\r\n334666\r\n1、请求\r\n-1.5元\r\n43****33');
+ expect(cleanRedactionText(cleaned)).toBe(cleaned);
+});
+test('recognizes a small fixed set of scanner timestamp forms, deleting only matched fragments',()=>{
+ for(const stamp of ['4751 2025-04-25 15:24:08','4751_2025/04/25 15:24:08','4751\\_2025.04.25 15：24：08','4751_2025-04-25T15:24:08.123','扫描时间：2025年4月25日 15:24:08']){
+  expect(cleanRedactionText(`前文 ${stamp} 后文`)).toBe('前文  后文');
+ }
+ expect(cleanRedactionText('开庭时间2025-04-25 15:24:08，金额4751元')).toBe('开庭时间2025-04-25 15:24:08，金额4751元');
 });

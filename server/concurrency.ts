@@ -1,6 +1,6 @@
 /**
  * 职责：读取／保存 worker 并发配置，并用 STORAGE_DIR 下的 SQLite 配置与槽位表协调跨进程 Agent 调用。
- * 入口：readConcurrencySettings() 读取持久设置或环境回退；saveWorkerConcurrencySettings() 保存页面设置；AgentConcurrencyGate.run() 供worker与连通性检查共同占槽。
+ * 入口：readConcurrencySettings() 按环境变量、持久设置、默认值逐项读取；saveWorkerConcurrencySettings() 保存页面设置；AgentConcurrencyGate.run() 供worker与连通性检查共同占槽。
  * SQLite 只保存本机并发配置及临时进程／槽位元数据，不涉及业务数据库迁移。
  */
 import {Database} from 'bun:sqlite';
@@ -63,11 +63,13 @@ function configuredLimit(value:string|undefined,name:string,fallback:number):num
 }
 
 export function readConcurrencySettings(env:NodeJS.ProcessEnv=process.env,storageRoot?:string){
+ const agent=env.AGENT_CONCURRENCY?.trim()?configuredLimit(env.AGENT_CONCURRENCY,'AGENT_CONCURRENCY',2):undefined;
+ const llmApi=env.LLM_API_CONCURRENCY?.trim()?configuredLimit(env.LLM_API_CONCURRENCY,'LLM_API_CONCURRENCY',8):undefined;
+ if(agent!==undefined&&llmApi!==undefined)return{agent,llmApi};
  const saved=storageRoot?readSavedWorkerConcurrencySettings(storageRoot):null;
- if(saved)return saved;
  return{
-  agent:configuredLimit(env.AGENT_CONCURRENCY,'AGENT_CONCURRENCY',2),
-  llmApi:configuredLimit(env.LLM_API_CONCURRENCY,'LLM_API_CONCURRENCY',8),
+  agent:agent??saved?.agent??2,
+  llmApi:llmApi??saved?.llmApi??8,
  };
 }
 

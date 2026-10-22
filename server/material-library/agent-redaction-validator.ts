@@ -1,4 +1,4 @@
-/** 职责：打包到Agent私有工作区的只读本地验收入口。运行bun validate-plan.mjs；只校验本次固定输入/结果，输出安全错误码，不写库、不修改材料、不调用模型。 */
+/** 职责：打包到Agent私有工作区的只读本地验收入口。由宿主指定Bun或Node运行validate-plan.mjs；只校验本次固定输入/结果，输出安全错误码，不写库、不修改材料、不调用模型。 */
 import {readFile} from 'node:fs/promises';
 import {compileAgentMaterialPlan} from '../../shared/agent-material-plan';
 

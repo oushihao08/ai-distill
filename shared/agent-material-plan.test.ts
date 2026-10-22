@@ -36,6 +36,24 @@ test('changing alias length remaps document boundaries without asking model for 
  const out=compileAgentMaterialPlan(plan,files,identity);
  expect(out.prepared.documents).toHaveLength(2);expect(out.plan.documents[0]!.segments[0]!.end).toBe(out.plan.documents[1]!.segments[0]!.start);
 });
+test('rejects masking amount digits without their unit, including partial numeric edits',()=>{
+ for(const source_text of ['10000','000']){
+  const {files,plan}=fixture();plan.edits.push({target_id:'f1p1b1f1',source_text,occurrence:1,kind:'identifier',keep_prefix:''});
+  let error:unknown;try{compileAgentMaterialPlan(plan,files,identity);}catch(cause){error=cause;}
+  expect(error).toMatchObject({reason_code:'agent_business_value_edit'});
+ }
+ const {files,plan}=fixture();plan.edits.push({target_id:'f1p1b2f1',source_text:'13812345678',occurrence:1,kind:'identifier',keep_prefix:''});
+ plan.edits.shift();expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();
+});
+test('post-Agent cleanup preserves mapped identifiers and compiles exact cleanup coordinates',()=>{
+ const {files,plan}=fixture(),page=files[0]!.pages[0]!;
+ page.structure.push({id:'code',kind:'paragraph',text:'12345678'},{id:'noise',kind:'paragraph',text:'[NO TEXT]\n221\n-22-\n4751 2025-04-25 15:24:08'});
+ page.text=page.structure.map((block:any)=>block.text).join('\n');files[0]!.text_sha256=createHash('sha256').update(page.text).digest('hex');
+ plan.edits.push({target_id:'f1p1b3f1',source_text:'12345678',occurrence:1,kind:'identifier',keep_prefix:''});plan.documents[0]!.ranges[0]!.last_block_id='f1p1b4';
+ const out=compileAgentMaterialPlan(plan,files,identity),text=out.prepared.documents[0]!.text;
+ expect(text).toContain('12****78');expect(text).toContain('10000元，2023年1月1日');expect(text).not.toMatch(/NO TEXT|221|-22-|15:24:08/);
+ for(const edit of out.plan.edits)expect(page.text.slice(edit.start,edit.end)).toBe(edit.source_text);
+});
 test('rejects overlapping identities, uncovered blocks and aliases colliding with original names',()=>{
  const {files,plan}=fixture();plan.entities.push({id:'p2',kind:'person',alias:'周行舟',variants:[{text:'世豪',targets:[]}]});
  expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();plan.entities.pop();
