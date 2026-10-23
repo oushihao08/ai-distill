@@ -2,6 +2,8 @@
 
 Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务，独立 worker 消费队列。`app.ts` 负责装配接口，业务模块负责输入冻结、执行和结果提交；请求等待时间不决定后台任务生命周期。
 
+材料库版本上传的HTTP限制与200MiB整包业务上限对齐，另留1MiB封装开销；其他接口仍保持100MiB加封装开销，单文件限制由validation.ts校验。
+
 ## 目录关系
 
 | 模块 | 职责 |
@@ -111,7 +113,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 
 新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发逐项优先读取 `.env`／进程环境中的 `AGENT_CONCURRENCY`、`LLM_API_CONCURRENCY`（1–32），未设置或空白才读取 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，均缺失时默认Agent2/API8；非法环境值直接报错，两项均配置时不读取持久设置。修改环境变量后须重启API和worker；页面保存的是回退设置，被环境变量覆盖的项不因保存而改变生效值；页面可设置Agent 1–6、API 1–8；范围以 `concurrency.ts` 的常量为准，环境兼容范围另见该文件，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
 
-`steps`是当前状态，`step_attempts`是尝试历史。`waiting`须结合活动尝试、就绪原因和worker归属判断；HTTP202只表示已接受或等待未终结。按原attempt/job/request key恢复，不因超时重新派发。单题与批量资格分别由入口及业务模块复核；批量一题失败不把其余结果改成失败。
+`steps`是当前状态，`step_attempts`是尝试历史。`waiting`须结合活动尝试、就绪原因和worker归属判断；HTTP202只表示已接受或等待未终结。按原attempt/job/request key恢复，不因超时重新派发。单题与批量资格分别由入口及业务模块复核；批量一题失败不把其余结果改成失败。ordinal 6若步骤状态为`succeeded`但至少一个模型评分摘要`valid=false`，且ordinal 7仍`waiting`，可由用户显式重新派发独立评分；有效评分或已有达标结论不因此开放重复评分，也不会自动重试。
 
 钩子采用独立检查点和事件，不恢复通用自动返修链。可选033表缺失不阻断无钩子旧流程；启用钩子、迁移和恢复副作用分别遵守对应接口与授权。
 
