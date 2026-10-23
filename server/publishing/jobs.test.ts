@@ -194,3 +194,14 @@ test.each(['error','changed'])('Work generation %s never publishes stale results
   expect(f.connections.held).toBe(0);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
+
+test.each([false,true])('all projects run delivery outside DB connection and revalidate afterwards (work=%s)',async work=>{
+ const f=await fixture({work});try{
+  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{
+   resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,
+   prepareWork:async()=>preparedWork,
+   deliver:async()=>{expect(f.connections.held).toBe(0);f.snapshot.question.result.question_version='changed';return undefined as never;}
+  })).rejects.toThrow('生成期间');
+  expect(f.connections.held).toBe(0);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});

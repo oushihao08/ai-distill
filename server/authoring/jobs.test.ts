@@ -3,7 +3,7 @@
  */
 import {LocalQueue} from '../execution-queue/store';
 import {withLocalExecution,PendingLocalCommit} from '../execution-queue/runtime';
-import {test,expect} from 'bun:test';
+import {test,expect,beforeAll,afterAll} from 'bun:test';
 import {mkdtemp,rm,mkdir,writeFile,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -14,6 +14,10 @@ import {enqueueAuthoring,runNextAuthoring,inputDigest} from './jobs';
 import {scanProjectPrompt} from '../rule-files';
 import {canonicalJson} from '../../shared/workflow-config';
 import {AUTHORING_FIXED_PROMPT} from '../../shared/step-prompts';
+// SQL替身不得继承工作台local模式并向真实队列登记意图。
+const originalQueueMode=process.env.EXECUTION_QUEUE_MODE;
+beforeAll(()=>{process.env.EXECUTION_QUEUE_MODE='legacy';});
+afterAll(()=>{if(originalQueueMode===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=originalQueueMode;});
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const empty={rows:[],rowCount:0};
 
@@ -309,4 +313,28 @@ test('本地结果提交断线只恢复完整作者成果，不重复创建作�
   await withLocalExecution(queue,job,()=>runNextAuthoring(pool,join(f.root,'storage'),author));expect(attempts).toBe(1);
   expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
  }finally{queue?.close();if(old===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=old;await rm(f.root,{recursive:true,force:true});}
+});
+
+test('local failure survives failed DB settlement and recovery never invokes author again',async()=>{
+ const {LocalQueue}=await import('../execution-queue/store');
+ const {withLocalExecution}=await import('../execution-queue/runtime');
+ const f=await projectFixture(),q=new LocalQueue(join(f.root,'queue'),'test-device');
+ const previous=process.env.EXECUTION_QUEUE_MODE;
+ try{
+  process.env.EXECUTION_QUEUE_MODE='legacy';await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  process.env.EXECUTION_QUEUE_MODE='local';const id=f.saved.id;q.intent(id,'step','agent','authoring');q.confirm(id);const job=q.claim('agent')!;
+  let failSettlement=true,authorCalls=0;
+  const pool={...f.pool,connect:async()=>{const db=await f.pool.connect();return{query:async(sql:string,values:any[])=>{
+   if(failSettlement&&sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed',result="))throw Object.assign(new Error('synthetic unavailable'),{code:'ECONNRESET'});
+   return db.query(sql,values);
+  },release:()=>db.release()};}} as unknown as Pool;
+  const author=async()=>{authorCalls++;throw Object.assign(new Error('private'),{reason_code:'result_missing'});};
+  await expect(withLocalExecution(q,job,()=>runNextAuthoring(pool,join(f.root,'storage'),author))).rejects.toThrow('synthetic unavailable');
+  expect(q.stepFailure(job)?.message).toContain('result.json');expect(authorCalls).toBe(1);
+  failSettlement=false;
+  await withLocalExecution(q,job,()=>runNextAuthoring(pool,join(f.root,'storage'),author));
+  expect(authorCalls).toBe(1);
+  const writes=f.calls.filter(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed',result="));
+  expect(writes).toHaveLength(1);expect(writes[0]!.values[2]).toContain('result.json');
+ }finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;q.close();await rm(f.root,{recursive:true,force:true});}
 });

@@ -88,4 +88,4 @@
 
 面包屑由AppShell渲染，三级业务页面通过usePageBreadcrumbs使用各自已加载的API身份；主项目、期次和题目逐层跳转。StepSettings表单使用视口上限，标题与底部操作固定，主体独立滚动；长提示词不应撑出窗口。
 
-`WorkerMonitor.vue`在local队列模式显示本机执行器、Agent/API实际排队和运行数，以及待同步/待核实数量；业务历史与执行状态分开。数据契约和切换边界见`server/execution-queue/README.md`。
+`WorkerMonitor.vue`在local队列模式显示本机执行器、Agent/API实际排队和运行数，以及待同步/待核实数量；恢复任务折叠列表显示任务ID、通道及更新时间，支持滚动；业务历史与执行状态分开。数据契约和切换边界见`server/execution-queue/README.md`。

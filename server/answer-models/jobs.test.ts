@@ -1,7 +1,7 @@
 /** 验证作答队列的输入冻结、供应商调用、结果落盘、过期隔离与取消处理。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
-import {test,expect} from 'bun:test';
+import {test,expect,beforeAll,afterAll} from 'bun:test';
 import type {Pool} from 'pg';
 import {enqueueAnswer,runNextAnswer} from './jobs';
 import {inputDigest,buildAnswerInput} from './input';
@@ -10,6 +10,10 @@ import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,mkdir,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+// SQL替身不得继承工作台local模式并向真实队列登记意图。
+const originalQueueMode=process.env.EXECUTION_QUEUE_MODE;
+beforeAll(()=>{process.env.EXECUTION_QUEUE_MODE='legacy';});
+afterAll(()=>{if(originalQueueMode===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=originalQueueMode;});
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
 const q={question_version:'v1',question:'题面',attachment_ids:['attachment'],quality_check:{passed:true},answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}};
 const config={provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'};
@@ -224,3 +228,15 @@ test('实际供应商调用收到文字成果指令，且原题面保持绑定',
  job.input={...input,question_attempt_id:'author',input_digest:inputDigest(input)};
  let called=false;await runNextAnswer(pool,root,async req=>{called=true;expect(req.question).toContain('意见.md');expect(req.question).toContain('不代表实际创建文件');return answer();});expect(called).toBe(true);
 }));
+
+test.each(['failed','skipped'] as const)('local answer terminal %s restores without provider and without resetting step',async status=>{
+ const {LocalQueue}=await import('../execution-queue/store');const {withLocalExecution}=await import('../execution-queue/runtime');
+ const root=await mkdtemp(join(tmpdir(),'answer-terminal-')),queue=new LocalQueue(root,'test-device'),f=fake(),previous=process.env.EXECUTION_QUEUE_MODE;
+ try{
+  process.env.EXECUTION_QUEUE_MODE='local';f.job.id=crypto.randomUUID();queue.intent(f.job.id,'step','api','answer');queue.confirm(f.job.id);const job=queue.claim('api')!;
+  queue.saveStepFailure(job,{status,message:'已记录终态',result:{reason_code:'test_failure'}});
+  let calls=0;await withLocalExecution(queue,job,()=>runNextAnswer(f.pool,root,async()=>{calls++;throw new Error('must not execute');}));
+  expect(calls).toBe(0);expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.steps SET status='running'"))).toBe(false);
+  const write=f.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.step_attempts SET status=$4'));expect(write?.values[3]).toBe(status);expect(write?.values[1]).toBe('已记录终态');
+ }finally{queue.close();if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
+});

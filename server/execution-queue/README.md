@@ -33,6 +33,7 @@ SQLite使用WAL/FULL同步及短事务，目录0700、文件0600；不能放在�
 - `GET /api/system/execution-queue`：本机模式、executor_id和轻量队列状态；不返回结果BLOB、租约令牌或正文。
 - `POST /api/system/execution-queue/adopt`：`{jobs:[{id,kind}]}`，kind为step/skill/library/hook/remote；1–100个明确的旧waiting/queued任务。已属于其他执行器、正在运行或同步钩子拒绝。route/lane由业务记录解析，不接受客户端伪造。
 - `POST /api/system/execution-queue/:id/cancel`：只取消本机记录；返回cancel_requested与cloud_synced。其他机请求应通过明确业务取消入口通知，不能冒充本机已停止。
+- `POST /api/system/execution-queue/:id/reconcile-failed`：仅供本机故障对账，提交 `{failure_event_id,failure_instance_id}`。要求本机队列任务已停止且处于`needs_review`、存在未决调用、指定worker实例的结构化日志含匹配的`attempt.failed`且没有后续成功事件，同时PG中的归属、代次、最新attempt和step仍匹配并处于`running`；全部通过后在一个事务内将attempt和step结算为`failed`，不重放调用。保留供应商的可重试标记，但设置本次`retryable=false`以阻止隐式重试；日志扫描受50文件/20 MiB限制，超限或证据不完整即拒绝。
 - `GET /api/monitor`：local_execution_queue提供本机实际状态；活动任务过滤为本机正在执行，待登记/同步/核实单列；全局业务列表仍共享，不按本机队列隐藏其他机成果。
 
 CLI继续调用原HTTP派发入口，不直连SQLite或PG。新的本机队列管理尚无独立CLI命令，不能编造命令。
@@ -42,3 +43,12 @@ CLI继续调用原HTTP派发入口，不直连SQLite或PG。新的本机队列�
 先盘点旧waiting/queued与running。047可在未归属旧任务运行时定向应用：归属为空时触发器保留原行为，DDL锁超时则整笔回滚。只应用047，不盲跑业务库全部未登记迁移。本机API先启用local，新派发登记归属；旧worker可继续收尾未归属任务，数据库保护拒绝其领取新归属任务。本机新worker与旧worker使用同一运行目录及现有槽位，历史队列归零后停止旧worker。另一台同样启用；按明确ID分配未开始的旧任务，不能每台复制全部。模型/阈值/规则、题目快照、成绩和历史不随切换改变。
 
 业务环境尚未切换时，新旧代码的兼容测试不能替代实际双机验收。存在未同步结果或取消时不回退旧消费者，不删除SQLite“清空重来”。应先停止新派发、备份本机队列并按同ID对账；没有明确归属的旧任务保持未认领，而非自动猜测机器。
+
+
+## 已知失败与对账
+
+出题、作答、评分处理器在结算失败之前，将安全终态（failed/skipped、原因、结构化结果）写入本机当前代次检查点。数据库不可用时保留result_pending_commit；恢复只进入原处理器的失败结算，不再执行模型、输入准备或同步钩子，也不重置当前步骤为running。沿用版本、最新尝试及多模型汇总检查。损坏检查点进入needs_review；没有业务终态的started/rejected调用不能自动重放。新代次不读取旧代次检查点。云端已成功或失败时补记本机终态。
+
+worker对账为单飞后台轮次，不作为各通道领取的前置等待；登记、取消、终态各轮最多20项并轮转。单项失败保留原状态并继续其他项，轮次结束等待5秒。状态读取的驱动超时15秒，沿用连接池15秒连接等待；取消事务另设10秒SQL/2秒锁等待，失败连接丢弃。超时不证明业务写入未发生，仍按原ID对账，不据此重跑模型。
+
+worker.test.ts使用临时SQLite、SQL替身和随机端口本机HTTP服务验证慢对账隔离及状态响应，不代表真实PG断网、现有服务部署或模型验收。三个业务jobs测试显式使用legacy替身模式；local恢复用例自行创建临时队列，避免继承工作台配置。

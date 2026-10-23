@@ -12,3 +12,5 @@
 | [doubao-phase6-work-materials-20261021](doubao-phase6-work-materials-20261021/总览.md) | 豆包第六期加载两份Work材料包并跑完整流程；记录材料分册输入、来源隔离和阶段结果。 |
 | [database-performance-audit-20261019](database-performance-audit-20261019/总览.md) | 本地数据库/API查询慢根因、最小查询改动、测试与运行态复测；尚未加载新API代码。 |
 | [repo-docs-cli-20261019](repo-docs-cli-20261019/总览.md) | 排除 `docs/` 后核对工程文档、源码注释与 CLI 对当前材料库、期次和工作流契约的覆盖。 |
+
+- [任务失败恢复与停滞修复](workflow-recovery-20261023/本轮结果.md)：源码修复、隔离故障验证及测试隔离失误记录。

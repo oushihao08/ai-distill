@@ -7,7 +7,7 @@
 import { useResource } from '@/composables/useResource';
 import { dateLabel, fileSize } from '@/utils/format';
 import type { MaterialLibraryQueueStatus,WorkerMonitorStatus } from '@server/monitoring/worker-monitor';
-type MonitorResponse=WorkerMonitorStatus&{active_workflow_tasks:{status:'known'|'unavailable';items:{attempt_id:string;project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;channel:'agent'|'api'|'unknown';state:'running';started_at:string|null}[]};material_library:MaterialLibraryQueueStatus;local_execution_queue?:{executor_id:string;items:{id:string;kind:string;lane:string;state:string;cancel_requested:number}[]}|null};
+type MonitorResponse=WorkerMonitorStatus&{active_workflow_tasks:{status:'known'|'unavailable';items:{attempt_id:string;project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;channel:'agent'|'api'|'unknown';state:'running';started_at:string|null}[]};material_library:MaterialLibraryQueueStatus;local_execution_queue?:{executor_id:string;items:{id:string;kind:string;lane:string;state:string;updated_at?:number;cancel_requested:number}[]}|null};
 const {data,error,loading,refresh}=useResource<MonitorResponse>('/monitor');
 let timer:ReturnType<typeof setInterval>|undefined;
 onMounted(()=>{timer=setInterval(()=>{if(!loading.value&&!document.hidden)void refresh();},10000);});
@@ -23,6 +23,8 @@ const libraryKindLabel={intake:'入库核验',extract:'文本提取',redact:'脱
 const libraryStateLabel={queued:'排队',running:'运行'};
 const localQueue=computed(()=>data.value?.local_execution_queue);
 const queueCounts=computed(()=>{const items=localQueue.value?.items??[];const count=(lane:string,state:string)=>items.filter(i=>i.lane===lane&&i.state===state).length;return{agentQueued:count('agent','queued'),agentRunning:count('agent','running'),apiQueued:count('api','queued'),apiRunning:count('api','running'),pending:items.filter(i=>['pending_registration','result_pending_commit'].includes(i.state)).length,review:items.filter(i=>i.state==='needs_review').length};});
+const recoveryItems=computed(()=>(localQueue.value?.items??[]).filter(item=>['pending_registration','result_pending_commit','needs_review'].includes(item.state)));
+const recoveryLabel:Record<string,string>={pending_registration:'等待确认入队',result_pending_commit:'等待结果同步',needs_review:'等待核实'};
 </script>
 <template><Column class="surface-card p-16" :gap="12">
  <Row x="between" wrap :gap="8"><h2 class="section-title">执行器监控</h2><span class="text-sm text-muted">{{ data ? labels[data.status] : '正在读取…' }}</span></Row>
@@ -39,6 +41,16 @@ const queueCounts=computed(()=>{const items=localQueue.value?.items??[];const co
   <span>API：{{ queueCounts.apiQueued }} 排队 / {{ queueCounts.apiRunning }} 运行</span>
   <span>待同步 {{ queueCounts.pending }} · 待核实 {{ queueCounts.review }}</span>
  </Row>
+ <details v-if="recoveryItems.length" class="border border-subtle rounded-md p-12">
+  <summary class="text-sm cursor-pointer">恢复中的本机任务（{{ recoveryItems.length }}）</summary>
+  <p class="text-xs text-muted mt-8">待同步会按原任务恢复；待核实不会自动重放外部调用。以下任务不计入正在执行数量。</p>
+  <Column :gap="8" class="mt-8 max-h-64 overflow-y-auto">
+   <Row v-for="item in recoveryItems" :key="item.id" wrap :gap="8" class="text-xs">
+    <span>{{ recoveryLabel[item.state] }}</span><code>{{ item.id }}</code>
+    <span class="text-muted">{{ item.lane }} · 更新于 {{ item.updated_at ? dateLabel(new Date(item.updated_at).toISOString()) : '未知' }}</span>
+   </Row>
+  </Column>
+ </details>
  <ActiveWorkflowTasks :status="activeTasksStatus" :tasks="activeTasks" />
  <section class="border border-subtle rounded-md p-12">
   <Row x="between" wrap :gap="8"><h3 class="text-sm font-semibold text-ink-heading">独立材料库队列</h3><span v-if="libraryTotals" class="text-xs text-muted">排队 {{ libraryTotals.queued }} · 运行 {{ libraryTotals.running }} · 成功 {{ libraryTotals.succeeded }} · 失败 {{ libraryTotals.failed }}</span><span v-else class="text-xs text-muted">{{ data?.material_library.status==='unavailable'?'尚未应用材料库迁移或读取不可用':'读取中' }}</span></Row>

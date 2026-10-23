@@ -9,6 +9,9 @@ export type JobKind='step'|'skill'|'library'|'hook'|'remote';
 export type Lane='agent'|'api'|'internal'|'hook'|'remote';
 export type QueueState='pending_registration'|'queued'|'running'|'result_pending_commit'|'needs_review'|'committed'|'cancelled'|'failed'|'stale';
 export interface QueueJob {id:string;generation:number;kind:JobKind;lane:Lane;state:QueueState;lease:string|null;pid:number|null;cancel_requested:number;cancel_synced:number;created_at:number;updated_at:number;route:string;error:string|null}
+/** 已由业务处理器判定的终态；私有检查点仅供原任务原代次补交，不用于再次执行模型。 */
+export interface StepFailure {status:'failed'|'skipped';message:string;result:unknown}
+export class InvalidLocalCheckpoint extends Error {}
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function assertJobId(id:string){if(!uuid.test(id))throw new Error('执行任务ID必须是UUID');}
 export class LocalQueue {
@@ -42,7 +45,14 @@ export class LocalQueue {
  settle(id:string,state:QueueState){this.db.query("UPDATE jobs SET state=?,updated_at=? WHERE id=? AND state IN ('needs_review','result_pending_commit')").run(state,Date.now(),id);}
  rearm(id:string,generation:number){this.db.query("UPDATE jobs SET generation=?,state='pending_registration',lease=NULL,pid=NULL,cancel_requested=0,cancel_synced=0,error=NULL,updated_at=? WHERE id=?").run(generation,Date.now(),id);}
  confirmCancellation(id:string){this.db.query('UPDATE jobs SET cancel_synced=1 WHERE id=? AND cancel_requested=1').run(id);}
- recover(){for(const row of this.list().filter(j=>j.state==='running'&&j.pid)){let alive=true;try{process.kill(row.pid!,0);}catch(e){if((e as NodeJS.ErrnoException).code==='ESRCH')alive=false;}if(!alive){const unknown=this.db.query("SELECT 1 FROM calls WHERE job_id=? AND state='started' LIMIT 1").get(row.id);this.finish(row.id,row.lease!,unknown?'needs_review':'result_pending_commit',unknown?'调用已开始但结果未知，禁止自动重复调用':null);}}}
+ recover(){
+  for(const row of this.list().filter(j=>j.state==='running'&&j.pid)){
+   let alive=true;try{process.kill(row.pid!,0);}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')alive=false;}
+   if(alive)continue;
+   try{const failure=this.stepFailure(row),unknown=this.hasUnknownCall(row.id);this.finish(row.id,row.lease!,failure||!unknown?'result_pending_commit':'needs_review',unknown&&!failure?'调用结果未完成确认，禁止自动重复调用':null);}
+   catch{this.finish(row.id,row.lease!,'needs_review','本地检查点损坏，需人工核实');}
+  }
+ }
  async call<T>(jobId:string,key:string,execute:()=>Promise<T>):Promise<T>{
   const prior=this.db.query('SELECT * FROM calls WHERE job_id=? AND call_key=?').get(jobId,key) as {state:string;result:Uint8Array;sha256:string}|null;
   if(prior){if(prior.state!=='completed')throw new Error('调用结果未知，需核实后再执行');const bytes=Buffer.from(prior.result);if(createHash('sha256').update(bytes).digest('hex')!==prior.sha256)throw new Error('本地结果摘要不一致');return deserialize(bytes) as T;}
@@ -50,7 +60,17 @@ export class LocalQueue {
   const result=await execute();const bytes=serialize(result),digest=createHash('sha256').update(bytes).digest('hex');
   this.db.query("UPDATE calls SET state='completed',result=?,sha256=? WHERE job_id=? AND call_key=? AND state='started'").run(bytes,digest,jobId,key);return result;
  }
- hasUnknownCall(id:string){return Boolean(this.db.query("SELECT 1 FROM calls WHERE job_id=? AND state='started' LIMIT 1").get(id));}
- hasResult(id:string){return Boolean(this.db.query("SELECT 1 FROM calls WHERE job_id=? AND state='completed' LIMIT 1").get(id));}
+ hasUnknownCall(id:string){return Boolean(this.db.query("SELECT 1 FROM calls WHERE job_id=? AND state IN ('started','rejected') AND (call_key LIKE ? OR call_key NOT GLOB '[0-9]*:*') LIMIT 1").get(id,`${this.get(id)?.generation??0}:%`));}
+ hasResult(id:string){return Boolean(this.db.query("SELECT 1 FROM calls WHERE job_id=? AND state='completed' AND (call_key LIKE ? OR call_key NOT GLOB '[0-9]*:*') LIMIT 1").get(id,`${this.get(id)?.generation??0}:%`));}
+ saveStepFailure(job:QueueJob,failure:StepFailure){
+  const bytes=serialize(failure),digest=createHash('sha256').update(bytes).digest('hex');
+  this.db.query("INSERT OR IGNORE INTO calls(job_id,call_key,state,result,sha256) VALUES(?,?,'terminal_failure',?,?)").run(job.id,`${job.generation}:terminal_failure`,bytes,digest);
+ }
+ stepFailure(job:QueueJob):StepFailure|null{
+  const row=this.db.query("SELECT result,sha256 FROM calls WHERE job_id=? AND call_key=? AND state='terminal_failure'").get(job.id,`${job.generation}:terminal_failure`) as {result:Uint8Array;sha256:string}|null;
+  if(!row)return null;
+  const bytes=Buffer.from(row.result);if(createHash('sha256').update(bytes).digest('hex')!==row.sha256)throw new InvalidLocalCheckpoint('失败检查点摘要不一致');
+  try{const value=deserialize(bytes) as StepFailure;if(!value||!['failed','skipped'].includes(value.status)||typeof value.message!=='string')throw new Error('invalid');return value;}catch{throw new InvalidLocalCheckpoint('失败检查点格式无效');}
+ }
  close(){this.db.close();}
 }

@@ -3,7 +3,7 @@
  * 关键方法与用途：`readAnswerAttachment()` 兼容旧题数据库脱敏附件；`enqueueAnswer()` 冻结并创建尝试；`runNextAnswer()` 领取、调用供应商并保存结果。
  * 使用场景：`app.ts` 接收用户派发，`worker.ts` 持续调用消费入口。
  */
-import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
+import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {canonicalJson,validateWorkflowConfig} from '../../shared/workflow-config';
 import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,registerAsyncAfterHooks,StageHookError,stageHookAffinitySql,type StageWorkerMode} from '../workflow-hook-jobs';
 import {watchTaskCancellation} from '../task-signal';
@@ -164,8 +164,8 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
   }
   job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.execution_target=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${providerAffinity} AND ${affinity} AND ${localWaitingSql('a')} ${localClaimSql('a',false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[executionTarget,workflowIds?.length?workflowIds:null])).rows[0];
   if(!job){await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'answer',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:5,attempt_id:row.id,operation:'answer'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false;}
-  await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
-  await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=5",[job.workflow_id]);
+  await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=COALESCE(started_at,now()),heartbeat_at=now() WHERE id=$1",[job.id]);
+  if(!readStepFailure())await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=5",[job.workflow_id]);
   await db.query('COMMIT');
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  for(const row of staleRows)withLogContext({component:'answer',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:5,attempt_id:row.id,operation:'answer'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));
@@ -177,6 +177,7 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
  const heartbeat=setInterval(()=>{if(heartbeatInFlight)return;heartbeatInFlight=true;withLogContext({component:'answer',project_id:job.project_id,workflow_id:job.workflow_id,ordinal:5,attempt_id:job.id},()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('作答任务心跳写入失败');}heartbeatFailed=true;}).finally(()=>{heartbeatInFlight=false;}));},10000);
  let wrote=false;
  try{
+  resumeStepFailure();
   // Validate the stored snapshot before dispatch, then check current source again at publication.
   const packaged:AnswerPackage={question_version:job.input.question_version,question:job.input.question,materials:job.input.materials,attachments:job.input.attachments,...(typeof job.input.system_prompt==='string'?{system_prompt:job.input.system_prompt}:{}),...(job.input.presentation?{presentation:job.input.presentation}:{}),...(job.input.material_origin?{material_origin:job.input.material_origin}:{})};
   if(!matchesInputDigest(packaged,job.input.input_digest))throw new AnswerInputError('作答输入指纹不一致，未发送模型请求');
@@ -210,12 +211,13 @@ export async function runNextAnswer(pool:Pool,root:string,answer:(input:AnswerRe
   try{qualifiedTimeout=isQualifiedLongGenerationTimeout(error,resolveAnswerGenerationPolicy(job.input.answer_generation_policy));}catch{qualifiedTimeout=false;}
   if(qualifiedTimeout)logEvent('attempt.long_generation_timeout_unscored',{level:'warn',state:'skipped',...classifyLogError(error)});
   else logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)});
+  const message=error instanceof RecordedStepFailure?error.failure.message:error instanceof StageHookError?'项目钩子执行失败，可查看钩子记录后续跑':qualifiedTimeout?'已观测到推理增量超过设置阈值后本地请求截止；本次未得到完整答案，不计分':error instanceof QwenError||error instanceof DomesticError||error instanceof AnswerInputError?error.message:'模型作答失败，请检查服务配置或存储状态';
+  const result=error instanceof RecordedStepFailure?error.failure.result:qualifiedTimeout?{outcome:'qualified_timeout_unscored',reason_code:'qualified_long_generation_timeout',generation_activity:(error as {generation_activity?:unknown}).generation_activity,request_id:(error as {request_id?:unknown}).request_id??null,generation_id:(error as {generation_id?:unknown}).generation_id??null,answer_generation_policy:job.input.answer_generation_policy,question_attempt_id:job.input.question_attempt_id,question_version:job.input.question_version,input_digest:job.input.input_digest,model_id:job.input.model_id??null,model_name:job.input.model_name??job.config.model}:error instanceof QwenError||error instanceof DomesticError?{error:{kind:error.kind,retryable:error.retryable,http_status:error.http_status,provider_code:error.provider_code,request_id:error.request_id,generation_id:error.generation_id??null,reason_code:error.reason_code??null}}:error instanceof StageHookError?{error_code:'project_hook_failed'}:null;
+  const terminal=error instanceof RecordedStepFailure?error.failure.status:qualifiedTimeout?'skipped':'failed';
+  saveStepFailure({status:terminal,message,result});
   if(wrote)try{const published=await pool.query('SELECT id FROM ai_distill.artifacts WHERE attempt_id=$1 LIMIT 1',[job.id]);if(!published.rowCount)await rm(join(resolve(root),job.workflow_id,job.id),{recursive:true,force:true});}catch(cleanupError){logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'model_answer',...classifyLogError(cleanupError)});console.error('无法确认答案发布状态，保留文件等待核对');}
-  const message=error instanceof StageHookError?'项目钩子执行失败，可查看钩子记录后续跑':qualifiedTimeout?'已观测到推理增量超过设置阈值后本地请求截止；本次未得到完整答案，不计分':error instanceof QwenError||error instanceof DomesticError||error instanceof AnswerInputError?error.message:'模型作答失败，请检查服务配置或存储状态';
-  const result=qualifiedTimeout?{outcome:'qualified_timeout_unscored',reason_code:'qualified_long_generation_timeout',generation_activity:(error as {generation_activity?:unknown}).generation_activity,request_id:(error as {request_id?:unknown}).request_id??null,generation_id:(error as {generation_id?:unknown}).generation_id??null,answer_generation_policy:job.input.answer_generation_policy,question_attempt_id:job.input.question_attempt_id,question_version:job.input.question_version,input_digest:job.input.input_digest,model_id:job.input.model_id??null,model_name:job.input.model_name??job.config.model}:error instanceof QwenError||error instanceof DomesticError?{error:{kind:error.kind,retryable:error.retryable,http_status:error.http_status,provider_code:error.provider_code,request_id:error.request_id,generation_id:error.generation_id??null,reason_code:error.reason_code??null}}:error instanceof StageHookError?{error_code:'project_hook_failed'}:null;
   const tx=await pool.connect();try{
    await tx.query('BEGIN');const w=(await tx.query(activeWorkflow,[job.workflow_id])).rows[0];
-   const terminal=qualifiedTimeout?'skipped':'failed';
    const updated=await tx.query("UPDATE ai_distill.step_attempts SET status=$4,error=$2,result=$3,finished_at=now() WHERE id=$1 AND status='running'",[job.id,message,JSON.stringify(result),terminal]);
    if(updated.rowCount&&w&&await matchesQuestion(tx,job)){job.status=terminal;job.result=result;await refreshAnswerStep(tx,job);}
    await tx.query('COMMIT');
