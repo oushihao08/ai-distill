@@ -1,9 +1,11 @@
 /**
- * 职责：本地资源采样与建议：解析 macOS 内存和进程数据，将未知值显式表达并计算派发建议。
- * 关键方法与用途：`parseMemoryPressure()`／`parseProcessRss()` 解析 macOS 采样；`sampleResources()` 汇总当前进程与内存；`adviseDispatch()` 计算是否暂停派发。
+ * 职责：本地资源采样与建议：采集 macOS／Windows 内存和登记进程数据，将未知值显式表达并计算派发建议。
+ * 关键方法与用途：`parseMemoryPressure()`／`parseProcessRss()` 解析 macOS 采样；`sampleResources()` 按平台汇总内存及进程工作集；`adviseDispatch()` 计算是否暂停派发。
  * 使用场景：由 worker monitor 定时调用；未知采样保留为 unknown，不猜成零。
  */
 import {execFile} from 'node:child_process';
+import {freemem,totalmem} from 'node:os';
+import {win32} from 'node:path';
 import type {StepStatus} from '@shared/types';
 export type Reading<T> = {status:'known';value:T}|{status:'unknown'};
 const unknown = ():Reading<never>=>({status:'unknown'});
@@ -18,7 +20,7 @@ export interface MonitorInput {registered_pids:readonly number[];tasks?:readonly
 export type CommandReader=(file:string,args:readonly string[])=>Promise<string>;
 export interface ResourceSnapshot {
  sampled_at:string;
- system:Reading<{total_bytes:number;available_bytes_estimate:number;available_percent:number;method:'macos_memory_pressure_percentage'}>;
+ system:Reading<{total_bytes:number;available_bytes_estimate:number;available_percent:number;method:'macos_memory_pressure_percentage'|'windows_available_physical_memory'}>;
  processes:{pid:number;rss_bytes:Reading<number>}[];
  tasks:Reading<{running:number;states:Record<TaskState,number>;executors:{state:TaskState;last_event:Reading<{type:SafeEvent;at:string}>;authentication:AuthState;quota:QuotaState;error:ErrorKind}[]}>;
 }
@@ -55,17 +57,40 @@ function safeTasks(raw:MonitorInput['tasks']):ResourceSnapshot['tasks'] {
  return known({running:counts.running,states:counts,executors});
 }
 const readCommand:CommandReader=async(file,args)=>{
- try{return await new Promise<string>((resolve,reject)=>execFile(file,[...args],{timeout:3000,maxBuffer:64*1024,env:{PATH:'/usr/bin:/bin',LC_ALL:'C'}},(error,stdout)=>error?reject(new Error('采样不可用')):resolve(stdout)));}catch{throw new Error('采样不可用');}
+ const windowsRoot=process.env.SystemRoot??'C:\\Windows';
+ const env=process.platform==='win32'?{SystemRoot:windowsRoot,WINDIR:windowsRoot,PATH:win32.join(windowsRoot,'System32')}:{PATH:'/usr/bin:/bin',LC_ALL:'C'};
+ try{return await new Promise<string>((resolve,reject)=>execFile(file,[...args],{timeout:3000,maxBuffer:64*1024,windowsHide:true,env},(error,stdout)=>error?reject(new Error('采样不可用')):resolve(stdout)));}catch{throw new Error('采样不可用');}
 };
 export async function sampleResources(input:MonitorInput,options:{read?:CommandReader;platform?:string;current_pid?:number;now?:()=>Date}={}):Promise<ResourceSnapshot> {
  const pid=options.current_pid??process.pid;
  if(!positiveInteger(pid)||!Array.isArray(input.registered_pids)||input.registered_pids.some(p=>!positiveInteger(p)))throw new Error('登记 PID 必须为正安全整数');
  const pids=[...new Set([pid,...input.registered_pids])];
  if(pids.length>256)throw new Error('登记 PID 数量超过采样上限');
- const read=options.read??readCommand;
- const systemTask=async()=>{if((options.platform??process.platform)!=='darwin')return unknown();try{return parseMemoryPressure(await read('/usr/bin/memory_pressure',['-Q']));}catch{return unknown();}};
+ const read=options.read??readCommand,platform=options.platform??process.platform;
+ const systemTask=async()=>{
+  try{
+   if(platform==='darwin')return parseMemoryPressure(await read('/usr/bin/memory_pressure',['-Q']));
+   if(platform==='win32'){
+    const total=totalmem(),available=freemem();
+    if(!positiveInteger(total)||!Number.isSafeInteger(available)||available<0||available>total)return unknown();
+    const percent=Math.floor(available/total*100);
+    return known({total_bytes:total,available_bytes_estimate:Math.floor(total*percent/100),available_percent:percent,method:'windows_available_physical_memory' as const});
+   }
+   return unknown();
+  }catch{return unknown();}
+ };
  const processTask=async()=>{
   try{
+   if(platform==='win32'){
+    const shell=win32.join(process.env.SystemRoot??'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+    const output=await read(shell,['-NoProfile','-NonInteractive','-Command',`ConvertTo-Json -InputObject @(Get-Process -Id ${pids.join(',')} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64) -Compress`]);
+    const rows:unknown=JSON.parse(output);
+    if(!Array.isArray(rows))throw new Error('进程采样结构无效');
+    return pids.map(pid=>{
+     const matches=rows.filter(row=>row&&typeof row==='object'&&row.Id===pid);
+     return{pid,rss_bytes:matches.length===1&&positiveInteger(matches[0].WorkingSet64)?known(matches[0].WorkingSet64):unknown()};
+    });
+   }
    const text=await read('/bin/ps',['-p',pids.join(','),'-o','pid=,rss=']);
    const lines=text.split('\n').filter(line=>line.trim());
    return pids.map(pid=>{

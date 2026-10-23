@@ -74,7 +74,7 @@ function projectSnapshot(raw:any):ResourceSnapshot {
  let system:ResourceSnapshot['system']={status:'unknown'};
  if(raw.system?.status==='known'){
   const v=raw.system.value;
-  if(!v||!integer(v.total_bytes)||v.total_bytes<=0||!integer(v.available_bytes_estimate)||!integer(v.available_percent)||v.available_percent>100||v.available_bytes_estimate!==Math.floor(v.total_bytes*v.available_percent/100)||v.method!=='macos_memory_pressure_percentage')throw new Error('invalid');
+  if(!v||!integer(v.total_bytes)||v.total_bytes<=0||!integer(v.available_bytes_estimate)||!integer(v.available_percent)||v.available_percent>100||v.available_bytes_estimate!==Math.floor(v.total_bytes*v.available_percent/100)||!['macos_memory_pressure_percentage','windows_available_physical_memory'].includes(v.method))throw new Error('invalid');
   system={status:'known',value:{total_bytes:v.total_bytes,available_bytes_estimate:v.available_bytes_estimate,available_percent:v.available_percent,method:v.method}};
  }else if(raw.system?.status!=='unknown')throw new Error('invalid');
  const processes=raw.processes.map((p:any)=>{
