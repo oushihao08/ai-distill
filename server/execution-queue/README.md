@@ -33,6 +33,7 @@ SQLite使用WAL/FULL同步及短事务，目录0700、文件0600；不能放在�
 - `GET /api/system/execution-queue`：本机模式、executor_id和轻量队列状态；不返回结果BLOB、租约令牌或正文。
 - `POST /api/system/execution-queue/adopt`：`{jobs:[{id,kind}]}`，kind为step/skill/library/hook/remote；1–100个明确的旧waiting/queued任务。已属于其他执行器、正在运行或同步钩子拒绝。route/lane由业务记录解析，不接受客户端伪造。
 - `POST /api/system/execution-queue/:id/cancel`：只取消本机记录；返回cancel_requested与cloud_synced。其他机请求应通过明确业务取消入口通知，不能冒充本机已停止。
+- `POST /api/system/execution-queue/:id/reconcile-failed`：仅供本机故障对账，提交 `{failure_event_id,failure_instance_id}`。要求本机队列任务已停止且处于`needs_review`、存在未决调用、指定worker实例的结构化日志含匹配的`attempt.failed`且没有后续成功事件，同时PG中的归属、代次、最新attempt和step仍匹配并处于`running`；全部通过后在一个事务内将attempt和step结算为`failed`，不重放调用。保留供应商的可重试标记，但设置本次`retryable=false`以阻止隐式重试；日志扫描受50文件/20 MiB限制，超限或证据不完整即拒绝。
 - `GET /api/monitor`：local_execution_queue提供本机实际状态；活动任务过滤为本机正在执行，待登记/同步/核实单列；全局业务列表仍共享，不按本机队列隐藏其他机成果。
 
 CLI继续调用原HTTP派发入口，不直连SQLite或PG。新的本机队列管理尚无独立CLI命令，不能编造命令。
