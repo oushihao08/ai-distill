@@ -8,7 +8,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `storage.ts` | 原件内容寻址安装、受管路径/符号链接边界和字节摘要校验；提取、旧导入及代称计划共用`insertLibraryTextBlob()`，统一正文/MIME/UTF8字节数复用校验 |
-| `service.ts` | 包资料、不可变文件集合、上传幂等、逻辑归档/恢复、历史与使用查询；复用原件时将核验字节恢复至已登记的受管路径，不更新不可变blob记录 |
+| `service.ts` | 包资料、不可变文件集合、上传幂等、逻辑归档/恢复、历史与使用查询；复用原件时核验字节摘要与大小，只修复不可变文件对象的受管存储路径 |
 | `settings.ts` | 共用SQLite配置数据库；首次读取初始化并持久化默认模板，每次派发重新读取；乐观版本控制、事务保存，不保存密钥 |
 | `jobs.ts` | 入队时读取共用设置并冻结；请求重放、执行lane、租约、取消、失租和终态事务 |
 | `runner.ts` | 领取后的调度、心跳、取消与截止；入库和提取执行；`executeExtraction`/`runClaimedJob`支持隔离行为验证 |
@@ -32,6 +32,8 @@
 | `uses.test.ts` | 原件集合身份、跨期占用、原期返修、提交证据和事件摘要边界 |
 
 原件位于`<STORAGE_DIR>/material-library/blobs/`；共用处理设置位于同目录下私有`processing-settings.sqlite3`；DOCX预览缓存位于`previews/`，转换临时目录和用户profile使用后删除。所有SQLite配置供同一STORAGE_DIR的本机API实例共用；未承诺多台独立API自动同步本地配置。worker读取已冻结的PostgreSQL任务快照，不在执行中重新读取本地共用配置。
+
+文件对象的摘要、大小、MIME、存储目标和类型保持不可变；在上传端已核验完全相同的字节并写入受管路径后，允许修复该文件对象的`storage_path`定位值。数据库迁移`049_allow_verified_library_blob_path_repair.sql`仅开放此单字段更新，不开放文件对象删除或其他字段修改。
 
 Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symlinks-main --preserve-symlinks validate-plan.mjs`，避免MXC默认拒绝读取父目录时运行时真实路径探测失败。其他平台继续使用`bun validate-plan.mjs`。调用命令由程序提供，不修改数据库中的业务脱敏规则。
 

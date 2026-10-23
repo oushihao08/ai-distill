@@ -106,6 +106,20 @@ describe('命令范围和结果', () => {
     const result=await runCommand(['step','dispatch','author_question','--project',project,'--ids',question],client);
     expect(result.outcome).toBe('partial');
   });
+  test('删除题目要求匹配期次与精确标题，并拒绝存在活动尝试的题目', async () => {
+    const {client,calls}=fixture((url,init)=>{
+      if(url.pathname===`/api/workflows/${question}`&&init?.method==='DELETE')return{deleted:true};
+      if(url.pathname===`/api/workflows/${question}`)return{workflow:{id:question,project_id:project,workflow_kind:'question',title:'重复题目'},attempts:[]};
+      return{deleted:true};
+    });
+    await runCommand(['question','delete','--project',project,'--workflow',question,'--confirm-title','重复题目'],client);
+    expect(calls.at(-1)?.init?.method).toBe('DELETE');
+    const mismatch=await runCommand(['question','delete','--project',project,'--workflow',question,'--confirm-title','错误题目'],client).catch(error=>error);
+    expect(mismatch).toBeInstanceOf(Error);
+    expect(calls.filter(call=>call.init?.method==='DELETE')).toHaveLength(1);
+    const activeClient=fixture(url=>({workflow:{id:question,project_id:project,workflow_kind:'question',title:'重复题目'},attempts:[{status:'waiting'}]})).client;
+    await expect(runCommand(['question','delete','--project',project,'--workflow',question,'--confirm-title','重复题目'],activeClient)).rejects.toThrow('活动尝试');
+  });
   test('所有可见步骤使用稳定身份，不依赖显示顺序', async () => {
     for(const [key,ordinal] of [['receive_materials',1],['redact_materials',9],['author_question',4],['model_answer',5],['independent_score',6],['accept_or_revise',7],['publish_export',8]] as const) {
       const {client,calls}=fixture(()=>({results:[{workflow_id:question,status:'queued',attempt_id:attempt}]}));

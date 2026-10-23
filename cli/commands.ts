@@ -60,6 +60,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   project materials update --project UUID --link UUID --version N [--redaction UUID | --revision UUID] [--position N]
   project materials remove|restore --project UUID --link UUID --version N
   project materials question --project UUID --link UUID --version N (--redaction UUID | --revision UUID) --title 名称 --request-key UUID [--role 角色] [--scenario 场景] [--level L2|L3|L4|L5] [--direction 方向] [--tags a,b]
+  question delete --project UUID --workflow UUID --confirm-title 精确题目名（软删除单题；有活动尝试时拒绝）
   project material use update --project UUID --use UUID --version N --status in_use|submitted --reason 原因 [--evidence-file JSON]
   project legacy-materials list --project UUID | project legacy-materials import --project UUID --workflow UUID --request-key UUID [--apply --digest SHA256] | project legacy-materials activate --project UUID --import UUID
   library processing show | library processing update --version N --file JSON
@@ -160,7 +161,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'library file download':['file','out'],
       'library processing show':[],'library processing update':['version','file'],
       'material-package list':['project'],'material-package versions':['workflow'],
-      'question list':['project'],'question show':['workflow'],'question create':['material-package','redaction-attempt','title','scenario','role','level','direction'],'workflow status':['project','ids','all'],
+      'question list':['project'],'question show':['workflow'],'question delete':['project','workflow','confirm-title'],'question create':['material-package','redaction-attempt','title','scenario','role','level','direction'],'workflow status':['project','ids','all'],
       'material text':['workflow','material','redacted-only'],'rules list':['project'],'rules file':['project','path'],
       'models catalog':[],'models show':['project'],'attempt show':['attempt'],'attempt wait':['ids','timeout','full'],
       'result list':[],'result show':['workflow'],'step list':[],'step dispatch':['project','ids','all'],
@@ -388,6 +389,16 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         data=await applySettings(projectId,settings);break;
       }
       case 'question list': data=object(await get(`/api/projects/${uuid('project')}`),'项目').workflows?.filter((flow:any)=>flow.workflow_kind!=='material_package')??[]; break;
+      case 'question delete': {
+        const projectId=uuid('project'),workflowId=uuid('workflow');
+        const detail=object(await get(`/api/workflows/${workflowId}`),'题目');
+        const workflow=detail.workflow;
+        if(workflow?.workflow_kind!=='question'||workflow.project_id!==projectId)throw new CliError('题目不属于指定期次或不是题目工作流；未删除任何数据');
+        if(required('confirm-title')!==workflow.title)throw new CliError('确认题目名与当前名称不完全一致；未删除任何数据');
+        if(!Array.isArray(detail.attempts))throw new CliError('题目响应缺少尝试状态；未删除任何数据',{kind:'invalid_response'});
+        if(detail.attempts.some((attempt:any)=>['waiting','running'].includes(attempt.status)))throw new CliError('题目仍有活动尝试；未删除任何数据');
+        data=await del(`/api/workflows/${workflowId}`);break;
+      }
       case 'question create': {
         const level=flags.has('level')?required('level'):null;
         if(level!==null&&!['L2','L3','L4','L5'].includes(level))throw new CliError('目标等级须为 L2 至 L5');
