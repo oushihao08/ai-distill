@@ -44,6 +44,17 @@ export function workflowStepReadiness(ordinal:number,steps:Map<number,WorkflowSt
  if(!['waiting','failed'].includes(status)&&!(status==='succeeded'&&retryingRepair))return{ready:false,reason:current.active?'此步骤已有排队或运行任务':status==='succeeded'?'此步骤已完成':'当前步骤状态不可执行'};
  if(current.active)return{ready:false,reason:'此步骤已有排队或运行任务'};
  if(ordinal===5){const issue=workAnswerCapabilityIssue(steps.get(4)?.result);if(issue)return{ready:false,reason:issue};}
+ if(ordinal===7){
+  // 只检查是否有可比较的最终分数，不复算逐项、不重新引入已移除的评分门槛。
+  const scoring=steps.get(6),models=scoring?.result?.models;
+  const numeric=(value:unknown)=>typeof value==='number'&&Number.isFinite(value);
+  const comparable=(model:any)=>model?.score_contract==='model_report_v1'
+   ?numeric(model.evaluation_percent)
+   :numeric(model?.score)&&numeric(model?.max_score)&&model.max_score>0;
+  const expected=Array.isArray(models)?models.filter((model:any)=>!['failed','skipped'].includes(model?.answer_status)):[];
+  const single=scoring?.result?.report??scoring?.result;
+  if(!(expected.length?expected.every(comparable):comparable(single)))return{ready:false,reason:'尚未取得明确评分分数，请检查评分记录或草稿'};
+ }
  if(ordinal===8){
   const decision=steps.get(7);
   if(!decision||!decision.enabled||decision.status!=='succeeded'||decision.result?.decision!=='accepted')return{ready:false,reason:'题目未达标，不能归档'};

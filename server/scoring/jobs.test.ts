@@ -304,16 +304,15 @@ test('local scoring failure restores without grader and without resetting curren
  }finally{queue.close();if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
 });
 
-test('新legacy Codex评分冻结交卷自检，API及旧尝试不补造协议',async()=>{
+test('新legacy评分不再冻结Python交卷自检',async()=>{
  for(const provider of ['codex','api'] as const){
   const f=fake({provider});await enqueueScore(f.pool,'workflow');
   const frozen=JSON.parse(f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!.values[2]);
-  if(provider==='codex')expect(frozen.execution_instructions.legacy_text_preflight).toBe('text_v1');
-  else expect(frozen.execution_instructions).not.toHaveProperty('legacy_text_preflight');
+  expect(frozen.execution_instructions).not.toHaveProperty('legacy_text_preflight');
  }
 });
 
-test('legacy worker按冻结标记传递自检，旧任务不变，篡改脚本摘要拒绝调用',async()=>{
+test('legacy worker只核对历史摘要但不再派发自检，篡改摘要仍拒绝',async()=>{
  const root=await mkdtemp(join(tmpdir(),'legacy-preflight-worker-'));
  try{
   for(const version of ['old','new','tampered']){
@@ -326,7 +325,7 @@ test('legacy worker按冻结标记传递自检，旧任务不变，篡改脚本�
     return {raw_text:'无有效结果',report:{},session_id:'fixture',usage:null,duration_ms:1};
    }) as any,undefined,async()=>{});
    expect(called).toBe(version!=='tampered');
-   if(called)expect(preflight).toBe(version==='new');
+   if(called)expect(preflight).toBe(false);
   }
  }finally{await rm(root,{recursive:true,force:true});}
 });

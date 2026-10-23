@@ -5,7 +5,7 @@ import {test,expect} from 'bun:test';
 import {decideAcceptance,type AcceptanceInput} from './acceptance';
 const valid:AcceptanceInput={question_current:true,config:{required_models:['qwen','kimi'],minimum_score_by_model:{qwen:50,kimi:50}},models:['qwen','kimi'].map(model=>({model,answer_status:'succeeded',score:9,max_score:20}))};
 test('新评分仅比较模型明确给出的指标，不由负原始分或否决改算',()=>{
- const input={...valid,models:valid.models.map(m=>({...m,score_contract:'model_report_v1',score_valid:true,raw_score:-7,full_score:100,evaluation_percent:12,veto_triggered:true}))} as any;
+ const input={...valid,models:valid.models.map(m=>({...m,score_contract:'model_report_v1',score_valid:false,raw_score:-7,full_score:100,evaluation_percent:12,veto_triggered:true}))} as any;
  expect(decideAcceptance(input)).toMatchObject({decision:'accepted',model_scores:{qwen:{percentage:12,raw_score:-7,veto_triggered:true,score_contract:'model_report_v1'}}});
  expect(decideAcceptance({...input,models:input.models.map((m:any)=>({...m,evaluation_percent:null}))}).decision).toBe('waiting');
  expect(decideAcceptance({...input,models:input.models.map((m:any)=>({...m,evaluation_percent:50}))}).decision).toBe('repair');
@@ -30,7 +30,7 @@ test('comparison is not rounded to the displayed two decimals',()=>{
 });
 test('configured mean uses every required model and accepts equality without rounding',()=>{
  const config={required_models:['qwen','kimi'],minimum_score_by_model:{qwen:55,kimi:55},aggregation:{mode:'mean_at_most' as const,model_count:2,threshold:55}};
- const models=[{model:'qwen',answer_status:'succeeded' as const,score_status:'succeeded' as const,score_valid:true,score:50,max_score:100},{model:'kimi',answer_status:'succeeded' as const,score_status:'succeeded' as const,score_valid:true,score:60,max_score:100}];
+ const models=[{model:'qwen',answer_status:'succeeded' as const,score_status:'succeeded' as const,score_valid:false,score:50,max_score:100},{model:'kimi',answer_status:'succeeded' as const,score_status:'succeeded' as const,score_valid:false,score:60,max_score:100}];
  expect(decideAcceptance({question_current:true,config,models})).toMatchObject({decision:'accepted',aggregate:{model_count:2,mean_percentage:55,threshold:55},model_scores:{qwen:{status:'included'},kimi:{status:'included'}}});
  expect(decideAcceptance({question_current:true,config,models:models.map(item=>({...item,score:item.model==='qwen'?50:60.02}))}).decision).toBe('repair');
  expect(decideAcceptance({question_current:true,config,models:models.slice(0,1)}).decision).toBe('waiting');

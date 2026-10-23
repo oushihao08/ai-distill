@@ -17,6 +17,9 @@ export interface ModelAssessment {
  model: string;
  answer_status: 'waiting'|'running'|'succeeded'|'failed'|'skipped';
  score_status?: 'waiting'|'running'|'succeeded'|'failed';
+ /** 当前题面、答案及评分的绑定是否匹配，避免把旧题分数用于新题。 */
+ source_current?: boolean;
+ /** 历史报告校验标记，仅兼容旧输入；不参与达标判断。 */
  score_valid?: boolean;
  score?: number;
  max_score?: number;
@@ -47,21 +50,16 @@ export function decideAcceptance(input:AcceptanceInput):AcceptanceResult{
   if(result.answer_status!=='succeeded'){
    scores[model]={status:'pending',threshold};pending=true;reasons.push(result.answer_status==='skipped'?`required_model_unscored:${model}`:`required_model_incomplete:${model}`);continue;
   }
-  if(result.score_valid===false){
-   scores[model]={status:'invalid',threshold};pending=true;reasons.push(`score_invalid_or_disputed:${model}`);continue;
+  if(result.source_current===false){
+   scores[model]={status:'invalid',threshold};pending=true;reasons.push(`score_source_binding_mismatch:${model}`);continue;
   }
-  if(result.score_status==='failed'){
-   scores[model]={status:'pending',threshold};pending=true;reasons.push(`required_model_score_failed:${model}`);continue;
-  }
-  if(result.score_status&&result.score_status!=='succeeded'){
+  // 活动评分未结束时不采用中间分数；终态只比较模型分数，不再附加报告审查条件。
+  if(result.score_status==='running'||result.score_status==='waiting'){
    scores[model]={status:'pending',threshold};pending=true;reasons.push(`required_model_score_incomplete:${model}`);continue;
-  }
-  if(result.score_status==='succeeded'&&result.score_valid!==true){
-   scores[model]={status:'pending',threshold};pending=true;reasons.push(`required_model_score_validation_missing:${model}`);continue;
   }
   if(result.score_contract==='model_report_v1'){
    const percentage=result.evaluation_percent;
-   if(result.score_valid!==true||!validScore(percentage)||percentage<0||percentage>100){scores[model]={status:'pending',threshold};pending=true;reasons.push(`score_missing_or_invalid:${model}`);continue;}
+   if(!validScore(percentage)||percentage<0||percentage>100){scores[model]={status:'pending',threshold};pending=true;reasons.push(`score_missing_or_invalid:${model}`);continue;}
    const status=aggregation?'included':percentage<threshold?'passed':'not_passed';
    scores[model]={status,score_contract:'model_report_v1',raw_score:result.raw_score??null,full_score:result.full_score??null,veto_triggered:result.veto_triggered??null,percentage,threshold};
    if(aggregation)includedPercentages.push(percentage);else if(status==='not_passed')reasons.push(`at_or_above_model_threshold:${model}`);

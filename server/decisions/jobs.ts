@@ -8,6 +8,7 @@ import {HTTPException} from 'hono/http-exception';
 import {buildAcceptanceConfig,decideAcceptance,type AcceptanceConfig,type AcceptanceInput,type ModelAssessment} from './acceptance';
 import {validateAcceptanceConfig,validateAcceptancePolicy} from './config';
 import {scoreRubricBindingText} from '../scoring/validate';
+import {projectReportedScore} from './score-projection';
 import {createHash} from 'node:crypto';
 import {answerModelSetDigest,readProjectModelSet} from '../answer-models/model-set';
 import {classifyLogError,enterLogContext,logEvent} from '../logging';
@@ -37,7 +38,10 @@ export async function readAcceptanceSnapshot(db:PoolClient,workflowId:string,con
  const question=await db.query("SELECT a.id,a.status,a.input,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 WHERE a.workflow_id=$1 AND a.ordinal=4 ORDER BY a.attempt DESC LIMIT 1",[workflowId]);
  const answers=await db.query("SELECT DISTINCT ON (COALESCE(input->>'model_id',config->>'model')) id,COALESCE(input->>'model_id',config->>'model') AS model,status,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND ($2::text IS NULL OR input->>'model_set_digest'=$2) ORDER BY COALESCE(input->>'model_id',config->>'model'),attempt DESC",[workflowId,modelSetDigest??null]);
  const scores=await db.query("SELECT id,input->'context'->'binding'->>'answer_attempt_id' AS answer_attempt_id,input->'context'->'binding' AS input_binding,status,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 ORDER BY attempt DESC",[workflowId]);
- return {config,question:question.rows[0],answers:answers.rows,scores:scores.rows};
+ // 只投影模型已给出的分数；历史校验争议不再成为额外达标门槛，不重跑模型或改写原报告。
+ const q=question.rows[0]?.result;
+ const effectiveScores=scores.rows.map(score=>({...score,result:projectReportedScore(score.result,q?.rubric??[],q?.scoring_policy?.contract==='model_report_v1')}));
+ return {config,question:question.rows[0],answers:answers.rows,scores:effectiveScores};
 }
 export function buildAcceptanceInput(snapshot:{config:AcceptanceConfig;question?:{id:string;status:string;input?:any;result?:any};answers:{id:string;model:string;status:string;result?:any}[];scores:{id?:string;answer_attempt_id:string;input_binding?:any;status:string;result?:any}[]}):AcceptanceInput{
  const questionAttempt=snapshot.question;
@@ -52,9 +56,9 @@ export function buildAcceptanceInput(snapshot:{config:AcceptanceConfig;question?
   const binding=result?.binding??score?.input_binding;
   let rubricDigest='';try{rubricDigest=createHash('sha256').update(scoreRubricBindingText(questionResult?.rubric??[],questionResult?.scoring_policy)).digest('hex');}catch{rubricDigest='';}
   const modelReport=questionResult?.scoring_policy?.contract==='model_report_v1';
-  const reportMatches=!modelReport||(report?.contract==='model_report_v1'&&result?.validation?.mode==='model_report_v1');
   const scoreMatches=!!answerMatches&&!!score&&binding?.answer_attempt_id===answer.id&&binding?.question_version===questionResult?.question_version&&binding?.rubric_version===questionResult?.rubric_version&&binding?.input_digest===answer.result?.input_digest&&binding?.answer_sha256===answer.result?.answer_sha256&&binding?.rubric_digest===rubricDigest&&answer.result?.answer_sha256===createHash('sha256').update(answer.result?.text??'').digest('hex');
-  return {model,answer_status:!answer?'waiting':!answerMatches?'failed':answer.status as ModelAssessment['answer_status'],score_status:score?.status as ModelAssessment['score_status'],score_valid:scoreMatches&&reportMatches&&result?.validation?.valid===true,...(modelReport?{score_contract:'model_report_v1' as const,evaluation_percent:report?.summary?.evaluation_percent??null,raw_score:report?.summary?.raw_score??null,full_score:report?.summary?.full_score??null,veto_triggered:report?.summary?.veto_triggered??null}:{}),score:typeof report?.total==='number'?report.total:undefined,max_score:typeof report?.max_score==='number'?report.max_score:undefined};
+  // 来源绑定与历史报告审查标记分离；只有当前来源和模型分数参与判断。
+  return {model,answer_status:!answer?'waiting':!answerMatches?'failed':answer.status as ModelAssessment['answer_status'],score_status:score?.status as ModelAssessment['score_status'],source_current:scoreMatches,...(modelReport?{score_contract:'model_report_v1' as const,evaluation_percent:report?.summary?.evaluation_percent??null,raw_score:report?.summary?.raw_score??null,full_score:report?.summary?.full_score??null,veto_triggered:report?.summary?.veto_triggered??null}:{}),score:typeof report?.total==='number'?report.total:undefined,max_score:typeof report?.max_score==='number'?report.max_score:undefined};
  });
  return {question_current:current,config:snapshot.config,models};
 }

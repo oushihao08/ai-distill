@@ -62,7 +62,7 @@ export async function enqueueScore(pool:Pool,id:string){
   const hooks=skill?await freezeStageHooks(dirname(skill.path),config.workflow):undefined;
   for(const answerId of answerIds){
    const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];if(context.content_contract==='work_legal_v1'&&context.scoring_policy?.contract==='model_report_v1')context.candidate_quote_check='literal_v1';buildAnonymousInput(context);
-   const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider,context.scoring_policy?.contract,context.candidate_quote_check,true),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
+   const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider,context.scoring_policy?.contract,context.candidate_quote_check),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
@@ -124,7 +124,7 @@ async function automaticallyJudgeAfterScoring(job:any,status:string,judge:(workf
 }
 /**
  * 领取一份答案的评分任务，通过冻结的Codex/API配置评分并校验上下文摘要和报告结构。
- * 结果写入前再次确认版本绑定；非空文本可记执行成功但validation无效；执行成功与成绩有效分开，无效成绩不参与达标。
+ * 结果写入前再次确认版本绑定；legacy必须返回可用最终总分才记成功；model_report保留独立的执行与结构状态。
  */
 export async function runNextScore(pool: Pool, root: string, grade: Grader = runIndependentScore, signal?: AbortSignal, judgeAcceptance: (workflowId: string) => Promise<unknown> = (workflowId) => runAcceptance(pool, workflowId), provider: 'codex' | 'api' = 'codex', workerMode: StageWorkerMode = 'all', workflowIds?: string[]) {
     if (signal?.aborted)
@@ -229,8 +229,8 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
         if (executionProvider === 'api' && (!config.api || typeof config.api.model !== 'string'))
             throw new Error('invalid frozen config');
         failurePhase = 'agent_execution';
-        const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'scoring' as const, binding_digest: createHash('sha256').update(canonicalJson({ input: job.input.digest, config: job.config })).digest('hex'), input: { files: buildScoreFiles(buildAnonymousInput({ ...job.input.context, project_name: undefined, question_id: undefined, project_prompt: undefined, project_rules: undefined }), legacyPreflight) }, hooks: job.input.hooks, signal };
-        const invocation = await executeWithStageHooks({ ...hookContext, runMain: additions => runExternalCall({ attempt_id: job.id, operation: 'score' }, call_id => grade(job.input.context, executionProvider === 'api' ? { hook_additions: additions, config: config.api, step_prompt: job.input.context.step_prompt ?? config.prompt ?? DEFAULT_STEP_PROMPTS[6], model_report_reading_instructions: frozenReading ?? '', signal, call_id, timeout_ms: 1800000 } : { hook_additions: additions, legacy_text_preflight: legacyPreflight, root: join(directory, 'private'), model: config.model, reasoning_effort: config.reasoning_effort, step_prompt: job.input.context.step_prompt ?? config.prompt ?? DEFAULT_STEP_PROMPTS[6], model_report_reading_instructions: frozenReading ?? '', signal, call_id, timeout_ms: 1800000 })), outputForHooks: value => ({ raw_text: value.raw_text ?? '', report: value.report }) });
+        const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'scoring' as const, binding_digest: createHash('sha256').update(canonicalJson({ input: job.input.digest, config: job.config })).digest('hex'), input: { files: buildScoreFiles(buildAnonymousInput({ ...job.input.context, project_name: undefined, question_id: undefined, project_prompt: undefined, project_rules: undefined }), false) }, hooks: job.input.hooks, signal };
+        const invocation = await executeWithStageHooks({ ...hookContext, runMain: additions => runExternalCall({ attempt_id: job.id, operation: 'score' }, call_id => grade(job.input.context, executionProvider === 'api' ? { hook_additions: additions, config: config.api, step_prompt: job.input.context.step_prompt ?? config.prompt ?? DEFAULT_STEP_PROMPTS[6], model_report_reading_instructions: frozenReading ?? '', signal, call_id, timeout_ms: 1800000 } : { hook_additions: additions, legacy_text_preflight: false, root: join(directory, 'private'), model: config.model, reasoning_effort: config.reasoning_effort, step_prompt: job.input.context.step_prompt ?? config.prompt ?? DEFAULT_STEP_PROMPTS[6], model_report_reading_instructions: frozenReading ?? '', signal, call_id, timeout_ms: 1800000 })), outputForHooks: value => ({ raw_text: value.raw_text ?? '', report: value.report }) });
         if (signal?.aborted)
             throw new Error('cancelled');
         failurePhase = 'result_validation';
@@ -264,7 +264,8 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
                 throw new Error('obsolete');
             await registerAsyncAfterHooks({ ...hookContext, pool: tx }, { raw_text: invocation.raw_text ?? '', report: invocation.report });
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)', [crypto.randomUUID(), job.workflow_id, job.id, 'score_report', relative(resolve(root), path), createHash('sha256').update(bytes).digest('hex'), bytes.length]);
-            const status = textReturned || validation.valid ? 'succeeded' : 'failed', error = textReturned || validation.valid ? null : '评分存在争议或证据/结构无效，详见校验结果';
+            const succeeded = isModelReport ? textReturned || validation.valid : validation.valid;
+            const status = succeeded ? 'succeeded' : 'failed', error = succeeded ? null : isModelReport ? '评分结果缺失，详见报告记录' : '评分未返回可用最终总分，请重新评分；原文已保留';
             await tx.query('UPDATE ai_distill.step_attempts SET status=$2,result=$3,session_id=$4,error=$5,finished_at=now() WHERE id=$1', [job.id, status, JSON.stringify(publication), invocation.session_id, error]);
             job.status = status;
             job.result = publication;

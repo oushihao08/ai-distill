@@ -1,6 +1,6 @@
 /**
  * 职责：评分报告程序校验：核对版本绑定、逐项证据、覆盖范围和分数合计，不替代模型判断。
- * 关键方法与用途：`extractTextScore()` 校验legacy逐项与总分；`extractModelReport()`提取新契约结构（不复算）；`validateScore()` 兼容旧结构化报告校验，不替代评分模型的专业判断。
+ * 关键方法与用途：`extractTextScore()`读取legacy明确报告的评分合计；`extractModelReport()`提取新契约结构（不复算）；`validateScore()` 兼容旧结构化报告校验，不替代评分模型的专业判断。
  * 使用场景：评分 executor 与上下文校验在发布评分结果前调用。
  */
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
@@ -62,12 +62,12 @@ export function extractModelReport(text:string,rubric:{id:string}[],candidateAns
  const report:ModelReport={contract:'model_report_v1',items:raw.items.map(item=>({id:item.id,judgment:item.judgment,score_delta:item.score_delta,reason:item.reason,...(candidateAnswer!==undefined?{answer_quotes:[...item.answer_quotes]}:{})})),summary:{raw_score:summary.raw_score as number|null,full_score:summary.full_score as number|null,evaluation_percent:summary.evaluation_percent as number|null,veto_triggered:summary.veto_triggered as boolean|null}};
  return result(report,[]);
 }
-/** 回复返回后提取明确总分；有歧义时保留原文，不改分或重新评分。 */
+/** 提取模型明确报告的总分，兼容草稿提交说明中的合计；不复算逐项或推测缺失分数。 */
 export function extractTextScore(text:string,rubric:RubricItem[]){
  const max_score=Number(rubric.reduce((sum,item)=>sum+item.max_score,0).toFixed(8));
  const candidates=new Set<number>();
  for(const rawLine of text.split('\n')){
-  // Markdown 标题与加粗只影响展示；编号、满分和合计仍严格核对。
+  // Markdown 标题与加粗只影响展示；只读取明确总分，不检查逐项格式、重复、合计或整数分。
   const line=rawLine.replace(/\*\*/g,'').trim().replace(/^#{1,6}\s+/,'');
   if(/假设|如果|若|补充后|修订后|改进后|例如|可能达到/.test(line))continue;
   const match=line.match(/^(?:最终总分|最终得分|总分|合计得分|得分)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:[／/]\s*(\d+(?:\.\d+)?)\s*分?|分\s*[（(]?满分\s*(\d+(?:\.\d+)?)\s*分?[）)]?)\s*$/);
@@ -75,41 +75,15 @@ export function extractTextScore(text:string,rubric:RubricItem[]){
    const denominator=Number(match[2]??match[3]);
    if(denominator===max_score)candidates.add(Number(match[1]));
   }
+  // 历史Agent可能只在提交说明中报告合计；这是模型已给出的分数，不要求额外审查正文。
+  for(const summary of line.matchAll(/(?:最终总分|最终得分|评分合计|逐项(?:评分|分数|计分)?合计|逐项复核后合计|复算总分|汇总|总分|合计得分|合计)\s*(?:已(?:人工|手动)?(?:核对|复核))?\s*(?:为|是|[:：])?\s*(\d+(?:\.\d+)?)\s*[／/]\s*(\d+(?:\.\d+)?)/g)){
+   if(Number(summary[2])===max_score)candidates.add(Number(summary[1]));
+  }
  }
  const value=candidates.size===1?[...candidates][0]:undefined;
  const issues:string[]=[];
- let itemTotal=0;
- if(rubric.length){
-  const byId=new Map(rubric.map(item=>[item.id,item]));
-  const found=new Set<string>();
-  const ordered=[...rubric].sort((left,right)=>right.id.length-left.id.length);
-  const linePattern=(id:string)=>new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\s*[：:]\\s*(?:得分\\s*)?(\\d+(?:\\.\\d+)?)\\s*[／/]\\s*(\\d+(?:\\.\\d+)?)(?:\\s*分)?(?:\\s|[，。；;|]|$)`);
-  const totalLabels=new Set(['最终总分','最终得分','总分','合计得分','得分']);
-  for(const rawLine of text.split('\n')){
-   // Markdown 标题与加粗只影响展示；编号、满分和合计仍严格核对。
-  const line=rawLine.replace(/\*\*/g,'').trim().replace(/^#{1,6}\s+/,'');
-   const item=ordered.find(candidate=>line.startsWith(`${candidate.id}：`)||line.startsWith(`${candidate.id}:`));
-   if(item){
-    const match=line.match(linePattern(item.id));
-    if(!match||found.has(item.id)){
-     issues.push(`${item.id}：条目评分格式缺失或重复`);
-     continue;
-    }
-    found.add(item.id);
-    const score=Number(match[1]),denominator=Number(match[2]);
-    if(item.max_score===1&&score!==0&&score!==1){issues.push(`${item.id}：每项满分1分且得分只能为0或1`);continue;}
-    if(denominator!==item.max_score||score<0||score>item.max_score){issues.push(`${item.id}：得分或满分与本题rubric不符`);continue;}
-    itemTotal+=score;
-    continue;
-   }
-   const unknown=line.match(/^(.{1,160}?)\s*[：:]\s*(?:得分\s*)?(\d+(?:\.\d+)?)\s*[／/]\s*(\d+(?:\.\d+)?)(?:\s*分)?(?:\s|[，。；;|]|$)/);
-   if(unknown&&!totalLabels.has(unknown[1].trim())&&!byId.has(unknown[1].trim()))issues.push(`评分条目ID不属于本题rubric：${unknown[1].trim()}`);
-  }
-  if(found.size!==byId.size)issues.push('rubric条目评分缺失或重复');
- }
  const totalValid=value!==undefined&&Number.isFinite(value)&&value>=0&&value<=max_score;
  if(!totalValid)issues.push(candidates.size>1?'评分原文存在多个不同总分':'未能从评分原文明确提取合法总分');
- if(totalValid&&rubric.length&&Math.abs(value-itemTotal)>1e-8)issues.push('最终总分与逐项评分合计不一致');
  const valid=totalValid&&issues.length===0;
  return {valid,total:valid?value:null,max_score,issues,mode:'text_score_extraction' as const};
 }

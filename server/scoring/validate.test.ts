@@ -52,30 +52,27 @@ test('quote from materials cannot substitute answer evidence for positive score'
 test.each([null,{}, {binding,items:'bad'}, {binding,items:[],disputes:'bad'}])('malformed report returns invalid without throwing',value=>{expect(validateScore(value,context).valid).toBe(false);});
 test('positive score cannot also claim the required answer was missing',()=>{expect(validateScore({...report,items:[{...report.items[0],missing:true},report.items[1]]},context).valid).toBe(false);});
 
-test('text scoring requires one binary score row for every unit-weight rubric item',()=>{
+test('text scoring extracts the final score without item-level gates',()=>{
  const text='one：1 / 1分。证据完整。\ntwo：0 / 1分。未找到。\n最终总分：1 / 2 分';
  expect(extractTextScore(text,context.rubric)).toMatchObject({valid:true,total:1,max_score:2,issues:[]});
 });
 
-test('text scoring rejects partial points even when the final total is extractable',()=>{
+test('text scoring accepts the final score without binary-point validation',()=>{
  const text='one：0.5 / 1分。部分满足。\ntwo：0 / 1分。未找到。\n最终总分：0.5 / 2 分';
- expect(extractTextScore(text,context.rubric)).toMatchObject({valid:false,total:null,max_score:2});
- expect(extractTextScore(text,context.rubric).issues.join(' ')).toContain('只能为0或1');
+ expect(extractTextScore(text,context.rubric)).toMatchObject({valid:true,total:0.5,max_score:2});
 });
 
-test('text scoring rejects a final total when a unit-weight rubric item is missing',()=>{
+test('text scoring accepts a final total even when rubric rows are missing',()=>{
  const text='one：1 / 1分。证据完整。\n最终总分：1 / 2 分';
- expect(extractTextScore(text,context.rubric)).toMatchObject({valid:false,total:null,max_score:2});
- expect(extractTextScore(text,context.rubric).issues.join(' ')).toContain('条目评分缺失');
+ expect(extractTextScore(text,context.rubric)).toMatchObject({valid:true,total:1,max_score:2});
 });
 
-test('text scoring validates exact IDs and weighted rows for every rubric',()=>{
+test('text scoring does not use rubric row IDs as acceptance gates',()=>{
  const rubric=[{id:'1',max_score:2,criterion:'两分项'},{id:'10',max_score:1,criterion:'单位分项'}];
  const valid='1：2 / 2分。满足。\n10：0 / 1分。未找到。\n最终总分：2 / 3 分';
  expect(extractTextScore(valid,rubric)).toMatchObject({valid:true,total:2,max_score:3,issues:[]});
  const mismatched='R1：2 / 2分。满足。\nR10：0 / 1分。未找到。\n最终总分：2 / 3 分';
- expect(extractTextScore(mismatched,rubric).valid).toBe(false);
- expect(extractTextScore(mismatched,rubric).issues.join(' ')).toContain('ID不属于本题rubric');
+ expect(extractTextScore(mismatched,rubric).valid).toBe(true);
 });
 
 
@@ -83,6 +80,6 @@ test('Markdown headings are presentation, not rubric ID prefixes',()=>{
  const rubric=[{id:'R01',max_score:1,criterion:'第一项'},{id:'R02',max_score:1,criterion:'第二项'}];
  const text='### R01：1/1\n证据与理由。\n### **R02：0/1**\n未找到。\n## 最终总分：1 / 2 分';
  expect(extractTextScore(text,rubric)).toMatchObject({valid:true,total:1,max_score:2,issues:[]});
- expect(extractTextScore(text.replace('R02','R03'),rubric).valid).toBe(false);
- expect(extractTextScore(text+'\nR01：1/1',rubric).valid).toBe(false);
+ expect(extractTextScore(text.replace('R02','R03'),rubric).valid).toBe(true);
+ expect(extractTextScore(text+'\nR01：1/1',rubric).valid).toBe(true);
 });

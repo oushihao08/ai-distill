@@ -37,20 +37,19 @@ const MODEL_REPORT_READING_INSTRUCTIONS=[
  'Rubric与附件或适用规范冲突时，说明原判据、冲突来源及影响，不用标答覆盖事实、不擅改权重或计分口径；无法形成可靠比较指标时，按冻结规则保留不确定及原因。将工具未执行、事实／法律判断错误和调用失败分别说明，不把能力限制当已完成，也不把技术失败当有效零分。',
 ].join('\n');
 /** 文件只在 Codex 的系统临时工作区生成，不写入持久化评分目录。 */
-export function buildScoreFiles(input:ReturnType<typeof buildAnonymousInput>,legacyPreflight=false){
+export function buildScoreFiles(input:ReturnType<typeof buildAnonymousInput>,_legacyPreflight=false){
  return [
   {name:'题面与评分标准.txt',text:['【题面】',input.question,'【rubric】',...input.rubric.map(r=>'rule' in r?`${r.id}：${r.criterion}\n计分规则：${r.rule}${r.metadata?`\n业务信息：${JSON.stringify(Object.fromEntries(Object.entries(r.metadata).filter(([key])=>key!=='project_context')))}`:''}`:`${r.id}（满分${r.max_score}）：${r.criterion}`)].join('\n\n')},
   ...input.materials.map((m,i)=>({name:`附件${i+1}.txt`,text:m.text})),
   {name:'待评答案.txt',text:input.answer},
   ...(input.scoring_policy?.contract==='model_report_v1'?buildScoreArithmeticFiles(input.rubric):[]),
-  ...(legacyPreflight&&input.scoring_policy?.contract!=='model_report_v1'?buildLegacyScorePreflightFiles(input.rubric):[]),
   ...(input.candidate_quote_check?buildCandidateQuoteFiles():[]),
   ...(input.answer_presentation?[{name:'本次文字呈现约定.txt',text:JSON.stringify(input.answer_presentation)+'\n本轮以回复中的完整文字成果对应成果清单，不因未创建实体文件而认定内容缺失。文件名用于定位对应成果：正文分节可明确对应同名成果且内容齐备时，不因未复述/app/output/等运行目录前缀、未创建目录或文件而扣分；清单中其他有业务意义的结构、字段及格式要求仍按原Rubric核对。不得改变Rubric分值或豁免专业内容要求。实际外部检索、工具执行和文件生成未被本轮验证，相关条目须据实际表现说明限制；不能将文字描述认定为已完成操作，也不能把未验证能力当已通过。'}]:[]),
   ...(input.scoring_policy?.contract==='model_report_v1'&&input.scoring_policy.reference_answer==='calibration'?[{name:'校准参考答案.txt',text:input.reference_answer}]:[]),
  ];
 }
 /** 仅说明文件用途、完整阅读要求及用户原样评分提示词。 */
-export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>,readingInstructions=MODEL_REPORT_READING_INSTRUCTIONS,legacyPreflight=false){
+export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>,readingInstructions=MODEL_REPORT_READING_INSTRUCTIONS,_legacyPreflight=false){
  const rubricIds=input.rubric.map(item=>item.id);
  const presentationNote=input.answer_presentation?'完整读取本次文字呈现约定.txt，结合本次实际执行边界评价；不改变原Rubric。':'';
  if(input.scoring_policy?.contract==='model_report_v1')return [
@@ -63,7 +62,7 @@ export function buildScoreMessage(input:ReturnType<typeof buildAnonymousInput>,r
   '先输出完整评审正文，最后输出唯一结果区：<model_report>有效JSON</model_report>。JSON字段：contract="model_report_v1"；items数组每项包含id、judgment、score_delta（数字或null）、reason；summary包含raw_score、full_score、evaluation_percent（以上各为数字或null）、veto_triggered（布尔或null）。按冻结规则判断加扣分、合计及否决；evaluation_percent是规则明确允许的0—100比较指标，未规定可比较口径时为null。否决独立记录，不擅自归零。不得把绑定、任务身份或程序状态写入结果区。',
  ].join('\n\n');
  const formats=input.rubric.map(item=>`${item.id}：<得分>/${'max_score' in item?item.max_score:''}`);
- return [...(presentationNote?[presentationNote]:[]),`题面与评分标准：题面与评分标准.txt`,`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,`待评分答案：待评答案.txt`,'请完整读取上述文件。',input.step_prompt??'',`评分条目编号规则（优先级高于前述提示词中的任何格式示例）：必须逐字使用本题清单中的 ID，每个恰好一次；若前述示例与清单不同，以本清单和题面与评分标准文件中的实际 ID 为准，不添加、删除或改写任何前后缀。\n本题rubric ID及逐项格式：\n${formats.join('\n')}`,...(legacyPreflight?[LEGACY_PREFLIGHT_INSTRUCTIONS]:[])].join('\n\n');
+ return [...(presentationNote?[presentationNote]:[]),`题面与评分标准：题面与评分标准.txt`,`题目附件：${input.materials.map((_,i)=>`附件${i+1}.txt`).join('、')}`,`待评分答案：待评答案.txt`,'请完整读取上述文件。',input.step_prompt??'',`评分条目编号规则（优先级高于前述提示词中的任何格式示例）：必须逐字使用本题清单中的 ID，每个恰好一次；若前述示例与清单不同，以本清单和题面与评分标准文件中的实际 ID 为准，不添加、删除或改写任何前后缀。\n本题rubric ID及逐项格式：\n${formats.join('\n')}`].join('\n\n');
 }
 /** 新契约默认提示不继承旧二元分格式；自定义正文原样保留。 */
 function scoringPrompt(context:ScoreContext,prompt?:string){
@@ -102,7 +101,8 @@ export async function runIndependentScore(context:ScoreContext,options:{root:str
   const root=await realpath(resolve(options.root));
   directory=join(root,`score-${randomUUID()}`);await mkdir(directory,{mode:0o700});
   const readingInstructions=options.model_report_reading_instructions??MODEL_REPORT_READING_INSTRUCTIONS;
-  const legacyPreflight=options.legacy_text_preflight===true&&input.scoring_policy?.contract!=='model_report_v1';
+  // 已取消Python交卷预检；历史标记仅供读取旧指令摘要，不注入本次会话。
+  const legacyPreflight=false;
   const prompt=buildScoreMessage(input,readingInstructions,legacyPreflight)+hookAdditionText(options.hook_additions);
   const input_files=buildScoreFiles(input,legacyPreflight);
   const execution_request={...scoreExecutionInstructions('codex',undefined,undefined,legacyPreflight),...candidateQuoteExecutionInstructions(input.candidate_quote_check),...(input.scoring_policy?.contract==='model_report_v1'&&readingInstructions?{model_report_reading_instructions:readingInstructions}:{}),step_prompt:input.step_prompt,model:options.model,reasoning_effort:options.reasoning_effort,input_sha256:hash(JSON.stringify({stdin:prompt,input_files})),stdin:prompt,input_files:input_files.map(file=>({name:file.name,sha256:hash(file.text),size_bytes:Buffer.byteLength(file.text)}))};

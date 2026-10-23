@@ -10,7 +10,7 @@ import {buildXlsx,type WorkbookSheet} from '../document-generation/xlsx';
 export interface ResultExportRecord {
  workflow_id:string;title:string;accepted:boolean;
  acceptance_aggregate?:{mode:'mean_at_most';model_count:number;mean_percentage:number;threshold:number};
- task_name:string;question:string;input_attachments:string[];
+ task_name:string;task_type?:string;question:string;input_attachments:string[];
  model_scores:{model_id:string;name:string;score:number|null;max_score:number|null;percentage:number|null;score_contract?:'model_report_v1';raw_score?:number|null;full_score?:number|null;veto_triggered?:boolean|null}[];
  rubric:unknown[];answer_approach:string;reference_answer:string;reference_answer_attachment:string;
 }
@@ -39,19 +39,20 @@ function modelScoresText(scores:ResultExportRecord['model_scores']):string{
  }).join('\n');
 }
 
-export function buildResultWorkbook(records:ResultExportRecord[]):Uint8Array{
+export function buildResultWorkbook(records:ResultExportRecord[],additionalSheets:WorkbookSheet[]=[]):Uint8Array{
  const attachments=records.map(record=>record.input_attachments.map(target=>{
   const path=fileURLToPath(target);
   return {name:basename(path),path,target};
  }));
  const sheet:WorkbookSheet={
   name:'题目数据',
-  columns:['题目','任务名称','评分','prompt','输入附件','考点','作答思路','标准答案-文本','标准答案-附件'],
-  columnWidths:{'题目':32,'任务名称':28,'评分':36,'prompt':72,'输入附件':52,'考点':72,'作答思路':64,'标准答案-文本':80,'标准答案-附件':40},
+  columns:['题目','任务名称','任务类型','评分','prompt','输入附件','考点','作答思路','标准答案-文本','标准答案-附件'],
+  columnWidths:{'题目':32,'任务名称':28,'任务类型':24,'评分':36,'prompt':72,'输入附件':52,'考点':72,'作答思路':64,'标准答案-文本':80,'标准答案-附件':40},
   rowHeight:150,
   rows:records.map((record,index)=>({
    '题目':record.title,
    '任务名称':record.task_name,
+   '任务类型':record.task_type??'',
    'prompt':record.question,
    '输入附件':attachments[index]!.map(attachment=>attachment.name).join('\n'),
    '考点':rubricText(record.rubric),
@@ -72,5 +73,5 @@ export function buildResultWorkbook(records:ResultExportRecord[]):Uint8Array{
    '打开文件':{text:attachment.name,target:attachment.target},
   }))),
  };
- return buildXlsx([sheet,attachmentSheet]);
+ return buildXlsx([sheet,attachmentSheet,...additionalSheets]);
 }

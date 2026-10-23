@@ -115,12 +115,23 @@
             "evidence/A010-tests-final.log",
             "evidence/A010-typecheck.log"
           ]
+        },
+        {
+          "id": "restart-services",
+          "title": "本轮追加授权：重启项目并检查服务",
+          "state": "succeeded",
+          "outcome": "用户追加授权立即中断出题。按确切ID取消成功后正常停止旧worker，保留39/1范围重启；API/前端200、schema ready、worker心跳正常、本机running0。未派发重试，五条测试意图保留。",
+          "attempt_id": "A012",
+          "observed_at": "2026-10-23T16:02:53.614285+08:00",
+          "evidence": [
+            "attempts/A012.json"
+          ]
         }
       ]
     }
   ],
   "next_actions": [],
-  "updated_at": "2026-10-23T15:52:27.152207+08:00",
+  "updated_at": "2026-10-23T16:02:53.614285+08:00",
   "completion_audit": {
     "observed_at": "2026-10-19T16:45:25.800162+08:00",
     "result": "数据库和代码排查目标已完成；不等于真实模型内容质量验收",
@@ -171,6 +182,17 @@
       "未重启API/worker；在线效果未复测。",
       "未改变历史needs_review、PG运行状态或既有取消记录。",
       "本轮只修复已证实的后台放大与无界往返，不宣称已定位网络/锁/数据库执行的全部底层原因。"
+    ]
+  },
+  "completion_audit_20261023_restart": {
+    "observed_at": "2026-10-23T16:02:53.614285+08:00",
+    "result": "项目重启及健康检查完成；不代表长期数据库延迟或所有历史停滞问题已解决。",
+    "evidence": [
+      "attempts/A012.json"
+    ],
+    "limitations": [
+      "当前authoring按用户明确要求中断，未重试。",
+      "正式服务已加载本轮源码；没有以真实模型调用验证持续吞吐或长期卡顿改善。"
     ]
   }
 }

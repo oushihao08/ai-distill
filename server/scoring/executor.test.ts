@@ -263,34 +263,7 @@ test('Work评分提供可执行的原文核验器；同一会话自行纠正，A
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-test('legacy交卷自检与服务端校验一致，不自动修正算分或重复条目',async()=>{
- const {buildLegacyScorePreflightFiles}=await import('./arithmetic-tool');
- const {extractTextScore}=await import('./validate');
- const root=await mkdtemp(join(tmpdir(),'legacy-preflight-'));
- const rubric=[{id:'R01',criterion:'a',max_score:1},{id:'R10',criterion:'b',max_score:1}];
- try{
-  for(const file of buildLegacyScorePreflightFiles(rubric))await writeFile(join(root,file.name),file.text);
-  for(const raw of [
-   'R01：1/1\nR10：0/1\n最终总分：1 / 2 分',
-   'R01：1/1\nR10：0/1\n最终总分：2 / 2 分',
-   'R01：1/1\nR10：1/1\nR10：0/1\n最终总分：1 / 2 分',
-   'R01：0.5/1\nR10：0/1\n最终总分：0.5 / 2 分',
-   'R01：1/1\n最终总分：1 / 2 分',
-   'R01：1/1\nR10：0/1\nR99：0/1\n最终总分：1 / 2 分',
-   '**R01：1/1**\n### R10：0/1\n最终得分：1分（满分2分）',
-   'R01：1/1\nR10：0/1\n最终总分：1 / 2 分\n总分：2/2',
-  ]){
-   await writeFile(join(root,'draft.txt'),raw);
-   const result=Bun.spawnSync(['python3','核验文本评分.py','draft.txt'],{cwd:root});
-   const checked=JSON.parse(new TextDecoder().decode(result.stdout)),expected=extractTextScore(raw,rubric);
-   expect(checked.valid).toBe(expected.valid);expect(checked.issues).toEqual(expected.issues);
-   expect(result.exitCode).toBe(expected.valid?0:1);
-   expect(await Bun.file(join(root,'draft.txt')).text()).toBe(raw);
-  }
- }finally{await rm(root,{recursive:true,force:true});}
-});
-
-test('legacy预检只对新冻结Codex任务启用，输入保持盲评且旧摘要不变',async()=>{
+test('legacy旧预检摘要可读取，但评分会话不再提供Python交卷预检',async()=>{
  const old=scoreExecutionInstructions(),current=scoreExecutionInstructions('codex',undefined,undefined,true);
  expect(current.legacy_text_preflight).toBe('text_v1');
  expect(current.legacy_text_preflight_tool_sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -302,13 +275,13 @@ test('legacy预检只对新冻结Codex任务启用，输入保持盲评且旧摘
  const root=await mkdtemp(join(tmpdir(),'legacy-preflight-executor-'));
  try{
   const result=await runIndependentScore(context,{root,model:'fixture',reasoning_effort:'low',legacy_text_preflight:true,execute:async(call:any)=>{
-   expect(call.prompt).toContain('仅在valid=true后逐字提交该草稿');
-   expect(call.input_files.some((f:any)=>f.name==='核验文本评分.py')).toBe(true);
+   expect(call.prompt).not.toContain('仅在valid=true后逐字提交该草稿');
+   expect(call.input_files.some((f:any)=>f.name==='核验文本评分.py')).toBe(false);
    const files=JSON.stringify(call.input_files);
    expect(files).not.toContain(context.reference_answer);expect(files).not.toContain(context.answer_approach);
    return reply(call);
   }});
-  expect(result.execution_request.legacy_text_preflight).toBe('text_v1');
+  expect(result.execution_request).not.toHaveProperty('legacy_text_preflight');
   expect(result.validation.valid).toBe(true);expect(result.raw_text).toBe(report);
  }finally{await rm(root,{recursive:true,force:true});}
 });

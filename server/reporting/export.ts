@@ -66,7 +66,7 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
   return {
    workflow_id:String(workflow.id),title:text(workflow.title),accepted:workflow.acceptance_status==='succeeded'&&questionAttempt?.status==='succeeded'&&acceptance?.status==='succeeded'&&decision.decision==='accepted',
    ...(aggregate?.mode==='mean_at_most'&&typeof aggregate.model_count==='number'&&typeof aggregate.mean_percentage==='number'&&typeof aggregate.threshold==='number'?{acceptance_aggregate:{mode:'mean_at_most' as const,model_count:aggregate.model_count,mean_percentage:aggregate.mean_percentage,threshold:aggregate.threshold}}:{}),
-   task_name:text(question.task_name),question:text(question.question),input_attachments:[],
+   task_name:text(question.task_name),task_type:text(question.task_type),question:text(question.question),input_attachments:[],
    model_scores:Object.entries(object(decision.model_scores)??{}).map(([modelId,value])=>{
     const score=object(value)??{};
     return {model_id:modelId,name:modelId,...(score.score_contract==='model_report_v1'?{score_contract:'model_report_v1' as const,raw_score:typeof score.raw_score==='number'?score.raw_score:null,full_score:typeof score.full_score==='number'?score.full_score:null,veto_triggered:typeof score.veto_triggered==='boolean'?score.veto_triggered:null}:{}),score:typeof score.score==='number'?score.score:null,max_score:typeof score.max_score==='number'?score.max_score:null,percentage:typeof score.percentage==='number'?score.percentage:null};

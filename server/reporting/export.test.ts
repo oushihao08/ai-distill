@@ -51,7 +51,7 @@ async function exportFixture(options:{workflowId?:string;materialCount?:number;a
 test('collects current question package and acceptance-linked model scores without loading answer bodies',async()=>{
  const f=await exportFixture(),statements:string[]=[];const query=f.pool.query;f.pool.query=async(sql:string,values?:unknown[])=>{statements.push(sql);return query(sql,values);};
  const result=await collectProjectResults(f.pool,'project',undefined,f.attachmentRoot);
- expect(result.records[0]).toMatchObject({title:'项目名-题目1',accepted:true,task_name:'付款核对',question:'核对合同付款节点',rubric:question.result.rubric,model_scores:[{model_id:'model-id',name:'Qwen 3.8',score:8,max_score:10,percentage:80}],answer_approach:'按合同条款核对',reference_answer:'合同约定分三期付款',reference_answer_attachment:''});
+ expect(result.records[0]).toMatchObject({title:'项目名-题目1',accepted:true,task_name:'付款核对',task_type:'合同审查',question:'核对合同付款节点',rubric:question.result.rubric,model_scores:[{model_id:'model-id',name:'Qwen 3.8',score:8,max_score:10,percentage:80}],answer_approach:'按合同条款核对',reference_answer:'合同约定分三期付款',reference_answer_attachment:''});
  const attemptsQuery=statements.find(sql=>sql.includes('ordinal IN (4,7)'))??'';
  expect(attemptsQuery).not.toContain('ordinal IN (4,5,6');
  expect(statements.some(sql=>sql.includes("COALESCE(result->>'model_name',input->>'model_name')"))).toBe(true);
