@@ -38,29 +38,31 @@ export class ApiClient {
     }
   }
 
-  async json(path: string, method = 'GET', body?: unknown, signal?: AbortSignal, headers:Record<string,string>={}): Promise<any> {
-    const response=await this.response(path,method,body===undefined?undefined:JSON.stringify(body),signal,{...(body===undefined?{}:{'Content-Type':'application/json'}),...headers});
-    const detail={http_status:response.status,request_id:response.headers.get('X-Request-ID'),outcome_unknown:method!=='GET'};
-    let value: any;
-    try { value=JSON.parse(await response.text()); } catch {
-      throw new CliError(response.ok?'响应不是有效 JSON':'API 返回 HTTP 错误且响应不是有效 JSON',
-        {...detail,kind:response.ok?'invalid_response':'http_error'});
-    }
-    if (!response.ok) throw new CliError(typeof value?.error==='string'?value.error:typeof value?.message==='string'?value.message:'API 请求失败', {...detail,kind:'http_error'});
-    return value;
-  }
-
-  /** 使用浏览器/Fetch 自动生成 multipart boundary，调用者只传由显式文件清单构造的 FormData。 */
-  async form(path:string,method:string,body:FormData,signal?:AbortSignal,headers:Record<string,string>={}):Promise<any>{
-    const response=await this.response(path,method,body,signal,headers);
+  /** JSON与multipart共用响应协议；写入结果未知时仍须按原任务ID查询，不能在这里重试。 */
+  private async readJsonResponse(response:Response,method:string):Promise<any>{
     const detail={http_status:response.status,request_id:response.headers.get('X-Request-ID'),outcome_unknown:method!=='GET'};
     let value:any;
     try{value=JSON.parse(await response.text());}catch{
       throw new CliError(response.ok?'响应不是有效 JSON':'API 返回 HTTP 错误且响应不是有效 JSON',
         {...detail,kind:response.ok?'invalid_response':'http_error'});
     }
-    if(!response.ok)throw new CliError(typeof value?.error==='string'?value.error:typeof value?.message==='string'?value.message:'API 请求失败',{...detail,kind:'http_error'});
+    if(!response.ok){
+      const message=typeof value?.error==='string'?value.error:typeof value?.message==='string'?value.message:'API 请求失败';
+      throw new CliError(message,{...detail,kind:'http_error'});
+    }
     return value;
+  }
+
+  async json(path:string,method='GET',body?:unknown,signal?:AbortSignal,headers:Record<string,string>={}):Promise<any>{
+    const response=await this.response(path,method,body===undefined?undefined:JSON.stringify(body),signal,
+      {...(body===undefined?{}:{'Content-Type':'application/json'}),...headers});
+    return this.readJsonResponse(response,method);
+  }
+
+  /** Fetch生成multipart boundary；只发送调用者明确列出的材料文件。 */
+  async form(path:string,method:string,body:FormData,signal?:AbortSignal,headers:Record<string,string>={}):Promise<any>{
+    const response=await this.response(path,method,body,signal,headers);
+    return this.readJsonResponse(response,method);
   }
 
   async download(path: string, signal?: AbortSignal): Promise<Uint8Array> {

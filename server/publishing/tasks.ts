@@ -1,5 +1,5 @@
 /**
- * 职责：第八步持久派发、领取和失败结算；HTTP只返回任务ID，worker生成所有产物后才提交成功。
+ * 职责：第八步持久派发、领取和失败结算；HTTP只返回任务ID，worker在项目必需交付完成后提交成功；辅助Office导出不阻断归档。
  * 入口：enqueuePublication()供HTTP；runNextPublication()供local/legacy worker。
  * 边界：冻结达标/项目/脚本身份，复用同输入活动任务；未知调用不重放，不自动派发其他步骤。
  */
@@ -11,8 +11,7 @@ import {localClaimSql,localWaitingSql,registerLocalJob,withLocalQueueRoot,deferL
 import {exportCurrentMaterialDocx} from '../materials/redacted-docx-export';
 import {writeArchivedWorkflowWorkbook} from '../reporting/archive-workbook';
 import {publishWorkflow,type PublicationBinding} from './jobs';
-import {resolveProjectDelivery} from './project-delivery';
-import {readProjectAgentDefaults} from '../agent/config';
+import {resolveProjectDelivery,loadProjectArchive} from './project-delivery';
 import {watchTaskCancellation} from '../task-signal';
 import {logEvent,classifyLogError,withLogContext} from '../logging';
 
@@ -34,11 +33,9 @@ export async function enqueuePublication(pool:Pool,workflowId:string,root:string
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
-  if(identity&&(!/^LAW-\d{3,}$/.test(identity.task_id)||!/^[a-z0-9][a-z0-9-]{1,31}$/.test(identity.org)))throw new HTTPException(400,{message:'可选交付身份格式无效'});
   const binding=await publicationBinding(db,workflowId);
-  const workContract=binding.parent_name==='Work法律全场景'
-   ?(await db.query("SELECT result->>'content_contract' AS content_contract FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=4",[workflowId])).rows[0]?.content_contract:null;
-  const legacyAgentConfig=binding.parent_name==='Work法律全场景'&&workContract!=='work_legal_v1'?await readProjectAgentDefaults(db,binding.project_id):null;
+  const projectArchive=await loadProjectArchive(await resolveProjectDelivery(binding.parent_name));
+  const legacyAgentConfig=await projectArchive?.readConfig?.(db,binding.project_id,workflowId)??null;
   const input={binding,legacy_agent_config:legacyAgentConfig,delivery_identity:identity??null,exports_root:exportsRoot};
   const previous=(await db.query("SELECT id,input FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
   if(previous){
@@ -94,7 +91,7 @@ export async function runNextPublication(pool:Pool,root:string,signal:AbortSigna
     attemptId:job.id,expected,signal:taskSignal,exportsRoot:job.input.exports_root,expectedLegacyAgentConfig:job.input.legacy_agent_config??undefined,
     prepareArtifacts:async()=>{
      taskSignal.throwIfAborted();
-     const docx=await (dependencies.docx??exportCurrentMaterialDocx)(pool,job.workflow_id,root,job.input.exports_root);
+     const docx=await (dependencies.docx??exportCurrentMaterialDocx)(pool,job.workflow_id,root,job.input.exports_root,undefined,{allowPublicationInProgress:true});
      const workbook=await (dependencies.workbook??writeArchivedWorkflowWorkbook)(pool,job.workflow_id,job.input.exports_root,true);
      return{material_docx:{archive_path:docx.archive_path,artifact_count:docx.artifacts.length},archive_workbook:{archive_path:workbook.archive_path,sha256:workbook.sha256,filename:workbook.filename}};
     },
@@ -103,7 +100,8 @@ export async function runNextPublication(pool:Pool,root:string,signal:AbortSigna
    deferLocalPublication(error);
    const diagnosticId=(error as {diagnostic_id?:unknown})?.diagnostic_id;
    const diagnostic=typeof diagnosticId==='string'&&/^[0-9a-f-]{36}$/i.test(diagnosticId)?{diagnostic_id:diagnosticId}:{};
-   const terminal=saveStepFailure(error instanceof RecordedStepFailure?error.failure:{status:'failed',message:'交付未完成，请按任务ID查看记录后恢复',result:{...classifyLogError(error),...diagnostic}});
+   const reasonCode=(error as {reason_code?:unknown})?.reason_code;
+   const terminal=saveStepFailure(error instanceof RecordedStepFailure?error.failure:{status:'failed',message:'交付未完成，请按任务ID查看记录后恢复',result:{...classifyLogError(error),...(typeof reasonCode==='string'&&/^[a-z][a-z0-9_]{0,79}$/.test(reasonCode)?{reason_code:reasonCode}:{}),...diagnostic}});
    const settle=await pool.connect();
    try{
     await settle.query('BEGIN');

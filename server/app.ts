@@ -6,13 +6,11 @@
 import {registerExecutionQueueRoutes} from './execution-queue/routes';
 import {localQueueEnabled,localQueue,withLocalQueueRoot} from './execution-queue/runtime';
 import {answerModelSummaryProjection,stepResultProjection,readWorkflowAttempts,readProjectWorkflowViews,projectWorkflowViewsFromSnapshot,readWorkflowStepHistory} from './workflow-view';
-import {invalidateRedactionResults} from './materials/state';
-import {sameRedactionConfig} from './materials/redaction-config';
 import {readModelApiCatalog} from './llm-api';
 import { Hono, type Context } from 'hono';
 import {runAgent} from './agent';
 import {AgentConcurrencyConfigurationError,getAgentConcurrencyGate,readConcurrencySettings,readSavedWorkerConcurrencySettings,saveWorkerConcurrencySettings,SAFE_WORKER_CONCURRENCY_LIMITS} from './concurrency';
-import {clearProjectAgentSettings,configureAgentCredentialHome,readAgentCredentialHome,readAgentModelCatalog,readAgentSettings,readProjectAgentDefaults,readProjectAgentSettings,saveAgentSettings,saveProjectAgentSettings} from './agent/config';
+import {clearProjectAgentSettings,configureAgentCredentialHome,readAgentCredentialHome,readAgentModelCatalog,readAgentSettings,readProjectAgentSettings,saveAgentSettings,saveProjectAgentSettings} from './agent/config';
 import {readActiveWorkflowTasks,readMaterialLibraryQueue,readWorkerMonitor} from './monitoring/worker-monitor';
 import {DEFAULT_CODEX_SETTINGS} from './codex/system-config';
 import { HTTPException } from 'hono/http-exception';
@@ -43,17 +41,18 @@ import {exportCurrentMaterialDocx,exportRedactedDocx,readCurrentMaterialDocx} fr
 import { enqueueExtraction } from './materials/jobs';
 import {createQuestionFromMaterialPackage,listMaterialPackageVersions} from './material-package-questions';
 import { readProjectRules,editProjectRuleFile,adoptProjectSkill,invalidateProjectRuleOutputs } from './rules';
-import { readRuleFile } from './rule-files';
+import { readRuleFile,resolveEffectiveProjectSkill } from './rule-files';
 import {createHash,randomUUID} from 'node:crypto';
-import { uuid, text, questionTags, sourceKey, validateFile, MAX_BATCH } from './validation';
+import { uuid, text, questionTags, sourceKey, validateFile, MAX_BATCH, requestBodyLimit } from './validation';
 import {classifyLogError,logEvent,loggerHealth,withLogContext} from './logging';
 import {dispatchWorkflowStep,type StepDispatchTask,type WorkflowStepHandlers,type WorkflowStepOrdinal} from './step-dispatch';
 import {registerWorkflowHookRoutes} from './workflow-hook-routes';
 import {registerWorkflowExecutionRoutes} from './workflow-execution-routes';
 import {registerRemoteMaterialRoutes} from './remote-material-routes';
-import {readSystemStepPrompts,saveSystemStepPrompts} from './system-step-prompts';
+import {readSystemStepPrompts,saveSystemStepPrompts,readSystemAuthoringDefaults,validateAuthoringDefaults} from './system-step-prompts';
 import {registerMaterialLibraryRoutes} from './material-library/routes';
 import {registerProjectLibraryRoutes} from './material-library/projects-routes';
+import {recoverCreatedProject} from './project-creation-recovery';
 import {registerProjectGroupRoutes,resolveProjectGroup,validatePhaseNumber} from './project-groups';
 import {documentBlocksToText} from './materials/pdf';
 
@@ -135,7 +134,11 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    }
   });
  });
- app.use('/api/*', bodyLimit({ maxSize: MAX_BATCH + 1024 * 1024, onError: c => c.json({ error: '上传请求超过100MB限制' }, 413) }));
+ // Bun外层接受最大合法材料包；其他路由保持原100MiB请求预算。
+ app.use('/api/*', async (c,next) => bodyLimit({
+  maxSize:requestBodyLimit(c.req.path,c.req.method),
+  onError:ctx=>ctx.json({error:'请求体超过该接口允许的上传大小'},413),
+ })(c,next));
  app.use('/api/*', async (c, next) => {
    try {
      const origin = c.req.header('Origin');
@@ -164,15 +167,16 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    return c.json({settings,active:concurrency,limits:SAFE_WORKER_CONCURRENCY_LIMITS,restart_required:next.agent!==concurrency.agent||next.llmApi!==concurrency.llmApi});
   }catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'并发设置无效'});}
  });
- app.get('/api/system/step-prompts',async c=>c.json({prompts:await readSystemStepPrompts(pool)}));
+ app.get('/api/system/step-prompts',async c=>c.json({prompts:await readSystemStepPrompts(pool),authoring_defaults:await readSystemAuthoringDefaults(pool)}));
  app.put('/api/system/step-prompts',async c=>{
   const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
-  try{return c.json({prompts:await saveSystemStepPrompts(pool,body?.prompts)});}
+  try{return c.json({prompts:await saveSystemStepPrompts(pool,body?.prompts,body?.authoring_defaults)});}
   catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'系统提示词设置无效'});}
  });
  app.put('/api/projects/:id/steps/:ordinal/prompt',async c=>{
   const id=uuid(c.req.param('id')),ordinal=Number(c.req.param('ordinal'));
-  if(![4,5,6,9].includes(ordinal))throw new HTTPException(400,{message:'此步骤不支持提示词设置'});
+  if(ordinal===9)throw new HTTPException(409,{message:'旧字段映射提示词设置已退役，请编辑材料库Agent化名模板'});
+  if(![4,5,6].includes(ordinal))throw new HTTPException(400,{message:'此步骤不支持提示词设置'});
   const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
   if(typeof body?.prompt!=='string'||!body.prompt.trim()||body.prompt.length>12000)throw new HTTPException(400,{message:'请填写有效的步骤提示词'});
   const db=await pool.connect();
@@ -181,7 +185,6 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    if(!(await db.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[id])).rowCount)throw new HTTPException(404,{message:'项目不存在'});
    const current=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=$2 FOR UPDATE',[id,ordinal])).rows[0]?.config??{};
    const next={...current,prompt:body.prompt};
-   if(ordinal===9&&!sameRedactionConfig(current,next,await readProjectAgentDefaults(db,id)))await invalidateRedactionResults(db,id);
    const saved=await db.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)
     ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(next)]);
    await db.query('COMMIT');return c.json(saved.rows[0]);
@@ -224,13 +227,13 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  });
  registerExecutionQueueRoutes(app,pool,storageRoot);
  app.get('/api/monitor', async c => { try {
+  const local_execution_queue=localQueueEnabled()?{executor_id:localQueue(storageRoot).executorId,items:localQueue(storageRoot).list().map(({id,kind,lane,state,cancel_requested})=>({id,kind,lane,state,cancel_requested}))}:null;
   const [monitor,active_workflow_tasks,material_library,logging]=await Promise.all([
    readWorkerMonitor(storageRoot),
-   readActiveWorkflowTasks(pool).then(items=>({status:'known' as const,items})).catch(error=>{logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable' as const,items:[] as Awaited<ReturnType<typeof readActiveWorkflowTasks>>};}),
+   readActiveWorkflowTasks(pool,local_execution_queue?.items.filter(job=>job.kind==='step'&&job.state==='running').map(job=>job.id)).then(items=>({status:'known' as const,items})).catch(error=>{logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable' as const,items:[] as Awaited<ReturnType<typeof readActiveWorkflowTasks>>};}),
    readMaterialLibraryQueue(pool),
    loggerHealth(),
   ]);
-  const local_execution_queue=localQueueEnabled()?{executor_id:localQueue(storageRoot).executorId,items:localQueue(storageRoot).list().map(({id,kind,lane,state,cancel_requested})=>({id,kind,lane,state,cancel_requested}))}:null;
   if(local_execution_queue){const own=new Set(local_execution_queue.items.map(j=>j.id));const running=new Set(local_execution_queue.items.filter(j=>j.state==='running').map(j=>j.id));active_workflow_tasks.items=active_workflow_tasks.items.filter(j=>running.has(j.attempt_id));if(material_library.status==='known'){material_library.items=material_library.items.filter(j=>own.has(j.job_id));material_library.totals={...material_library.totals,queued:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='queued').length,running:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='running').length,succeeded:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='committed').length,failed:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='failed').length,cancelled:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='cancelled').length};}}
   return c.json({...monitor,active_workflow_tasks,material_library,logging,local_execution_queue});
  } catch(error) { throw error; } });
@@ -314,18 +317,23 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    WHERE w.deleted_at IS NULL ORDER BY acceptance.finished_at DESC NULLS LAST,w.id`);
   return c.json(result.rows);
  });
+ app.post('/api/projects/creation-receipt',async c=>{
+  const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
+  return c.json(await recoverCreatedProject(pool,body));
+ });
  app.post('/api/projects', async c => {
    const body = await c.req.json().catch(() => { throw new HTTPException(400,{message:'请提交有效JSON'}); });
    const legacyName = body?.name===undefined?undefined:text(body.name,'项目名称',120);
-   const parentName = body?.parent_name===undefined?legacyName!:text(body.parent_name,'项目名称',120);
+   const parentName = text(body?.parent_name??legacyName,'项目名称',120);
    const phaseName = body?.phase_name===undefined?'':text(body.phase_name,'期数',120,false);
    const name = body?.parent_name!==undefined||body?.phase_name!==undefined?projectPhaseLabel(parentName,phaseName):legacyName!;
    const description = text(body?.description ?? '','项目说明',2000,false);
    const tags=questionTags(body?.question_tags??[]);
-   const materialMode=body?.material_mode??'question_folders';
+   const materialMode=body?.material_mode??(body?.material_backend==='legacy'?'question_folders':'material_packages');
    if(!['question_folders','material_packages'].includes(materialMode))throw new HTTPException(400,{message:'项目材料模式无效'});
-   const materialBackend=body?.material_backend??'legacy';
+   const materialBackend=body?.material_backend??'library_v1';
    if(!['legacy','library_v1'].includes(materialBackend))throw new HTTPException(400,{message:'项目材料后端无效'});
+   if(materialBackend==='library_v1'&&materialMode!=='material_packages')throw new HTTPException(400,{message:'共享材料库新期使用material_packages；旧目录模式须显式选择legacy'});
    const workspacePath=materialBackend==='library_v1'?await validateFolder(body?.workspace_path,'项目规则工作区'):null;
    const materialRoot = materialBackend==='legacy'?await validateFolder(body?.material_root):null;
    const questions = materialRoot?await scanProjectFolder(materialRoot):[];
@@ -338,18 +346,20 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     if(skillPaths.length>1)throw new HTTPException(409,{message:'同一项目的期次绑定了多个 skill 目录，请先统一项目 skill 路径'});
     const requestedSkill=body?.local_skill_path?await validateFolder(body.local_skill_path,'本地skill目录'):undefined;
     if(requestedSkill&&skillPaths.length&&requestedSkill!==skillPaths[0])throw new HTTPException(409,{message:'该项目已有共享 skill 目录，请使用项目现有 skill 路径'});
-    const inferredProjectRoot=workspacePath??(phaseName&&materialRoot&&basename(dirname(materialRoot))===phaseName?dirname(dirname(materialRoot)):undefined);
+    const inferredProjectRoot=materialBackend==='legacy'?(phaseName&&materialRoot&&basename(dirname(materialRoot))===phaseName?dirname(dirname(materialRoot)):undefined):undefined;
+    if(materialBackend==='library_v1'&&!requestedSkill&&!skillPaths.length)throw new HTTPException(400,{message:'首期创建须明确主项目共享Skill目录，不从本期工作区推断'});
     const skillPath=requestedSkill??skillPaths[0]??(inferredProjectRoot?join(inferredProjectRoot,'skill'):resolve(storageRoot,'project-skills',id));
     await mkdir(skillPath,{recursive:true,mode:0o700});
     const group=await resolveProjectGroup(db,parentName,body?.project_group_id);
-    const phaseNo=body?.phase_no===undefined?null:validatePhaseNumber(body.phase_no);
+    const phaseNo=body?.phase_no===undefined?(materialBackend==='library_v1'?1:null):validatePhaseNumber(body.phase_no);
     const result = await db.query('INSERT INTO ai_distill.projects(id,name,description,material_root,local_skill_path,parent_name,phase_name,material_mode,question_tags,material_backend,workspace_path,project_group_id,phase_no) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',[id,name,description,materialRoot,skillPath,parentName,phaseName,materialMode,tags,materialBackend,workspacePath,group.id,phaseNo]);
     const prompts=await readSystemStepPrompts(db);
+    const authoringDefaults=body?.authoring_defaults===undefined?await readSystemAuthoringDefaults(db):validateAuthoringDefaults(body.authoring_defaults);
     const promptOrdinals:readonly (4|5|6|9)[]=materialBackend==='library_v1'?[4,5,6]:[4,5,6,9];
-    for(const ordinal of promptOrdinals)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:prompts[ordinal]})]);
+    for(const ordinal of promptOrdinals)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:prompts[ordinal],...(ordinal===4?{...authoringDefaults,material_processing_mode:'aliases',material_source_mode:'redacted'}:{})})]);
     if(materialRoot)await registerQuestionFolders(db,id,name,questions,materialMode);
     await db.query('COMMIT'); return c.json(result.rows[0],201);
-   } catch(error) { await db.query('ROLLBACK'); if(error&&typeof error==='object'&&'code'in error&&error.code==='23505')throw new HTTPException(409,{message:'该主项目已登记相同期号，请使用新的期号'});throw error; } finally { db.release(); }
+   } catch(error) { await db.query('ROLLBACK'); if(error&&typeof error==='object'&&'code'in error&&error.code==='23505'){const constraint='constraint'in error?String(error.constraint):'';throw new HTTPException(409,{message:constraint==='projects_group_phase_no'?'该主项目已登记相同期号，请核对已有期次':constraint==='project_groups_name_key'?'主项目名称已存在，请选择已有主项目':'项目记录发生唯一性冲突，请刷新并核对已有记录'});}throw error; } finally { db.release(); }
  });
  app.get('/api/projects/:id', async c => {
    const id = uuid(c.req.param('id'));
@@ -394,8 +404,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    const workflowStatus=projectWorkflowViewsFromSnapshot({states:workflowRows,hasAuthored:new Map(workflows.rows.map((row:any)=>[String(row.id),Boolean(row.has_authored)]))},workflows.rows.map((row:any)=>String(row.id)));
    const workflowItems=workflows.rows.map(({has_authored,...workflow}:any)=>workflow);
    const {__system_codex_model:_,__system_codex_reasoning_effort:__,__step_configs:___,...projectRow}=project.rows[0];
-   const skillExists = await Bun.file(join(projectRow.local_skill_path ?? '/nonexistent','SKILL.md')).exists();
-   return c.json({project:{...projectRow,skill_exists:skillExists},workflows:workflowItems,steps,workflow_status:workflowStatus});
+   let skillExists=false,effectiveSkillPath:string|null=null,skillIssue:string|undefined;
+   try{const effective=await resolveEffectiveProjectSkill(projectRow);effectiveSkillPath=effective.path;skillExists=await Bun.file(join(effective.path,'SKILL.md')).exists();}
+   catch(error){skillIssue=error instanceof Error?error.message:'无法读取当前Skill路径';}
+   return c.json({project:{...projectRow,skill_exists:skillExists,effective_skill_path:effectiveSkillPath,...(skillIssue?{skill_issue:skillIssue}:{})},workflows:workflowItems,steps,workflow_status:workflowStatus});
  });
  app.patch('/api/projects/:id/material-mode',async c=>{
   const id=uuid(c.req.param('id'));
@@ -596,9 +608,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.on('PUT',['/api/agent/projects/:id/steps/:ordinal/config','/api/projects/:id/steps/:ordinal/config'], async c => {
    const id = uuid(c.req.param('id')??''); const ordinal = Number(c.req.param('ordinal'));
    if(c.req.path.startsWith('/api/agent/')&&![4,6,9].includes(ordinal))throw new HTTPException(404,{message:'此步骤不使用Agent配置'});
+   if(ordinal===9)throw new HTTPException(409,{message:'旧字段映射脱敏配置已退役，请使用材料库Agent化名设置'});
    const raw=await c.req.json().catch(() => { throw new HTTPException(400,{message:'请提交有效JSON'}); });
    const config=validateStepConfig(ordinal,raw);
-   if(ordinal!==7&&ordinal!==9){
+   if(ordinal!==7){
     const saved=ordinal===5
      ?await pool.query(`INSERT INTO ai_distill.project_step_configs AS current_config(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config || CASE WHEN current_config.config ? 'answer_generation_policy' THEN jsonb_build_object('answer_generation_policy',current_config.config->'answer_generation_policy') ELSE '{}'::jsonb END,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)])
      :await pool.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)]);
@@ -606,13 +619,6 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    }
    const db=await pool.connect();try{
     await db.query('BEGIN');
-    if(ordinal===9){
-     const project=await db.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[id]);
-     if(!project.rowCount)throw new HTTPException(404,{message:'项目不存在'});
-     const current=await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=9 FOR UPDATE',[id]);
-     const defaults=await readProjectAgentDefaults(db,id);
-     if(!sameRedactionConfig(current.rows[0]?.config,config,defaults))await invalidateRedactionResults(db,id);
-    }
     const saved=await db.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)]);
     if(!saved.rowCount)throw new HTTPException(404,{message:'项目不存在'});
     if(ordinal===7){
@@ -626,24 +632,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.on('DELETE',['/api/agent/projects/:id/steps/:ordinal/config','/api/projects/:id/steps/:ordinal/config'],async c=>{
   const id=uuid(c.req.param('id')??''),ordinal=Number(c.req.param('ordinal'));
   if(c.req.path.startsWith('/api/agent/')&&![4,6,9].includes(ordinal))throw new HTTPException(404,{message:'此步骤不使用Agent配置'});
-  if(![4,6,9].includes(ordinal))throw new HTTPException(400,{message:'此步骤不支持恢复默认'});
+  if(ordinal===9)throw new HTTPException(409,{message:'旧字段映射脱敏设置已退役，不再恢复旧API默认'});
+  if(![4,6].includes(ordinal))throw new HTTPException(400,{message:'此步骤不支持恢复默认'});
   const project=await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[id]);
   if(!project.rowCount)throw new HTTPException(404,{message:'项目不存在'});
-  if(ordinal===9){
-   const db=await pool.connect();try{
-    await db.query('BEGIN');
-    const project=await db.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[id]);
-    if(!project.rowCount)throw new HTTPException(404,{message:'项目不存在'});
-    const current=await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=9 FOR UPDATE',[id]);
-    const currentConfig=current.rows[0]?.config as Record<string,unknown>|undefined;
-    const resetConfig:Record<string,unknown>|undefined=currentConfig?{...currentConfig,provider:'api'}:undefined;
-    if(resetConfig){delete resetConfig.model;delete resetConfig.reasoning_effort;delete resetConfig.api;}
-    const defaults=await readProjectAgentDefaults(db,id);
-    if(currentConfig&&!sameRedactionConfig(currentConfig,resetConfig,defaults))await invalidateRedactionResults(db,id);
-    const saved=await db.query(`UPDATE ai_distill.project_step_configs SET config=(config-'provider'-'model'-'reasoning_effort'-'api')||'{"provider":"api"}'::jsonb,updated_at=now() WHERE project_id=$1 AND ordinal=9 RETURNING config`,[id]);
-    await db.query('COMMIT');return c.json({reset:true,config:saved.rows[0]?.config??{provider:'api'}});
-   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
-  }
   await pool.query('DELETE FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=$2',[id,ordinal]);
   return c.json({reset:true});
  });

@@ -1,5 +1,8 @@
 /** 使用SQL/交付器替身和临时SQLite验证持久派发、产物完成边界与失败结算；不调用业务数据库或项目模型。 */
-import {test,expect} from 'bun:test';
+import {test,expect,beforeAll,afterAll} from 'bun:test';
+const originalQueueMode=process.env.EXECUTION_QUEUE_MODE;
+beforeAll(()=>{process.env.EXECUTION_QUEUE_MODE='legacy';});
+afterAll(()=>{if(originalQueueMode===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=originalQueueMode;});
 import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -17,7 +20,7 @@ function fixture(){
   if(sql.startsWith('INSERT INTO ai_distill.step_attempts')){job={id:values[1],workflow_id:values[0],input:JSON.parse(values[2]),status:'waiting'};}
   if(sql.startsWith('SELECT a.*'))return{rows:job&&['waiting','running'].includes(job.status)?[job]:[]};
   if(sql.includes("SET status='running'")){if(sql.includes('step_attempts'))job.status='running';else step='running';}
-  if(sql.includes('SET status=$2'))job.status=values[1];
+  if(sql.includes('SET status=$2')){job.status=values[1];job.result=typeof values[3]==='string'?JSON.parse(values[3]):values[3];}
   if(sql.includes("SET status='failed'"))step='failed';
   writes.push(sql);return{rows:[],rowCount:1};
  };
@@ -41,17 +44,30 @@ test('enqueue is durable and idempotent while active; project code never runs in
   expect(f.writes.filter(s=>s.startsWith('INSERT INTO ai_distill.step_attempts'))).toHaveLength(1);
  }finally{localQueue(root).close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;await rm(root,{recursive:true,force:true});}
 });
-test('worker artifact failure settles failure and does not report successful publication',async()=>{
+test('worker project delivery failure settles failure and does not report successful publication',async()=>{
  const root=await mkdtemp(join(tmpdir(),'publication-worker-')),f=fixture();let publishCalls=0;
  try{
   await enqueuePublication(f.pool,workflow,root,undefined,root);
   const worked=await runNextPublication(f.pool,root,new AbortController().signal,undefined,{
-   publish:async(_pool,_id,_root,_identity,deps)=>{publishCalls++;await deps!.prepareArtifacts!(f.job.input.binding);return{id:f.job.id,completed:true,reused:false};},
+   publish:async()=>{publishCalls++;throw new Error('project delivery failed');},
    docx:async()=>{throw new Error('fixture DOCX failure');},
    workbook:async()=>{throw new Error('must not execute workbook after DOCX failure');},
   });
   expect(worked).toBe(true);expect(publishCalls).toBe(1);expect(f.job.status).toBe('failed');expect(f.step).toBe('failed');
   expect(f.writes.some(s=>s.includes("status='succeeded'"))).toBe(false);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('worker failure persists only a safe publication reason code',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'publication-reason-')),f=fixture();
+ try{
+  await enqueuePublication(f.pool,workflow,root,undefined,root);
+  const worked=await runNextPublication(f.pool,root,new AbortController().signal,undefined,{
+   publish:async()=>{throw Object.assign(new Error('private source text must not persist'),{reason_code:'publication_original_source_invalid'});},
+  });
+  expect(worked).toBe(true);expect(f.job.status).toBe('failed');
+  expect(f.job.result).toMatchObject({reason_code:'publication_original_source_invalid'});
+  expect(JSON.stringify(f.job.result)).not.toContain('private source text');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

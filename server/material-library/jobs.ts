@@ -91,16 +91,13 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   const settings=(await readLibraryProcessingSettings(db,storageRoot)).processing_settings as Record<string,any>;
   const projectMode=request.project_id?await readProjectMaterialProcessingMode(db,request.project_id):undefined;
   const template=request.kind==='redact'?resolveLibraryTemplate(settings,projectMode?projectRedactionTemplate(projectMode,request.template_id):request.template_id):undefined;
-  if(projectMode==='aliases'&&template&&template.workflow!=='codex_plan')throw conflict('化名模式需要整包Agent模板，当前模板配置与流程不一致');
-  if(projectMode==='mask'&&template&&template.workflow!=='field_mapping')throw conflict('API遮挡模式需要字段映射模板，当前模板配置与流程不一致');
+  // 请求重放已在上方返回；此处只拒绝新建旧流程，不改写历史任务快照。
+  if(template&&template.workflow!=='codex_plan')throw conflict('字段映射脱敏已退役，请选择Agent化名模板');
   if(template?.workflow==='codex_plan'){
    settings.redaction={...template.redaction,...await readAgentDefaults(db)};
    settings.execution.task_timeout_ms=Math.min(settings.execution.task_timeout_ms,AGENT_REDACTION_MAX_MS);
-  }else if(template){
-   settings.redaction={...template.redaction,...(projectMode==='mask'?{provider:'api'}:{})};
-   if(projectMode==='mask'&&!settings.redaction.api)throw conflict('请先在材料处理设置中配置API遮挡模型');
   }
-  const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:template?.workflow==='codex_plan'||projectMode==='mask'?'model':file.redaction_mode})),settings.redaction,request.execution_target);
+  const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:template?.workflow==='codex_plan'?'model':file.redaction_mode})),settings.redaction,request.execution_target);
   if(request.kind==='redact'&&executor==='api'&&!settings.redaction?.api)throw conflict('材料库 API 模型尚未配置');
   if(request.kind==='extract'&&executor==='api'&&!process.env.MINERU_KEY?.trim())throw conflict('文本提取服务尚未配置');
   if(request.previous_job_id){

@@ -32,6 +32,8 @@ export async function readLibraryProcessingSettings(pool:Pick<Pool,'query'>,root
 export function saveLibraryProcessingSettings(root:string,version:number,value:unknown){
  if(!Number.isSafeInteger(version)||version<0)throw new HTTPException(400,{message:'共用设置版本无效'});
  const raw=validateProcessingSettings(value);
+ const templates=raw.redaction_templates as Array<{workflow:string}>|undefined;
+ if(templates?.some(template=>template.workflow!=='codex_plan'))throw new HTTPException(400,{message:'字段映射模板已退役，新设置仅支持Agent化名模板'});
  const settings=validateProcessingSettings({...raw,redaction_templates:libraryRedactionTemplates(raw).filter(t=>t.id!=='mask')}),db=open(root);let active=false;
  try{
   db.exec('BEGIN IMMEDIATE');

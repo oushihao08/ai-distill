@@ -8,6 +8,7 @@ import {join,resolve,sep} from 'node:path';
 import {storageDirectory} from './paths';
 import { createPool } from './db';
 import { createApp } from './app';
+import {MAX_UPLOAD_REQUEST_BYTES} from './validation';
 import {configureLogger,installFatalErrorLogging,logEvent,classifyLogError} from './logging';
 // 服务入口默认每机独立；仅显式 legacy 用于受控兼容。
 process.env.EXECUTION_QUEUE_MODE ??= 'local';
@@ -37,7 +38,7 @@ try{
    return new Response(indexFile);
   }
   return app.fetch(request);
- }, maxRequestBodySize: 101 * 1024 * 1024, idleTimeout: 60 });
+ }, maxRequestBodySize: MAX_UPLOAD_REQUEST_BYTES, idleTimeout: 60 });
 }catch(error){logEvent('service.start_failed',{level:'error',component:'http',...classifyLogError(error)});try{if(pool)await pool.end();}finally{await logger.close();}throw error;}
 console.log(`接口已启动：http://${process.env.HOST??'127.0.0.1'}:${server.port}`);
 logEvent('service.started',{level:'info',component:'http',pid:process.pid});

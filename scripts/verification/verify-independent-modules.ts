@@ -1,78 +1,8 @@
-/** 文件职责：用合成夹具核对达标、发布、导出和模型设置的模块接线。
- * 执行入口与副作用：`bun scripts/verification/verify-independent-modules.ts`；直接向 `createPool()` 配置连接的 `ai_distill` schema 写入合成行，结束时按随机 ID 删除；它不创建临时 schema，清理失败可能遗留数据。
- * 使用边界：只能在已确认的专用测试数据库上运行；本脚本不是隔离数据库测试，也不应对未知或业务数据库执行。
+/**
+ * 职责：已退役的历史验证入口，仅保留明确失败提示，防止旧操作记录误调用。
+ * 原脚本直接向业务schema写合成行且依赖旧步骤布局；不得恢复此行为。
+ * 当前隔离验证：bun scripts/verification/verify-project-material-usage.ts。
+ * 本入口不加载配置、不连接数据库、不调用模型、不写文件。
  */
-import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import {createPool} from '../../server/db';
-import {createApp} from '../../server/app';
-import {createHash} from 'node:crypto';
-const pool=createPool(),storage=await mkdtemp(join(tmpdir(),'independent-modules-'));
-const projectId=crypto.randomUUID(),workflowId=crypto.randomUUID(),requestId=crypto.randomUUID(),questionAttempt=crypto.randomUUID(),answerAttempt=crypto.randomUUID(),scoreAttempt=crypto.randomUUID(),extractAttempt=crypto.randomUUID(),materialArtifact=crypto.randomUUID();
-const provider='qwen',model='fixture-token-model';
-let report:Record<string,unknown>={checked_at:new Date().toISOString(),fixture:'synthetic rows in the configured ai_distill schema; no temporary schema',real_database:true,migrations_assumed:['008_acceptance_reporting.sql','009_stale_exports.sql','011_publication_step.sql'],acceptance:false,export_failure_isolated:false,export_retry:false,export:false,repeated_export:false,download:false,nonaccepted_gate:false,stale_export:false};
-try{
- await pool.query("INSERT INTO ai_distill.projects(id,name) VALUES($1,'independent-module-verification')",[projectId]);
- await pool.query("INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_key) VALUES($1,$2,$3,'verification question','verification-batch')",[workflowId,projectId,requestId]);
- await pool.query("INSERT INTO ai_distill.steps(workflow_id,ordinal,name,status,implemented) SELECT $1,n,($2::text[])[n],'waiting',true FROM generate_series(1,8) n",[workflowId,['接收材料','提取与脱敏','加载本期规则','出题与质检','模型作答','独立评分','达标或返修','发布成果与导出']]);
- const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
- const questionResult={rubric:[{id:'amount',criterion:'金额正确',max_score:10}],answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},question:'根据材料金额是多少？',question_version:'qv1',rubric_version:'rv1',attachment_ids:[materialArtifact],quality_check:{passed:true,checks:{material_grounding:true,question_complete:true,rubric_consistent:true,reference_answer_complete:true,deliverables_complete:true},issues:[]}};
- const answerResult={text:'100元',answer_sha256:hash('100元'),input_digest:'a'.repeat(64),provider:'qwen',model,question_attempt_id:questionAttempt,question_version:'qv1',usage:{prompt_tokens:100,completion_tokens:20}};
- const rubric=[{id:'amount',criterion:'金额正确',max_score:10}];
- const scoreBinding={question_version:'qv1',rubric_version:'rv1',input_digest:'a'.repeat(64),rubric_digest:'b'.repeat(64),answer_attempt_id:answerAttempt,answer_sha256:hash('100元')};
- const scoreResult={binding:scoreBinding,validation:{valid:true},report:{assessment_valid:true,items:[{id:'amount',score:9,reason:'与答案相符',evidence:[{source:'answer',quote:'100元'}]}],total:9,max_score:10,disputes:[]}};
- const attempts=[
-  [extractAttempt,2,'succeeded',{},{},{},1],
-  [questionAttempt,4,'succeeded',{extraction_attempt_id:extractAttempt,materials:[{id:materialArtifact,sha256:hash('脱敏测试资料')}]},questionResult,{provider:'codex',model:'fixture'},1],
-  [answerAttempt,5,'succeeded',{question_attempt_id:questionAttempt},answerResult,{provider:'qwen',model},1],
-  [scoreAttempt,6,'succeeded',{context:{binding:scoreBinding,rubric}},scoreResult,{provider:'codex',model:'fixture'},1],
- ];
- for(const [id,ordinal,status,input,result,config,revision] of attempts)await pool.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,config,finished_at) VALUES($1,$2,$3,1,$4,$5,$6,$7,now())",[id,workflowId,ordinal,status,JSON.stringify(input),JSON.stringify(result),JSON.stringify(config)]);
- await pool.query("UPDATE ai_distill.steps SET status='succeeded',implemented=true WHERE workflow_id=$1 AND ordinal IN(2,3,4,5,6)",[workflowId]);
- await pool.query('UPDATE ai_distill.steps SET result=$2 WHERE workflow_id=$1 AND ordinal=4',[workflowId,JSON.stringify(questionResult)]);
- await pool.query('UPDATE ai_distill.steps SET result=$2 WHERE workflow_id=$1 AND ordinal=5',[workflowId,JSON.stringify(answerResult)]);
- await pool.query('UPDATE ai_distill.steps SET result=$2 WHERE workflow_id=$1 AND ordinal=6',[workflowId,JSON.stringify(scoreResult)]);
- await pool.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,7,$2)',[projectId,JSON.stringify({required_models:[model],minimum_score_by_model:{[model]:8}})]);
- for(const [attempt,kind,filename,body] of [[questionAttempt,'authored_question','authoring.json',JSON.stringify(questionResult)],[answerAttempt,'model_answer','answer.txt',answerResult.text],[scoreAttempt,'score_report','score.json',JSON.stringify(scoreResult)]]){
-  await writeFile(join(storage,filename!),body!);await pool.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)',[crypto.randomUUID(),workflowId,attempt,kind,filename,hash(body!),Buffer.byteLength(body!)]);
- }
- await writeFile(join(storage,'material.md'),'脱敏测试资料');await pool.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)',[materialArtifact,workflowId,extractAttempt,'redacted_markdown','material.md',hash('脱敏测试资料'),Buffer.byteLength('脱敏测试资料')]);
- const app=createApp(pool,storage);
- const accepted=await app.request(`/api/workflows/${workflowId}/accept`,{method:'POST'});const acceptanceBody=await accepted.json() as any;
- if(accepted.status!==200||acceptanceBody.decision!=='accepted')throw new Error('acceptance endpoint failed');report.acceptance=true;
- const before=await app.request(`/api/projects/${projectId}/export`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
- if(before.status!==201||(await before.json() as any).workflow_count!==0)throw new Error('unpublished accepted result exported');report.unpublished_gate=true;
- const publications=await Promise.all([app.request(`/api/workflows/${workflowId}/publish`,{method:'POST'}),app.request(`/api/workflows/${workflowId}/publish`,{method:'POST'})]);
- const published=await publications[0]!.json() as any,duplicate=await publications[1]!.json() as any;
- if(publications.some(item=>item.status!==200)||published.id!==duplicate.id||published.reused===duplicate.reused)throw new Error('publication or concurrent reuse failed');report.publication=true;report.publication_reused=true;
- const artifact=(await pool.query("SELECT id FROM ai_distill.artifacts WHERE attempt_id=$1 AND kind='published_result'",[published.id])).rows[0];
- const publicationDownload=await app.request(`/api/artifacts/${artifact.id}/download`);const publicationBody=await publicationDownload.json() as any;
- if(publicationDownload.status!==200||publicationBody.question_version!==questionResult.question_version||'reference_answer' in publicationBody)throw new Error('publication download failed');report.publication_download=true;
-
- await pool.query('UPDATE ai_distill.step_attempts SET config=jsonb_set(config,\'{provider}\',to_jsonb($2::text)),result=jsonb_set(result,\'{provider}\',to_jsonb($2::text)) WHERE id=$1',[answerAttempt,provider]);
- const attemptsBeforeExport=(await pool.query('SELECT count(*)::int AS count FROM ai_distill.step_attempts WHERE workflow_id=$1',[workflowId])).rows[0].count;
- const blockedStorage=join(storage,'blocked-export');await mkdir(blockedStorage,{recursive:true});await writeFile(join(blockedStorage,'exports'),'not a directory');
- const blockedExport=await createApp(pool,blockedStorage).request(`/api/projects/${projectId}/export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batch:'verification-batch'})});
- const failedExportRow=await pool.query("SELECT status FROM ai_distill.project_exports WHERE project_id=$1 ORDER BY created_at DESC,id LIMIT 1",[projectId]);
- const attemptsAfterFailure=(await pool.query('SELECT count(*)::int AS count FROM ai_distill.step_attempts WHERE workflow_id=$1',[workflowId])).rows[0].count;
- if(blockedExport.status!==500||failedExportRow.rows[0]?.status!=='failed'||attemptsAfterFailure!==attemptsBeforeExport)throw new Error('export failure changed workflow or was not recorded independently');report.export_failure_isolated=true;
- await rm(join(blockedStorage,'exports'),{force:true});
- const retryExport=await createApp(pool,blockedStorage).request(`/api/projects/${projectId}/export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batch:'verification-batch'})});
- const retriedRow=await pool.query("SELECT status,workflow_count FROM ai_distill.project_exports WHERE project_id=$1 ORDER BY created_at DESC,id LIMIT 1",[projectId]);
- if(retryExport.status!==201||retriedRow.rows[0]?.status!=='succeeded'||retriedRow.rows[0]?.workflow_count!==1)throw new Error('independent export retry failed');report.export_retry=true;
- const exported=await app.request(`/api/projects/${projectId}/export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batch:'verification-batch'})});const exportBody=await exported.json() as any;
- if(exported.status!==201||exportBody.workflow_count!==1)throw new Error('export endpoint failed');report.export=true;
- const repeated=await app.request(`/api/projects/${projectId}/export`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batch:'verification-batch'})});const repeatedBody=await repeated.json() as any;
- if(repeated.status!==201||repeatedBody.id===exportBody.id)throw new Error('repeated export failed');report.repeated_export=true;
- const downloaded=await app.request(`/api/exports/${exportBody.id}/download`);const workbook=new Uint8Array(await downloaded.arrayBuffer());if(downloaded.status!==200||workbook[0]!==0x50||workbook[1]!==0x4b)throw new Error('download endpoint failed');report.download=true;
- await pool.query("UPDATE ai_distill.project_step_configs SET config=jsonb_set(config,'{minimum_score_by_model}',jsonb_build_object($2::text,10)) WHERE project_id=$1 AND ordinal=7",[projectId,model]);
- const below=await app.request(`/api/workflows/${workflowId}/accept`,{method:'POST'});const belowBody=await below.json() as any;const stepState=await pool.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=7',[workflowId]);const exportState=await pool.query('SELECT status FROM ai_distill.project_exports WHERE id=ANY($1::uuid[])',[ [exportBody.id,repeatedBody.id] ]);
- if(below.status!==200||belowBody.decision!=='repair'||stepState.rows[0]?.status!=='failed')throw new Error('nonaccepted result was not gated');report.nonaccepted_gate=true;
- if(exportState.rows.length!==2||exportState.rows.some((row:any)=>row.status!=='stale'))throw new Error('prior exports were not invalidated');report.stale_export=true;
- report={...report,decision:acceptanceBody.decision,export_sha256:exportBody.sha256,workbook_bytes:workbook.length};
-}catch(error){report={...report,error:error instanceof Error?error.message:'verification failed'};process.exitCode=1;}
-finally{
- try{await pool.query('DELETE FROM ai_distill.project_exports WHERE project_id=$1',[projectId]);await pool.query('DELETE FROM ai_distill.artifacts WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.step_attempts WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.steps WHERE workflow_id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.workflows WHERE id=$1',[workflowId]);await pool.query('DELETE FROM ai_distill.project_step_configs WHERE project_id=$1',[projectId]);await pool.query('DELETE FROM ai_distill.projects WHERE id=$1',[projectId]);const leftovers=await pool.query("SELECT (SELECT count(*) FROM ai_distill.projects WHERE id=$1)::int AS projects",[projectId]);if(leftovers.rows[0].projects)throw new Error('cleanup incomplete');report.cleanup_complete=true;}catch{report={...report,cleanup_complete:false};process.exitCode=1;}
- await rm(storage,{recursive:true,force:true});await pool.end();await mkdir('docs/evidence',{recursive:true});await writeFile('docs/evidence/independent-modules-integration.json',JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report));
-}
+console.error('此历史验证入口已停用。请阅读 scripts/verification/README.md，改用随机临时schema的 verify-project-material-usage.ts；不要对业务库写入合成记录。');
+process.exitCode=1;

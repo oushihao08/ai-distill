@@ -10,6 +10,8 @@ import {acceptanceSourceDigest} from '../decisions/jobs';
 import {scanProjectPrompt} from '../rule-files';
 import {getAgentConcurrencyGate,closeAgentConcurrencyGate,saveWorkerConcurrencySettings} from '../concurrency';
 import {canonicalJson} from '../../shared/workflow-config';
+import {prepare as prepareWorkArchive} from '../../projects/Work法律全场景/scripts/archive';
+const workPreparation=(prepareWork:any)=>async(input:any,context:any)=>prepareWorkArchive(input,context,{readStructuredMaterials:async()=>undefined as never,prepareWork});
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 async function fixture(options:{withoutPrompt?:boolean;work?:boolean}={}){
  const root=await mkdtemp(join(tmpdir(),'publish-test-'));const text='模型完整答案';
@@ -59,15 +61,15 @@ async function fixture(options:{withoutPrompt?:boolean;work?:boolean}={}){
  return {root,skill,snapshot,accepted,artifacts,writes,librarySnapshotDigest,connections,pool:{query,connect:async()=>{connections.held++;connections.opened++;let released=false;return{query,release(){if(released)throw new Error('double release');released=true;connections.held--;}};}} as unknown as Pool,setPrevious:(value:any)=>{previous=value;},setLatestEvent:(value:'archived'|'withdrawn')=>{latestEventType=value;}};
 }
 async function publisher(){return publishWorkflow;}
-test('期次显示名变化后仍从已登记的归档目录读取原ZIP，不重建或改写旧成果',async()=>{
- const f=await fixture();
+test.each([false,true])('期次改名后按保存目录读取原ZIP；无需历史Skill或成功工作簿（新目录索引=%s）',async useOutput=>{
+ const f=await fixture({withoutPrompt:true});
  try{
   const dir=join(f.root,'附件库','Work法律全场景','首批筹备','原题','成果');await mkdir(join(dir,'Siriser五件套'),{recursive:true});
   const zip='frozen zip bytes',digest=f.accepted.input.source_digest;
   await writeFile(join(dir,'Siriser五件套','old.zip'),zip);
   await writeFile(join(dir,'Siriser五件套.json'),JSON.stringify({workflow_id:'workflow',source_digest:digest,delivery_digest:'delivery',question_version:'qv1',rubric_version:'rv1',zip_relative_path:'Siriser五件套/old.zip',zip_sha256:hash(zip),zip_bytes:Buffer.byteLength(zip),filename:'old.zip'}));
   const db=await f.pool.connect();
-  const pool={connect:async()=>({release(){},query:async(sql:string,values?:unknown[])=>sql.startsWith('SELECT w.project_id')?{rows:[{project_id:'project',title:'原题',parent_name:'Work法律全场景',phase_name:'第一期',result:{source_digest:digest,question_version:'qv1',rubric_version:'rv1',delivery:{digest:'delivery'},archive_workbook:{archive_path:'附件库/Work法律全场景/首批筹备/原题/成果/题目归档数据.xlsx'}}}]}:db.query(sql,values)})} as unknown as Pool;
+  const pool={connect:async()=>({release(){},query:async(sql:string,values?:unknown[])=>sql.startsWith('SELECT w.project_id')?{rows:[{project_id:'project',title:'原题',parent_name:'Work法律全场景',phase_name:'第一期',result:{source_digest:digest,question_version:'qv1',rubric_version:'rv1',delivery:{digest:'delivery',...(useOutput?{output_path:'附件库/Work法律全场景/首批筹备/原题/成果'}:{})},...(!useOutput?{archive_workbook:{archive_path:'附件库/Work法律全场景/首批筹备/原题/成果/题目归档数据.xlsx'}}:{})}}]}:db.query(sql,values)})} as unknown as Pool;
   const result=await readSiriserArchive(pool,'workflow',f.root);
   expect(result.bytes.toString()).toBe(zip);expect(result.filename).toBe('old.zip');expect(f.writes).toHaveLength(0);
  }finally{await rm(f.root,{recursive:true,force:true});}
@@ -120,18 +122,38 @@ test('publication history remains readable after its workflow has been removed',
  expect(history).toMatchObject([{workflow_id:'removed-workflow',workflow_exists:false,event_type:'archived'}]);
  expect(sql).toContain('LEFT JOIN ai_distill.workflows w');
 });
-test.each(['changed_answer','changed_threshold','changed_file','changed_material'])('archive blocks %s without marking success',async mode=>{
+test.each(['changed_answer','changed_threshold'])('archive blocks %s without marking success',async mode=>{
  const publish=await publisher(),f=await fixture();try{
   if(mode==='changed_answer')f.snapshot.answers[0]!.result.text='changed';
   if(mode==='changed_threshold')f.snapshot.config.minimum_score_by_model['11111111-1111-4111-8111-111111111111']=30;
-  if(mode==='changed_material')await writeFile(join(f.root,'material'),'changed material');
-  if(mode==='changed_file')await writeFile(join(f.root,'artifact-a'),'tampered');
-  await expect(publish(f.pool,'workflow',f.root)).rejects.toThrow();expect(f.writes).toHaveLength(0);
+  const expectedReason='publication_acceptance_snapshot_changed';
+  await expect(publish(f.pool,'workflow',f.root)).rejects.toMatchObject({reason_code:expectedReason});expect(f.writes).toHaveLength(0);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
-test('archive refuses historical attempts without a frozen project skill fingerprint',async()=>{
- const f=await fixture({withoutPrompt:true});try{await expect(publishWorkflow(f.pool,'workflow',f.root)).rejects.toThrow('缺少出题时绑定的项目 skill 指纹');expect(f.writes).toHaveLength(0);}finally{await rm(f.root,{recursive:true,force:true});}
+test('missing score report file is recoverable only from its valid database-bound score result',async()=>{
+ const f=await fixture();
+ try{
+  await rm(join(f.root,'artifact-s'));
+  const result=await publishWorkflow(f.pool,'workflow',f.root);
+  expect(result.completed).toBe(true);
+  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('valid database answer allows archive without a local answer copy',async()=>{
+ const f=await fixture();
+ try{
+  await rm(join(f.root,'artifact-a'));
+  expect((await publishWorkflow(f.pool,'workflow',f.root)).completed).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('accepted database version archives without historical skill fingerprints or local material files',async()=>{
+ const f=await fixture({withoutPrompt:true});try{await rm(join(f.root,'material'));f.artifacts.splice(0);let called=false;expect((await publishWorkflow(f.pool,'workflow',f.root,undefined,{prepareArtifacts:async()=>{called=true;throw new Error('no project requires Office exports');}})).completed).toBe(true);expect(called).toBe(false);}finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('historical Windows skill paths cannot block an otherwise valid accepted version',async()=>{
+ const f=await fixture();try{f.snapshot.question.input.project_prompt!.workspace_path='D:\\codes\\work';f.snapshot.question.input.project_prompt!.skill_path='D:\\codes\\work\\skill';f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);expect((await publishWorkflow(f.pool,'workflow',f.root)).completed).toBe(true);}finally{await rm(f.root,{recursive:true,force:true});}
 });
 test('identical publication is reused instead of overwriting files or creating attempts',async()=>{
  const publish=await publisher(),f=await fixture();try{await writeFile(join(f.root,'published-file'),'published');f.artifacts.push({id:'published-file',attempt_id:'published',kind:'published_result',storage_path:'published-file',sha256:hash('published')});f.setPrevious({id:'published',result:{source_digest:f.accepted.input.source_digest,acceptance_attempt_id:'accepted'}});const result=await publish(f.pool,'workflow',f.root);expect(result).toMatchObject({id:'published',reused:true,completed:true});expect(f.writes).toHaveLength(0);}finally{await rm(f.root,{recursive:true,force:true});}
@@ -179,7 +201,7 @@ test.each([true,false])('Work frozen=%s releases DB before preparation and only 
  let release!:()=>void,occupied=false,called=false;const gate=getAgentConcurrencyGate(f.root,1);
  const held=gate.run(async()=>{occupied=true;await new Promise<void>(r=>{release=r;});});
  while(!occupied)await Bun.sleep(1);
- const run=publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,prepareWork:async()=>{called=true;expect(f.connections.held).toBe(0);return preparedWork;}});
+ const run=publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),prepare:workPreparation(async()=>{called=true;expect(f.connections.held).toBe(0);return preparedWork;})});
  try{
   if(frozen){await run;expect(called).toBe(true);}
   else{await Bun.sleep(25);expect(called).toBe(false);expect(f.connections.held).toBe(0);release();await held;await run;expect(called).toBe(true);}
@@ -190,7 +212,7 @@ test.each([true,false])('Work frozen=%s releases DB before preparation and only 
 test.each(['error','changed'])('Work generation %s never publishes stale results or leaks a connection',async(mode)=>{
  const f=await fixture({work:true});(f.snapshot.question.result as any).content_contract='work_legal_v1';f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);
  try{
-  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,prepareWork:async()=>{expect(f.connections.held).toBe(0);if(mode==='error')throw new Error('prepare failed');f.snapshot.question.result.question_version='changed';return preparedWork;}})).rejects.toThrow(mode==='error'?'prepare failed':'生成期间');
+  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),prepare:workPreparation(async()=>{expect(f.connections.held).toBe(0);if(mode==='error')throw new Error('prepare failed');f.snapshot.question.result.question_version='changed';return preparedWork;})})).rejects.toThrow(mode==='error'?'prepare failed':'生成期间');
   expect(f.connections.held).toBe(0);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
@@ -198,21 +220,29 @@ test.each(['error','changed'])('Work generation %s never publishes stale results
 test.each([false,true])('all projects run delivery outside DB connection and revalidate afterwards (work=%s)',async work=>{
  const f=await fixture({work});try{
   await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{
-   exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,
-   prepareWork:async()=>preparedWork,
+   exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),prepare:work?workPreparation(async()=>preparedWork):undefined,
    deliver:async()=>{expect(f.connections.held).toBe(0);f.snapshot.question.result.question_version='changed';return undefined as never;}
   })).rejects.toThrow('生成期间');
   expect(f.connections.held).toBe(0);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
-test('supplemental artifact failure cannot publish a successful archive or audit event',async()=>{
+test('optional Office export failure does not block an accepted project delivery',async()=>{
  const f=await fixture();
  try{
-  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{prepareArtifacts:async()=>{expect(f.connections.held).toBe(0);throw new Error('workbook generation failed');}})).rejects.toThrow('workbook generation failed');
-  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
-  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
+  const result=await publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'script',digest:'delivery'}),deliver:async()=>{},prepareArtifacts:async()=>{expect(f.connections.held).toBe(0);throw new Error('workbook generation failed');}});
+  expect(result.completed).toBe(true);
+  const saved=f.writes.find(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;
+  expect(JSON.parse(String(saved.values[3])).supplemental_exports.status).toBe('failed');
+  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(true);
   expect(f.connections.held).toBe(0);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('a project-specific preparation requirement remains mandatory',async()=>{
+ const f=await fixture();try{
+  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{prepare:async()=>{throw new Error('project requires a confirmed package');}})).rejects.toThrow('project requires a confirmed package');
+  expect(f.writes).toHaveLength(0);expect(f.connections.held).toBe(0);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
@@ -220,7 +250,7 @@ test('archive success includes project supplemental artifacts only after they al
  const f=await fixture();
  try{
   const archive_workbook={archive_path:'附件库/题目归档数据.xlsx',sha256:'a'.repeat(64),filename:'题目归档数据.xlsx'};
-  await publishWorkflow(f.pool,'workflow',f.root,undefined,{prepareArtifacts:async binding=>{
+  await publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'script',digest:'delivery'}),deliver:async()=>{},prepareArtifacts:async binding=>{
    expect(f.connections.held).toBe(0);expect(binding.acceptance_attempt_id).toBe('accepted');
    expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
    return{archive_workbook};
@@ -230,15 +260,16 @@ test('archive success includes project supplemental artifacts only after they al
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
-test('local publication recovery reuses completed project script without another side effect',async()=>{
+test('local publication recovery reuses a completed project script after a database commit failure',async()=>{
  const {LocalQueue}=await import('../execution-queue/store');const {withLocalExecution}=await import('../execution-queue/runtime');
  const f=await fixture(),q=new LocalQueue(f.root),id=crypto.randomUUID();q.intent(id,'step','internal','publish');q.confirm(id);const local=q.claim('internal')!;
- let scriptCalls=0,artifacts=0;
- const dependencies={deliver:async()=>{scriptCalls++;},prepareArtifacts:async()=>{artifacts++;if(artifacts===1)throw new Error('temporary artifact failure');return{};}};
+ let scriptCalls=0,failCommit=true;const connect=f.pool.connect.bind(f.pool);
+ f.pool.connect=async()=>{const db=await connect(),query=db.query.bind(db);return{...db,query:async(sql:string,values:any[])=>{if(sql.startsWith('SELECT w.project_id')&&scriptCalls&&failCommit){failCommit=false;throw new Error('temporary commit failure');}return query(sql,values);}} as any;};
+ const dependencies={deliver:async()=>{scriptCalls++;}};
  try{
-  await expect(withLocalExecution(q,local,()=>publishWorkflow(f.pool,'workflow',f.root,undefined,dependencies))).rejects.toThrow('temporary artifact failure');
+  await expect(withLocalExecution(q,local,()=>publishWorkflow(f.pool,'workflow',f.root,undefined,dependencies))).rejects.toThrow('temporary commit failure');
   await withLocalExecution(q,local,()=>publishWorkflow(f.pool,'workflow',f.root,undefined,dependencies));
-  expect(scriptCalls).toBe(1);expect(artifacts).toBe(2);
+  expect(scriptCalls).toBe(1);
  }finally{q.close();await rm(f.root,{recursive:true,force:true});}
 });
 
@@ -264,7 +295,7 @@ test('queued publication updates its original task after complete generation, wi
   }} as any;
  };
  try{
-  const result=await publishWorkflow(f.pool,'workflow',f.root,undefined,{attemptId,prepareArtifacts:async()=>({archive_workbook:{sha256:'workbook'}})});
+  const result=await publishWorkflow(f.pool,'workflow',f.root,undefined,{attemptId,exportsRoot:f.root,resolveDelivery:async()=>({mode:'script',digest:'delivery'}),deliver:async()=>{},prepareArtifacts:async()=>({archive_workbook:{sha256:'workbook'}})});
   expect(result.id).toBe(attemptId);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
   const update=f.writes.find(row=>row.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))!;
   expect(update.values[0]).toBe(attemptId);expect(JSON.parse(String(update.values[1])).archive_workbook.sha256).toBe('workbook');
@@ -277,4 +308,12 @@ test('legacy Work simulation refuses a changed queued model before cache access 
  const pool={query:async(sql:string)=>{reads++;return{rows:sql.includes('system_codex_config')?[{model:'new-model',reasoning_effort:'medium'}]:[{codex_model:'new-model',codex_reasoning_effort:'medium'}]};}} as any;
  await expect(getOrGenerateWorkSimulation(pool,{project_id:'p',question:{}} as any,'/unused-test-root','a'.repeat(64),{model:'queued-model',reasoning_effort:'medium'})).rejects.toThrow('排队后Agent配置');
  expect(reads).toBe(2);
+});
+
+test('Work alone rejects a changed required source material',async()=>{
+ const f=await fixture({work:true});try{
+  await writeFile(join(f.root,'material'),'changed material');
+  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),prepare:workPreparation(async()=>preparedWork)})).rejects.toMatchObject({reason_code:'publication_material_hash_mismatch'});
+  expect(f.writes).toHaveLength(0);
+ }finally{await rm(f.root,{recursive:true,force:true});}
 });

@@ -21,9 +21,9 @@ function noiseRanges(text:string,removeStandaloneNumbers:boolean):NoiseRange[]{
  }
  return ranges;
 }
-/** AI返回后调用的纯文本清理：替换为''并保留换行；不泛删方括号正文，不匹配带单位/小数/序号的正文。 */
+/** AI返回后调用的纯文本清理：默认只删除固定噪声并保留换行/数字。removeStandaloneNumbers仅用于显式已确认数字为噪声的旧调用。 */
 export function cleanRedactionText(text:string,options:{removeStandaloneNumbers?:boolean}={}){
- const ranges=noiseRanges(text,options.removeStandaloneNumbers??true).sort((a,b)=>a.start-b.start||b.end-a.end),merged:{start:number;end:number}[]=[];
+ const ranges=noiseRanges(text,options.removeStandaloneNumbers??false).sort((a,b)=>a.start-b.start||b.end-a.end),merged:{start:number;end:number}[]=[];
  for(const range of ranges){const prior=merged.at(-1);if(prior&&range.start<=prior.end)prior.end=Math.max(prior.end,range.end);else merged.push({...range});}
  for(const range of merged.reverse())text=text.slice(0,range.start)+text.slice(range.end);
  return text;
@@ -55,10 +55,10 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  const edits:ScanNoiseEdit[]=[];
  const add=(entry:typeof entries[number],a=0,b=entry.text.length)=>{if(numberLine.test(entry.text.trim())&&sensitiveEdits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start<entry.start+b&&edit.end>entry.start+a))return;if(b>a&&!edits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start===entry.start+a&&edit.end===entry.start+b))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+a,end:entry.start+b,source_text:entry.text.slice(a,b),replacement_text:''});};
  const addProjection=(entry:typeof entries[number],a:number,b:number)=>{if(b>a&&!edits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start===entry.start+a&&edit.end===entry.start+b))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+a,end:entry.start+b,source_text:entry.projection.slice(a,b),replacement_text:''});};
- // AI返回后的规则清理；独立数字仅作用于文本块，表格/列表数值及已脱敏编号不按页码删除。
+ // AI返回后仅清理固定占位符与时间戳；普通数字保留，页角数字由下方跨页证据判断。
  for(const entry of entries){
-  const prior=entry.blocks.slice(0,entry.index).findLast(block=>documentBlocksToText([block]).trim());
-  const removeNumbers=!['table','list','formula','code'].includes(entry.block.kind)&&!valueLabel.test(prior?documentBlocksToText([prior]).trim():'');
+  // 普通独立数字没有足够证据证明是页码；仅在下方跨页/签名规则中删除。
+  const removeNumbers=false;
   for(const range of noiseRanges(entry.projection,removeNumbers)){
    if(range.kind==='number_line'&&sensitiveEdits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start<entry.start+range.end&&edit.end>entry.start+range.start))continue;
    addProjection(entry,range.start,range.end);

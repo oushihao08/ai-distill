@@ -78,3 +78,7 @@ worker 恢复超时作答 attempt 时先记录该 attempt 失败；只有其冻�
 `dispatch.test.ts`核对API/Agent转换；`input.test.ts`核对白名单、来源与呈现指纹；`jobs.test.ts`核对队列/绑定/恢复；`model-set.test.ts`核对集合/阈值；`generation-policy.test.ts`核对时长与禁用免评分；`domestic.test.ts`和`qwen.test.ts`覆盖兼容客户端及供应商响应。各测试的替身/本地执行范围须看文件，存在测试不代表真实模型或供应商验收。
 
 本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。
+
+## 队列代码维护导航
+
+`jobs.ts`的`buildAnswerFailure()`集中生成安全错误载荷，保留原失败检查点及供应商白名单字段；它不决定是否重试。时长资格仍由`generation-policy.ts`判断，不可在错误格式化时启用免评分。`refreshAnswerStep()`负责当前模型集合的汇总；部分模型失败不能抹去其他模型的成功答案。修改提交逻辑须保留当前题目、附件和模型集合绑定校验。

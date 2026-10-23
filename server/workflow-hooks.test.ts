@@ -68,3 +68,10 @@ test('收费复核不能声明可自动恢复的幂等动作，配置中不接�
  const f=await fixture("console.log('{}');"),m=(await modulePromise)!;
  for(const config of [{provider:'deepseek',base_url:'https://api.deepseek.com',model:'deepseek-chat'},{provider:'deepseek',base_url:'https://user:password@api.deepseek.com',model:'deepseek-chat'}])await expect(m.freezeHookScript(f.root,{...f.action,idempotent:!config.base_url.includes('@'),model_request:{config,prompt:'复核'}} as any)).rejects.toThrow();
 });
+
+test('hook model request accepts registered SiliconFlow while preserving endpoint and provider checks',async()=>{
+ const {validateWorkflowConfig}=await import('../shared/workflow-config');
+ const action={id:'verify',script:'hook.ts',files:['hook.ts'],mode:'sync',params:{},timeout_ms:1000,idempotent:false,model_request:{config:{provider:'siliconflow',model:'Qwen/Qwen3.8-27B',base_url:'https://api.siliconflow.cn/v1'},prompt:'review'}};
+ expect(validateWorkflowConfig({hooks:{before:[action]}})?.hooks.before[0]?.model_request?.config.provider).toBe('siliconflow');
+ for(const config of [{...action.model_request.config,provider:'unknown'},{...action.model_request.config,base_url:'http://localhost/v1'}])expect(()=>validateWorkflowConfig({hooks:{before:[{...action,model_request:{...action.model_request,config}}]}})).toThrow();
+});

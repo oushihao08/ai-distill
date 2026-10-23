@@ -4,19 +4,19 @@
 使用场景：由 ProjectDetail.vue 挂载；不在这里处理原件、入库或脱敏任务。
 -->
 <script setup lang="ts">
-import {api} from '../api/client';
+import {api,apiPostIntent} from '../api/client';
 import {redactionProcessingMode,type MaterialProcessingMode} from '@shared/material-library';
 import type {CreateLibraryQuestionRequest,MaterialLibraryPackageSummary,MaterialUseRecord} from '@shared/material-library';
 
 interface RedactionChoice {redaction_template_id?:string|null;redaction_template_workflow?:string|null;id:string;output_digest:string;usable_for_question:boolean|string;created_at:string;revision_id:string}
 interface RevisionChoice {id:string;state:'pending'|'ready';redactions:Omit<RedactionChoice,'revision_id'>[];jobs?:{kind:string;status:string}[]}
 interface PackageRevisions {items:RevisionChoice[]}
-interface LoadedPackage {selected_processing_mode?:MaterialProcessingMode;id:string;project_id:string;package_id:string;package_name:string;selected_revision_id:string|null;selected_redaction_id:string|null;current_revision_id:string|null;position:number;lock_version:number;removed_at:string|null;usage_status?:'in_use'|'submitted';use_lock_version?:number}
+interface LoadedPackage {selected_version_usable?:boolean;selected_processing_mode?:MaterialProcessingMode;id:string;project_id:string;package_id:string;package_name:string;selected_revision_id:string|null;selected_redaction_id:string|null;current_revision_id:string|null;position:number;lock_version:number;removed_at:string|null;usage_status?:'in_use'|'submitted';use_lock_version?:number}
 interface CandidatePage {items:Candidate[];page:number;page_size:number;total_count:number}
 type Candidate=MaterialLibraryPackageSummary&{used_in_project?:boolean;used_phase_name?:string;usage_status?:'in_use'|'submitted'};
 
 const props=defineProps<{projectId:string;questionTags:string[];materialSourceMode:'redacted'|'original';materialProcessingMode:MaterialProcessingMode}>();
-const emit=defineEmits<{refresh:[]} >();
+const emit=defineEmits<{refresh:[];loaded:[count:number,usable:number|null]} >();
 const loaded=shallowRef<LoadedPackage[]>([]),materialUses=shallowRef<MaterialUseRecord[]>([]);
 const activeLinks=computed(()=>loaded.value.filter(item=>!item.removed_at));
 const removedLinks=computed(()=>loaded.value.filter(item=>!!item.removed_at));
@@ -40,17 +40,21 @@ const questionForm=reactive({title:'',scenario:'',role_perspective:'',authoring_
 function levelFromPackageName(name:string):''|'L2'|'L3'|'L4'|'L5'{const level=/(?:^|[-_\s])(L[2-5])(?=$|[-_\s])/i.exec(name)?.[1]?.toUpperCase();return level==='L2'||level==='L3'||level==='L4'||level==='L5'?level:'';}
 const questionPackageLevel=computed(()=>questionLink.value?levelFromPackageName(questionLink.value.package_name):'');
 
-let candidateRequestVersion=0;
+let candidateRequestVersion=0,refreshVersion=0;
+let refreshController:AbortController|undefined,disposed=false;
 async function refresh(){
+ const version=++refreshVersion,projectId=props.projectId;
+ refreshController?.abort();const controller=new AbortController();refreshController=controller;
  try{
   const [projectMaterials,uses]=await Promise.all([
-   api<{items:LoadedPackage[]}>(`/projects/${props.projectId}/loaded-materials?include_removed=true`),
-   api<{items:MaterialUseRecord[]}>(`/projects/${props.projectId}/material-uses`),
+   api<{items:LoadedPackage[]}>(`/projects/${projectId}/loaded-materials?include_removed=true`,{signal:controller.signal}),
+   api<{items:MaterialUseRecord[]}>(`/projects/${projectId}/material-uses`,{signal:controller.signal}),
   ]);
-  loaded.value=projectMaterials.items;materialUses.value=uses.items;loadedVersionIds.clear();
+  if(disposed||controller.signal.aborted||version!==refreshVersion||projectId!==props.projectId)return;
+  loaded.value=projectMaterials.items;emit('loaded',projectMaterials.items.filter(item=>!item.removed_at).length,projectMaterials.items.some(item=>!item.removed_at&&item.selected_version_usable===undefined)?null:projectMaterials.items.filter(item=>!item.removed_at&&item.selected_version_usable===true&&item.selected_processing_mode===props.materialProcessingMode).length);materialUses.value=uses.items;loadedVersionIds.clear();
   if(phasePage.value>phasePageCount.value)phasePage.value=phasePageCount.value;
   for(const link of loaded.value)if(link.selected_redaction_id&&!redactionsByPackage[link.package_id])redactionsByPackage[link.package_id]=[{title:'当前选用的脱敏版本',value:link.selected_redaction_id}];
- }catch(cause){error.value=cause instanceof Error?cause.message:'本期材料加载失败';}
+ }catch(cause){if(!disposed&&!controller.signal.aborted&&version===refreshVersion)error.value=cause instanceof Error?cause.message:'本期材料加载失败';}
 }
 async function loadCandidates(){
  const requestVersion=++candidateRequestVersion,page=candidatePage.value,query=candidateQuery.value.trim();candidateLoading.value=true;
@@ -118,17 +122,17 @@ function openQuestionDialog(link:LoadedPackage){
 }
 async function createQuestion(){
  const link=questionLink.value,title=questionForm.title.trim();if(!link||!title||!canCreateQuestion(link)||busy.value)return;
- const body:CreateLibraryQuestionRequest={request_key:crypto.randomUUID(),...(props.materialSourceMode==='original'?{revision_id:link.selected_revision_id!}:{redaction_id:link.selected_redaction_id!}),expected_link_version:link.lock_version,title,
+ const body:Omit<CreateLibraryQuestionRequest,'request_key'>={...(props.materialSourceMode==='original'?{revision_id:link.selected_revision_id!}:{redaction_id:link.selected_redaction_id!}),expected_link_version:link.lock_version,title,
   ...(questionForm.scenario.trim()?{scenario:questionForm.scenario.trim()}:{}),...(questionForm.role_perspective.trim()?{role_perspective:questionForm.role_perspective.trim()}:{}),
   ...(questionForm.authoring_direction.trim()?{authoring_direction:questionForm.authoring_direction.trim()}:{}),...(questionForm.target_level?{target_level:questionForm.target_level}:{}),question_tags:[...questionForm.question_tags]};
  busy.value=true;error.value='';notice.value='';
- try{await api(`/projects/${props.projectId}/loaded-materials/${link.id}/questions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});questionDialog.value=false;notice.value=`已从“${link.package_name}”创建题目，题目保存独立材料快照`;emit('refresh');await refresh();}
+ try{await apiPostIntent(`/projects/${props.projectId}/loaded-materials/${link.id}/questions`,body);questionDialog.value=false;notice.value=`已从“${link.package_name}”创建题目，题目保存独立材料快照`;emit('refresh');await refresh();}
  catch(cause){error.value=cause instanceof Error?cause.message:'从材料包创建题目失败';}
  finally{busy.value=false;}
 }
 watch(()=>props.materialProcessingMode,()=>{loadedVersionIds.clear();for(const key of Object.keys(redactionsByPackage))delete redactionsByPackage[key];void refresh();});
 watch(()=>props.projectId,()=>{phasePage.value=1;void refresh();},{immediate:true});
-onBeforeUnmount(()=>{if(searchTimer)clearTimeout(searchTimer);});
+onBeforeUnmount(()=>{disposed=true;refreshVersion++;refreshController?.abort();if(searchTimer)clearTimeout(searchTimer);});
 </script>
 
 <template><section class="surface-card p-16"><Column :gap="14">
@@ -137,7 +141,7 @@ onBeforeUnmount(()=>{if(searchTimer)clearTimeout(searchTimer);});
  <Row v-if="activeLinks.length" wrap y="center" :gap="8" class="text-sm"><v-chip size="small" variant="tonal">材料包 {{ activeLinks.length }}</v-chip><v-chip size="small" color="primary" variant="tonal">使用中 {{ inUsePackageCount }}</v-chip><v-chip size="small" color="success" variant="tonal">已提交 {{ submittedPackageCount }}</v-chip></Row>
  <p v-if="!activeLinks.length" class="text-sm text-muted">本期尚未加载材料包。</p>
  <Column v-else class="w-full overflow-x-auto" :gap="0"><v-table density="comfortable" class="min-w-1000px" aria-label="本期已加载材料包"><thead><tr><th scope="col">材料包</th><th scope="col">主项目状态</th><th scope="col">本期材料版本</th><th scope="col">题目设置</th><th scope="col">操作</th></tr></thead><tbody>
-  <tr v-for="link in visibleActiveLinks" :key="link.id"><td class="min-w-220"><Column :gap="4"><RouterLink :to="{path:`/materials/${link.package_id}`,query:{projectId:props.projectId}}" class="link-text font-medium">{{ link.package_name }} · 材料详情</RouterLink><span class="text-xs text-muted">版本 {{ link.selected_revision_id?.slice(0,8)??'未选择' }}</span></Column></td>
+  <tr v-for="link in visibleActiveLinks" :key="link.id"><td class="min-w-220"><Column :gap="4"><RouterLink :to="{path:`/materials/${link.package_id}`,query:{projectId:props.projectId}}" class="link-text font-medium">{{ link.package_name }} · 材料详情</RouterLink><span class="text-xs text-muted">版本 {{ link.selected_revision_id?.slice(0,8)??'未选择' }}</span><span class="text-xs text-muted">{{ link.selected_version_usable===undefined?'可用状态未核实':link.selected_version_usable&&link.selected_processing_mode===props.materialProcessingMode?'本期来源可用':'需处理或调整版本' }}</span></Column></td>
    <td class="min-w-180"><MaterialUsePanel v-if="useByPackage[link.package_id]" :project-id="projectId" :item="useByPackage[link.package_id]!" @updated="refresh"/><v-chip v-else color="primary">使用中</v-chip></td>
    <td class="min-w-230"><v-select v-if="props.materialSourceMode==='original'" :model-value="link.selected_revision_id" :items="revisionsByPackage[link.package_id]??(link.selected_revision_id?[{title:`当前版本 ${link.selected_revision_id.slice(0,8)}`,value:link.selected_revision_id}]:[])" label="未脱敏提取版本" item-title="title" item-value="value" density="compact" hide-details :disabled="busy||link.usage_status==='submitted'" @update:menu="open=>{if(open)void inspectLoadedPackage(link.package_id)}" @update:model-value="id=>chooseRevision(link,id)"/><v-select v-else :model-value="link.selected_redaction_id" :items="redactionsByPackage[link.package_id]??[]" label="脱敏版本" item-title="title" item-value="value" density="compact" hide-details :disabled="busy||link.usage_status==='submitted'" @update:menu="open=>{if(open)void inspectLoadedPackage(link.package_id)}" @update:model-value="id=>chooseRedaction(link,id)"/></td>
    <td><v-btn v-if="props.materialProcessingMode!=='original'" size="small" variant="text" :to="{path:`/materials/${link.package_id}`,query:{projectId:props.projectId}}">处理材料</v-btn><v-btn v-if="props.materialSourceMode==='original'&&link.selected_redaction_id&&link.selected_revision_id" size="small" variant="text" @click="chooseRevision(link,link.selected_revision_id)">使用原文</v-btn><v-btn size="small" variant="outlined" :disabled="busy||!canCreateQuestion(link)" @click="openQuestionDialog(link)">创建题目</v-btn></td>

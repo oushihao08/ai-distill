@@ -3,6 +3,8 @@
  * 关键方法与用途：`createStructuredLogger()` 创建过滤、轮转的 JSONL logger；`withLogContext()`／`withIsolatedLogContext()`／`enterLogContext()` 传递或隔离上下文；`logEvent()` 写事件。
  * 使用场景：API、worker 和业务队列按事件边界调用；`loggerHealth()` 查询状态，敏感字段先经 `sanitizeLogRecord()` 过滤。
  */
+import {MODEL_API_PROVIDERS} from '../shared/types';
+
 import {appendFileSync,chmodSync,mkdirSync,statSync} from 'node:fs';
 import {appendFile,chmod,mkdir,open,readFile,readdir,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -13,7 +15,7 @@ type LogFields=Record<string,unknown>;
 type LogContext=Partial<Record<'request_id'|'operation_id'|'component'|'project_id'|'workflow_id'|'attempt_id'|'skill_attempt_id'|'ordinal'|'call_id'|'session_id'|'artifact_id'|'operation'|'provider'|'model'|'reasoning_effort'|'library_package_id'|'library_revision_id'|'library_job_id'|'library_file_id',unknown>>;
 const context=new AsyncLocalStorage<LogContext>();
 const safeErrors=new Set(['authentication','quota','rate_limit','network','timeout','provider','configuration','cancelled','invalid_response','unknown','none']);
-const safeProviders=new Set(['codex','qwen','kimi','deepseek','doubao','openrouter','glm-ocr','mineru-api','mineru-cli','unknown']);
+const safeProviders=new Set(['codex',...MODEL_API_PROVIDERS,'glm-ocr','mineru-api','mineru-cli','unknown']);
 const safeChangedFields=new Set(['credential_home','model','reasoning_effort','enabled','models','name','description','material_root','local_skill_path','provider','base_url','config','minimum_score','currency','input_per_million','output_per_million','cached_input_per_million','cache_write_per_million','source','valid_from','valid_until','ordinal','prompt','threshold','workspace_path','source_digest','expected_sha256','text','path','rubric','question','workflow_ids']);
 const allowed=new Set(['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','session_id','operation','provider','model','reasoning_effort','library_package_id','library_revision_id','library_job_id','library_file_id','build_id','child_pid','timeout_ms','elapsed_ms','wall_elapsed_ms','timer_lateness_ms','exit_code','signal','error_kind','reason_code','finish_reason','failure_phase','retryable','http_status','material_count','page_count','input_bytes','output_bytes','token_usage','method','route','status_code','duration_ms','query_name','transaction_name','artifact_id','target_id','changed_fields','file_kind','dropped_count','state','queue_wait_ms','attempt_count','batch_index','last_heartbeat_at','threshold_ms','error_code','error_constraint','process_state','event_type','event_count','level','material_id','page','expected_count','actual_count','expected_page','actual_page','source_empty','diagnostic_id'
 ]);

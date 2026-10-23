@@ -18,3 +18,23 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
  } catch (error) { throw error instanceof Error ? error : new Error('无法连接工作台接口'); }
 }
+
+/** 同一输入结果未知时保留request_key；成功回执后释放，下次明确操作可新建尝试。
+ * 会话存储仅保存输入摘要/随机键，不保存正文；存储不可用时退回当前页面内恢复。 */
+const pendingIntents=new Map<string,string>();
+export async function apiPostIntent<T>(path:string,body:Record<string,unknown>):Promise<T>{
+ const input=JSON.stringify([path,body]);
+ const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(input));
+ const storageKey='ai-distill:intent:'+Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+ let stored:string|null=null;
+ try{stored=sessionStorage.getItem(storageKey);}catch{stored=null;}
+ const key=pendingIntents.get(storageKey)??stored??crypto.randomUUID();
+ pendingIntents.set(storageKey,key);
+ try{sessionStorage.setItem(storageKey,key);}catch{ /* 私密浏览等环境使用上面的页面内Map，不影响已冻结请求键。 */ stored=null;}
+ try{
+  const result=await api<T>(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,request_key:key})});
+  pendingIntents.delete(storageKey);
+  try{sessionStorage.removeItem(storageKey);}catch{stored=null;}
+  return result;
+ }catch(cause){throw new Error(`${cause instanceof Error?cause.message:'派发失败'}。本次请求标识已保留；相同输入再次提交会先恢复原请求。`);}
+}

@@ -137,3 +137,12 @@ test('active workflow monitor includes publication tasks so idle checks cannot m
  const pool={query:async(text:string)=>{sql=text;return{rows:[{attempt_id:'publication',project_id:'p',workflow_id:'w',project_name:'项目',question_title:'题目',step_name:'归档',state:'running',channel:'unknown',started_at:null}]};}} as unknown as Pool;
  expect((await readActiveWorkflowTasks(pool))[0]?.attempt_id).toBe('publication');expect(sql).toContain('a.ordinal IN (4,5,6,8,9)');
 });
+
+test('active task query filters local ownership before LIMIT and classifies frozen providers',async()=>{
+ const {readActiveWorkflowTasks}=await import('./worker-monitor');let sql='',values:unknown;
+ const pool={query:async(text:string,params:unknown)=>{sql=text;values=params;return{rows:[]};}} as unknown as Pool;
+ const id='11111111-1111-4111-8111-111111111111';
+ await readActiveWorkflowTasks(pool,[id]);expect(values).toEqual([[id]]);expect(sql.indexOf('a.id=ANY')).toBeLessThan(sql.indexOf('LIMIT 500'));
+ expect(sql).toContain("a.ordinal=5 AND a.config->>'provider'='codex' THEN 'agent'");expect(sql).toContain("a.ordinal=6 AND a.config->>'provider'='api' THEN 'api'");
+ await readActiveWorkflowTasks(pool,[]);expect(values).toEqual([[]]);await readActiveWorkflowTasks(pool);expect(values).toEqual([null]);
+});

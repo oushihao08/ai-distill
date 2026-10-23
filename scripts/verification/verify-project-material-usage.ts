@@ -3,7 +3,9 @@
  * 入口：bun scripts/verification/verify-project-material-usage.ts；仅使用合成TXT和内部合成脱敏结果，不调用模型。
  * 边界：所有业务SQL替换到随机verify schema；退出清理该schema和临时目录，不操作现有业务项目。
  */
-import {readdir,mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {readdir,mkdtemp,mkdir,writeFile,rm,cp} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
+import {readQuestionMaterials} from '../../server/question-materials';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -17,8 +19,11 @@ import {canonicalJson} from '../../shared/workflow-config';
 import {runNextAuthoring} from '../../server/authoring/jobs';
 import {inputDigest as authoringInputDigest} from '../../server/authoring/jobs';
 import {runNextAnswer} from '../../server/answer-models/jobs';
+import {runNextPublication} from '../../server/publishing/tasks';
 import {runNextScore} from '../../server/scoring/jobs';
 
+// 本验证器仅直接消费随机schema内合成任务，不启动本机SQLite消费者；禁止继承工作台local模式。
+process.env.EXECUTION_QUEUE_MODE='legacy';
 const raw=createPool(),schema=`verify_project_phases_${randomUUID().replaceAll('-','')}`;
 const root=await mkdtemp(join(tmpdir(),'ai-distill-project-phases-'));
 const sql=(text:string)=>text.replaceAll('ai_distill',schema);
@@ -55,7 +60,7 @@ try{
   const response=await app.request(`/api${path}`,{method,headers:{'Content-Type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
   const result=await response.json();return{status:response.status,body:result as any};
  }
- async function phase(parent:string,no:number){const result=await request('/projects',{parent_name:parent,phase_name:`第${no}期`,phase_no:no,material_backend:'library_v1',workspace_path:root});check(`创建${parent}${no}期`,result.status===201);return result.body;}
+ async function phase(parent:string,no:number){const result=await request('/projects',{parent_name:parent,phase_name:`第${no}期`,phase_no:no,material_backend:'library_v1',workspace_path:root,local_skill_path:root});check(`创建${parent}${no}期`,result.status===201);return result.body;}
  const a5=await phase('项目甲',5),a6=await phase('项目甲',6),b1=await phase('项目乙',1);
  check('同主项目各期共享稳定主项目ID',a5.project_group_id===a6.project_group_id&&a5.project_group_id!==b1.project_group_id);
  const phaseOverview=await request(`/project-groups/${a5.project_group_id}/phases`,undefined,'GET');
@@ -115,7 +120,7 @@ try{
   await fixtureClient.query('BEGIN');
   for(const [id,value,type] of [[mdBlob,redacted.markdown,'text/markdown; charset=utf-8'],[indexBlob,redacted.index,'application/vnd.ai-distill.redacted-index+json']])await fixtureClient.query("INSERT INTO ai_distill.library_blobs(id,sha256,size_bytes,content_type,storage_kind,text_content) VALUES($1,$2,$3,$4,'database_text',$5)",[id,sha(value!),Buffer.byteLength(value!),type,value]);
   await fixtureClient.query("INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target,finished_at) VALUES($1,$2,$3,'redact','succeeded',$4,$5,'{}',$5,'{}','internal','local',now())",[redactionJob,pkg,rev,randomUUID(),inputDigest]);
-  await fixtureClient.query('INSERT INTO ai_distill.library_redactions(id,package_id,revision_id,extraction_job_id,redaction_job_id,markdown_blob_id,index_blob_id,input_digest,output_digest,validation_report) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[redaction,pkg,rev,extraction,redactionJob,mdBlob,indexBlob,inputDigest,outputDigest,JSON.stringify({usable_for_question:true,synthetic:true})]);
+  await fixtureClient.query('INSERT INTO ai_distill.library_redactions(id,package_id,revision_id,extraction_job_id,redaction_job_id,markdown_blob_id,index_blob_id,input_digest,output_digest,validation_report) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[redaction,pkg,rev,extraction,redactionJob,mdBlob,indexBlob,inputDigest,outputDigest,JSON.stringify({usable_for_question:true,synthetic:true,material_processing_mode:'aliases',redaction_template_workflow:'codex_plan',redaction_template_id:'aliases'})]);
   await fixtureClient.query('COMMIT');
  }catch(error){await fixtureClient.query('ROLLBACK');throw error;}finally{fixtureClient.release();}
  const c1=await phase('并发项目',1),c2=await phase('并发项目',2);
@@ -186,10 +191,13 @@ try{
  }
  check('作答评分成功且本期达标为accepted',state.find(s=>s.ordinal===5)?.status==='succeeded'&&state.find(s=>s.ordinal===6)?.status==='succeeded'&&state.find(s=>s.ordinal===7)?.result?.decision==='accepted');
  const archive=await request(`/workflows/${questionId}/publish`);
- if(archive.status!==200)throw new Error(`合成归档失败 ${archive.status}: ${archive.body.error}`);
- check('脱敏题目归档步骤成功',archive.status===200&&(await pool.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8',[questionId])).rows[0].status==='succeeded');
+ if(archive.status!==202)throw new Error(`合成归档失败 ${archive.status}: ${archive.body.error}`);
+ await runNextPublication(pool,root,new AbortController().signal,[questionId]);
+ check('脱敏题目归档步骤成功',archive.status===202&&(await pool.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8',[questionId])).rows[0].status==='succeeded');
  const redactedDocx=await request(`/workflows/${questionId}/material-docx`,{});const redactedDocxRow=(await pool.query("SELECT kind,storage_path FROM ai_distill.artifacts WHERE workflow_id=$1 AND kind IN ('redacted_docx','original_docx')",[questionId])).rows[0];
  check('脱敏题最终材料生成脱敏DOCX',[200,201].includes(redactedDocx.status)&&redactedDocxRow?.kind==='redacted_docx'&&redactedDocxRow.storage_path.endsWith('.docx'));
+ const redactedXml=spawnSync('python3',['-c',"import zipfile,sys,xml.etree.ElementTree as E; print(''.join(E.fromstring(zipfile.ZipFile(sys.argv[1]).read('word/document.xml')).itertext()))",join(root,'exports',redactedDocxRow.storage_path)],{encoding:'utf8'});
+ check('实际脱敏DOCX正文含处理版本且没有原始号码',redactedXml.status===0&&redactedXml.stdout.includes('[已脱敏]')&&!redactedXml.stdout.includes('13800138000'));
  const redactedWorkbook=await request(`/projects/${winner.id}/export`,{});check('脱敏题生成项目XLSX导出',redactedWorkbook.status===201&&redactedWorkbook.body.status==='succeeded'&&redactedWorkbook.body.workflow_count===1);
  const originalPhase=await phase('原文模式验收项目',1);
  await pool.query('UPDATE ai_distill.projects SET local_skill_path=$2 WHERE id=$1',[originalPhase.id,join(root,'skill')]);
@@ -222,11 +230,17 @@ try{
  const originalAcceptance=(await pool.query("SELECT status,result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=7",[originalQuestionId])).rows[0];
  check('原文评分后达标判断低于55并accepted',originalAcceptance?.status==='succeeded'&&originalAcceptance.result?.decision==='accepted'&&originalAcceptance.result?.model_scores?.[modelId]?.percentage===50);
  const originalPublish=await request(`/workflows/${originalQuestionId}/publish`);
- check('原文题达标后归档成功',originalPublish.status===200&&(await pool.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8',[originalQuestionId])).rows[0].status==='succeeded');
+ await runNextPublication(pool,root,new AbortController().signal,[originalQuestionId]);
+ check('原文题达标后归档成功',originalPublish.status===202&&(await pool.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8',[originalQuestionId])).rows[0].status==='succeeded');
  const originalDocx=await request(`/workflows/${originalQuestionId}/material-docx`,{});
  const originalDocxRow=(await pool.query("SELECT kind,storage_path FROM ai_distill.artifacts WHERE workflow_id=$1 AND kind IN ('redacted_docx','original_docx')",[originalQuestionId])).rows[0];
  const originalManifest=(await pool.query("SELECT content FROM ai_distill.artifacts WHERE workflow_id=$1 AND kind='redacted_docx_manifest'",[originalQuestionId])).rows[0]?.content;
  check('原文题最终材料生成original_docx并写入原文模式manifest',[200,201].includes(originalDocx.status)&&originalDocxRow?.kind==='original_docx'&&originalDocxRow.storage_path.endsWith('.docx')&&JSON.parse(originalManifest??'{}').material_mode==='original');
+ const originalXml=spawnSync('python3',['-c',"import zipfile,sys,xml.etree.ElementTree as E; print(''.join(E.fromstring(zipfile.ZipFile(sys.argv[1]).read('word/document.xml')).itertext()))",join(root,'exports',originalDocxRow.storage_path)],{encoding:'utf8'});
+ check('实际原文DOCX保留原始号码且无脱敏占位符',originalXml.status===0&&originalXml.stdout.includes('13800138000')&&!originalXml.stdout.includes('[已脱敏]'));
+ const modeChange=await request(`/projects/${originalPhase.id}/steps/4/config`,{model:'gpt-6.1-sol',reasoning_effort:'low',prompt:'使用本次冻结材料',material_processing_mode:'aliases'},'PUT');
+ const frozenAfterModeChange=await readQuestionMaterials(pool,originalQuestionId);
+ check('期次切换化名后旧题仍读取冻结原文',modeChange.status===200&&frozenAfterModeChange.origin.kind==='library_v1'&&frozenAfterModeChange.origin.material_mode==='original'&&frozenAfterModeChange.attachments[0]?.content.includes('13800138000'));
  const originalWorkbook=await request(`/projects/${originalPhase.id}/export`,{});
  check('原文题生成项目XLSX导出',originalWorkbook.status===201&&originalWorkbook.body.status==='succeeded'&&originalWorkbook.body.workflow_count===1);
  const originalAnswerInput=(await pool.query('SELECT input FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 ORDER BY attempt DESC LIMIT 1',[originalQuestionId])).rows[0]?.input;
@@ -234,6 +248,7 @@ try{
  check('最终作答尝试保留原文模式及正确附件ID和摘要',originalAnswerInput?.material_origin?.material_mode==='original'&&originalAnswerArtifact?.kind==='source_markdown'&&originalAnswerArtifact.sha256===originalAnswerInput.attachments[0].sha256);
  const opposite=await request(`/projects/${loser.id}`,undefined,'GET');check('另一期间列表和计数不包含本期题目',opposite.status===200&&!opposite.body.workflows.some((w:any)=>w.id===questionId));
  check('本期尝试和产物均绑定原题及期次',(await pool.query('SELECT count(*)::int AS n FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.workflow_id=$1 AND w.project_id=$2',[questionId,winner.id])).rows[0].n>=4);
+ if(process.env.VERIFY_EVIDENCE_DIR)await cp(join(root,'exports'),process.env.VERIFY_EVIDENCE_DIR,{recursive:true,errorOnExist:true,force:false});
  // 删除和归档必须保留主项目永久占用；全部操作仍限于本次随机schema。
  const removedQuestion=await request(`/workflows/${questionId}`,undefined,'DELETE');
  check('删除题目不释放跨期使用资格',removedQuestion.status===200&&(await request(`/projects/${loser.id}/loaded-materials`,{package_id:pkg,redaction_id:redaction})).status===409);

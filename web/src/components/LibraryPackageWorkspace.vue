@@ -9,7 +9,7 @@ import {defaultLibraryRedactionTemplateId} from '@shared/redaction-templates';
 const props=defineProps<{revisions:LibraryRevision[];busy:boolean;processingMode?:MaterialProcessingMode}>();
 const emit=defineEmits<{run:[revision:LibraryRevision,kind:'intake'|'extract'|'redact',templateId?:string];refresh:[]}>();
 const templates=shallowRef<{id:string;name:string;workflow:string}[]>([]),templateId=shallowRef(''),templateError=shallowRef('');
-const selectedTemplate=computed(()=>templates.value.find(t=>t.id===(props.processingMode??templateId.value)));
+const selectedTemplate=computed(()=>props.processingMode==='mask'?undefined:templates.value.find(t=>t.id===templateId.value));
 onMounted(async()=>{try{templates.value=(await api<{items:typeof templates.value}>('/material-library/redaction-templates')).items;templateId.value=defaultLibraryRedactionTemplateId(templates.value);}catch(error){templateError.value=error instanceof Error?error.message:'读取模板失败';}});
 const revisionId=shallowRef(''),fileId=shallowRef('');
 type FileMode='source'|'redacted'|'compare';
@@ -35,15 +35,15 @@ const names={intake:'入库',extract:'识别原文',redact:'脱敏'};
   <template v-if="revision">
    <v-btn v-if="revision.state==='pending'" :disabled="busy||!!active" @click="emit('run',revision,'intake')">入库</v-btn>
    <v-btn v-else :disabled="busy||!!active" @click="emit('run',revision,'extract')">{{ extracted?'重新识别':'识别原文' }}</v-btn>
-   <v-btn v-if="props.processingMode!=='original'" color="primary" :disabled="busy||!!active||!extracted||!selectedTemplate" @click="emit('run',revision,'redact',props.processingMode??templateId)">{{ usable?'重新脱敏':'脱敏' }}</v-btn>
-   <v-select v-if="!props.processingMode" v-model="templateId" label="脱敏模板" :items="templates.map(t=>({title:t.name,value:t.id}))" hide-details class="w-full sm:w-220px sm:flex-none"/>
+   <v-btn v-if="props.processingMode!=='original'" color="primary" :disabled="busy||!!active||!extracted||!selectedTemplate" @click="emit('run',revision,'redact',templateId)">{{ usable?'重新脱敏':'脱敏' }}</v-btn>
+   <v-select v-if="props.processingMode!=='original'&&props.processingMode!=='mask'" v-model="templateId" label="脱敏模板" :items="templates.map(t=>({title:t.name,value:t.id}))" hide-details class="w-full sm:w-220px sm:flex-none"/>
    <span v-if="revisions.length===1" class="text-sm text-muted whitespace-nowrap">第 1 版 · {{ revision.file_count }} 份文件</span>
    <v-select v-else v-model="revisionSelection" label="文件版本" :items="revisions.map((item,index)=>({title:`第 ${revisions.length-index} 版 · ${dateLabel(item.created_at)}`,value:item.id}))" hide-details class="w-full sm:w-220px sm:flex-none"/>
    <v-select v-model="fileSelection" label="选择文件" :items="revision.files.map(item=>({title:item.original_name,value:item.id}))" hide-details class="w-full sm:w-240px sm:flex-none"/>
    <v-select v-if="(fileMode==='redacted'||fileMode==='compare')&&revision.redactions.length" v-model="redactionSelection" label="脱敏版本" :items="redactionItems" hide-details class="w-full sm:w-260px sm:flex-none"/>
   </template>
  </Row>
- <p v-if="props.processingMode" class="px-12 py-8 text-sm text-muted">本期设置：{{ props.processingMode==='original'?'不脱敏，后续使用提取原文':props.processingMode==='mask'?'API 遮挡脱敏':'Agent 主导化名脱敏' }}</p>
+ <p v-if="props.processingMode" class="px-12 py-8 text-sm text-muted">本期设置：{{ props.processingMode==='original'?'不脱敏，后续使用提取原文':props.processingMode==='mask'?'历史遮挡模式已退役，请先修改本期设置':'Agent 主导化名脱敏' }}</p>
  <v-alert v-if="templateError" type="error" density="compact">{{ templateError }}</v-alert>
  <v-alert v-if="selectedTemplate?.workflow==='codex_plan'" type="info" density="compact">Agent按整包主体表统一化名、保留法院名称并划分文书。使用数据库中本次保存的模板；单次执行最多10分钟，到限停止并保留进度。</v-alert>
  <Row v-if="active" x="between" wrap y="center" :gap="12" class="px-16 py-12 bg-primary-soft"><span class="text-sm">{{ names[active.kind] }}任务{{ active.status==='queued'?'排队中':'执行中' }}。</span><v-btn size="small" variant="text" @click="emit('refresh')">刷新状态</v-btn></Row>

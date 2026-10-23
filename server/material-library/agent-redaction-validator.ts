@@ -8,6 +8,6 @@ try{
  const result=compileAgentMaterialPlan(plan,context.files,context.identity);
  console.log(JSON.stringify({valid:true,pages:result.prepared.pages.length,documents:result.prepared.documents.length}));
 }catch(error){
- console.log(JSON.stringify({valid:false,reason_code:(error as any)?.reason_code??(error instanceof SyntaxError?'invalid_json':'agent_plan_file_invalid')}));
+ console.log(JSON.stringify({valid:false,reason_code:(error as any)?.reason_code??(error instanceof SyntaxError?'invalid_json':'agent_plan_file_invalid'),...((error as any)?.validation_details?{validation_details:(error as any).validation_details}:{})}));
  process.exitCode=2;
 }

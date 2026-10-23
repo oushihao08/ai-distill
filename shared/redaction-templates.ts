@@ -41,9 +41,9 @@ export const ALIAS_REDACTION_PROMPT = `你将对本次冻结提取任务中的�
 - 按本次调用提供的JSON Schema返回完整字段映射计划；包含主体对应表、各字段中的原文片段及处理类别、文书首尾结构块ID和未决项。字段映射应覆盖全部敏感片段及本节明确列出的垃圾；提交计划前逐项检索完整source核对这些垃圾均已列入删除编辑。未列明且确实无法确认的噪声可记为非阻断unresolved，不得覆盖或省略已确认垃圾。不生成或改写全文，程序按精确原文片段定位并生成脱敏文本。
 - 主体原名映射只写入私有工作目录，不进入公开产物。所有正文结构块均须归入文书；跨页同一文书合并，同页多件按完整结构划分，不能拆分表格行或条款。边界不清的连续附件完整保留为组合文书，不凭猜测拆分。
 	- 仅敏感片段尚未安全处理或正文无法完整覆盖时标记blocking=true；其他未决项列明但不阻断。单次执行最多10分钟，到限停止并保留进度，不自行追加重试。`;
-/** 旧设置无需回写即可读取默认模板；mask始终引用既有共用脱敏配置。 */
-export function libraryRedactionTemplates(settings:Record<string,any>):LibraryRedactionTemplate[]{
+/** 当前模板只提供Agent化名；历史解析显式传includeLegacy，不回写配置或结果。 */
+export function libraryRedactionTemplates(settings:Record<string,any>,includeLegacy=false):LibraryRedactionTemplate[]{
  const configured=[...(settings.redaction_templates??[])];
  if(!configured.some((t:LibraryRedactionTemplate)=>t.id==='aliases'))configured.push({id:'aliases',name:'Agent整包化名脱敏与分册',workflow:'codex_plan',redaction:{provider:'codex',prompt:ALIAS_REDACTION_PROMPT}});
- return [{id:'mask',name:'原有字段映射脱敏',workflow:'field_mapping',redaction:settings.redaction},...configured];
+ return includeLegacy?[{id:'mask',name:'原有字段映射脱敏',workflow:'field_mapping',redaction:settings.redaction},...configured]:configured.filter((t:LibraryRedactionTemplate)=>t.workflow==='codex_plan'&&t.id!=='mask');
 }

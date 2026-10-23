@@ -185,6 +185,8 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
  if(ordinal===4){
   if(value.material_source_mode!==undefined&&!['redacted','original'].includes(String(value.material_source_mode)))throw new HTTPException(400,{message:'出题材料版本设置无效'});
   try{materialProcessingMode=resolveMaterialProcessingMode(value);}catch{throw new HTTPException(400,{message:'材料处理模式无效'});}
+  // 保存入口拒绝退役模式；执行校验保留历史冻结题目的 mask 身份。
+  if(validateAdvertisedModel&&materialProcessingMode==='mask')throw new HTTPException(400,{message:'API遮挡脱敏已退役，请选择Agent化名或提取原文'});
   if(value.material_processing_mode!==undefined&&value.material_source_mode!==undefined&&value.material_source_mode!==materialProcessingSourceMode(materialProcessingMode))throw new HTTPException(400,{message:'材料处理模式与来源版本不一致'});
  }
  const extension={...(workflow?{workflow}:{}),...(materialProcessingMode?{material_processing_mode:materialProcessingMode,material_source_mode:materialProcessingSourceMode(materialProcessingMode)}:{})};

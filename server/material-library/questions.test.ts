@@ -58,12 +58,12 @@ test('creates a private question from a usable redaction while retaining OCR war
   const inserts:{sql:string;values:any[]}[]=[];
   const query=async(sql:string,values:any[]=[])=>{
    if(sql.startsWith('SELECT package_id FROM'))return{rows:[{package_id:'package-a'}]};
-   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{material_processing_mode:'mask'}}]};
+   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{material_processing_mode:'aliases'}}]};
    if(sql.startsWith('SELECT question_tags'))return{rows:[{question_tags:['执行']}]};
    if(sql.startsWith('SELECT id,name,deleted_at FROM'))return{rows:[{id:'package-a',name:'共享材料',deleted_at:null}]};
    if(sql.startsWith('SELECT id,name,material_backend'))return{rows:[{id:'project-a',name:'验证项目',material_backend:'legacy',question_tags:['执行'],deleted_at:null}]};
    if(sql.includes('FROM ai_distill.project_library_packages')&&sql.includes('FOR UPDATE'))return{rows:[{id:'link-a',package_id:'package-a',project_id:'project-a',selected_revision_id:'revision-a',selected_redaction_id:request.redaction_id,lock_version:3,removed_at:null}]};
-   if(sql.startsWith('SELECT r.id,r.package_id'))return{rows:[{id:request.redaction_id,revision_id:'revision-a',extraction_job_id:'extract-a',output_digest:'source-digest',validation_report:{usable_for_question:true,extraction_issue_count:1},revision_state:'ready',redact_status:'succeeded',extract_status:'succeeded',markdown:text,markdown_sha256:sha(text),redacted_index:index,index_sha256:sha(index)}]};
+   if(sql.startsWith('SELECT r.id,r.package_id'))return{rows:[{id:request.redaction_id,revision_id:'revision-a',extraction_job_id:'extract-a',output_digest:'source-digest',validation_report:{usable_for_question:true,extraction_issue_count:1,redaction_template_workflow:'codex_plan'},revision_state:'ready',redact_status:'succeeded',extract_status:'succeeded',markdown:text,markdown_sha256:sha(text),redacted_index:index,index_sha256:sha(index)}]};
    if(sql.startsWith('SELECT f.id,f.original_name'))return{rows:[file]};
    if(sql.startsWith('SELECT file_count'))return{rows:[{file_count:1}]};
    if(sql.startsWith('INSERT'))inserts.push({sql,values});
@@ -118,4 +118,13 @@ test('creates a private question from extracted original without requiring redac
   expect(inserts.some(item=>item.sql.includes('INSERT INTO ai_distill.question_library_sources')&&item.values[13]==='original')).toBe(true);
   expect(inserts.filter(item=>item.sql.includes('INSERT INTO ai_distill.steps')).map(item=>item.values[1])).toEqual([4,5,6,7,8]);
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+
+test('一包一道只由Work项目规则限定，不推广到其他主项目',async()=>{
+ const {singleQuestionPerPackage}=await import('./questions');
+ expect(singleQuestionPerPackage({parent_name:'Work法律全场景',name:'第一期'})).toBe(true);
+ expect(singleQuestionPerPackage({name:'Work法律全场景 - 第一期'})).toBe(true);
+ expect(singleQuestionPerPackage({parent_name:'豆包高经济价值',name:'Work法律全场景'})).toBe(false);
+ expect(singleQuestionPerPackage({name:'其他项目'})).toBe(false);
 });

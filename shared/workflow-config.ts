@@ -2,6 +2,8 @@
  * 职责：项目阶段扩展配置的共享契约与结构校验，不解释业务计分规则。
  * 入口：validateWorkflowConfig() 供步骤设置保存及派发冻结使用；缺省不改变旧任务。
  */
+import {MODEL_API_PROVIDERS} from './types';
+
 import type {ModelApiConfig} from './types';
 export type WorkflowContract='legacy'|'model_report_v1';
 export interface HookAction {
@@ -38,7 +40,7 @@ function actions(raw:unknown):HookAction[]{
    if(!record(request))return fail();keys(request,['config','prompt']);
    if(typeof request.prompt!=='string'||!request.prompt.trim()||request.prompt.length>100000||!record(request.config))return fail();
    const config=request.config;keys(config,['provider','model','base_url','enable_thinking','max_tokens']);
-   if(!['qwen','kimi','deepseek','doubao','openrouter'].includes(config.provider as string)||typeof config.model!=='string'||!config.model.trim()||typeof config.base_url!=='string'||!config.base_url.startsWith('https://')||config.enable_thinking!==undefined&&typeof config.enable_thinking!=='boolean'||config.max_tokens!==undefined&&(typeof config.max_tokens!=='number'||!Number.isInteger(config.max_tokens)||config.max_tokens<1))return fail();
+   if(!(MODEL_API_PROVIDERS as readonly string[]).includes(config.provider as string)||typeof config.model!=='string'||!config.model.trim()||typeof config.base_url!=='string'||!config.base_url.startsWith('https://')||config.enable_thinking!==undefined&&typeof config.enable_thinking!=='boolean'||config.max_tokens!==undefined&&(typeof config.max_tokens!=='number'||!Number.isInteger(config.max_tokens)||config.max_tokens<1))return fail();
    let url:URL;try{url=new URL(config.base_url);}catch{return fail();}
    if(url.username||url.password||url.search||url.hash||config.model.length>1000||config.base_url.length>2000)return fail();
    if(idempotent) return fail(); // 无供应商幂等请求保证，状态未知的收费调用不能自动重试。

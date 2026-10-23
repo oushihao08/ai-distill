@@ -9,18 +9,18 @@ test('cleans repeated scanner signatures and adjacent page-corner fragments, ret
  expect(text).not.toContain('15:27');expect(text).not.toContain('00!');expect(text).toContain('款项18836元，2025-03-26');expect(text).toContain('2022/2/9');expect(JSON.stringify(pages)).toBe(before);
  for(const edit of out.edits){const original=pages.find(p=>p.page===edit.page)!;expect(documentBlocksToText(original.blocks).slice(edit.start,edit.end)).toBe(edit.source_text);}
 });
-test('removes standalone number lines and explicit watermarks but preserves business prose and table values',()=>{
+test('preserves unproven numeric lines while removing explicit watermarks',()=>{
  const pages=[page(1,['2025-03-26 15:27:50','8836_2025-03-26 15:27:50','1','10000']),page(2,['记录8836_2025-03-26 15:27:51作为业务流水号','2'])];
  pages[1]!.blocks.push({id:'table',kind:'table',rows:[{cells:[{text:'8836_2025-03-26 15:27:51'},{text:'2'}]}]});
  const out=cleanScanNoisePages(pages),text=out.pages.map(p=>documentBlocksToText(p.blocks)).join('\n');
  expect(text).toContain('2025-03-26 15:27:50');expect(text).toContain('记录8836_2025-03-26 15:27:51作为业务流水号');
- expect(text).not.toMatch(/^10000$/m);expect((out.pages[1]!.blocks.at(-1) as any).rows[0].cells[1].text).toBe('2');
+ expect(text).toMatch(/^10000$/m);expect((out.pages[1]!.blocks.at(-1) as any).rows[0].cells[1].text).toBe('2');
 });
-test('standalone numeric noise is removed while a labelled amount remains unchanged',()=>{
+test('cross-page corner evidence removes page numbers, preserving other numeric fields',()=>{
  const pages=[1,2,3].map(n=>page(n,['12345','付款金额','1000',String(n).padStart(3,'0')]));
  for(const p of pages)p.blocks.unshift({id:'stamp',kind:'paragraph',text:`8836_2025-03-26 15:27:5${p.page}`});
- const out=cleanScanNoisePages(pages);expect(out.edits).toHaveLength(9);
- for(const p of out.pages){expect(documentBlocksToText(p.blocks)).toContain('付款金额\n1000');expect(documentBlocksToText(p.blocks)).not.toContain('12345');}
+ const out=cleanScanNoisePages(pages);expect(out.edits).toHaveLength(6);
+ for(const p of out.pages){expect(documentBlocksToText(p.blocks)).toContain('付款金额\n1000');expect(documentBlocksToText(p.blocks)).toContain('12345');}
 });
 
 
@@ -37,10 +37,10 @@ test('removes explicit OCR placeholders in paragraphs and tables without deletin
  expect(text).toContain('法院说明无法识别原因，金额334666元，日期2025-05-23。');expect(text).toContain('10000元');
  expect(text.match(/无法识别/g)).toHaveLength(1);
 });
-test('post-AI regex cleanup deletes fixed placeholders and number-only lines, preserving line breaks and real content',()=>{
+test('post-AI text cleanup preserves number-only lines without structural evidence',()=>{
  const text='正文[NO TEXT][NO_TEXT][No text detected][UNREADABLE]\r\n1\r\n234\r\n221\r\n-1-\r\n-22-\r\n[证据1] 334666元\r\n本金：\r\n334666\r\n1、请求\r\n-1.5元\r\n43****33';
  const cleaned=cleanRedactionText(text);
- expect(cleaned).toBe('正文\r\n\r\n\r\n\r\n\r\n\r\n[证据1] 334666元\r\n本金：\r\n334666\r\n1、请求\r\n-1.5元\r\n43****33');
+ expect(cleaned).toBe('正文\r\n1\r\n234\r\n221\r\n-1-\r\n-22-\r\n[证据1] 334666元\r\n本金：\r\n334666\r\n1、请求\r\n-1.5元\r\n43****33');
  expect(cleanRedactionText(cleaned)).toBe(cleaned);
 });
 test('recognizes a small fixed set of scanner timestamp forms, deleting only matched fragments',()=>{
@@ -48,4 +48,12 @@ test('recognizes a small fixed set of scanner timestamp forms, deleting only mat
   expect(cleanRedactionText(`前文 ${stamp} 后文`)).toBe('前文  后文');
  }
  expect(cleanRedactionText('开庭时间2025-04-25 15:24:08，金额4751元')).toBe('开庭时间2025-04-25 15:24:08，金额4751元');
+});
+
+test('preserves unlabelled split business amounts, terms and identifiers in both cleanup paths',()=>{
+ const texts=['欠款','20000','元','期限','12','个月','证据号码','8836','份数','4'];
+ const input=texts.join('\n');
+ expect(cleanRedactionText(input)).toBe(input);
+ const source=[page(1,texts)],before=JSON.stringify(source),out=cleanScanNoisePages(source);
+ expect(out.edits).toHaveLength(0);expect(documentBlocksToText(out.pages[0]!.blocks)).toBe(input);expect(JSON.stringify(source)).toBe(before);
 });

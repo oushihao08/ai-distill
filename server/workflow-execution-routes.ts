@@ -53,7 +53,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChu
     let body:unknown;try{body=JSON.parse(raw);}catch{throw new HTTPException(400,{message:'归档参数须为有效JSON'});}
     if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||!('delivery_identity'in body))throw new HTTPException(400,{message:'归档参数只允许 delivery_identity'});
     const identity=(body as {delivery_identity?:unknown}).delivery_identity;
-    if(!identity||typeof identity!=='object'||Array.isArray(identity)||Object.keys(identity).some(key=>!['task_id','org'].includes(key))||typeof (identity as any).task_id!=='string'||!/^LAW-\d{3,}$/.test((identity as any).task_id)||typeof (identity as any).org!=='string'||!/^[a-z0-9][a-z0-9-]{1,31}$/.test((identity as any).org))throw new HTTPException(400,{message:'Work归档需要已确认的 task_id（LAW-序号）和小写 org 代号'});
+    if(!identity||typeof identity!=='object'||Array.isArray(identity)||Object.keys(identity).some(key=>!['task_id','org'].includes(key))||typeof (identity as any).task_id!=='string'||!(identity as any).task_id.trim()||(identity as any).task_id.length>180||typeof (identity as any).org!=='string'||!(identity as any).org.trim()||(identity as any).org.length>180)throw new HTTPException(400,{message:'交付身份需要非空的 task_id 和 org；具体格式由项目交付规则校验'});
     context={delivery_identity:{task_id:(identity as any).task_id,org:(identity as any).org}};
    }
   }

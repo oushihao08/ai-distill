@@ -78,6 +78,8 @@ export async function enqueueRedaction(pool:Pool,id:string,executionTarget:'loca
   // A settings change invalidates the current step, even when an older attempt used identical settings.
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=9 AND execution_target=$5 AND input->>'digest'=$2 AND config=$3::jsonb AND status IN ('waiting','running','succeeded') AND (status<>'succeeded' OR $4::boolean) ORDER BY attempt DESC LIMIT 1",[id,digest,JSON.stringify(config),gate.find(row=>row.ordinal===9)?.status==='succeeded',executionTarget])).rows[0];
   if(previous){await db.query('COMMIT');withLogContext({component:'redaction',workflow_id:id,project_id:workflow.project_id,ordinal:9,attempt_id:previous.id,operation:'redaction_enqueue'},()=>logEvent('attempt.reused',{level:'info',state:'waiting'}));return{id:previous.id,reused:true};}
+  // 旧冻结尝试可读/复用并由worker收尾；不再新建旧字段映射模型任务。
+  if(!manualOnly)throw new HTTPException(409,{message:'旧字段映射脱敏已退役，请将材料入共享材料库后选择Agent化名或提取原文'});
   // The workflow lock serializes dispatch. Never let changed inputs start a second writer while
   // the previous attempt is active; retry after it finishes or has been explicitly cancelled.
   if(active)throw new HTTPException(409,{message:'当前脱敏任务尚未结束，请先等待或取消，再派发新输入'});
