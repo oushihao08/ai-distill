@@ -10,6 +10,7 @@
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | 工程约束、数据不变量、运行授权和说明文档维护规则 |
 | [CLI](cli/README.md)、[操作 Skill](skill/SKILL.md) | AI 的操作入口、命令参数、异步等待与恢复；默认直接调用本机 HTTP API，用户明确要求命令行时使用 CLI |
+| [定时容量调度 Skill](toolSkills/ai-distill-capacity-runner/SKILL.md) | 每5分钟检查指定期次的本机容量，优先补满Agent并推进出题、作答、评分；需指定执行目标才启动 |
 | [后端](server/README.md)、[前端](web/README.md) | 模块与文件用途、接口调用和界面结构 |
 | [共享契约](shared/README.md) | 稳定步骤身份、公开类型和输入输出契约 |
 | [材料库](server/material-library/README.md) | 全局材料、处理任务、期次加载、题目来源快照和使用记录 |
