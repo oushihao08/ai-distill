@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {LocalQueue} from './store';
-import {withLocalExecution,localClaimSql,localWaitingSql,reconcileRegistrations,deferLocalPublication,PendingLocalCommit,synchronizeCancellation} from './runtime';
+import {withLocalExecution,localClaimSql,localWaitingSql,reconcileRegistrations,deferLocalPublication,PendingLocalCommit,synchronizeCancellation,synchronizeLocalCancellations} from './runtime';
 async function fixture(run:(q:LocalQueue)=>Promise<void>){const before=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='local';const root=mkdtempSync(join(tmpdir(),'queue-runtime-')),q=new LocalQueue(root,'test-device');try{await run(q);}finally{q.close();rmSync(root,{recursive:true,force:true});if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;}}
 test('local mode cannot claim any cloud task without a local lease context',()=>fixture(async()=>{expect(localClaimSql('a')).toContain('FALSE');expect(localClaimSql('a',true)).toContain('FALSE');}));
 test('local context restricts claim to exact validated ID and disables stale recovery',()=>fixture(async q=>{const id=randomUUID();q.intent(id,'step','api','answer');q.confirm(id);const j=q.claim('api')!;await withLocalExecution(q,j,async()=>{expect(localClaimSql('a')).toContain(id);expect(localClaimSql('a',true)).toContain('FALSE');expect(localWaitingSql('a')).toContain("'running'");expect(()=>localClaimSql('a;DROP')).toThrow();});}));
@@ -15,6 +15,49 @@ test('saved result turns transient publication error into pending commit, not ne
 test('cancel remains durable when cloud is disconnected',()=>fixture(async q=>{const id=randomUUID();q.intent(id,'step','api','answer');q.confirm(id);q.cancel(id);const pool={connect:async()=>{throw Object.assign(new Error('offline'),{code:'ECONNRESET'});}} as unknown as Pool;await expect(synchronizeCancellation(pool,q,id)).rejects.toThrow('offline');expect(q.get(id)?.cancel_requested).toBe(1);expect(q.get(id)?.cancel_synced).toBe(0);expect(q.claim('api')).toBeNull();}));
 test('unconfirmed or foreign registration does not block other local cancellation work',()=>fixture(async q=>{const id=randomUUID();q.intent(id,'step','api','answer');q.cancel(id);const queries:string[]=[];const pool={connect:async()=>({query:async(input:string|{text:string})=>{const sql=typeof input==='string'?input:input.text;queries.push(sql);return{rows:[]};},release(){}})} as unknown as Pool;await synchronizeCancellation(pool,q,id);expect(queries).toContain('ROLLBACK');expect(q.get(id)?.cancel_synced).toBe(0);}));
 test('late cancellation preserves an already published success',()=>fixture(async q=>{const id=randomUUID();q.intent(id,'step','api','answer');q.confirm(id);q.cancel(id);const queries:string[]=[];const pool={connect:async()=>({query:async(input:string|{text:string})=>{const sql=typeof input==='string'?input:input.text;queries.push(sql);return{rows:sql.includes('SELECT executor_id')?[{executor_id:q.executorId}]:sql.includes('SELECT status')?[{status:'succeeded'}]:[]};},release(){}})} as unknown as Pool;await synchronizeCancellation(pool,q,id);expect(q.get(id)?.state).toBe('committed');expect(q.get(id)?.cancel_synced).toBe(1);expect(queries.some(sql=>sql.startsWith('UPDATE'))).toBe(false);}));
+
+test('unregistered cancellation backlog uses one owner read per bounded round without opening transactions',()=>fixture(async q=>{
+ const ids=Array.from({length:39},()=>randomUUID());for(const id of ids){q.intent(id,'step','api','answer');q.cancel(id);}
+ let reads=0,connections=0;const seen=new Set<string>();
+ const pool={query:async(query:{text:string;query_timeout:number},args:string[][])=>{
+  reads++;expect(query.text).toContain('execution_dispatches');expect(query.query_timeout).toBe(15000);
+  expect(args[0]!.length).toBeLessThanOrEqual(20);for(const id of args[0]!)seen.add(id);return{rows:[]};
+ },connect:async()=>{connections++;throw new Error('unregistered cancellation must not start a transaction');}} as unknown as Pool;
+ await synchronizeLocalCancellations(pool,q);await synchronizeLocalCancellations(pool,q);
+ expect(reads).toBe(2);expect(connections).toBe(0);expect(seen.size).toBe(39);
+ expect(q.list().every(j=>j.state==='cancelled'&&j.cancel_requested===1&&j.cancel_synced===0)).toBe(true);
+}));
+
+test('batch cancellation preflight preserves missing owners and transactional checks, and isolates failures',()=>fixture(async q=>{
+ const missing=randomUUID(),failed=randomUUID(),own=randomUUID(),foreign=randomUUID();
+ for(const id of [missing,failed,own,foreign]){q.intent(id,'step','api','answer');q.cancel(id);}
+ let fail=true;const checked:string[]=[],released:unknown[]=[],foreignOwner=randomUUID();
+ const pool={query:async()=>({rows:[{job_id:failed},{job_id:own},{job_id:foreign}]}),connect:async()=>({query:async(input:string|{text:string},args?:string[])=>{
+  const sql=typeof input==='string'?input:input.text;
+  if(sql.startsWith('SELECT executor_id')){const id=args![0]!;checked.push(id);if(id===failed&&fail)throw new Error('synthetic connection interruption');return{rows:[{executor_id:id===foreign?foreignOwner:q.executorId}]};}
+  return{rows:sql.startsWith('SELECT status')?[{status:'succeeded'}]:[]};
+ },release:(error?:Error)=>released.push(error)})} as unknown as Pool;
+ await synchronizeLocalCancellations(pool,q);
+ expect(checked).toContain(failed);expect(checked).toContain(own);expect(checked).not.toContain(missing);expect(checked).toContain(foreign);
+ expect(q.get(missing)?.cancel_synced).toBe(0);expect(q.get(failed)?.cancel_synced).toBe(0);
+ expect(q.get(own)?.state).toBe('committed');expect(q.get(own)?.cancel_synced).toBe(1);expect(q.get(foreign)?.cancel_synced).toBe(1);
+ expect(released.some(error=>error instanceof Error)).toBe(true);
+ fail=false;await synchronizeLocalCancellations(pool,q);expect(q.get(failed)?.state).toBe('committed');
+}));
+
+test('late registration is picked up in a later cancellation round and an owner disappearing after preflight stays unconfirmed',()=>fixture(async q=>{
+ const id=randomUUID();q.intent(id,'step','api','answer');q.cancel(id);
+ let registered=false,ownerPresent=false,connections=0;
+ const pool={query:async()=>({rows:registered?[{job_id:id}]:[]}),connect:async()=>{
+  connections++;
+  return{query:async(input:string|{text:string})=>{const sql=typeof input==='string'?input:input.text;return{rows:sql.startsWith('SELECT executor_id')?ownerPresent?[{executor_id:q.executorId}]:[]:sql.startsWith('SELECT status')?[{status:'failed'}]:[]};},release(){}};
+ }} as unknown as Pool;
+ await synchronizeLocalCancellations(pool,q);expect(connections).toBe(0);expect(q.get(id)?.cancel_synced).toBe(0);
+ registered=true;
+ await synchronizeLocalCancellations(pool,q);expect(connections).toBe(1);expect(q.get(id)?.cancel_synced).toBe(0);
+ ownerPresent=true;
+ await synchronizeLocalCancellations(pool,q);expect(q.get(id)?.state).toBe('failed');expect(q.get(id)?.cancel_synced).toBe(1);
+}));
 
 test('finished reconciliation settles failures and continues past an unavailable item with bounded batches',()=>fixture(async q=>{
  const {reconcileFinishedJobs}=await import('./runtime');

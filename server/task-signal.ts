@@ -6,24 +6,13 @@
 import type {Pool} from 'pg';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import{classifyLogError,logEvent,withIsolatedLogContext}from'./logging';
+import{readStatusRows}from'./db';
 const context=new AsyncLocalStorage<AbortSignal>();
 export const currentTaskSignal=()=>context.getStore();
 export function withTaskSignal<T>(signal:AbortSignal,run:()=>Promise<T>){return context.run(signal,run);}
 interface WatchedTask {id:string;controller:AbortController;projectSkill:boolean;disposed:boolean}
 interface CancellationGroup {tasks:Set<WatchedTask>;timer:ReturnType<typeof setTimeout>|undefined;checking:boolean;failed:Set<string>;interval:number}
 const groups=new WeakMap<Pool,CancellationGroup>();
-
-async function readStatuses(pool:Pool,table:'step_attempts'|'project_skill_attempts',ids:string[]){
- const client=await pool.connect();
- try{
-  await client.query('BEGIN');
-  await client.query("SET LOCAL statement_timeout = '2000ms'");
-  const result=await client.query(`SELECT id,status FROM ai_distill.${table} WHERE id=ANY($1::uuid[])`,[ids]);
-  await client.query('COMMIT');
-  return result.rows;
- }catch(error){await client.query('ROLLBACK');throw error;}
- finally{client.release();}
-}
 
 /** 同一连接池合并状态查询；状态读取有服务端时限，停止信号仍即时传播。 */
 export function watchTaskCancellation(pool:Pool,id:string,upstream?:AbortSignal,projectSkill=false,intervalMs=3000){
@@ -43,7 +32,7 @@ export function watchTaskCancellation(pool:Pool,id:string,upstream?:AbortSignal,
      const table=skill?'project_skill_attempts':'step_attempts';
      const groupName=skill?'project-skill-attempts':'step-attempts';
      try{
-      const rows=await readStatuses(pool,table,[...new Set(selected.map(item=>item.id))]);
+      const rows=await readStatusRows(pool,`SELECT id,status FROM ai_distill.${table} WHERE id=ANY($1::uuid[])`,[[...new Set(selected.map(item=>item.id))]]);
       const states=new Map(rows.map(row=>[row.id,row.status]));
       for(const item of selected)if(!item.disposed&&states.get(item.id)!=='running')item.controller.abort();
       const operation=skill?'poll-project-skill-attempts':'poll-step-attempts';

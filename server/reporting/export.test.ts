@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {redactionInputDigest} from '../materials/redaction-jobs';
-import {collectProjectResults,buildProjectExport,verifyProjectAuthoringRules,withProjectExportLock} from './export';
+import {collectProjectResults,buildProjectExport,verifyProjectAuthoringRules,withProjectExportLock,preparedDocxPathsComplete} from './export';
 import {scanProjectPrompt} from '../rule-files';
 
 const question={
@@ -118,4 +118,15 @@ test('rolls back and does not run export work when another project operation own
  await expect(withProjectExportLock(pool,'project-1',async()=>{ran=true;})).rejects.toThrow('项目导出或重置正在执行');
  expect(ran).toBe(false);
  expect(statements.at(-1)).toBe('ROLLBACK');
+});
+
+
+test('逻辑分册DOCX按冻结文件名完整核对，而非原始PDF数量',()=>{
+ const documents=[{title:'申请书'},{title:'裁定书'}];
+ const paths=['file:///private/out/001-%E7%94%B3%E8%AF%B7%E4%B9%A6.docx','file:///private/out/002-%E8%A3%81%E5%AE%9A%E4%B9%A6.docx'];
+ expect(preparedDocxPathsComplete(documents,paths)).toBe(true);
+ expect(preparedDocxPathsComplete(documents,paths.slice(0,1))).toBe(false);
+ expect(preparedDocxPathsComplete(documents,[paths[0]!,paths[0]!])).toBe(false);
+ expect(preparedDocxPathsComplete(documents,[...paths,'file:///extra.docx'])).toBe(false);
+ expect(preparedDocxPathsComplete(documents,[paths[0]!,'file:///private/out/002-wrong.docx'])).toBe(false);
 });

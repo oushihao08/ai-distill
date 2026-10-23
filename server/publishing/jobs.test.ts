@@ -150,7 +150,7 @@ test('valid database answer allows archive without a local answer copy',async()=
 });
 
 test('accepted database version archives without historical skill fingerprints or local material files',async()=>{
- const f=await fixture({withoutPrompt:true});try{await rm(join(f.root,'material'));f.artifacts.splice(0);let called=false;expect((await publishWorkflow(f.pool,'workflow',f.root,undefined,{prepareArtifacts:async()=>{called=true;throw new Error('no project requires Office exports');}})).completed).toBe(true);expect(called).toBe(false);}finally{await rm(f.root,{recursive:true,force:true});}
+ const f=await fixture({withoutPrompt:true});try{await rm(join(f.root,'material'));f.artifacts.splice(0);let called=false;expect((await publishWorkflow(f.pool,'workflow',f.root,undefined,{prepareArtifacts:async()=>{called=true;throw new Error('optional export unavailable');}})).completed).toBe(true);expect(called).toBe(true);}finally{await rm(f.root,{recursive:true,force:true});}
 });
 test('historical Windows skill paths cannot block an otherwise valid accepted version',async()=>{
  const f=await fixture();try{f.snapshot.question.input.project_prompt!.workspace_path='D:\\codes\\work';f.snapshot.question.input.project_prompt!.skill_path='D:\\codes\\work\\skill';f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);expect((await publishWorkflow(f.pool,'workflow',f.root)).completed).toBe(true);}finally{await rm(f.root,{recursive:true,force:true});}

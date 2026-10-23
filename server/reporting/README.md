@@ -40,3 +40,5 @@ Excel 导出逐份调用当前 DOCX 下载所用的安全读取与 SHA-256 校�
 `export.test.ts`以注入查询/临时附件检查筛选、锁、来源和文件完整性；`xlsx.test.ts`检查OOXML结构/超长文本/链接与渲染字段。源码/ZIP结构不证明Excel应用视觉效果或平台交付成功。
 
 单题归档工作簿由publishing worker在最终归档提交前生成；内部preparingPublication只接受当前步骤running，不向普通下载开放未完成归档。下载仍只接受succeeded和已保存的文件摘要。
+
+分册材料按冻结且非空的`prepared_documents`生成DOCX，工作簿逐一核对其数量和文件名，不拿原PDF数量作分册数量；非分册材料仍核对逐原件覆盖。一次导出对每题只读取一次已验证来源索引，并继续逐文件核验归属、来源模式、路径和SHA，不在多份分册之间复用其他题的来源。

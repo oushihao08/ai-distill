@@ -1,15 +1,74 @@
-/** 验证数据库连接参数/TLS配置和查询、事务日志脱敏；用 example.invalid 检查 Pool 配置并替换查询行为，不建立真实 PostgreSQL 连接。 */
+/** 验证连接/TLS配置、日志脱敏和后台状态事务超时；使用SQL替身及随机端口PG协议夹具，不连接业务数据库。 */
 import{test,expect}from'bun:test';
 import{mkdtemp,readFile,readdir,rm}from'node:fs/promises';
 import{tmpdir}from'node:os';
 import{join}from'node:path';
-import{createPool}from'./db';
+import{createPool,readStatusRows}from'./db';
+import{Pool}from'pg';
+import{createServer,type Socket}from'node:net';
 import{configureLogger,withLogContext}from'./logging';
 test('database URL is required',()=>{expect(()=>createPool({})).toThrow('DATABASE_URL');});
 test('database configuration verifies TLS and retains channel binding',async()=>{
  const pool=createPool({DATABASE_URL:'postgresql://test:test@example.invalid/test?sslmode=require&channel_binding=require'});
  try{expect(pool.options.ssl).toEqual({rejectUnauthorized:true});expect(pool.options.enableChannelBinding).toBe(true);expect(pool.options.max).toBe(4);expect(pool.options.idleTimeoutMillis).toBe(10000);expect(pool.options.connectionString).not.toContain('sslmode');expect(pool.options.connectionString).not.toContain('channel_binding');}finally{await pool.end();}
 });
+
+test('status reads preserve rows, bound every transaction message and discard failed connections',async()=>{
+ const rows=[{id:'task-a',status:'running'}],failure=new Error('synthetic read failure');
+ for(const phase of ['success','BEGIN','SET','SELECT','COMMIT','ROLLBACK']){
+  const queries:{text:string;query_timeout:number;values?:unknown[]}[]=[],released:unknown[]=[];
+  const pool={connect:async()=>({query:async(query:any)=>{
+   expect(typeof query).toBe('object');queries.push(query);
+   expect(query.query_timeout).toBeGreaterThan(2000);expect(query.query_timeout).toBeLessThanOrEqual(5000);
+   if(phase==='ROLLBACK'&&(query.text.startsWith('SELECT')||query.text==='ROLLBACK'))throw failure;
+   if(phase!=='success'&&query.text.startsWith(phase))throw failure;
+   return{rows:query.text.startsWith('SELECT')?rows:[]};
+  },release:(error?:Error)=>released.push(error)})} as unknown as Pool;
+  if(phase==='success'){
+   expect(await readStatusRows(pool,'SELECT id,status FROM example WHERE id=$1',['task-a'])).toEqual(rows);
+   expect(released).toEqual([undefined]);expect(queries.find(q=>q.text.startsWith('SELECT'))?.values).toEqual(['task-a']);
+  }else{
+   await expect(readStatusRows(pool,'SELECT id,status FROM example')).rejects.toBe(failure);
+   expect(released).toEqual([failure]);
+  }
+ }
+});
+
+test('status reads stop real pg protocol stalls and evict the connection at each transaction phase',async()=>{
+ const frame=(type:string,body:Buffer)=>{const length=Buffer.alloc(4);length.writeInt32BE(body.length+4);return Buffer.concat([Buffer.from(type),length,body]);};
+ for(const phase of ['BEGIN','SET','SELECT','COMMIT']){
+  const sockets=new Set<Socket>();let stalled=false,stallEnabled=true;
+  const server=createServer(socket=>{
+   sockets.add(socket);socket.on('close',()=>sockets.delete(socket));socket.on('error',()=>{/* The fixture expects the timed-out client to destroy its socket. */});
+   let startup=true,pending=Buffer.alloc(0);
+   socket.on('data',chunk=>{
+    pending=Buffer.concat([pending,typeof chunk==='string'?Buffer.from(chunk):chunk]);
+    while(pending.length>=(startup?4:5)){
+     const length=pending.readInt32BE(startup?0:1),total=length+(startup?0:1);if(pending.length<total)return;
+     const packet=pending.subarray(0,total);pending=pending.subarray(total);
+     if(startup){startup=false;socket.write(Buffer.concat([frame('R',Buffer.alloc(4)),frame('Z',Buffer.from('I'))]));continue;}
+     if(packet[0]!==81)continue;
+     const sql=packet.subarray(5,-1).toString();
+     if(stallEnabled&&sql.startsWith(phase)){stalled=true;continue;}
+     const command=sql.startsWith('SELECT')?'SELECT 0':sql.split(' ')[0]!;
+     socket.write(Buffer.concat([frame('C',Buffer.from(command+'\0')),frame('Z',Buffer.from(command==='COMMIT'?'I':'T'))]));
+    }
+   });
+  });
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const address=server.address();if(!address||typeof address==='string')throw new Error('fixture port unavailable');
+  const pool=new Pool({host:'127.0.0.1',port:address.port,user:'fixture',database:'fixture',ssl:false,max:1,connectionTimeoutMillis:1000});
+  const started=performance.now();
+  try{
+   await expect(readStatusRows(pool,'SELECT id,status FROM example')).rejects.toThrow('Query read timeout');
+   expect(stalled).toBe(true);expect(performance.now()-started).toBeLessThan(4500);
+   expect(pool.totalCount).toBe(0);expect(pool.waitingCount).toBe(0);
+   stallEnabled=false;
+   expect(await readStatusRows(pool,'SELECT id,status FROM example')).toEqual([]);
+   expect(pool.totalCount).toBe(1);
+  }finally{await pool.end();for(const socket of sockets)socket.destroy();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+ }
+},20000);
 test('database query and transaction logs keep SQL values and raw errors private',async()=>{
  const root=await mkdtemp(join(tmpdir(),'db-logs-')),logger=configureLogger({root,service:'api'});
  let failCommit=false;

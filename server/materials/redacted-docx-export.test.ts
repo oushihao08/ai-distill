@@ -12,7 +12,7 @@ import {spawnSync} from 'node:child_process';
 import type {Pool} from 'pg';
 import {STEP_REGISTRY} from '@shared/step-registry';
 import {redactionInputDigest} from './redaction-jobs';
-import {exportCurrentMaterialDocx,exportRedactedDocx,isLibraryDocxPath} from './redacted-docx-export';
+import {exportCurrentMaterialDocx,exportRedactedDocx,isLibraryDocxPath,projectPreparedDocuments} from './redacted-docx-export';
 
 const workflowId='11111111-1111-4111-8111-111111111111',attemptId='22222222-2222-4222-8222-222222222222',materialId='33333333-3333-4333-8333-333333333333';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -51,7 +51,7 @@ async function fixture(options:{incomplete?:boolean;active?:boolean;publicationI
 
 test('manual export writes one DOCX artifact without touching workflow state or attempts',async()=>{
  const f=await fixture();await mkdir(f.materialRoot,{recursive:true});
- const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot),file=join(f.projectExportsRoot,'附件库','豆包高经','问题1','成果',`source-脱敏-${materialId.slice(0,8)}.docx`),sourceCopy=join(f.projectExportsRoot,'附件库','豆包高经','问题1','原件',`${materialId.slice(0,8)}_source.pdf`),bytes=await readFile(file),again=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
+ const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot),file=join(f.projectExportsRoot,'附件库','豆包高经','问题1','成果','脱敏材料.docx'),sourceCopy=join(f.projectExportsRoot,'附件库','豆包高经','问题1','原件',`${materialId.slice(0,8)}_source.pdf`),bytes=await readFile(file),again=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
  expect(result).toMatchObject({reused:false,sha256:hash(bytes)});expect(bytes.readUInt32LE(0)).toBe(0x04034b50);expect(again).toMatchObject({artifact_id:result.artifact_id,reused:true});
  expect(await readFile(sourceCopy)).toEqual(Buffer.from('original attachment'));
  expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toHaveLength(1);
@@ -63,7 +63,7 @@ test('new phase exports use project, phase, and question directory levels',async
  const f=await fixture({parentName:'豆包高经济价值',phaseName:'第五期',sourceKey:'题目3'});
  const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
  expect(result.archive_path).toBe('附件库/豆包高经济价值/第五期/题目3');
- expect(f.docxArtifacts[0]?.storage_path).toBe(`附件库/豆包高经济价值/第五期/题目3/成果/source-脱敏-${materialId.slice(0,8)}.docx`);
+ expect(f.docxArtifacts[0]?.storage_path).toBe(`附件库/豆包高经济价值/第五期/题目3/成果/脱敏材料.docx`);
  expect(await Bun.file(join(f.projectExportsRoot,f.docxArtifacts[0]!.storage_path)).exists()).toBe(true);
 });
 
@@ -73,42 +73,21 @@ test('attachment library path contract accepts legacy and project-phase-question
  expect(isLibraryDocxPath('附件库/project/phase/question/other/file.docx')).toBe(false);
 });
 
-test('export accepts identical attachment fingerprints returned in a different database order',async()=>{
+test('multiple verified attachments are merged into one DOCX without losing either body',async()=>{
  const f=await fixture({reversedSources:true});
  const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
- expect(result.reused).toBe(false);
- expect(result.artifacts).toHaveLength(2);
- expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toHaveLength(2);
- const contents=await Promise.all(result.artifacts.map(artifact=>readFile(join(f.projectExportsRoot,result.archive_path,'成果',artifact.filename))));
- expect(hash(contents[0]!)).not.toBe(hash(contents[1]!));
- for(const artifact of result.artifacts){
-  const index=artifact.material_id===materialId?0:1;
-  const path=join(f.projectExportsRoot,result.archive_path,'成果',artifact.filename);
-  const out=spawnSync('python3',['-c',"import zipfile,sys,xml.etree.ElementTree as E; r=E.fromstring(zipfile.ZipFile(sys.argv[1]).read('word/document.xml')); print(''.join(r.itertext()))",path],{encoding:'utf8'});
-  expect(out.status).toBe(0);expect(out.stdout).toContain(`附件${index+1}的脱敏正文`);expect(out.stdout).not.toContain(`附件${2-index}的脱敏正文`);
- }
-});
-
-test('incomplete workflow rejects export before writing any file or artifact',async()=>{
- const f=await fixture({incomplete:true});await mkdir(f.materialRoot,{recursive:true});
- await expect(exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('请先完成当前工作流');
- expect(f.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
- expect(await Bun.file(join(f.root,'project','outputs')).exists()).toBe(false);
-});
-
-test('active workflow attempt rejects export before writing any file or artifact',async()=>{
- const f=await fixture({active:true});await mkdir(f.materialRoot,{recursive:true});
- await expect(exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('当前仍有工作流任务');
- expect(f.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
- expect(await Bun.file(join(f.root,'project','outputs')).exists()).toBe(false);
-});
-
-test('publication may export supplemental DOCX during its own running ordinal 8 only',async()=>{
- const f=await fixture({active:true,publicationInProgress:true});await mkdir(f.materialRoot,{recursive:true});
- await expect(exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('请先完成当前工作流');
- const result=await exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{allowPublicationInProgress:true});
  expect(result.artifacts).toHaveLength(1);
- expect(f.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toBe(true);
+ const path=join(f.projectExportsRoot,result.archive_path,'成果',result.artifacts[0]!.filename);
+ const out=spawnSync('python3',['-c',"import zipfile,sys,xml.etree.ElementTree as E; r=E.fromstring(zipfile.ZipFile(sys.argv[1]).read('word/document.xml')); print(''.join(r.itertext()))",path],{encoding:'utf8'});
+ expect(out.status).toBe(0);expect(out.stdout).toContain('附件1的脱敏正文');expect(out.stdout).toContain('附件2的脱敏正文');
+ expect(f.calls.some(call=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts)/.test(call.sql))).toBe(false);
+});
+
+test.each([{incomplete:true},{active:true},{active:true,publicationInProgress:true}])('valid redacted material exports independently of workflow progress (%j)',async options=>{
+ const f=await fixture(options);await mkdir(f.materialRoot,{recursive:true});
+ const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
+ expect(result.artifacts).toHaveLength(1);
+ expect(f.calls.some(call=>call.sql.startsWith('UPDATE ai_distill.steps'))).toBe(false);
 });
 
 test('stale material digest rejects export without changing workflow state',async()=>{
@@ -121,7 +100,7 @@ test('unsafe source key cannot escape the id-based attachment library folder',as
  const f=await fixture({sourceKey:'../outside'});await mkdir(f.materialRoot,{recursive:true});
  const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
  expect(result.reused).toBe(false);
- expect(await Bun.file(join(f.projectExportsRoot,'附件库','豆包高经','问题1','成果',`source-脱敏-${materialId.slice(0,8)}.docx`)).exists()).toBe(true);
+ expect(await Bun.file(join(f.projectExportsRoot,'附件库','豆包高经','问题1','成果','脱敏材料.docx')).exists()).toBe(true);
  expect(await Bun.file(join(f.projectExportsRoot,'outside','脱敏材料.docx')).exists()).toBe(false);
 });
 
@@ -129,7 +108,7 @@ test('artifact-index failure removes the staged DOCX and leaves workflow state u
  const f=await fixture({failInsert:true});await mkdir(f.materialRoot,{recursive:true});
  await expect(exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('artifact write failed');
  expect(f.calls.some(call=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts)/.test(call.sql))).toBe(false);
- expect(await Bun.file(join(f.projectExportsRoot,'附件库','豆包高经','问题1','成果',`source-脱敏-${materialId.slice(0,8)}.docx`)).exists()).toBe(false);
+ expect(await Bun.file(join(f.projectExportsRoot,'附件库','豆包高经','问题1','成果','脱敏材料.docx')).exists()).toBe(false);
  expect(await Bun.file(join(f.projectExportsRoot,'附件库','豆包高经','问题1','原件',`${materialId.slice(0,8)}_source.pdf`)).exists()).toBe(false);
 });
 
@@ -154,7 +133,7 @@ test('corrupt structured index fails closed before copying or exporting material
  expect(f.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
 });
 
-test.each([false,true])('library completion gate uses only applicable stages before material validation (incomplete=%s)',async incomplete=>{
+test.each([false,true])('library material validation does not depend on workflow completion (incomplete=%s)',async incomplete=>{
  const calls:string[]=[];
  const client={release(){},async query(sql:string){
   calls.push(sql);
@@ -165,11 +144,11 @@ test.each([false,true])('library completion gate uses only applicable stages bef
   return{rows:[],rowCount:0};
  }};
  const pool={connect:async()=>client} as unknown as Pool;
- await expect(exportRedactedDocx(pool,workflowId,'unused','unused')).rejects.toThrow(incomplete?'请先完成当前工作流并归档达标题目':'已进入材料读取边界');
+ await expect(exportRedactedDocx(pool,workflowId,'unused','unused')).rejects.toThrow('已进入材料读取边界');
  expect(calls.at(-1)).toBe('ROLLBACK');
 });
 
-test('legacy project library-package question uses the library completion gate',async()=>{
+test('legacy project library-package question validates frozen materials without a completion gate',async()=>{
  const calls:string[]=[];
  const client={release(){},async query(sql:string){
   calls.push(sql);
@@ -182,5 +161,32 @@ test('legacy project library-package question uses the library completion gate',
  }};
  const pool={connect:async()=>client} as unknown as Pool;
  await expect(exportRedactedDocx(pool,workflowId,'unused','unused')).rejects.toThrow('library snapshot material read reached');
- expect(calls.some(sql=>sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))).toBe(true);
+ expect(calls.some(sql=>sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))).toBe(false);
+});
+
+
+test('冻结分册仅省略纯空白，非空正文及结构矛盾仍严格拒绝',()=>{
+ const empty={id:'blank',title:'空白分册',text:'\n',document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'a',kind:'paragraph',text:''},{id:'b',kind:'paragraph',text:''}]}]}};
+ const actual={id:'actual',title:'申请书',text:'保留全部真实正文'};
+ const frozen=[empty,actual],before=JSON.stringify(frozen);
+ expect(projectPreparedDocuments(frozen)).toEqual([actual]);expect(JSON.stringify(frozen)).toBe(before);
+ expect(projectPreparedDocuments(undefined)).toBeUndefined();
+ expect(()=>projectPreparedDocuments({})).toThrow('清单无效');
+ expect(()=>projectPreparedDocuments([{...actual,text:null}])).toThrow('正文无效');
+ expect(()=>projectPreparedDocuments([actual,actual])).toThrow('正文无效');
+ expect(()=>projectPreparedDocuments([{...empty,text:'',document:{...empty.document,pages:[{page:1,blocks:[{id:'x',kind:'paragraph',text:'真实正文不能被丢弃'}]}]}}])).toThrow('结构无效');
+});
+
+test('已验证脱敏正文可在本机原PDF缺失时导出，不改写原件或冻结数据',async()=>{
+ const f=await fixture({structured:true});await rm(join(f.storageRoot,'sources','source.pdf'));
+ const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
+ expect(result.artifacts).toHaveLength(1);
+ expect(await Bun.file(join(f.projectExportsRoot,result.archive_path,'成果',result.artifacts[0]!.filename)).exists()).toBe(true);
+ expect(await Bun.file(join(f.storageRoot,'sources','source.pdf')).exists()).toBe(false);
+ expect(f.calls.some(call=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(materials|steps|step_attempts)/.test(call.sql))).toBe(false);
+});
+
+test('脱敏导出不把存在但指纹损坏的原件误当成缺失',async()=>{
+ const f=await fixture({structured:true});await writeFile(join(f.storageRoot,'sources','source.pdf'),'wrong bytes');
+ await expect(exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('指纹校验失败');
 });

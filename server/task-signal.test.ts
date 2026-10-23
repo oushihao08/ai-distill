@@ -7,7 +7,7 @@ import{join}from'node:path';
 import{configureLogger,withLogContext}from'./logging';
 
 function poolWithQuery(query:(sql:string,values:any[])=>Promise<any>){
- return{connect:async()=>({query,release(){}})} as any;
+ return{connect:async()=>({query:(input:string|{text:string;values?:any[]},values?:any[])=>query(typeof input==='string'?input:input.text,(typeof input==='string'?values:input.values)??[]),release(){}})} as any;
 }
 
 test('database cancellation aborts in-flight work; concurrent task signals stay isolated',async()=>{

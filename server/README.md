@@ -29,12 +29,12 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `index.ts` | API进程入口；创建pool/app、配置HOST/PORT，可选提供web/dist，退出时关闭资源 |
 | `app.ts` | `createApp()`：请求/错误/日志中间件与项目、配置、文件和模块路由装配；题目附件全文接口按共享题快照读取冻结的原文或脱敏正文 |
 | `paths.ts` | `repositoryRoot`、`resolveRepositoryPath()`、`storageDirectory()`：路径相对仓库解析，绝对路径保持 |
-| `db.ts` | `createPool()`：启用TLS证书验证及可选channel binding；连接/查询安全日志，不输出SQL正文或参数 |
+| `db.ts` | `createPool()`：启用TLS证书验证及可选channel binding；连接/查询安全日志，不输出SQL正文或参数。`readStatusRows()`供取消轮询与worker统计复用有界只读事务，失败连接销毁 |
 | `migrate.ts` | 人工迁移入口：互斥事务内按完整文件名执行所有未登记SQL；API健康检查不执行迁移 |
 | `concurrency.ts` | `readConcurrencySettings()` / `saveWorkerConcurrencySettings()` 管理本机持久并发；`AgentConcurrencyGate` 协调同一STORAGE_DIR下的Agent槽位 |
 | `worker.ts` | 进程入口：按模式、执行端和任务provider注册材料/API/Agent及钩子消费者，传播停止信号 |
 | `worker-pool.ts` | `runWorkerPool()` 控制循环并发、空闲/失败退避；`createFairQueueHandler()` 公平轮转业务队列并在轮转间检查停止；`createWorkerShutdown()` 一次性广播停止、记录请求及10秒未完成诊断，不强杀进程 |
-| `task-signal.ts` | `watchTaskCancellation()` 合并查询持久任务状态并取消失效执行；`withTaskSignal()` 传递调用链信号 |
+| `task-signal.ts` | `watchTaskCancellation()` 合并查询持久任务状态并取消失效执行；状态SQL服务端限时2秒，BEGIN/SET/SELECT/COMMIT及回滚逐次驱动限时3秒，读取失败不误取消模型；`withTaskSignal()` 传递调用链信号 |
 | `external-call.ts` | `runExternalCall()` 将一次调用关联到attempt或library_job及call_id，传递安全日志；不重试收费请求 |
 | `logging.ts` | `createStructuredLogger()`、`logEvent()` 与上下文入口：安全字段投影、JSONL轮转保留、健康及致命错误记录 |
 | `validation.ts` | HTTP请求预算（普通101MiB、库级版本上传201MiB含1MiB封装余量；业务文件仍限100/200MiB）、UUID/文字/标签/source key及PDF/DOCX/TXT/MD类型和大小边界；不代替内容解析 |

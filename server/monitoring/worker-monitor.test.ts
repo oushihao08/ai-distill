@@ -11,7 +11,7 @@ import {sampleResources,type MonitorInput} from './resources';
 import{configureLogger}from'../logging';
 const db=(rows:any[]=[])=>{
  const query=async(sql:string)=>{if(sql.startsWith('SELECT')){expect(sql).toContain("a.status IN ('waiting','running')");expect(sql).toContain('w.deleted_at IS NULL');expect(sql).not.toContain('a.error');}return{rows};};
- return{query,connect:async()=>({query,release(){}})} as unknown as Pool;
+ return{query,connect:async()=>({query:(input:string|{text:string})=>query(typeof input==='string'?input:input.text),release(){}})} as unknown as Pool;
 };
 const sampler=(percent:number|null)=>async(input:MonitorInput)=>sampleResources(input,{platform:'darwin',read:async(file,args)=>file.endsWith('memory_pressure')?percent===null?'':`The system has 1000000 (100 pages).\nSystem-wide memory free percentage: ${percent}%\n`:`${args[1]} 100`});
 async function directory(run:(root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'distill-monitor-'));try{await run(root);}finally{await rm(root,{recursive:true,force:true});}}
@@ -53,7 +53,8 @@ test('concurrent dispatch callers merge one sampling operation',async()=>directo
 test('dispatch memory check does not wait for a pending database task query',async()=>directory(async root=>{
  let releaseQuery!:()=>void,notifyQueryStarted!:()=>void,sampled=false,taskQueries=0;
  const queryStarted=new Promise<void>(resolve=>{notifyQueryStarted=resolve;});
- const pool={connect:async()=>({query:async(sql:string)=>{
+ const pool={connect:async()=>({query:async(input:string|{text:string})=>{
+  const sql=typeof input==='string'?input:input.text;
   if(sql.includes('FROM ai_distill.step_attempts')){taskQueries++;notifyQueryStarted();return new Promise<{rows:any[]}>(resolve=>{releaseQuery=()=>resolve({rows:[]});});}
   return{rows:[]};
  },release(){}})} as unknown as Pool;
@@ -84,7 +85,7 @@ test('database query failure is task unknown, not zero',async()=>directory(async
 }));
 test('reads task status with a server-side timeout and releases its connection',async()=>directory(async root=>{
  const queries:string[]=[];let released=false;
- const client={query:async(sql:string)=>{queries.push(sql);return{rows:[]};},release:()=>{released=true;}};
+ const client={query:async(input:string|{text:string})=>{queries.push(typeof input==='string'?input:input.text);return{rows:[]};},release:()=>{released=true;}};
  const pool={connect:async()=>client,query:async()=>{throw new Error('pool query should not be used');}} as unknown as Pool;
  const monitor=createWorkerMonitor(pool,root,{min_available_percent:10,sample:sampler(30)});
  try{

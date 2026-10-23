@@ -10,6 +10,7 @@ import {randomUUID} from 'node:crypto';
 import {sampleResources,adviseDispatch,type ResourceSnapshot,type ExecutorStatus,type Reading,type SafeEvent} from './resources';
 import {listAgentProcessIds} from '../agent/processes';
 import {classifyLogError,logEvent} from '../logging';
+import {readStatusRows} from '../db';
 export interface WorkerMonitorStatus {
  status:'running'|'paused'|'stopped'|'stale'|'unavailable';
  heartbeat_at:string|null;worker_pid:number|null;
@@ -147,22 +148,13 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
   tasksInflight=(async()=>{
    let next:ExecutorStatus[]|undefined;
   try{
-   const db=await pool.connect();let transaction=false;
-   try{
-    await db.query('BEGIN');transaction=true;
-    await db.query("SET LOCAL statement_timeout = '2000ms'");
-    const result=await db.query("SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status IN ('waiting','running')");
-    next=result.rows.map(row=>{
+    const rows=await readStatusRows(pool,"SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status IN ('waiting','running')");
+    next=rows.map(row=>{
     if(row.status!=='waiting'&&row.status!=='running')throw new Error('invalid');
     const at=row.heartbeat_at??row.started_at;
     const date=at instanceof Date?at:new Date(at);
     return{state:row.status,authentication:'unknown',quota:'unknown',error:row.error_kind??'unknown',...(at&&Number.isFinite(date.getTime())?{last_event:{type:row.heartbeat_at?'heartbeat' as const:'started' as const,at:date.toISOString()}}:{})};
     });
-    await db.query('COMMIT');transaction=false;
-   }catch(error){
-    if(transaction)try{await db.query('ROLLBACK');}catch(rollbackError){logEvent('monitor.tasks_read_rollback_failed',{level:'error',component:'worker_monitor',...classifyLogError(rollbackError)});}
-    throw error;
-   }finally{db.release();}
    }catch(error){next=undefined;if(!tasksReadFailed)logEvent('monitor.tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});tasksReadFailed=true;}
    if(stopped)return;
    tasks=next;

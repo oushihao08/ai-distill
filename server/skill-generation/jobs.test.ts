@@ -1,12 +1,15 @@
-/** 验证项目 skill 队列冻结来源和配置、复用任务并拒绝过期发布。
+/** 使用legacy SQL替身和临时文件验证项目skill队列，禁止继承工作台local模式写入本机业务队列。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
-import {test,expect} from 'bun:test';
+import {test,expect,beforeAll,afterAll} from 'bun:test';
 import type {Pool} from 'pg';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {enqueueProjectSkill,runNextProjectSkill} from './jobs';
+const originalQueueMode=process.env.EXECUTION_QUEUE_MODE;
+beforeAll(()=>{process.env.EXECUTION_QUEUE_MODE='legacy';});
+afterAll(()=>{if(originalQueueMode===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=originalQueueMode;});
 const entry='---\nname: fixture\ndescription: fixture\n---';
 async function fixture(run:(f:ReturnType<typeof fake>,root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'skill-queue-'));try{await mkdir(join(root,'project/materials'),{recursive:true});await mkdir(join(root,'template'),{recursive:true});await writeFile(join(root,'project/materials/rules.md'),'本期规则');await writeFile(join(root,'template/SKILL.md'),entry);await run(fake(root),root);}finally{await rm(root,{recursive:true,force:true});}}
 function fake(root:string){const calls:{sql:string;values:any[]}[]=[];let job:any,deleted=false;const project={id:'project',material_root:join(root,'project/questions'),local_skill_path:join(root,'project/imported'),workspace_path:join(root,'project')};

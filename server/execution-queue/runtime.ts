@@ -94,7 +94,11 @@ export async function synchronizeCancellation(pool:Pool,q:LocalQueue,id:string){
 }
 
 export async function synchronizeLocalCancellations(pool:Pool,q:LocalQueue){
- for(const job of reconciliationBatch(q,'cancel',q.list().filter(j=>j.cancel_requested&&!j.cancel_synced))){
+ const pending=reconciliationBatch(q,'cancel',q.list().filter(j=>j.cancel_requested&&!j.cancel_synced));if(!pending.length)return;
+ // 尚未提交/已回滚的登记不逐项开启空事务；保留取消意图，后续轮次再探测。
+ const owners=(await pool.query(boundedQuery('SELECT job_id FROM ai_distill.execution_dispatches WHERE job_id=ANY($1::uuid[])'),[pending.map(job=>job.id)])).rows;
+ const registered=new Set(owners.map(row=>row.job_id));
+ for(const job of pending.filter(job=>registered.has(job.id))){
   try{await synchronizeCancellation(pool,q,job.id);}catch(error){logEvent('queue.cancel_sync_failed',{level:'error',component:'local_execution_queue',...classifyLogError(error)});}
  }
 }

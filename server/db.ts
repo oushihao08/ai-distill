@@ -1,11 +1,11 @@
 /**
  * 职责：数据库连接工厂：创建启用 TLS 证书验证的 PostgreSQL 连接池，避免输出连接凭证。
- * 关键方法与用途：`createPool()` 创建 PostgreSQL 连接池并启用证书校验与安全错误处理。
+ * 关键方法与用途：`createPool()` 创建安全连接池；`readStatusRows()` 有界读取后台状态并销毁失败连接。
  * 使用场景：由 API、worker 和迁移入口分别创建本进程连接池。
  */
 import {localQueueEnabled,localQueue} from './execution-queue/runtime';
 import {storageDirectory} from './paths';
-import { Pool } from 'pg';
+import { Pool,type QueryConfig } from 'pg';
 import {classifyLogError,logEvent} from './logging';
 function queryName(value:unknown){
  const sql=typeof value==='string'?value:value&&typeof value==='object'&&'text'in value&&typeof value.text==='string'?value.text:'';
@@ -43,6 +43,28 @@ function topLevelSql(sql:string){
 }
 function safeDbCode(error:unknown){const code=error&&typeof error==='object'?(error as {code?:unknown}).code:undefined;return typeof code==='string'&&/^[A-Z0-9]{5}$/.test(code)?code:undefined;}
 function transactionEvent(name:string){const op=name.split(':',1)[0];return op==='begin'?'transaction.started':op==='commit'?'transaction.committed':op==='rollback'?'transaction.rolled_back':undefined;}
+/** 后台状态读取：服务端限制SQL执行，驱动同时约束事务往返；超时后销毁连接，避免未结束查询回到池中。 */
+export async function readStatusRows(pool:Pool,text:string,values:unknown[]=[]){
+ const client=await pool.connect();let transaction=false,discard:Error|undefined;
+ const query=(text:string,values?:unknown[])=>{
+  const config:QueryConfig&{query_timeout:number}={text,values,query_timeout:3000};
+  return client.query(config);
+ };
+ try{
+  await query('BEGIN READ ONLY');transaction=true;
+  await query("SET LOCAL statement_timeout = '2000ms'");
+  const result=await query(text,values);
+  await query('COMMIT');transaction=false;
+  return result.rows;
+ }catch(error){
+  discard=error instanceof Error?error:new Error('后台状态读取失败');
+  // 驱动读超时不证明服务器已停止执行；立即销毁连接，不再向同一连接排入ROLLBACK。
+  if(transaction&&discard.message!=='Query read timeout'){
+   try{await query('ROLLBACK');}catch(rollbackError){logEvent('db.status_read_rollback_failed',{level:'error',...classifyLogError(rollbackError)});}
+  }
+  throw error;
+ }finally{client.release(discard);}
+}
 export function createPool(env = process.env) {
   const raw = env.DATABASE_URL;
   if (!raw) throw new Error('缺少 DATABASE_URL，请配置本地 .env');

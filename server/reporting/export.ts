@@ -4,9 +4,9 @@
  * 使用场景：由 `app.ts` 导出接口调用；`workbookSha256()` 标记导出文件完整性。
  */
 import type {Pool,PoolClient} from 'pg';
-import {readCurrentMaterialDocx} from '../materials/redacted-docx-export';
+import {readCurrentMaterialDocx,readCurrentRedactionForDocx,preparedDocxFilename} from '../materials/redacted-docx-export';
 import {createHash} from 'node:crypto';
-import {dirname,isAbsolute,join,relative,resolve,sep} from 'node:path';
+import {basename,dirname,isAbsolute,join,relative,resolve,sep} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {HTTPException} from 'hono/http-exception';
 import {buildResultWorkbook,type ResultExportRecord} from './results';
@@ -17,6 +17,12 @@ import {canonicalJson} from '../../shared/workflow-config';
 
 const object=(value:unknown):Record<string,any>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,any>:undefined;
 const text=(value:unknown)=>typeof value==='string'?value:'';
+
+/** 分册按冻结名称逐一核对，不能拿原PDF数量放行或误拦截。 */
+export function preparedDocxPathsComplete(documents:{title:string}[],paths:string[]){
+ const names=paths.map(path=>decodeURIComponent(basename(new URL(path).pathname)));
+ return names.length===documents.length&&new Set(names).size===documents.length&&documents.every((doc,index)=>names.includes(preparedDocxFilename(doc,index)));
+}
 
 /** 对要导出的达标题目核验出题时冻结的 skill 快照；不因项目后续编辑而改变历史 attempt。 */
 export async function verifyProjectAuthoringRules(pool:Pool|PoolClient,projectId:string,workflowIds:string[]){
@@ -117,9 +123,18 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
   const countsByQuestionAttempt=new Map<string,number>();
   const materialIdsByQuestionAttempt=new Map<string,Set<string>>();
   const pathsByQuestionAttempt=new Map<string,string[]>();
+  const sourcesByQuestionAttempt=new Map<string,{workflow_id:string;source:Awaited<ReturnType<typeof readCurrentRedactionForDocx>>}>();
   for(const row of attachmentRows.rows){
+   let verified=sourcesByQuestionAttempt.get(row.question_attempt_id);
+   if(!verified){
+    const attempt=acceptedQuestionAttempts.find((item:any)=>item.id===row.question_attempt_id);
+    if(!attempt)throw new Error('input_attachment_missing');
+    const workflow_id=String(attempt.workflow_id);
+    verified={workflow_id,source:await readCurrentRedactionForDocx(pool,workflow_id)};
+    sourcesByQuestionAttempt.set(row.question_attempt_id,verified);
+   }
    // 复用下载入口的当前版本、路径、普通文件和指纹校验，不只相信索引。
-   if(!await readCurrentMaterialDocx(pool,String(row.docx_id),attachmentRoot))throw new HTTPException(409,{message:'当前材料 DOCX 已缺失或失效，请重新生成'});
+   if(!await readCurrentMaterialDocx(pool,String(row.docx_id),attachmentRoot,verified))throw new HTTPException(409,{message:'当前材料 DOCX 已缺失或失效，请重新生成'});
    countsByQuestionAttempt.set(row.question_attempt_id,Number(row.material_count));
    const materialIds=materialIdsByQuestionAttempt.get(row.question_attempt_id)??new Set<string>();
    materialIds.add(String(row.material_id));materialIdsByQuestionAttempt.set(row.question_attempt_id,materialIds);
@@ -134,7 +149,14 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
    const attempt=questionAttemptByWorkflow.get(workflowId),record=records.find(item=>item.workflow_id===workflowId);
    if(!attempt)throw new Error('input_attachment_missing');
    const paths=pathsByQuestionAttempt.get(attempt.id)??[];
-   if(!paths.length||materialIdsByQuestionAttempt.get(attempt.id)?.size!==countsByQuestionAttempt.get(attempt.id))throw new HTTPException(409,{message:`${record?.title??'题目'}尚未生成全部附件的当前来源 DOCX，请先归档并重新生成材料 DOCX`});
+   const prepared=sourcesByQuestionAttempt.get(attempt.id)?.source.prepared_documents;
+   const mergedName=sourcesByQuestionAttempt.get(attempt.id)?.source.material_mode==='original'?'原文材料.docx':'脱敏材料.docx';
+   const merged=paths.length===1&&decodeURIComponent(basename(paths[0]!))===mergedName;
+   // 新导出一题一份；历史分册在重新生成前仍按原覆盖规则校验。
+   const complete=merged||(prepared?.length
+    ?preparedDocxPathsComplete(prepared,paths)
+    :materialIdsByQuestionAttempt.get(attempt.id)?.size===countsByQuestionAttempt.get(attempt.id));
+   if(!paths.length||!complete)throw new HTTPException(409,{message:`${record?.title??'题目'}尚未生成全部附件的当前来源 DOCX，请先归档并重新生成材料 DOCX`});
    if(record)record.input_attachments=paths;
   }
  }

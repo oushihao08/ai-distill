@@ -133,12 +133,13 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   dependencies.signal?.throwIfAborted();
   await cachedExternalCall(`publication_delivery:${digest}:${delivery.digest}:${deliveryIdentityDigest}`,()=> (dependencies.deliver??runProjectDelivery)(delivery,deliveryInput,deliveryDir));
   let supplemental:Record<string,unknown>={};
-  if(delivery.mode==='script'&&dependencies.prepareArtifacts){
+  // Office成果是公共能力，不以项目是否配置专用交付脚本为条件。
+  if(dependencies.prepareArtifacts){
    try{supplemental=await dependencies.prepareArtifacts(binding);}
    catch(error){
     dependencies.signal?.throwIfAborted();
     logEvent('publication.supplemental_export_failed',{level:'warn',...classifyLogError(error)});
-    supplemental={supplemental_exports:{status:'failed'}};
+    supplemental={supplemental_exports:{status:'failed',...(error instanceof HTTPException?{error:error.message,http_status:error.status}:{})}};
    }
   }
   dependencies.signal?.throwIfAborted();
