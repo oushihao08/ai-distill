@@ -15,6 +15,10 @@ import {inputDigest} from '../answer-models/input';
 import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+// SQL替身不得继承工作台local模式并向真实队列登记意图。
+const originalQueueMode=process.env.EXECUTION_QUEUE_MODE;
+beforeAll(()=>{process.env.EXECUTION_QUEUE_MODE='legacy';});
+afterAll(()=>{if(originalQueueMode===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=originalQueueMode;});
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const snapshot=join(tmpdir(),`score-job-rules-${process.pid}`),modelCatalogRoot=join(tmpdir(),`score-job-models-${process.pid}`),previousCodexHome=process.env.CODEX_HOME,ruleText='---\nname: scoring-fixture\ndescription: scoring test\n---\n本期评分规则';
 const projectRules={version_id:'rules-v1',source_digest:hash('project-rules'),snapshot_path:snapshot,files:[{path:'skill/SKILL.md',sha256:hash(ruleText),size_bytes:Buffer.byteLength(ruleText)}]};
@@ -287,3 +291,15 @@ test('旧Work队列不补引文字段；新Work冻结工具摘要被改写时拒
   }
  }
 }));
+
+test('local scoring failure restores without grader and without resetting current step',async()=>{
+ const {LocalQueue}=await import('../execution-queue/store');const {withLocalExecution}=await import('../execution-queue/runtime');
+ const root=await mkdtemp(join(tmpdir(),'score-terminal-')),queue=new LocalQueue(root,'test-device'),f=fake(),previous=process.env.EXECUTION_QUEUE_MODE;
+ try{
+  process.env.EXECUTION_QUEUE_MODE='local';f.job.id=crypto.randomUUID();queue.intent(f.job.id,'step','agent','score');queue.confirm(f.job.id);const job=queue.claim('agent')!;
+  queue.saveStepFailure(job,{status:'failed',message:'已记录评分失败',result:{reason_code:'test_failure'}});
+  let calls=0;await withLocalExecution(queue,job,()=>runNextScore(f.pool,root,async()=>{calls++;throw new Error('must not execute');},undefined,async()=>{}));
+  expect(calls).toBe(0);expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.steps SET status='running'"))).toBe(false);
+  const write=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed',result="));expect(write?.values[2]).toBe('已记录评分失败');
+ }finally{queue.close();if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
+});

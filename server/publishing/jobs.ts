@@ -104,12 +104,13 @@ async function readVerifiedTextArtifact(root:string,artifact:Artifact){
  * 相同达标摘要和脚本摘要复用已归档标记；每次点击仍执行项目交付入口。
  */
 interface PublicationDependencies {
+ deliver?:typeof runProjectDelivery;
  resolveDelivery?:typeof resolveProjectDelivery;
  prepareWork?:typeof getOrGenerateWorkSimulation;
  readStructuredMaterials?:(db:import('pg').PoolClient,id:string)=>Promise<Awaited<ReturnType<typeof readCurrentRedactionForDocx>>|undefined>;
 }
 export async function publishWorkflow(pool:Pool,workflowId:string,root:string,deliveryIdentity?:{task_id:string;org:string},dependencies:PublicationDependencies={}){
- let db=await pool.connect();let connectionHeld=true;let attemptId:string|undefined;let restoreLogContext=()=>{},inTransaction=false;
+ let db=await pool.connect();let connectionHeld=true;let attemptId:string|undefined;let restoreLogContext=()=>{},inTransaction=false;let failurePhase='snapshot';
  const resolveDelivery=dependencies.resolveDelivery??resolveProjectDelivery;
  const prepareWork=dependencies.prepareWork??getOrGenerateWorkSimulation;
  const readStructuredMaterials=dependencies.readStructuredMaterials??readCurrentRedactionForDocx;
@@ -176,9 +177,10 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   }));
   const deliveryIdentityDigest=hash(JSON.stringify(deliveryIdentity??null));
   const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:deliveryAttachments};
+  await db.query('COMMIT');inTransaction=false;
+  db.release();connectionHeld=false;
+  failurePhase='delivery';
   if(workflow.parent_name==='Work法律全场景'){
-   await db.query('COMMIT');inTransaction=false;
-   db.release();connectionHeld=false;
    const generate=()=>prepareWork(pool,{project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,rubric:q.rubric},attachments:deliveryAttachments.map(({name,text,material_mode})=>({name,text,material_mode}))},root,hash(`${digest}:${delivery.digest}`));
    if(q.content_contract==='work_legal_v1')deliveryInput.simulation=await generate();
    else{
@@ -187,6 +189,10 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
     if(!permit.acquired)throw new HTTPException(409,{message:'Agent 并发任务未取得执行槽位'});
     deliveryInput.simulation=permit.value;
    }
+  }
+  await (dependencies.deliver??runProjectDelivery)(delivery,deliveryInput,deliveryDir);
+  if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
+  failurePhase='commit';
    db=await pool.connect();connectionHeld=true;
    await db.query('BEGIN');inTransaction=true;
    const currentWorkflow=(await db.query("SELECT w.project_id,w.title,w.source_key,p.name AS project_name,p.parent_name,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w",[workflowId])).rows[0];
@@ -194,12 +200,10 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    const currentAcceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
    const currentAccepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
    const currentSnapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(currentModelSet,currentAcceptancePolicy),answerModelSetDigest(currentModelSet));
-   if(!currentWorkflow||currentWorkflow.title!==workflow.title||currentWorkflow.project_id!==workflow.project_id||currentWorkflow.parent_name!=='Work法律全场景'||currentAccepted?.id!==accepted.id||currentAccepted.status!=='succeeded'||currentAccepted.result?.decision!=='accepted'||answerModelSetDigest(currentModelSet)!==answerModelSetDigest(modelSet)||acceptanceSourceDigest(currentSnapshot)!==digest||currentAccepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(currentSnapshot)).decision!=='accepted')throw new HTTPException(409,{message:'生成期间题目、模型或达标依据发生变化，请重新归档'});
+   if(!currentWorkflow||currentWorkflow.title!==workflow.title||currentWorkflow.project_id!==workflow.project_id||currentWorkflow.parent_name!==workflow.parent_name||currentWorkflow.phase_name!==workflow.phase_name||currentWorkflow.source_key!==workflow.source_key||currentAccepted?.id!==accepted.id||currentAccepted.status!=='succeeded'||currentAccepted.result?.decision!=='accepted'||answerModelSetDigest(currentModelSet)!==answerModelSetDigest(modelSet)||acceptanceSourceDigest(currentSnapshot)!==digest||currentAccepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(currentSnapshot)).decision!=='accepted')throw new HTTPException(409,{message:'生成期间题目、模型或达标依据发生变化，请重新归档'});
    await verifyFrozenProjectPrompt(currentSnapshot.question?.input?.project_prompt);
-  }
   const previous=(await db.query("SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded' AND input->>'source_digest'=$2 AND input->>'acceptance_attempt_id'=$3 AND input->>'delivery_digest'=$4 AND input->>'delivery_identity_digest'=$5 ORDER BY attempt DESC LIMIT 1",[workflowId,digest,accepted.id,delivery.digest,deliveryIdentityDigest])).rows[0];
   if(previous){
-   await runProjectDelivery(delivery,deliveryInput,deliveryDir);
    if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
    await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
    const latestEvent=(await db.query('SELECT event_type FROM ai_distill.workflow_publication_events WHERE workflow_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1',[workflowId])).rows[0];
@@ -211,7 +215,6 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    }
    await db.query('COMMIT');inTransaction=false;withLogContext({attempt_id:previous.id},()=>logEvent('publication.reused',{level:'info',state:'succeeded'}));return {id:previous.id,reused:true,completed:true};
   }
-  await runProjectDelivery(delivery,deliveryInput,deliveryDir);
   await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
   if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
   attemptId=crypto.randomUUID();
@@ -224,7 +227,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
   await db.query('COMMIT');inTransaction=false;withLogContext({attempt_id:attemptId},()=>logEvent('publication.completed',{level:'info',state:'succeeded'}));return {id:attemptId,reused:false,completed:true};
  }catch(error){
-  logEvent('publication.failed',{level:'error',state:'failed',...classifyLogError(error)});
+  logEvent('publication.failed',{level:'error',state:'failed',failure_phase:failurePhase,...(error instanceof HTTPException?{http_status:error.status}:{}),...classifyLogError(error)});
   if(inTransaction)try{await db.query('ROLLBACK');}catch(rollbackError){logEvent('transaction.rollback_failed',{level:'error',transaction_name:'rollback:publishing',...classifyLogError(rollbackError)});console.error('成果发布事务回滚失败，等待核对');}
   throw error;
  }finally{restoreLogContext();if(connectionHeld)db.release();}
