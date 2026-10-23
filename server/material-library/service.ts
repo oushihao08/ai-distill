@@ -272,8 +272,16 @@ export async function createLibraryRevision(pool:Pool,storageRoot:string,id:stri
     VALUES($1,$2,$3,$4,'file',$5,$6) ON CONFLICT(sha256,storage_target) WHERE storage_kind='file' DO NOTHING RETURNING id`,[randomUUID(),blob.sha256,blob.size_bytes,blob.content_type,blob.storage_target,blob.storage_path]);
    let blobId=inserted.rows[0]?.id;
    if(!blobId){
-    const existingBlob=(await db.query("SELECT id,size_bytes,content_type,storage_path FROM ai_distill.library_blobs WHERE sha256=$1 AND storage_target=$2 AND storage_kind='file'",[blob.sha256,blob.storage_target])).rows[0];
-    if(!existingBlob||Number(existingBlob.size_bytes)!==blob.size_bytes||existingBlob.storage_path!==blob.storage_path)throw conflict('已有材料对象与新文件的类型或摘要信息不一致');
+    const existingBlob=(await db.query("SELECT id,size_bytes,content_type,storage_path FROM ai_distill.library_blobs WHERE sha256=$1 AND storage_target=$2 AND storage_kind='file' FOR UPDATE",[blob.sha256,blob.storage_target])).rows[0];
+    if(!existingBlob||Number(existingBlob.size_bytes)!==blob.size_bytes)throw conflict('已有材料对象与新文件的类型或摘要信息不一致');
+    if(existingBlob.storage_path!==blob.storage_path){
+     // installLibraryBlob has verified the exact bytes at this canonical path. Repair only the
+     // locator while retaining the immutable SHA/size identity; older deployments may have
+     // stored this relative path using a different platform layout.
+     const repaired=await db.query(`UPDATE ai_distill.library_blobs SET storage_path=$2
+      WHERE id=$1 AND sha256=$3 AND size_bytes=$4 AND storage_target=$5 AND storage_kind='file' RETURNING id`,[existingBlob.id,blob.storage_path,blob.sha256,blob.size_bytes,blob.storage_target]);
+     if(!repaired.rowCount)throw conflict('材料对象路径修复未命中当前对象');
+    }
     if(existingBlob.content_type!==blob.content_type){
      // 同一UTF8原件可按TXT/MD命名；复用已核验的字节，不改既有对象的MIME。
      // 历史PDF的scanned/text识别类别继续兼容，二进制格式仍不能混用。
