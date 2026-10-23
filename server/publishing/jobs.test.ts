@@ -179,7 +179,7 @@ test.each([true,false])('Work frozen=%s releases DB before preparation and only 
  let release!:()=>void,occupied=false,called=false;const gate=getAgentConcurrencyGate(f.root,1);
  const held=gate.run(async()=>{occupied=true;await new Promise<void>(r=>{release=r;});});
  while(!occupied)await Bun.sleep(1);
- const run=publishWorkflow(f.pool,'workflow',f.root,undefined,{resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,prepareWork:async()=>{called=true;expect(f.connections.held).toBe(0);return preparedWork;}});
+ const run=publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,prepareWork:async()=>{called=true;expect(f.connections.held).toBe(0);return preparedWork;}});
  try{
   if(frozen){await run;expect(called).toBe(true);}
   else{await Bun.sleep(25);expect(called).toBe(false);expect(f.connections.held).toBe(0);release();await held;await run;expect(called).toBe(true);}
@@ -190,7 +190,7 @@ test.each([true,false])('Work frozen=%s releases DB before preparation and only 
 test.each(['error','changed'])('Work generation %s never publishes stale results or leaks a connection',async(mode)=>{
  const f=await fixture({work:true});(f.snapshot.question.result as any).content_contract='work_legal_v1';f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);
  try{
-  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,prepareWork:async()=>{expect(f.connections.held).toBe(0);if(mode==='error')throw new Error('prepare failed');f.snapshot.question.result.question_version='changed';return preparedWork;}})).rejects.toThrow(mode==='error'?'prepare failed':'生成期间');
+  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,prepareWork:async()=>{expect(f.connections.held).toBe(0);if(mode==='error')throw new Error('prepare failed');f.snapshot.question.result.question_version='changed';return preparedWork;}})).rejects.toThrow(mode==='error'?'prepare failed':'生成期间');
   expect(f.connections.held).toBe(0);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
@@ -198,10 +198,83 @@ test.each(['error','changed'])('Work generation %s never publishes stale results
 test.each([false,true])('all projects run delivery outside DB connection and revalidate afterwards (work=%s)',async work=>{
  const f=await fixture({work});try{
   await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{
-   resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,
+   exportsRoot:f.root,resolveDelivery:async()=>({mode:'noop',digest:'delivery'}),readStructuredMaterials:async()=>undefined,
    prepareWork:async()=>preparedWork,
    deliver:async()=>{expect(f.connections.held).toBe(0);f.snapshot.question.result.question_version='changed';return undefined as never;}
   })).rejects.toThrow('生成期间');
   expect(f.connections.held).toBe(0);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('supplemental artifact failure cannot publish a successful archive or audit event',async()=>{
+ const f=await fixture();
+ try{
+  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{prepareArtifacts:async()=>{expect(f.connections.held).toBe(0);throw new Error('workbook generation failed');}})).rejects.toThrow('workbook generation failed');
+  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
+  expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
+  expect(f.connections.held).toBe(0);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('archive success includes project supplemental artifacts only after they all complete',async()=>{
+ const f=await fixture();
+ try{
+  const archive_workbook={archive_path:'附件库/题目归档数据.xlsx',sha256:'a'.repeat(64),filename:'题目归档数据.xlsx'};
+  await publishWorkflow(f.pool,'workflow',f.root,undefined,{prepareArtifacts:async binding=>{
+   expect(f.connections.held).toBe(0);expect(binding.acceptance_attempt_id).toBe('accepted');
+   expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
+   return{archive_workbook};
+  }});
+  const saved=f.writes.find(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;
+  expect(JSON.parse(String(saved.values[3])).archive_workbook).toEqual(archive_workbook);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('local publication recovery reuses completed project script without another side effect',async()=>{
+ const {LocalQueue}=await import('../execution-queue/store');const {withLocalExecution}=await import('../execution-queue/runtime');
+ const f=await fixture(),q=new LocalQueue(f.root),id=crypto.randomUUID();q.intent(id,'step','internal','publish');q.confirm(id);const local=q.claim('internal')!;
+ let scriptCalls=0,artifacts=0;
+ const dependencies={deliver:async()=>{scriptCalls++;},prepareArtifacts:async()=>{artifacts++;if(artifacts===1)throw new Error('temporary artifact failure');return{};}};
+ try{
+  await expect(withLocalExecution(q,local,()=>publishWorkflow(f.pool,'workflow',f.root,undefined,dependencies))).rejects.toThrow('temporary artifact failure');
+  await withLocalExecution(q,local,()=>publishWorkflow(f.pool,'workflow',f.root,undefined,dependencies));
+  expect(scriptCalls).toBe(1);expect(artifacts).toBe(2);
+ }finally{q.close();await rm(f.root,{recursive:true,force:true});}
+});
+
+test('queued publication refuses changed frozen identity before invoking a project script',async()=>{
+ const f=await fixture();let delivered=false;
+ try{
+  await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{
+   expected:{project_id:'project',title:'old title',parent_name:null,phase_name:null,source_key:null,acceptance_attempt_id:'accepted',source_digest:f.accepted.input.source_digest,delivery_digest:'old-script'},
+   deliver:async()=>{delivered=true;},
+  })).rejects.toThrow('排队后来源');
+  expect(delivered).toBe(false);expect(f.writes).toHaveLength(0);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('queued publication updates its original task after complete generation, without another success attempt',async()=>{
+ const f=await fixture(),original=f.pool.connect.bind(f.pool),attemptId=crypto.randomUUID();
+ f.pool.connect=async()=>{
+  const db=await original(),query=db.query.bind(db);
+  return{...db,query:async(sql:string,values?:unknown[])=>{
+   const result=await query(sql,values);
+   if(sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))return{rows:[{id:attemptId}],rowCount:1};
+   return result;
+  }} as any;
+ };
+ try{
+  const result=await publishWorkflow(f.pool,'workflow',f.root,undefined,{attemptId,prepareArtifacts:async()=>({archive_workbook:{sha256:'workbook'}})});
+  expect(result.id).toBe(attemptId);expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
+  const update=f.writes.find(row=>row.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))!;
+  expect(update.values[0]).toBe(attemptId);expect(JSON.parse(String(update.values[1])).archive_workbook.sha256).toBe('workbook');
+  expect(update.sql).toContain('ORDER BY attempt DESC LIMIT 1');
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('legacy Work simulation refuses a changed queued model before cache access or Agent execution',async()=>{
+ const {getOrGenerateWorkSimulation}=await import('./work-simulation');let reads=0;
+ const pool={query:async(sql:string)=>{reads++;return{rows:sql.includes('system_codex_config')?[{model:'new-model',reasoning_effort:'medium'}]:[{codex_model:'new-model',codex_reasoning_effort:'medium'}]};}} as any;
+ await expect(getOrGenerateWorkSimulation(pool,{project_id:'p',question:{}} as any,'/unused-test-root','a'.repeat(64),{model:'queued-model',reasoning_effort:'medium'})).rejects.toThrow('排队后Agent配置');
+ expect(reads).toBe(2);
 });

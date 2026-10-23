@@ -47,7 +47,7 @@ export function registerExecutionQueueRoutes(app:Hono,pool:Pool,root:string){
    else if(input.kind==='skill'){route='skill';lane='agent';}
    else if(input.kind==='hook'){if(j.mode!=='async')throw new HTTPException(409,{message:'同步钩子属于原主任务'});route='hook';lane='hook';}
    else if(input.kind==='remote'){route='remote';lane='remote';}
-   else{route=({1:'intake',2:'extract',4:'authoring',5:'answer',6:'score',9:'redact'} as Record<number,string>)[j.ordinal];if(!route)throw new HTTPException(409,{message:'该步骤不属于后台执行队列'});lane=j.ordinal===1?'internal':j.ordinal===2?'api':j.ordinal===4?'agent':j.config?.provider==='codex'||j.ordinal===6&&j.config?.provider!=='api'?'agent':'api';}
+   else{route=({1:'intake',2:'extract',4:'authoring',5:'answer',6:'score',8:'publish',9:'redact'} as Record<number,string>)[j.ordinal];if(!route)throw new HTTPException(409,{message:'该步骤不属于后台执行队列'});lane=j.ordinal===1||j.ordinal===8?'internal':j.ordinal===2?'api':j.ordinal===4?'agent':j.config?.provider==='codex'||j.ordinal===6&&j.config?.provider!=='api'?'agent':'api';}
    await registerLocalJob(db,input.id,input.kind,lane,route);accepted.push(input.id);
   }await db.query('COMMIT');return c.json({executor_id:q.executorId,ids:accepted});
   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}

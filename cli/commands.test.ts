@@ -429,3 +429,16 @@ test('材料库期次更新不要求旧材料目录，也不重绑未修改的�
  await runCommand(['project','update','--project',project,'--description','更新'],legacy.client);
  expect(JSON.parse(String(legacy.calls[1]!.init?.body)).material_root).toBe('/tmp/legacy');
 });
+
+test('批量等待公平覆盖整组，不被最前四个长任务阻塞，终态不再查询',async()=>{
+ const ids=Array.from({length:8},(_,i)=>`00000000-0000-4000-8000-${String(i+100).padStart(12,'0')}`);
+ const reads=new Map<string,number>();const seen:string[]=[];
+ const client=new ApiClient(undefined,async input=>{
+  const url=new URL(input),id=url.pathname.split('/').at(-1)!;seen.push(id);reads.set(id,(reads.get(id)??0)+1);
+  const index=ids.indexOf(id),status=index<4&&reads.get(id)===1?'running':'succeeded';
+  return Response.json({id,status,completed:status==='succeeded'});
+ });
+ const result=await runCommand(['attempt','wait','--ids',ids.join(','),'--timeout','2s'],client);
+ expect(result.outcome).toBe('complete');expect(new Set(seen.slice(0,8)).size).toBe(8);
+ for(const id of ids.slice(4))expect(reads.get(id)).toBe(1);
+});

@@ -35,9 +35,10 @@ import {enqueueAnswer} from './answer-models/jobs';
 import {listAnswerModels,registerAnswerModel,setAnswerModelEnabled,readProjectModelSet,saveProjectModelSet} from './answer-models/model-set';
 import {mergeAnswerGenerationPolicyIntoStepConfig,parseAnswerGenerationPolicyMinutes,readAnswerGenerationPolicyFromStepConfig,serializeAnswerGenerationPolicyMinutes} from './answer-models/generation-policy';
 import {runAcceptance} from './decisions/jobs';
-import {publishWorkflow,readPublicationHistory,readSiriserArchive,withdrawPublication} from './publishing/jobs';
+import {readPublicationHistory,readSiriserArchive,withdrawPublication} from './publishing/jobs';
 import {buildProjectExport,verifyProjectAuthoringRules,workbookSha256,withProjectExportLock} from './reporting/export';
-import {readArchivedWorkflowWorkbook,writeArchivedWorkflowWorkbook} from './reporting/archive-workbook';
+import {enqueuePublication} from './publishing/tasks';
+import {readArchivedWorkflowWorkbook} from './reporting/archive-workbook';
 import {exportCurrentMaterialDocx,exportRedactedDocx,readCurrentMaterialDocx} from './materials/redacted-docx-export';
 import { enqueueExtraction } from './materials/jobs';
 import {createQuestionFromMaterialPackage,listMaterialPackageVersions} from './material-package-questions';
@@ -959,13 +960,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   5:()=>enqueueAnswer(pool,workflowId,storageRoot),
   6:()=>enqueueScore(pool,workflowId),
   7:()=>runAcceptance(pool,workflowId),
-  8:async()=>{
-   const archived=await publishWorkflow(pool,workflowId,storageRoot,deliveryIdentity);
-   const docx=await exportCurrentMaterialDocx(pool,workflowId,storageRoot,assetExportRoot);
-   const workbook=await writeArchivedWorkflowWorkbook(pool,workflowId,assetExportRoot);
-   await pool.query("UPDATE ai_distill.steps SET result=COALESCE(result,'{}'::jsonb)||jsonb_build_object('archive_workbook',$2::jsonb) WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded'",[workflowId,JSON.stringify({archive_path:workbook.archive_path,sha256:workbook.sha256,filename:workbook.filename})]);
-   return{...archived,docx_archive_path:docx.archive_path,docx_artifact_count:docx.artifacts.length,archive_workbook_path:workbook.archive_path};
-  },
+  8:()=>enqueuePublication(pool,workflowId,storageRoot,deliveryIdentity,assetExportRoot),
   9:()=>enqueueRedaction(pool,workflowId),
  });
  app.get('/api/workflows/:id/archive-xlsx',async c=>{

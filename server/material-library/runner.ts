@@ -3,7 +3,7 @@
  * 关键入口：`runNextLibraryJob()` 领取匹配任务；默认Agent按语义计划整包脱敏，显式旧模板继续字段映射。
  * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
-import {deferLocalPublication} from '../execution-queue/runtime';
+import {deferLocalPublication,readLibraryFailure,saveLibraryFailure} from '../execution-queue/runtime';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {Pool} from 'pg';
@@ -156,7 +156,8 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   if(!/^[a-z][a-z0-9_]{0,79}$/.test(code))code='library_job_failed';
   const cancelled=code==='user_cancelled'||code==='worker_shutdown';
   const message=code==='agent_redaction_timeout'?'Agent脱敏达到执行预算（最多10分钟），已停止并保留私有进度':cancelled?'材料任务已取消或 worker 已停止':code==='deadline_exceeded'?'材料任务达到本次执行期限':code==='heartbeat_unavailable'?'材料任务心跳不可用，已停止发布':'材料任务执行失败，请检查处理记录和服务配置';
-  const saved=await failLibraryJob(pool,job.id,job.lease_token,code,message,cancelled?'cancelled':'failed');
+  const failure=saveLibraryFailure({lease_token:job.lease_token,code,message,status:cancelled?'cancelled':'failed'});
+  const saved=await failLibraryJob(pool,job.id,failure.lease_token,failure.code,failure.message,failure.status);
   if(!saved){logEvent('library_job.terminal_not_written',{level:'error',reason_code:code,state:'unknown'});return;}
   logEvent(cancelled?'library_job.cancelled':'library_job.failed',{level:cancelled?'info':'error',state:cancelled?'cancelled':'failed',error_kind:classified.error_kind,reason_code:code,retryable:classified.retryable});
   if(cancelled)console.info('材料库任务已取消或 worker 已停止');else console.error('材料库任务失败；未输出原文、提示词或凭证');
@@ -166,6 +167,13 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
 /** runWorkerPool 的并发循环先取得槽位，再调用本函数领取任务。 */
 export async function runNextLibraryJob(pool:Pool,root:string,executor:LibraryExecutorKind,target:LibraryExecutionTarget,signal:AbortSignal,onlyJobId?:string){
  if(signal.aborted)return false;
+ const failure=readLibraryFailure();
+ if(failure){
+  // 只按原租约结算已知终态；不重新领取、不延长预算、不再读取原件或调用处理器。
+  if(!onlyJobId)throw new Error('材料失败恢复缺少明确任务ID');
+  await failLibraryJob(pool,onlyJobId,failure.lease_token,failure.code,failure.message,failure.status);
+  return true;
+ }
  const job=await claimLibraryJob(pool,executor,target,onlyJobId);
  if(!job)return false;
  await withLogContext({component:'material_library',library_package_id:job.package_id,library_revision_id:job.revision_id,library_job_id:job.id,operation:`library_${job.kind}`},()=>runClaimedJob(pool,root,job,signal));

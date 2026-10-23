@@ -66,7 +66,7 @@ flowchart LR
 | model_answer | 5 | `server/answer-models/jobs.ts` |
 | independent_score | 6 | `server/scoring/jobs.ts`、`executor.ts`、`validate.ts` |
 | accept_or_revise | 7 | `server/decisions/jobs.ts`、`acceptance.ts` |
-| publish_export | 8 | `server/publishing/jobs.ts`；Excel另走`server/reporting/export.ts` |
+| publish_export | 8 | `server/publishing/tasks.ts`持久派发/消费，`jobs.ts`校验提交；Excel另走`server/reporting/export.ts` |
 
 步骤key与ordinal以`shared/step-registry.ts`为准。隐藏的旧规则绑定/独立审查不作为当前操作入口。
 

@@ -522,39 +522,36 @@ async function waitAttempts(api: ApiClient, ids: string[], timeout: number, sign
   const readSignal=budget?(signal?AbortSignal.any([signal,budget]):budget):signal;
   const snapshots=new Map<string,any>();const errors=new Map<string,any>();
   // 限制客户端并发，避免大批量长轮询占满本机 API；每个任务共享同一外层截止时间。
-  const pending=[...ids];
-  const worker=async()=>{
-    try {
-      while(pending.length) {
-        if(budget?.aborted)break;
-        const attempt=pending.shift()!;
-        do {
-          if(signal?.aborted)throw new CliError('等待已中断，后台任务继续执行',{kind:'interrupted'});
-          const waitMs=Math.min(30000,Math.max(0,Math.floor(deadline-performance.now())));
-          try {
-            const data=object(await api.json(`/api/attempts/${attempt}?wait_ms=${waitMs}${full?'':'&view=status'}`,'GET',undefined,readSignal),'任务');
-            if(data.id!==attempt||!['waiting','running','succeeded','failed','skipped'].includes(data.status))throw new CliError('任务响应身份或状态无效',{kind:'invalid_response'});
-            // Project even old servers' full responses so wait output cannot grow with answer text.
-            const {id,workflow_id,ordinal,status,error,started_at,finished_at,completed}=data;
-            snapshots.set(attempt,full?data:{id,workflow_id,ordinal,status,error,started_at,finished_at,completed});
-            if(['succeeded','failed','skipped'].includes(data.status)) break;
-          } catch(error) {
-            if(signal?.aborted)throw error;
-            if(budget?.aborted)break;
-            errors.set(attempt,error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'});break;
-          }
-          // API 正常会等待；旧服务立即返回时也避免忙轮询。
-          if(performance.now()<deadline)await new Promise<void>(resolve=>{
-            const finish=()=>{clearTimeout(timer);signal?.removeEventListener('abort',finish);resolve();};
-            const timer=setTimeout(finish,Math.min(250,Math.max(0,deadline-performance.now())));
-            signal?.addEventListener('abort',finish,{once:true});
-          });
-        } while(performance.now()<deadline);
+  let pending=[...ids];
+  // 每轮每个任务最多读一次；长任务不能独占查询worker直到总截止时间。
+  do {
+    const round=pending;const broad=round.length>4;pending=[];
+    const worker=async()=>{
+      while(round.length&&!budget?.aborted){
+        if(signal?.aborted)throw new CliError('等待已中断，后台任务继续执行',{kind:'interrupted'});
+        const attempt=round.shift()!;
+        // 多于4项时先快速覆盖整组，避免首批长轮询饿死后续任务。
+        const waitMs=broad?0:Math.min(1000,Math.max(0,Math.floor(deadline-performance.now())));
+        try{
+          const data=object(await api.json(`/api/attempts/${attempt}?wait_ms=${waitMs}${full?'':'&view=status'}`,'GET',undefined,readSignal),'任务');
+          if(data.id!==attempt||!['waiting','running','succeeded','failed','skipped'].includes(data.status))throw new CliError('任务响应身份或状态无效',{kind:'invalid_response'});
+          const {id,workflow_id,ordinal,status,error,started_at,finished_at,completed}=data;
+          snapshots.set(attempt,full?data:{id,workflow_id,ordinal,status,error,started_at,finished_at,completed});
+          if(['waiting','running'].includes(status))pending.push(attempt);
+        }catch(error){
+          if(signal?.aborted)throw error;
+          if(!budget?.aborted)errors.set(attempt,error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'});
+        }
       }
-    } catch(error) { throw error; }
-  };
-  try {await Promise.all(Array.from({length:Math.min(4,ids.length)},worker));}
-  catch(error) {throw error;}
+    };
+    await Promise.all(Array.from({length:Math.min(4,round.length)},worker));
+    if(!pending.length||performance.now()>=deadline||budget?.aborted)break;
+    await new Promise<void>(resolve=>{
+      const finish=()=>{clearTimeout(timer);signal?.removeEventListener('abort',finish);resolve();};
+      const timer=setTimeout(finish,Math.min(250,Math.max(0,deadline-performance.now())));
+      signal?.addEventListener('abort',finish,{once:true});if(signal?.aborted)finish();
+    });
+  }while(performance.now()<deadline);
   const attempts=ids.map(attempt=>({id:attempt,...(snapshots.get(attempt)??{}),...(errors.has(attempt)?{read_error:errors.get(attempt)}:{})}));
   const stillRunning=attempts.some(a=>!a.status||['waiting','running'].includes(a.status));
   return {outcome:errors.size||attempts.some(a=>a.status==='failed')?'partial':stillRunning?'waiting':'complete',attempts,

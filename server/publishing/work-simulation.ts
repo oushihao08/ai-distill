@@ -176,7 +176,7 @@ async function generateWorkSimulation(input:WorkSimulationInput,config:{model:st
 }
 
 /** 缓存键绑定归档来源摘要，重复归档复用同一生成结果，避免再次检索或改写。 */
-export async function getOrGenerateWorkSimulation(pool:Pick<Pool,'query'>,input:WorkSimulationInput,storageRoot:string,sourceDigest:string):Promise<WorkSimulation>{
+export async function getOrGenerateWorkSimulation(pool:Pick<Pool,'query'>,input:WorkSimulationInput,storageRoot:string,sourceDigest:string,expectedConfig?:{model:string;reasoning_effort:string}):Promise<WorkSimulation>{
  if(input.question.content_contract==='work_legal_v1'){
   const q=input.question as unknown as WorkContent;
   if(q.content_status?.status!=='complete'||!q.reference_outputs?.length)throw new Error('Work内容尚未完成，不能转换成果');
@@ -188,6 +188,7 @@ export async function getOrGenerateWorkSimulation(pool:Pick<Pool,'query'>,input:
  }
  if(!/^[a-f0-9]{64}$/i.test(sourceDigest))throw new Error('模拟成果来源摘要无效');
  const config=await readProjectAgentDefaults(pool,input.project_id);
+ if(expectedConfig&&(config.model!==expectedConfig.model||config.reasoning_effort!==expectedConfig.reasoning_effort))throw new Error('交付排队后Agent配置已变化，请核对后重新派发');
  const cacheKey=createHash('sha256').update(`work-simulation-harbor-files-v2:${sourceDigest}:${config.model}:${config.reasoning_effort}`).digest('hex');
  const directory=join(resolve(storageRoot),'project-delivery','work-simulation',input.workflow_id);
  await mkdir(directory,{recursive:true,mode:0o700});

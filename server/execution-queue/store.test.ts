@@ -44,3 +44,17 @@ test('corrupt failure is quarantined; old generation unknown calls do not poison
  a.rearm(id,1);expect(a.hasUnknownCall(id)).toBe(false);expect(a.hasResult(id)).toBe(false);
  await a.call(id,'1:new',async()=>({ok:true}));expect(a.hasResult(id)).toBe(true);
 }));
+
+test('library failure persists across reopening, recovers known failure, and rejects corrupt or old generations',()=>fixture(async(a,_b,root)=>{
+ const id=randomUUID();a.intent(id,'library','api','library:extract');a.confirm(id);const job=a.claim('api')!;
+ await expect(a.call(id,'0:extract',async()=>{throw new Error('provider failure');})).rejects.toThrow();
+ const failure={status:'failed' as const,code:'provider',message:'safe error',lease_token:randomUUID()};a.saveLibraryFailure(job,failure);
+ const reopened=new LocalQueue(join(root,'A'),'device-a');
+ try{
+  expect(reopened.libraryFailure(job)).toEqual(failure);
+  a.db.query('UPDATE jobs SET pid=? WHERE id=?').run(2147483647,id);a.recover();expect(a.get(id)?.state).toBe('result_pending_commit');
+  a.rearm(id,1);expect(a.libraryFailure(a.get(id)!)).toBeNull();
+  a.db.query("UPDATE calls SET sha256='corrupted' WHERE job_id=? AND state='terminal_failure'").run(id);
+  expect(()=>a.libraryFailure(job)).toThrow('摘要不一致');
+ }finally{reopened.close();}
+}));

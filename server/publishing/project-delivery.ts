@@ -3,10 +3,11 @@
  * 关键入口：`resolveProjectDelivery()` 固定脚本版本；`runProjectDelivery()` 接收当前题目快照并等待脚本完成。
  * 使用场景：`publishWorkflow()` 在写入 ordinal 8 成功状态前调用；未配置脚本时执行内置空函数。
  */
+import {logEvent} from '../logging';
 import type {RedactedDocumentStructure} from '../materials/redacted-docx';
 import {spawn} from 'node:child_process';
-import {createHash} from 'node:crypto';
-import {lstat,readFile,readdir,realpath} from 'node:fs/promises';
+import {createHash,randomUUID} from 'node:crypto';
+import {lstat,readFile,readdir,realpath,mkdir,writeFile,chmod} from 'node:fs/promises';
 import {basename,dirname,isAbsolute,join,relative,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {HTTPException} from 'hono/http-exception';
@@ -75,9 +76,25 @@ export async function runProjectDelivery(delivery:ProjectDelivery,input:Delivery
  if(sha256(JSON.stringify(currentFiles))!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本或其规则依赖已变化，请重新归档'});
  await new Promise<void>((resolveRun,rejectRun)=>{
   const outputParent=outputDir;
-  const child=spawn(process.execPath,[delivery.path!],{cwd:delivery.projectRoot,env:{PATH:process.env.PATH??'',HOME:process.env.HOME??'/tmp',TMPDIR:process.env.TMPDIR??'/tmp',AI_DISTILL_DELIVERY_PARENT_DIR:outputParent},stdio:['pipe','ignore','ignore']});
-  let settled=false;
-  const finish=(error?:Error)=>{if(settled)return;settled=true;clearTimeout(timer);if(error)rejectRun(error);else resolveRun();};
+  const child=spawn(process.execPath,[delivery.path!],{cwd:delivery.projectRoot,env:{PATH:process.env.PATH??'',HOME:process.env.HOME??'/tmp',TMPDIR:process.env.TMPDIR??'/tmp',AI_DISTILL_DELIVERY_PARENT_DIR:outputParent},stdio:['pipe','pipe','pipe']});
+  const limit=64*1024,stdout:Buffer[]=[],stderr:Buffer[]=[];
+  let outBytes=0,errBytes=0,truncated=false,settled=false;
+  const collect=(chunks:Buffer[],chunk:Buffer,current:number)=>{const remaining=Math.max(0,limit-current);if(chunk.length>remaining)truncated=true;if(remaining)chunks.push(chunk.subarray(0,remaining));return current+Math.min(remaining,chunk.length);};
+  child.stdout.on('data',(chunk:Buffer)=>{outBytes=collect(stdout,chunk,outBytes);});
+  child.stderr.on('data',(chunk:Buffer)=>{errBytes=collect(stderr,chunk,errBytes);});
+  const finish=(error?:Error)=>{
+   if(settled)return;settled=true;clearTimeout(timer);
+   if(!error){resolveRun();return;}
+   const diagnosticId=randomUUID();
+   // 有界原始输出只写入成果目录内私有文件；公开日志仅关联ID，不复制内容。
+   void (async()=>{
+    const folder=join(await realpath(outputDir),'.delivery-diagnostics');await mkdir(folder,{recursive:true,mode:0o700});
+    const info=await lstat(folder);if(info.isSymbolicLink()||!info.isDirectory()||await realpath(folder)!==folder)throw new Error('unsafe diagnostic path');
+    await chmod(folder,0o700);
+    await writeFile(join(folder,`${diagnosticId}.json`),JSON.stringify({diagnostic_id:diagnosticId,exit_code:child.exitCode,reason:error.message,truncated,stdout:Buffer.concat(stdout).toString('utf8'),stderr:Buffer.concat(stderr).toString('utf8')}),{mode:0o600,flag:'wx'});
+    logEvent('publication.script_failed',{level:'error',diagnostic_id:diagnosticId,...(child.exitCode!==null?{exit_code:child.exitCode}:{})});
+   })().catch(()=>{logEvent('publication.diagnostic_write_failed',{level:'error',diagnostic_id:diagnosticId});}).finally(()=>rejectRun(Object.assign(error,{diagnostic_id:diagnosticId})));
+  };
   const timer=setTimeout(()=>{child.kill('SIGKILL');finish(new HTTPException(409,{message:'项目交付脚本超时，归档未完成'}));},60_000);
   child.once('error',()=>finish(new HTTPException(409,{message:'项目交付脚本无法启动，归档未完成'})));
   child.once('close',code=>finish(code===0?undefined:new HTTPException(409,{message:'项目交付脚本执行失败，归档未完成'})));

@@ -47,6 +47,8 @@ export class RecordedStepFailure extends Error{
 export function readStepFailure(){const c=current.getStore();return c?c.queue.stepFailure(c.job):null;}
 export function resumeStepFailure(){const failure=readStepFailure();if(failure)throw new RecordedStepFailure(failure);}
 export function saveStepFailure(failure:import('./store').StepFailure){const c=current.getStore();if(c?.job.kind==='step')c.queue.saveStepFailure(c.job,failure);return failure;}
+export function readLibraryFailure(){const c=current.getStore();return c?.job.kind==='library'?c.queue.libraryFailure(c.job):null;}
+export function saveLibraryFailure(failure:import('./store').LibraryFailure){const c=current.getStore();if(c?.job.kind==='library')c.queue.saveLibraryFailure(c.job,failure);return failure;}
 export function isTransientCommitFailure(error:unknown){
  const primary=error instanceof AggregateError?error.errors[0]:error,code=(primary as {code?:string})?.code,message=primary instanceof Error?primary.message:'';
  return Boolean(code&&(/^(08|57P)/.test(code)||['ECONNRESET','ETIMEDOUT','EPIPE','ECONNREFUSED','40001','40P01','55P03'].includes(code)))||/^(?:Connection terminated(?: unexpectedly| due to connection timeout)?|Query read timeout)$/.test(message);

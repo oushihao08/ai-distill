@@ -38,3 +38,5 @@ Excel 导出逐份调用当前 DOCX 下载所用的安全读取与 SHA-256 校�
 `readArchivedWorkflowWorkbook()`只按步骤8已保存路径、普通文件、大小及SHA读取，不重新运行当前达标算法；五件套下载的当前依据校验另见publishing模块。单题Excel是内部通用报表，包含思路/标答，不能当成模型作答或盲评输入。
 
 `export.test.ts`以注入查询/临时附件检查筛选、锁、来源和文件完整性；`xlsx.test.ts`检查OOXML结构/超长文本/链接与渲染字段。源码/ZIP结构不证明Excel应用视觉效果或平台交付成功。
+
+单题归档工作簿由publishing worker在最终归档提交前生成；内部preparingPublication只接受当前步骤running，不向普通下载开放未完成归档。下载仍只接受succeeded和已保存的文件摘要。

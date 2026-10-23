@@ -167,3 +167,5 @@ Agent返回计划后，编译器调用`shared/scan-noise.ts`的统一正则规�
 `extraction-recovery.test.ts`使用临时存储、假提取器和SQL替身覆盖多文件恢复、缓存降级、权限/来源不匹配和停止分类；不证明真实PostgreSQL事务或MinerU质量。本轮变更不自动启动服务或恢复业务批次。
 
 本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。
+
+材料失败结算的local恢复：处理器判明失败后先持久化安全终态与原租约，再写PG。暂时写入失败保留result_pending_commit；恢复仅调用原失败结算，不再读取原件或调用处理器。仍核对原租约及取消优先级；未知失败不按日志猜测重放，详见[执行队列](../execution-queue/README.md)。

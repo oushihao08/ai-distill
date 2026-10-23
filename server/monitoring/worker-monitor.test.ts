@@ -131,3 +131,9 @@ test('corrupt monitor snapshots log one failure and a recovery event',async()=>d
   expect(records.filter(record=>record.event==='monitor.snapshot_read_failed')).toHaveLength(1);expect(JSON.stringify(records)).not.toContain('private malformed snapshot');
  }finally{await monitor.stop();await logger.close();}
 }));
+
+test('active workflow monitor includes publication tasks so idle checks cannot miss delivery',async()=>{
+ const {readActiveWorkflowTasks}=await import('./worker-monitor');let sql='';
+ const pool={query:async(text:string)=>{sql=text;return{rows:[{attempt_id:'publication',project_id:'p',workflow_id:'w',project_name:'项目',question_title:'题目',step_name:'归档',state:'running',channel:'unknown',started_at:null}]};}} as unknown as Pool;
+ expect((await readActiveWorkflowTasks(pool))[0]?.attempt_id).toBe('publication');expect(sql).toContain('a.ordinal IN (4,5,6,8,9)');
+});

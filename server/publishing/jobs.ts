@@ -4,6 +4,7 @@
  * 使用场景：由 HTTP 工作流入口调用；同摘要重用归档记录，但仍执行项目交付脚本。
  */
 import type {Pool} from 'pg';
+import {cachedExternalCall} from '../execution-queue/runtime';
 import {canonicalJson} from '../../shared/workflow-config';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
@@ -103,7 +104,14 @@ async function readVerifiedTextArtifact(root:string,artifact:Artifact){
  * 归档前重新验证当前版本已通过出题、作答、评分和达标，并逐一核对产物指纹及附件绑定。
  * 相同达标摘要和脚本摘要复用已归档标记；每次点击仍执行项目交付入口。
  */
-interface PublicationDependencies {
+export interface PublicationBinding {project_id:string;title:string;parent_name:string|null;phase_name:string|null;source_key:string|null;acceptance_attempt_id:string;source_digest:string;delivery_digest:string}
+export interface PublicationDependencies {
+ expectedLegacyAgentConfig?:{model:string;reasoning_effort:string};
+ exportsRoot?:string;
+ attemptId?:string;
+ expected?:PublicationBinding;
+ signal?:AbortSignal;
+ prepareArtifacts?:(binding:PublicationBinding)=>Promise<Record<string,unknown>>;
  deliver?:typeof runProjectDelivery;
  resolveDelivery?:typeof resolveProjectDelivery;
  prepareWork?:typeof getOrGenerateWorkSimulation;
@@ -117,6 +125,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
  try{
   await db.query('BEGIN');inTransaction=true;
   const workflow=(await db.query("SELECT w.project_id,w.title,w.source_key,p.name AS project_name,p.parent_name,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w",[workflowId])).rows[0];
+  dependencies.signal?.throwIfAborted();
   if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
   if(deliveryIdentity&&(!/^LAW-\d{3,}$/.test(deliveryIdentity.task_id)||!/^[a-z0-9][a-z0-9-]{1,31}$/.test(deliveryIdentity.org)))throw new HTTPException(400,{message:'可选Harbor身份格式无效；生成Siriser五件套无需填写此项'});
   restoreLogContext=enterLogContext({component:'publishing',operation:'publish',workflow_id:workflowId,project_id:workflow.project_id,ordinal:8});
@@ -157,7 +166,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   }
   for(const id of q.attachment_ids){const matching=attachments.filter(file=>file.id===id);if(matching.length!==1||!frozen.materials.some((item:any)=>item.id===id&&item.sha256===matching[0]!.sha256)||(frozen.material_origin?.kind!=='library_v1'&&matching[0]!.attempt_id!==frozen.redaction_attempt_id))throw new HTTPException(409,{message:'当前附件与出题快照不一致'});await verifyArtifact(root,matching[0]!);}
   const delivery=await resolveDelivery(workflow.parent_name);
-  const deliveryDir=delivery.mode==='noop'?root:await questionResultDirectory(fileURLToPath(new URL('../../assets/out/',import.meta.url)),workflow.parent_name||workflow.project_name,workflow.phase_name??'',workflow.phase_name?(workflow.source_key||workflow.title):workflow.title);
+  const deliveryDir=delivery.mode==='noop'?root:await questionResultDirectory(dependencies.exportsRoot??fileURLToPath(new URL('../../assets/out/',import.meta.url)),workflow.parent_name||workflow.project_name,workflow.phase_name??'',workflow.phase_name?(workflow.source_key||workflow.title):workflow.title);
   const structuredRedaction=workflow.parent_name==='Work法律全场景'?await readStructuredMaterials(db,workflowId):undefined;
   const deliveryAttachments=await Promise.all(q.attachment_ids.map(async(id:string,index:number)=>{
    const artifact=attachments.find(file=>file.id===id);
@@ -175,13 +184,15 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    }
    return{id:artifact.id,sha256:artifact.sha256,name:`材料-${String(index+1).padStart(3,'0')}.md`,text:await readVerifiedTextArtifact(root,artifact),material_mode:materialMode,...(documents?{documents}:{}),...(prepared_documents?{prepared_documents}:{}),...(original_files?{original_files}:{})};
   }));
+  const binding:PublicationBinding={project_id:workflow.project_id,title:workflow.title,parent_name:workflow.parent_name??null,phase_name:workflow.phase_name??null,source_key:workflow.source_key??null,acceptance_attempt_id:accepted.id,source_digest:digest,delivery_digest:delivery.digest};
+  if(dependencies.expected&&canonicalJson(binding)!==canonicalJson(dependencies.expected))throw new HTTPException(409,{message:'交付排队后来源、项目身份或脚本已变化，请核对后重新派发'});
   const deliveryIdentityDigest=hash(JSON.stringify(deliveryIdentity??null));
   const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:deliveryAttachments};
   await db.query('COMMIT');inTransaction=false;
   db.release();connectionHeld=false;
   failurePhase='delivery';
   if(workflow.parent_name==='Work法律全场景'){
-   const generate=()=>prepareWork(pool,{project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,rubric:q.rubric},attachments:deliveryAttachments.map(({name,text,material_mode})=>({name,text,material_mode}))},root,hash(`${digest}:${delivery.digest}`));
+   const generate=()=>cachedExternalCall(`publication_simulation:${digest}:${delivery.digest}`,()=>prepareWork(pool,{project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,rubric:q.rubric},attachments:deliveryAttachments.map(({name,text,material_mode})=>({name,text,material_mode}))},root,hash(`${digest}:${delivery.digest}`),dependencies.expectedLegacyAgentConfig));
    if(q.content_contract==='work_legal_v1')deliveryInput.simulation=await generate();
    else{
     const gate=getAgentConcurrencyGate(root,readConcurrencySettings(process.env,root).agent);
@@ -190,7 +201,10 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
     deliveryInput.simulation=permit.value;
    }
   }
-  await (dependencies.deliver??runProjectDelivery)(delivery,deliveryInput,deliveryDir);
+  dependencies.signal?.throwIfAborted();
+  await cachedExternalCall(`publication_delivery:${digest}:${delivery.digest}:${deliveryIdentityDigest}`,()=> (dependencies.deliver??runProjectDelivery)(delivery,deliveryInput,deliveryDir));
+  const supplemental=dependencies.prepareArtifacts?await dependencies.prepareArtifacts(binding):{};
+  dependencies.signal?.throwIfAborted();
   if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
   failurePhase='commit';
    db=await pool.connect();connectionHeld=true;
@@ -203,7 +217,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    if(!currentWorkflow||currentWorkflow.title!==workflow.title||currentWorkflow.project_id!==workflow.project_id||currentWorkflow.parent_name!==workflow.parent_name||currentWorkflow.phase_name!==workflow.phase_name||currentWorkflow.source_key!==workflow.source_key||currentAccepted?.id!==accepted.id||currentAccepted.status!=='succeeded'||currentAccepted.result?.decision!=='accepted'||answerModelSetDigest(currentModelSet)!==answerModelSetDigest(modelSet)||acceptanceSourceDigest(currentSnapshot)!==digest||currentAccepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(currentSnapshot)).decision!=='accepted')throw new HTTPException(409,{message:'生成期间题目、模型或达标依据发生变化，请重新归档'});
    await verifyFrozenProjectPrompt(currentSnapshot.question?.input?.project_prompt);
   const previous=(await db.query("SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded' AND input->>'source_digest'=$2 AND input->>'acceptance_attempt_id'=$3 AND input->>'delivery_digest'=$4 AND input->>'delivery_identity_digest'=$5 ORDER BY attempt DESC LIMIT 1",[workflowId,digest,accepted.id,delivery.digest,deliveryIdentityDigest])).rows[0];
-  if(previous){
+  if(previous&&!dependencies.attemptId){
    if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
    await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
    const latestEvent=(await db.query('SELECT event_type FROM ai_distill.workflow_publication_events WHERE workflow_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1',[workflowId])).rows[0];
@@ -217,14 +231,20 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   }
   await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
   if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
-  attemptId=crypto.randomUUID();
+  attemptId=dependencies.attemptId??crypto.randomUUID();
   const provenance=await readArchiveProvenance(db,workflow.project_id,workflowId,frozen,workflow.project_name,workflow.title);
-  const result={source_digest:digest,acceptance_attempt_id:accepted.id,question_version:q.question_version,rubric_version:q.rubric_version,delivery:{mode:delivery.mode,digest:delivery.digest,status:'succeeded'},material_provenance:provenance,archived_at:new Date().toISOString()};
+  const result={source_digest:digest,acceptance_attempt_id:accepted.id,question_version:q.question_version,rubric_version:q.rubric_version,delivery:{mode:delivery.mode,digest:delivery.digest,status:'succeeded'},material_provenance:provenance,...supplemental,archived_at:new Date().toISOString()};
+  if(dependencies.attemptId){
+   const saved=await db.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE id=$1 AND workflow_id=$3 AND ordinal=8 AND status='running' AND id=(SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$3 AND ordinal=8 ORDER BY attempt DESC LIMIT 1) RETURNING id",[attemptId,JSON.stringify(result),workflowId]);
+   if(saved.rowCount!==1)throw new HTTPException(409,{message:'交付任务已取消或被新版本替代，结果未发布'});
+  }else{
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,finished_at) SELECT $2,$1::uuid,8,COALESCE(max(attempt),0)+1,'succeeded',$3,$4,now() FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=8",[workflowId,attemptId,JSON.stringify({source_digest:digest,acceptance_attempt_id:accepted.id,delivery_digest:delivery.digest,delivery_identity_digest:deliveryIdentityDigest,material_provenance:provenance}),JSON.stringify(result)]);
+  }
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='succeeded',result=$2,error=NULL,started_at=now(),finished_at=now() WHERE workflow_id=$1 AND ordinal=8",[workflowId,JSON.stringify(result)]);
   await insertPublicationEvent(db,workflowId,workflow.project_id,attemptId,'archived',provenance);
   await db.query("UPDATE ai_distill.workflows SET status='succeeded' WHERE id=$1",[workflowId]);
   await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
+  dependencies.signal?.throwIfAborted();
   await db.query('COMMIT');inTransaction=false;withLogContext({attempt_id:attemptId},()=>logEvent('publication.completed',{level:'info',state:'succeeded'}));return {id:attemptId,reused:false,completed:true};
  }catch(error){
   logEvent('publication.failed',{level:'error',state:'failed',failure_phase:failurePhase,...(error instanceof HTTPException?{http_status:error.status}:{}),...classifyLogError(error)});

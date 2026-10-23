@@ -13,7 +13,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | [scoring/](scoring/README.md) | 同版匿名评分输入、Codex/API执行、报告解析及版本校验 |
 | [decisions/](decisions/README.md) | 按项目配置解释评分指标并保存达标依据 |
 | [document-generation/](document-generation/README.md) | 各项目共用DOCX与XLSX字节生成、表格显示布局，不承担项目交付资格 |
-| [publishing/](publishing/README.md) | 复核达标、调用项目交付、记录归档/撤回及下载五件套 |
+| [publishing/](publishing/README.md) | 持久派发第八步、复核达标、调用各项目交付、产物齐全后记录归档/撤回及下载五件套 |
 | [reporting/](reporting/README.md) | 单题/项目 Excel、版本一致性、费用与统计投影 |
 | [agent/](agent/README.md)、[codex/](codex/README.md) | 本地 Agent 任务契约及底层 Codex CLI/配置；作者和盲作答/评分使用不同隔离策略 |
 | [llm-api/](llm-api/README.md) | API供应商配置、凭证引用、消息/JSON传输、完整响应和本机请求槽位 |

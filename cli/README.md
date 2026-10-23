@@ -166,6 +166,8 @@ bun run ai-distill result show --workflow <题目UUID> --json
 
 `material text` 需要题目 ID、材料 ID 和 `--redacted-only`，始终读取当前数据库脱敏产物。`question show`/`result show` 返回现有工作流详情，含当前题目、作答、评分、判定与产物清单；`attempt show` 按精确任务 ID 读取完整尝试，可能含敏感业务正文，仅按需使用。默认不输出原件正文或私有文件。
 
+第八步也异步派发：HTTP返回任务ID，使用attempt wait等待；全部必需产物成功才提交归档成功，不以派发202作为可下载证明。各项目继续使用自身交付脚本和成果契约。
+
 第七步在评分全部结束后自动计算达标状态；未达标题目由用户决定是否按普通步骤重新出题、作答和评分。`publish_export` 是归档步骤，`export create` 是单独的 Excel 操作。下载命令必须给 `--out`，父目录须存在，文件权限600且禁止覆盖已有文件。创建、修改、删除项目及应用设置均为显式写操作，按当前 API 的校验、事务和失效规则执行。
 
 Work 五件套的 CLI 流程：先用 `step dispatch publish_export --project UUID --ids 题目UUID` 派发第八步；按返回的 `attempt_ids` 用 `attempt wait` 等待终态；再用 `result show --workflow 题目UUID` 核对服务端达标与归档状态，最后执行 `siriser download --workflow 题目UUID --out 新路径.zip`。下载 API 会重新核对当前 accepted 版本、归档输入摘要和包内文件哈希；题目或 Rubric 已变化、归档失效或包被篡改时拒绝下载。该命令只下载本机 ZIP，不上传到 Siriser，也不执行“提交出题”。Harbor 六件套由独立转换流程处理，不包含在该命令中。
@@ -198,7 +200,7 @@ Work 五件套的 CLI 流程：先用 `step dispatch publish_export --project UU
 
 `result show.business` 原样展示服务端第七步的执行状态及判定。模型分数、阈值和状态保留在 `data.steps` 与 `business.model_scores`，不由 CLI 重新算分。评分成功仍可能无效或未达标；缺判定时报告未知，不能推定通过。
 
-等待上限1小时，GET单次等待不超过30秒；HTTP传输等待35秒是单次请求故障边界，不改变模型执行超时。读取故障保留其他任务结果，不取消任务；下次直接以同一 ID 读取。POST 永不自动重试，超时/断开/响应解析失败标记 `outcome_unknown`，先查状态再处理。后组派发失败保留此前已取得的任务 ID 和未发送范围。
+等待按轮次公平查询全部任务，最多4个并发读取；终态不再轮询，前几个长任务不占住后续查询。等待上限1小时，GET单次等待不超过30秒；HTTP传输等待35秒是单次请求故障边界，不改变模型执行超时。读取故障保留其他任务结果，不取消任务；下次直接以同一 ID 读取。POST 永不自动重试，超时/断开/响应解析失败标记 `outcome_unknown`，先查状态再处理。后组派发失败保留此前已取得的任务 ID 和未发送范围。
 
 `attempt wait` 默认请求 `view=status`，仅保留 id、workflow_id、ordinal、status、error、started_at、finished_at、completed 和单项 read_error，不读取题面、答案及评分正文；旧服务忽略视图时 CLI 仍投影这些字段。`attempt show` 或 `attempt wait --full` 可按需读取原有完整结果，HTTP 默认视图仍保留完整 result。服务端长轮询每秒查询一次，剩余预算不足1秒则只等待剩余时间；取消及时唤醒，不取消持久任务。无需正文时不使用 `--full`。
 
@@ -247,7 +249,7 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/remote-materials.test
 
 ### 期次材料处理模式
 
-`project configure`的`steps.author_question.material_processing_mode`支持`aliases`（默认化名）、`mask`（API遮挡）和`original`（不脱敏）；与旧`material_source_mode`同时提交时必须一致。配置仍经现有步骤API保存到数据库。`library job start --project <期次UUID>`把期次上下文交给服务器选择处理流程，不用提示词指示改流程；原文模式无需redact任务。CLI只调用API，不实现脱敏，也不把阶段文件当作已入库。模式、来源冻结与恢复边界见[材料库说明](../server/material-library/README.md#期次三种处理模式)。
+`project settings apply`的`steps.author_question.material_processing_mode`支持`aliases`（默认化名）、`mask`（API遮挡）和`original`（不脱敏）；与旧`material_source_mode`同时提交时必须一致。配置仍经现有步骤API保存到数据库。`library job start --project <期次UUID>`把期次上下文交给服务器选择处理流程，不用提示词指示改流程；原文模式无需redact任务。CLI只调用API，不实现脱敏，也不把阶段文件当作已入库。模式、来源冻结与恢复边界见[材料库说明](../server/material-library/README.md#期次三种处理模式)。
 
 ## OFD与超限PDF上传前准备
 

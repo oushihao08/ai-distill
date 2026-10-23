@@ -143,3 +143,24 @@ test('a late heartbeat response cannot query or stop a job after its completion'
   expect(stateReads).toBe(0);
  }finally{releaseHeartbeat?.({rows:[],rowCount:0});await rm(root,{recursive:true,force:true});}
 });
+
+test('known library failure survives settlement outage and resumes only original lease settlement',async()=>{
+ const {LocalQueue}=await import('../execution-queue/store');
+ const {withLocalExecution}=await import('../execution-queue/runtime');
+ const root=await mkdtemp(join(tmpdir(),'library-failure-settlement-')),q=new LocalQueue(root),first={...job(),deadline_at:new Date(Date.now()-1).toISOString()};
+ q.intent(first.id,'library','api','library:extract');q.confirm(first.id);const local=q.claim('api')!;
+ let writes=0,claims=0;const params:any[][]=[];
+ const pool={query:async(sql:string,values:any[]=[])=>{
+  if(sql.includes('to_regclass'))claims++;
+  if(sql.startsWith('UPDATE ai_distill.library_jobs SET status=CASE')){writes++;params.push(values);if(writes===1)throw Object.assign(new Error('settlement unavailable'),{code:'ECONNRESET'});return{rows:[{id:first.id}],rowCount:1};}
+  throw new Error('must not read inputs or run a provider');
+ }} as any;
+ try{
+  await expect(withLocalExecution(q,local,()=>runClaimedJob(pool,root,first,new AbortController().signal))).rejects.toThrow('settlement unavailable');
+  expect(q.libraryFailure(local)?.code).toBe('deadline_exceeded');
+  await withLocalExecution(q,local,()=>runNextLibraryJob(pool,root,'api','local',new AbortController().signal,first.id));
+  expect(writes).toBe(2);expect(claims).toBe(0);expect(params[1]!.slice(0,5)).toEqual(params[0]!.slice(0,5));
+  expect(JSON.parse(params[1]![5]).reason_code).toBe(JSON.parse(params[0]![5]).reason_code);
+  expect(params[1]![1]).toBe(first.lease_token);expect(params[1]![2]).toBe('failed');
+ }finally{q.close();await rm(root,{recursive:true,force:true});}
+});

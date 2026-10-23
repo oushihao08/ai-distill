@@ -14,11 +14,11 @@ import {buildProjectExport} from './export';
 const digest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 function inside(root:string,path:string){const rel=relative(root,path);return rel!==''&&rel!=='..'&&!rel.startsWith(`..${sep}`)&&!rel.startsWith(sep);}
 
-export async function writeArchivedWorkflowWorkbook(pool:Pool,workflowId:string,assetRoot:string){
+export async function writeArchivedWorkflowWorkbook(pool:Pool,workflowId:string,assetRoot:string,preparingPublication=false){
  const row=(await pool.query(`SELECT w.project_id,w.title,w.source_key,p.name,p.parent_name,p.phase_name
   FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id
-  JOIN ai_distill.steps publication ON publication.workflow_id=w.id AND publication.ordinal=8 AND publication.status='succeeded'
-  WHERE w.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL`,[workflowId])).rows[0];
+  JOIN ai_distill.steps publication ON publication.workflow_id=w.id AND publication.ordinal=8 AND (publication.status='succeeded' OR ($2::boolean AND publication.status='running'))
+  WHERE w.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL`,[workflowId,preparingPublication])).rows[0];
  if(!row)throw new HTTPException(409,{message:'题目尚未归档，不能生成归档 Excel'});
  const exported=await buildProjectExport(pool,String(row.project_id),undefined,assetRoot,workflowId);
  if(exported.records.length!==1||exported.records[0]?.workflow_id!==workflowId)throw new HTTPException(409,{message:'当前达标题目数据不完整，不能生成归档 Excel'});
