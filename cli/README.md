@@ -108,6 +108,7 @@ CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、�
 | `library package/revision/job` | 包 ID、revision ID、任务 kind 与 request-key | 全局包、不可变文件版本及入库/提取/脱敏任务 | `commands.ts` → `server/material-library/` |
 | `project materials` / `project material use` | 期次、link/use ID、来源版本、版本锁 | 加载材料、选版、创建题目及查看/更新永久使用台账 | `commands.ts` → `projects-routes.ts`、`uses.ts` |
 | `question list/show` | list用 `--project`；show用 `--workflow` | 题目清单或单题完整状态/结果 | `commands.ts` |
+| `question delete` | `--project`、`--workflow`、`--confirm-title` | 精确核对期次、题目类型和标题后软删除单题；有活动尝试时拒绝 | `commands.ts` → `DELETE /api/workflows/:id` |
 | `workflow status` | `--project` + `--ids` 或 `--all` | 当前状态、就绪原因及活动尝试摘要 | `commands.ts` |
 | `workflow design update` | `--workflow` + 一个或多个 `--direction`、`--scenario`、`--role` | 更新既有题目的出题设计输入；值变化时会重置步骤4—8并使相关导出失效 | `commands.ts` → `PATCH /api/workflows/:id/authoring-direction` |
 | `rules list/file` | `--project`；file另需 `--path` | 读取项目规则清单/规则文件，不修改规则 | `commands.ts` |
