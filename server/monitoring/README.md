@@ -7,12 +7,12 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `resources.ts` | 本地资源采样与建议：解析 macOS 内存和进程数据，将未知值显式表达并计算派发建议。 |
+| `resources.ts` | 本地资源采样与建议：读取 macOS／Windows 内存和登记进程数据，将未知值显式表达并计算派发建议。 |
 | `worker-monitor.ts` | worker 安全监控：采集任务与资源心跳、写入共享快照并据内存阈值控制新任务派发；查询活动工作流尝试与材料库队列，并只投影允许的进度字段。 |
 
 ## 数据流与依赖
 
-worker-monitor.ts 在 worker 生命周期采样并写共享存储快照；resources.ts 解析 macOS 资源与未知值；API 读取快照并查询运行中尝试的安全摘要和 `library_jobs` 汇总；前端 WorkerMonitor 展示全局材料库的排队/运行计数及有限安全进度。旧数据库尚无材料库迁移时，队列状态显示 unavailable，不影响 legacy worker 派发。
+worker-monitor.ts 在 worker 生命周期采样并写共享存储快照；resources.ts 按平台读取资源与未知值；API 读取快照并查询运行中尝试的安全摘要和 `library_jobs` 汇总；前端 WorkerMonitor 展示全局材料库的排队/运行计数及有限安全进度。旧数据库尚无材料库迁移时，队列状态显示 unavailable，不影响 legacy worker 派发。
 
 ## 维护边界
 
@@ -25,7 +25,8 @@ worker-monitor.ts 在 worker 生命周期采样并写共享存储快照；resour
 ## 判断边界与已知投影限制
 
 - 真正的`beforeDispatch()`只按已知低内存暂停新领取，内存unknown时允许继续；`adviseDispatch()`给出的认证、额度或任务数建议不直接成为派发闸门。不能把advice=unknown误读为任务停止。
-- 系统内存估计只实现macOS的memory_pressure，其余系统为unknown；进程采样只包含当前worker和登记Agent PID，不扫描所有系统进程或读取参数/环境。
+- macOS系统内存继续使用`memory_pressure -Q`，进程RSS使用`ps`。Windows系统可用物理内存使用`node:os`的`totalmem()`／`freemem()`，进程工作集使用系统自带Windows PowerShell的`Get-Process -Id`批量读取；禁用profile和交互、隐藏窗口、3秒超时。两平台均将可用比例向下取整为整数百分比，再据该百分比估算字节数；采样方法分别为`macos_memory_pressure_percentage`和`windows_available_physical_memory`，API同时接受两种快照。
+- 进程采样只包含当前worker和登记Agent PID，不扫描所有系统进程或读取进程参数/环境；已退出、无权限或重复返回的PID保持unknown，不影响其他PID及系统内存。Windows失败时不调用Unix命令兜底；其他系统的系统内存仍为unknown。
 - 共享`.worker-monitor.json`是同存储位置最后写入的worker快照，不是多worker合并清单。30秒以上旧心跳（或未来偏移超过5秒）投影为stale；stale不能证明供应商任务已经结束，也不能据此自动重派。
 - `readActiveWorkflowTasks()`最多返回500条运行尝试；当前channel的SQL按ordinal固定把5标api、4/6标agent，只有9读取provider。因此Codex作答和API评分的channel可能误标，不能拿该字段计算真实Agent/API占用；需核对attempt冻结config与worker队列。
 - 全局库计数是任务历史状态数，非去重材料包数；活动明细最多100条，计数可能大于明细长度。安全progress只含白名单计数，是本地执行器阶段信息，不是供应商token/页生成进度。
@@ -34,3 +35,5 @@ worker-monitor.ts 在 worker 生命周期采样并写共享存储快照；resour
 `resources.test.ts`通过注入命令输出核对解析/PID/建议；`worker-monitor.test.ts`使用临时文件、注入数据库与采样检查共享写入、低内存/未知、统计超时、停止等待和投影。它们不证明真实OS资源、供应商进度或多机监控。
 
 本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。
+
+更改资源采样与快照校验后，API与worker都需要加载新代码；只重启worker而API仍运行旧校验器，会拒绝Windows已知内存快照。按根规则取得运行授权，并在现有任务安全收尾后通过原启动入口重启；不以改写运行中快照代替代码生效。源码支持及本机只读采样不等于现有服务已重启验收。
