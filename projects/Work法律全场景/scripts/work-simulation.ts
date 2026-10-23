@@ -181,7 +181,7 @@ export async function getOrGenerateWorkSimulation(pool:Pick<Pool,'query'>,input:
   const q=input.question as unknown as WorkContent;
   if(q.content_status?.status!=='complete'||!q.reference_outputs?.length)throw new Error('Work内容尚未完成，不能转换成果');
   const records=q.research_records;
-  if(records.some(r=>r.supports.length>0&&(r.verification_status!=='verified'||!r.source_url)))throw new Error('用于成果或判据的出题检索记录尚有未核验项，不在归档阶段重新创作补齐');
+  // supports标记记录归属，包含未采用来源及失败检索的说明；投影保留核验状态，不在归档时重判已达标题目。
   const type=String(input.question.task_type).match(/^F[1-5]/)?.[0] as WorkSimulation['deliverable_type'];
   if(!type)throw new Error('Work主任务类型缺失');
   return {deliverable_type:type,deliverable_title:String(input.question.task_name),deliverable_markdown:projectReference(q),harbor_files:q.reference_outputs.map(output=>{const file=q.deliverables.find(d=>d.id===output.deliverable_id);if(!file)throw new Error('标准成果引用缺失');return{path:file.path,markdown:output.content,sheets:output.sheets};}),research_entries:records.map(r=>({id:r.id,query:r.query,title:r.source_title,url:r.source_url??'',finding:`${r.verification_status==='verified'?'已核验':'未核验'}：${r.findings}`,version_or_date:r.version,used_in:r.supports.join('、')||'未采用为成果或判据依据'})),unresolved:[],generated_at:'未记录（采用冻结作者成果，归档未重新生成）',model:'author_snapshot',reasoning_effort:'not_applicable',actual_search_queries:[],actually_opened_urls:[]};

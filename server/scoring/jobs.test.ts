@@ -303,3 +303,30 @@ test('local scoring failure restores without grader and without resetting curren
   const write=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed',result="));expect(write?.values[2]).toBe('已记录评分失败');
  }finally{queue.close();if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
 });
+
+test('新legacy Codex评分冻结交卷自检，API及旧尝试不补造协议',async()=>{
+ for(const provider of ['codex','api'] as const){
+  const f=fake({provider});await enqueueScore(f.pool,'workflow');
+  const frozen=JSON.parse(f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!.values[2]);
+  if(provider==='codex')expect(frozen.execution_instructions.legacy_text_preflight).toBe('text_v1');
+  else expect(frozen.execution_instructions).not.toHaveProperty('legacy_text_preflight');
+ }
+});
+
+test('legacy worker按冻结标记传递自检，旧任务不变，篡改脚本摘要拒绝调用',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'legacy-preflight-worker-'));
+ try{
+  for(const version of ['old','new','tampered']){
+   const f=fake();
+   if(version!=='old')f.job.input.execution_instructions=scoreExecutionInstructions('codex',undefined,undefined,true);
+   if(version==='tampered')f.job.input.execution_instructions.legacy_text_preflight_tool_sha256='invalid';
+   let called=false,preflight:unknown;
+   await runNextScore(f.pool,root,(async(_context:any,options:any)=>{
+    called=true;preflight=options.legacy_text_preflight;
+    return {raw_text:'无有效结果',report:{},session_id:'fixture',usage:null,duration_ms:1};
+   }) as any,undefined,async()=>{});
+   expect(called).toBe(version!=='tampered');
+   if(called)expect(preflight).toBe(version==='new');
+  }
+ }finally{await rm(root,{recursive:true,force:true});}
+});

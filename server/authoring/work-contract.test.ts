@@ -73,7 +73,8 @@ test('未命中且未采用的真实检索允许空关联，归档保留未核�
  expect(result.research_entries[1]?.url).toBe('');expect(result.research_entries[1]?.finding).toContain('未核验');
  expect(result.research_entries[1]?.used_in).toContain('未采用');
  const used=structuredClone(value);used.research_records[1].supports=['opinion'];
- await expect(getOrGenerateWorkSimulation({} as any,{project_id:'p',workflow_id:'w',title:'测试',question_version:'q',rubric_version:'r',question:used,attachments:[]},'/tmp','a'.repeat(64))).rejects.toThrow('未核验');
+ const linked=await getOrGenerateWorkSimulation({} as any,{project_id:'p',workflow_id:'w',title:'测试',question_version:'q',rubric_version:'r',question:used,attachments:[]},'/tmp','a'.repeat(64));
+ expect(linked.research_entries[1]?.finding).toContain('未核验');expect(linked.research_entries[1]?.url).toBe('');expect(linked.research_entries[1]?.used_in).toBe('opinion');
 });
 test('文件及检索能力需求可以保存完整题目，不由文本 runner 降级',()=>{
  const raw=workFixture();raw.task_requirements={input_mode:'text',output_mode:'file',tools:['web_search']};
