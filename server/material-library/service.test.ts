@@ -104,3 +104,27 @@ test('同原文字节可在TXT和MD之间复用，其他类型冲突不放宽且
   expect(writes.some(sql=>sql.startsWith('UPDATE ai_distill.library_blobs'))).toBe(false);
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('revision upload repairs a stale blob path only after the exact object is installed',async()=>{
+ const {mkdtemp,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
+ const {createLibraryRevision}=await import('./service');
+ const root=await mkdtemp(join(tmpdir(),'library-blob-path-repair-')),writes:string[]=[];
+ const db={query:async(sql:string,values:any[]=[])=>{
+  writes.push(sql);
+  if(sql==='BEGIN'||sql==='COMMIT')return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT current_revision_id'))return{rows:[{current_revision_id:'parent',lock_version:2,deleted_at:null}],rowCount:1};
+  if(sql.startsWith('SELECT id,request_digest'))return{rows:[],rowCount:0};
+  if(sql.startsWith('INSERT INTO ai_distill.library_revisions'))return{rows:[],rowCount:1};
+  if(sql.startsWith('INSERT INTO ai_distill.library_blobs'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT id,size_bytes,content_type,storage_path'))return{rows:[{id:'blob',size_bytes:Buffer.byteLength('%PDF-恢复原文'),content_type:'application/pdf',storage_path:'legacy/blob/location'}],rowCount:1};
+  if(sql.startsWith('UPDATE ai_distill.library_blobs SET storage_path'))return{rows:[{id:'blob'}],rowCount:1};
+  if(sql.startsWith('INSERT INTO ai_distill.library_files'))return{rows:[],rowCount:1};
+  if(sql.startsWith('UPDATE ai_distill.library_packages'))return{rows:[{lock_version:3}],rowCount:1};
+  return{rows:[],rowCount:0};
+ },release(){}};const pool={connect:async()=>db} as any;
+ try{
+  const result=await createLibraryRevision(pool,root,'package',2,crypto.randomUUID(),[{original_name:'恢复.pdf',bytes:Buffer.from('%PDF-恢复原文')}]);
+  expect(result.reused).toBe(false);
+  expect(writes.some(sql=>sql.startsWith('UPDATE ai_distill.library_blobs SET storage_path'))).toBe(true);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
