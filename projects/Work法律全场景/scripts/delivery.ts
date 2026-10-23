@@ -98,7 +98,7 @@ function parseInput(value:unknown):DeliveryInput{
 
 /** 兼容尚未重载的本地API：从题目冻结索引补齐所选来源结构，不访问数据库或原件。 */
 async function hydrateRedactedDocuments(input:DeliveryInput){
- if(input.question.content_contract!=='work_legal_v1'||input.attachments.every(item=>item.documents!==undefined&&item.prepared_documents!==undefined))return;
+ if(input.question.content_contract!=='work_legal_v1'||input.attachments.every(item=>item.documents!==undefined))return;
  const read=async(path:string)=>{
   const response=await fetch(`http://127.0.0.1:3700/api/${path}`,{signal:AbortSignal.timeout(10000)});
   if(!response.ok)throw new Error('无法读取冻结脱敏结构');

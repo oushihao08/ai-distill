@@ -10,7 +10,7 @@
 | `executor.ts` | `buildAnonymousInput()`构造内部绑定上下文；`buildScoreFiles()`投影实际模型白名单；`runIndependentScore()`和`runIndependentApiScore()`执行并保存原文；指令/摘要函数用于冻结与回放核对。 |
 | `validate.ts` | `scoreRubricSnapshot()`/`scoreRubricBindingText()`规范判据绑定；`extractTextScore()`、`extractModelReport()`和旧`validateScore()`具有不同校验范围，见下表。 |
 | `candidate-quotes.ts` | Work新评分候选引文的字面来源核验；提供会话内只读Python工具与返回后同义检查，不决定业务或改分。 |
-| `arithmetic-tool.ts` | `buildScoreArithmeticFiles()`提供同版权重JSON和只读Python复算器，不决定业务判分，不写回模型报告或数据库。 |
+| `arithmetic-tool.ts` | `buildScoreArithmeticFiles()`提供新契约权重与复算器；`buildLegacyScorePreflightFiles()`提供旧文本报告的只读交卷自检器，不决定业务判分，不写回模型报告或数据库。 |
 | `jobs.ts` | `enqueueScore()`逐答案冻结上下文/参数；`runNextScore()`按provider和钩子亲和性消费，提交前复核版本、汇总并接续达标判断。 |
 | `context.test.ts` | 用 SQL 替身和临时文件核对上下文、版本及隔离边界。 |
 | `executor.test.ts` | 核对评分输入构造、匿名化和调用参数；API/Codex执行器由替身承接，不发真实模型请求。 |
@@ -56,6 +56,8 @@ model_report原始分可为负，否决独立记录；raw_score、full_score、e
 worker按Codex/API分别领取，带钩子的API任务由local/all亲和队列执行；API使用独立API资源池，不占Agent槽。失联恢复只整理状态，不自动收费重试；自动达标在评分汇总终态后运行，并先提交释放评分事务连接。自动判断失败记录安全日志，不等于已归档或已上传。
 
 before/after钩子输入仍是相同白名单；notes/data不能覆盖模型成绩。主检查点及明确续跑由`../workflow-hook-*`管理，异步后置与成功提交同事务登记。真实使用须具备对应表，不因文档描述而自动迁移。
+
+新派发的legacy Codex评分冻结`legacy_text_preflight=text_v1`、自检提示及脚本SHA，提供`文本计分条目.json`和`核验文本评分.py`。Agent先将完整最终正文保存为草稿，核验ID唯一性、合法分值和合计，在同一次会话中自行纠正后再提交；工具只读，不决定业务得分、不修改报告、不调用模型。返回后仍由`extractTextScore()`严格校验；工具提供或提示存在不证明实际执行成功。旧无标记尝试保持旧输入和摘要；API及model_report协议不新增此工具，不引入自动重试或绕过无效评分。
 
 维护时保留输入隔离、来源模式、版本与契约区别。静态核对和替身测试不能证明真实模型评分准确率、当前worker已加载、外部提交或整条业务验收。
 
