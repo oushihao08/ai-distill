@@ -109,10 +109,11 @@ CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、�
 | `project materials` / `project material use` | 期次、link/use ID、来源版本、版本锁 | 加载材料、选版、创建题目及查看/更新永久使用台账 | `commands.ts` → `projects-routes.ts`、`uses.ts` |
 | `question list/show` | list用 `--project`；show用 `--workflow` | 题目清单或单题完整状态/结果 | `commands.ts` |
 | `workflow status` | `--project` + `--ids` 或 `--all` | 当前状态、就绪原因及活动尝试摘要 | `commands.ts` |
+| `workflow design update` | `--workflow` + 一个或多个 `--direction`、`--scenario`、`--role` | 更新既有题目的出题设计输入；值变化时会重置步骤4—8并使相关导出失效 | `commands.ts` → `PATCH /api/workflows/:id/authoring-direction` |
 | `rules list/file` | `--project`；file另需 `--path` | 读取项目规则清单/规则文件，不修改规则 | `commands.ts` |
 | `models catalog/show` | show需 `--project` | 查看系统可选模型或项目模型及阈值 | `commands.ts` |
 | `material text` | `--workflow`、`--material`、`--redacted-only` | 只读取当前脱敏正文；不能省略显式脱敏旗标 | `commands.ts` |
-| `step list` / `step dispatch STEP_KEY` | dispatch需 `--project` + `--ids` 或 `--all` | 列出稳定 key，或仅派发单一步骤 | `commands.ts` + `shared/step-registry.ts` |
+| `step list` / `step dispatch STEP_KEY` | dispatch需 `--project` + `--ids` 或 `--all` | 列出稳定 key，或仅派发单一步骤；无效评分且达标判断等待时可显式重派独立评分 | `commands.ts` + `shared/step-registry.ts` |
 | `attempt show/wait` | show需 `--attempt`；wait需 `--ids`，可选 `--timeout`、`--full` | show读完整结果；wait默认状态投影，`--full` 才取正文 | `commands.ts` |
 | `result list/show` | show需 `--workflow` | 当前达标成果摘要或单题工作流结果 | `commands.ts` |
 | `monitor show` | 无 | 本机监控快照，不是供应商生成的页级进度 | `commands.ts` |
@@ -175,6 +176,16 @@ Work 五件套的 CLI 流程：先用 `step dispatch publish_export --project UU
 人工复核未达标题目时使用 `bun cli/index.ts export failed --project UUID --all --json`，或用 `--ids UUID,...` 限定题目。它只导出当前系统判定为 `repair` 且题目、作答、有效评分绑定齐全的记录，固定写入 `assets/未达标题目/`（首次运行时由 `cli/failed-export.ts` 创建），不使用 `--out`，也不写入 `assets/out/`。每题保存出题文本、每个模型的作答与评分文本／JSON，以及带尝试 ID、版本和哈希的清单；同一判定重复调用只核对、不覆盖。未达标是业务判定，执行失败而缺少三项完整记录会在结果中报错。此命令不调用模型、不更改工作流状态。
 
 明确指定已评分题目做作答质量复核，可用 `export review --project UUID --ids UUID,... --json` 导出同样的文件，即使系统判定已达标；清单保留真实 `accepted`／`repair`，不把模型低分冒充作答任务失败。此命令必须列明题目，不支持 `--all`。
+
+## 已有题目的返修设计输入
+
+修改既有题目的角色、场景或出题方向可运行：
+
+```sh
+bun run ai-distill workflow design update --workflow <题目UUID> --direction <新出题方向> --scenario <场景> --role <角色视角>
+```
+
+至少提供一个字段；未提供的字段保持原值。只有值实际变化时，服务端才重置 ordinal 4—8、使活动尝试失效并标记相关导出过期。该命令不派发出题；设置确认后仍须显式执行 `step dispatch author_question`，再按普通步骤重新作答和评分。全局材料包工作流不支持此接口。
 
 ## 状态和错误契约
 
