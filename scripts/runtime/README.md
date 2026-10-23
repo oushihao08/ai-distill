@@ -12,3 +12,5 @@
 - `ofd/`：经显式授权安装OFDRW本地运行依赖，提供OFD整页转PDF桥接；不随服务启动自动安装。详见[OFD工具](ofd/README.md)。
 
 `apply-local-queue-migration.ts`是047定向迁移工具：`bun scripts/runtime/apply-local-queue-migration.ts`默认只列全部未登记迁移与在途计数；显式`--apply`只应用047，拒绝其他必要迁移未齐；允许未归属在途任务继续，DDL仅等待短事务锁且超时回滚。不调用全量迁移器、不启动服务、不转移旧队列。旧消费者可以收尾未归属任务，但不会领取已归属任务；全部旧队列退役仍须逐机核对。队列启用与恢复见`server/execution-queue/README.md`。
+
+`apply-authoring-defaults-migration.ts`默认只读列出待迁移清单；显式`--apply`仅应用048，其他必要迁移未齐时拒绝执行。需要单独数据库迁移授权，不重启服务或修改业务期次。

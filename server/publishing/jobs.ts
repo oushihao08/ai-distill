@@ -1,5 +1,5 @@
 /**
- * 职责：达标题目归档事务：重新验证当前达标依据与产物指纹，执行项目交付脚本并记录归档状态。
+ * 职责：达标题目归档事务：重新验证当前有效评分与达标版本，调用项目独有准备/交付入口，执行项目交付脚本并记录归档状态。
  * 关键方法与用途：`publishWorkflow()` 分段事务复核当前版本并执行项目交付；`readSiriserArchive()` 校验并下载五件套，`withdrawPublication()` 保留事件并撤回当前归档。
  * 使用场景：由 HTTP 工作流入口调用；同摘要重用归档记录，但仍执行项目交付脚本。
  */
@@ -9,19 +9,16 @@ import {canonicalJson} from '../../shared/workflow-config';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
 import {readFile,realpath,stat} from 'node:fs/promises';
-import {dirname,isAbsolute,join,resolve} from 'node:path';
+import {dirname,isAbsolute,join,resolve,relative,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {questionResultDirectory,readCurrentRedactionForDocx,readOriginalFilesForDelivery} from '../materials/redacted-docx-export';
+import {questionResultDirectory} from '../materials/redacted-docx-export';
 import {acceptanceSourceDigest,readAcceptanceSnapshot,buildAcceptanceInput,buildConfiguredAcceptanceConfig} from '../decisions/jobs';
 import {decideAcceptance} from '../decisions/acceptance';
 import {answerModelSetDigest,readProjectModelSet} from '../answer-models/model-set';
-import {verifyFrozenProjectPrompt} from '../rule-files';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
-import {resolveProjectDelivery,runProjectDelivery,type DeliveryInput} from './project-delivery';
-import {getOrGenerateWorkSimulation} from './work-simulation';
-import {getAgentConcurrencyGate,readConcurrencySettings} from '../concurrency';
-import {readQuestionMaterials} from '../question-materials';
+import {resolveProjectDelivery,runProjectDelivery,type DeliveryInput,loadProjectArchive,type ProjectArchiveModule} from './project-delivery';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
+const publicationConflict=(reason_code:string,message:string)=>Object.assign(new HTTPException(409,{message}),{reason_code});
 function archiveProvenance(projectId:string,workflowId:string,frozen:any,projectName?:string,workflowTitle?:string){
  const origin=frozen?.material_origin??{kind:'legacy',redaction_attempt_id:String(frozen?.redaction_attempt_id??'')};
  const materials=Array.isArray(frozen?.materials)?frozen.materials.map((item:any)=>({artifact_id:String(item.id),sha256:String(item.sha256)})):[];
@@ -54,14 +51,15 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  const snapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(models,policy),answerModelSetDigest(models));
  const digest=acceptanceSourceDigest(snapshot);
  if(row.result?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw new HTTPException(409,{message:'归档已不对应当前达标版本，请重新归档'});
- await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
  // 展示期名可变，已归档成果仍由保存的输出路径定位，不能因首批筹备→第一期而搬动或重建。
  const archivedWorkbook=row.result?.archive_workbook?.archive_path;
+ const archivedOutput=row.result?.delivery?.output_path;
  let directory:string;
- if(typeof archivedWorkbook==='string'){
-  const parts=archivedWorkbook.split('/');
-  if(isAbsolute(archivedWorkbook)||parts.some(part=>!part||part==='.'||part==='..'||part.includes('\\'))||parts[0]!=='附件库'||parts.at(-1)!=='题目归档数据.xlsx')throw new HTTPException(409,{message:'归档目录索引无效'});
-  directory=dirname(resolve(assetRoot,archivedWorkbook));
+ if(typeof archivedOutput==='string'||typeof archivedWorkbook==='string'){
+  const indexed=typeof archivedOutput==='string'?archivedOutput:archivedWorkbook;
+  const parts=indexed.split('/');
+  if(isAbsolute(indexed)||parts.some((part:string)=>!part||part==='.'||part==='..'||part.includes('\\'))||parts[0]!=='附件库'||(typeof archivedOutput!=='string'&&parts.at(-1)!=='题目归档数据.xlsx'))throw new HTTPException(409,{message:'归档目录索引无效'});
+  directory=typeof archivedOutput==='string'?resolve(assetRoot,indexed):dirname(resolve(assetRoot,indexed));
   const root=await realpath(assetRoot),actual=await realpath(directory).catch(()=>null);
   if(!actual||!actual.startsWith(`${root}/`))throw new HTTPException(409,{message:'归档目录缺失或越界'});
  }else directory=await questionResultDirectory(assetRoot,row.parent_name,row.phase_name??'',row.phase_name?(row.source_key||row.title):row.title);
@@ -76,32 +74,8 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  }catch{throw new HTTPException(409,{message:'五件套文件缺失、版本或指纹不一致，请重新执行项目交付'});}
  }finally{db.release();}
 }
-interface Artifact {id:string;attempt_id:string|null;kind:string;storage_path:string;sha256:string;content?:string|null}
-async function verifyArtifact(root:string,artifact:Artifact){
- if(typeof artifact.content==='string'){if(hash(artifact.content)!==artifact.sha256)throw new HTTPException(409,{message:'成果内容指纹变化，不能归档'});return;}
- if(!artifact||isAbsolute(artifact.storage_path))throw new HTTPException(409,{message:'成果文件索引无效'});
- try{
-  const base=await realpath(resolve(root)),path=await realpath(join(base,artifact.storage_path));
-  if(!path.startsWith(`${base}/`))throw new Error('unsafe artifact');
-  const info=await stat(path);if(!info.isFile()||info.size>30*1024*1024)throw new Error('invalid artifact');
-  const bytes=await readFile(path);if(hash(bytes)!==artifact.sha256)throw new Error('changed artifact');
- }catch{throw new HTTPException(409,{message:'成果文件缺失、越界或指纹变化，不能归档'});}
-}
-async function readVerifiedTextArtifact(root:string,artifact:Artifact){
- let bytes:Uint8Array;
- if(typeof artifact.content==='string')bytes=Buffer.from(artifact.content,'utf8');
- else{
-  if(!artifact||isAbsolute(artifact.storage_path))throw new HTTPException(409,{message:'材料文件索引无效'});
-  try{const base=await realpath(resolve(root)),path=await realpath(join(base,artifact.storage_path));if(!path.startsWith(`${base}/`))throw new Error('unsafe artifact');bytes=await readFile(path);}
-  catch{throw new HTTPException(409,{message:'材料正文无法读取'});}
- }
- if(hash(bytes)!==artifact.sha256)throw new HTTPException(409,{message:'材料内容指纹变化'});
- try{const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);if(!text.trim())throw new Error('empty');return text;}
- catch{throw new HTTPException(409,{message:'材料不是有效的 UTF-8 文本'});}
-}
-
 /**
- * 归档前重新验证当前版本已通过出题、作答、评分和达标，并逐一核对产物指纹及附件绑定。
+ * 归档前核对当前版本的有效评分、达标及答案绑定；项目独有的材料和成果要求交给项目准备/交付入口。
  * 相同达标摘要和脚本摘要复用已归档标记；每次点击仍执行项目交付入口。
  */
 export interface PublicationBinding {project_id:string;title:string;parent_name:string|null;phase_name:string|null;source_key:string|null;acceptance_attempt_id:string;source_digest:string;delivery_digest:string}
@@ -114,96 +88,59 @@ export interface PublicationDependencies {
  prepareArtifacts?:(binding:PublicationBinding)=>Promise<Record<string,unknown>>;
  deliver?:typeof runProjectDelivery;
  resolveDelivery?:typeof resolveProjectDelivery;
- prepareWork?:typeof getOrGenerateWorkSimulation;
- readStructuredMaterials?:(db:import('pg').PoolClient,id:string)=>Promise<Awaited<ReturnType<typeof readCurrentRedactionForDocx>>|undefined>;
+ prepare?:NonNullable<ProjectArchiveModule['prepare']>;
 }
 export async function publishWorkflow(pool:Pool,workflowId:string,root:string,deliveryIdentity?:{task_id:string;org:string},dependencies:PublicationDependencies={}){
  let db=await pool.connect();let connectionHeld=true;let attemptId:string|undefined;let restoreLogContext=()=>{},inTransaction=false;let failurePhase='snapshot';
  const resolveDelivery=dependencies.resolveDelivery??resolveProjectDelivery;
- const prepareWork=dependencies.prepareWork??getOrGenerateWorkSimulation;
- const readStructuredMaterials=dependencies.readStructuredMaterials??readCurrentRedactionForDocx;
  try{
   await db.query('BEGIN');inTransaction=true;
   const workflow=(await db.query("SELECT w.project_id,w.title,w.source_key,p.name AS project_name,p.parent_name,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w",[workflowId])).rows[0];
   dependencies.signal?.throwIfAborted();
   if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
-  if(deliveryIdentity&&(!/^LAW-\d{3,}$/.test(deliveryIdentity.task_id)||!/^[a-z0-9][a-z0-9-]{1,31}$/.test(deliveryIdentity.org)))throw new HTTPException(400,{message:'可选Harbor身份格式无效；生成Siriser五件套无需填写此项'});
   restoreLogContext=enterLogContext({component:'publishing',operation:'publish',workflow_id:workflowId,project_id:workflow.project_id,ordinal:8});
   logEvent('publication.started',{level:'info'});
   const steps=await db.query('SELECT ordinal,status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 7',[workflowId]);
-  if(steps.rows.length!==4||steps.rows.some(row=>row.status!=='succeeded'))throw new HTTPException(409,{message:'当前出题、作答、评分及达标尚未全部成功'});
+  if(steps.rows.length!==4||steps.rows.some(row=>row.status!=='succeeded'))throw publicationConflict('publication_steps_incomplete','当前出题、作答、评分及达标尚未全部成功');
   const modelSet=await readProjectModelSet(db,workflow.project_id);
-  if(!modelSet.length)throw new HTTPException(409,{message:'项目尚未配置作答模型'});
+  if(!modelSet.length)throw publicationConflict('publication_model_set_missing','项目尚未配置作答模型');
   const acceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
   const config=buildConfiguredAcceptanceConfig(modelSet,acceptancePolicy);
   const accepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
-  if(accepted?.status!=='succeeded'||accepted.result?.decision!=='accepted')throw new HTTPException(409,{message:'当前版本尚未达标'});
+  if(accepted?.status!=='succeeded'||accepted.result?.decision!=='accepted')throw publicationConflict('publication_acceptance_missing','当前版本尚未达标');
   const snapshot=await readAcceptanceSnapshot(db,workflowId,config,answerModelSetDigest(modelSet));
   const digest=acceptanceSourceDigest(snapshot),q=snapshot.question?.result;
-  await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
-  if(accepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw new HTTPException(409,{message:'达标依据已变化，请重新执行第七步'});
-  if(!q||!q.question?.trim()||!q.question_version||!q.rubric_version||!Array.isArray(q.rubric)||!q.rubric.length)throw new HTTPException(409,{message:'题目包不完整'});
-  const models=config.required_models.map(model=>{
+  if(accepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw publicationConflict('publication_acceptance_snapshot_changed','达标依据已变化，请重新执行第七步');
+  if(!q||!q.question?.trim()||!q.question_version||!q.rubric_version||!Array.isArray(q.rubric)||!q.rubric.length)throw publicationConflict('publication_question_incomplete','题目包不完整');
+  for(const model of config.required_models){
    const answer=snapshot.answers.find(item=>item.model===model)!;
    const score=snapshot.scores.find(item=>item.answer_attempt_id===answer.id)!;
    const binding=score.result?.binding;
-   if(typeof answer.result?.text!=='string'||hash(answer.result.text)!==answer.result.answer_sha256||binding?.answer_sha256!==answer.result.answer_sha256||binding?.answer_attempt_id!==answer.id||binding?.question_version!==q.question_version||binding?.rubric_version!==q.rubric_version||binding?.input_digest!==answer.result.input_digest||!score.id)throw new HTTPException(409,{message:'答案或评分版本指纹不一致'});
-   return {model,answer_attempt_id:answer.id,answer_sha256:answer.result.answer_sha256,score_attempt_id:score.id};
-  });
-  const attemptIds=[snapshot.question!.id,...models.flatMap(item=>[item.answer_attempt_id,item.score_attempt_id])];
-  const artifacts=(await db.query("SELECT id,attempt_id,kind,storage_path,sha256,content FROM ai_distill.artifacts WHERE workflow_id=$1 AND attempt_id=ANY($2::uuid[]) AND kind IN ('authored_question','model_answer','score_report')",[workflowId,attemptIds])).rows as Artifact[];
-  const required=[{attempt_id:snapshot.question!.id,kind:'authored_question'},...models.flatMap(item=>[{attempt_id:item.answer_attempt_id,kind:'model_answer'},{attempt_id:item.score_attempt_id,kind:'score_report'}])];
-  for(const item of required){const matching=artifacts.filter(file=>file.attempt_id===item.attempt_id&&file.kind===item.kind);if(matching.length!==1)throw new HTTPException(409,{message:'当前题目、答案或评分缺少唯一产物'});await verifyArtifact(root,matching[0]!);}
-  const frozen=snapshot.question!.input;
-  if(!Array.isArray(q.attachment_ids)||!q.attachment_ids.length||!Array.isArray(frozen?.materials))throw new HTTPException(409,{message:'出题附件快照不完整'});
-  let attachments:Artifact[];
-  if(frozen.material_origin?.kind==='library_v1'){
-   const source=await readQuestionMaterials(db,workflowId);
-   if(canonicalJson(source.origin)!==canonicalJson(frozen.material_origin)||JSON.stringify(q.attachment_ids)!==JSON.stringify(source.attachments.map(item=>item.id)))throw new HTTPException(409,{message:'材料库冻结附件与题目版本不一致'});
-   attachments=source.attachments.map(item=>({id:item.id,attempt_id:null,kind:source.origin.kind==='library_v1'&&source.origin.material_mode==='original'?'source_markdown':'redacted_markdown',storage_path:'',sha256:item.sha256,content:item.content}));
-  }else{
-   attachments=(await db.query("SELECT ar.id,ar.attempt_id,ar.kind,ar.storage_path,ar.sha256,ar.content FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id JOIN ai_distill.steps s ON s.workflow_id=ar.workflow_id AND s.ordinal=9 WHERE ar.workflow_id=$1 AND ar.id=ANY($2::uuid[]) AND ar.kind='redacted_markdown' AND a.ordinal=9 AND a.status='succeeded' AND s.status='succeeded'",[workflowId,q.attachment_ids])).rows as Artifact[];
+   if(typeof answer.result?.text!=='string'||hash(answer.result.text)!==answer.result.answer_sha256||binding?.answer_sha256!==answer.result.answer_sha256||binding?.answer_attempt_id!==answer.id||binding?.question_version!==q.question_version||binding?.rubric_version!==q.rubric_version||binding?.input_digest!==answer.result.input_digest||score.status!=='succeeded'||score.result?.validation?.valid!==true||!score.id)throw publicationConflict('publication_answer_score_binding_mismatch','答案或评分版本指纹不一致');
   }
-  for(const id of q.attachment_ids){const matching=attachments.filter(file=>file.id===id);if(matching.length!==1||!frozen.materials.some((item:any)=>item.id===id&&item.sha256===matching[0]!.sha256)||(frozen.material_origin?.kind!=='library_v1'&&matching[0]!.attempt_id!==frozen.redaction_attempt_id))throw new HTTPException(409,{message:'当前附件与出题快照不一致'});await verifyArtifact(root,matching[0]!);}
+  const frozen=snapshot.question!.input;
   const delivery=await resolveDelivery(workflow.parent_name);
   const deliveryDir=delivery.mode==='noop'?root:await questionResultDirectory(dependencies.exportsRoot??fileURLToPath(new URL('../../assets/out/',import.meta.url)),workflow.parent_name||workflow.project_name,workflow.phase_name??'',workflow.phase_name?(workflow.source_key||workflow.title):workflow.title);
-  const structuredRedaction=workflow.parent_name==='Work法律全场景'?await readStructuredMaterials(db,workflowId):undefined;
-  const deliveryAttachments=await Promise.all(q.attachment_ids.map(async(id:string,index:number)=>{
-   const artifact=attachments.find(file=>file.id===id);
-   if(!artifact)throw new HTTPException(409,{message:'归档冻结材料缺失'});
-   const materialMode=frozen.material_origin?.kind==='library_v1'?frozen.material_origin.material_mode:'redacted';
-   const documents=structuredRedaction&&structuredRedaction.redacted_sha256===artifact.sha256?[...structuredRedaction.materialDocuments.values()].map(item=>item.document):undefined;
-   const prepared_documents=structuredRedaction&&'prepared_documents' in structuredRedaction?structuredRedaction.prepared_documents:undefined;
-   let original_files:DeliveryInput['attachments'][number]['original_files'];
-   if(materialMode==='original'){
-    if(q.attachment_ids.length!==1)throw new HTTPException(409,{message:'原文归档的多附件映射不明确，不能生成五件套'});
-    const snapshot=(await db.query('SELECT snapshot_manifest FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0]?.snapshot_manifest;
-    const expected=Array.isArray(snapshot?.files)?snapshot.files.map((file:any)=>({material_id:String(file.material_id),original_name:String(file.original_name),sha256:String(file.source_sha256)})):[];
-    const originals=await readOriginalFilesForDelivery(db,workflowId,root,expected);
-    original_files=originals.map(file=>({name:file.name,sha256:file.sha256,content_base64:Buffer.from(file.bytes).toString('base64')}));
-   }
-   return{id:artifact.id,sha256:artifact.sha256,name:`材料-${String(index+1).padStart(3,'0')}.md`,text:await readVerifiedTextArtifact(root,artifact),material_mode:materialMode,...(documents?{documents}:{}),...(prepared_documents?{prepared_documents}:{}),...(original_files?{original_files}:{})};
-  }));
   const binding:PublicationBinding={project_id:workflow.project_id,title:workflow.title,parent_name:workflow.parent_name??null,phase_name:workflow.phase_name??null,source_key:workflow.source_key??null,acceptance_attempt_id:accepted.id,source_digest:digest,delivery_digest:delivery.digest};
   if(dependencies.expected&&canonicalJson(binding)!==canonicalJson(dependencies.expected))throw new HTTPException(409,{message:'交付排队后来源、项目身份或脚本已变化，请核对后重新派发'});
   const deliveryIdentityDigest=hash(JSON.stringify(deliveryIdentity??null));
-  const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:deliveryAttachments};
+  const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:[]};
   await db.query('COMMIT');inTransaction=false;
   db.release();connectionHeld=false;
   failurePhase='delivery';
-  if(workflow.parent_name==='Work法律全场景'){
-   const generate=()=>cachedExternalCall(`publication_simulation:${digest}:${delivery.digest}`,()=>prepareWork(pool,{project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,rubric:q.rubric},attachments:deliveryAttachments.map(({name,text,material_mode})=>({name,text,material_mode}))},root,hash(`${digest}:${delivery.digest}`),dependencies.expectedLegacyAgentConfig));
-   if(q.content_contract==='work_legal_v1')deliveryInput.simulation=await generate();
-   else{
-    const gate=getAgentConcurrencyGate(root,readConcurrencySettings(process.env,root).agent);
-    const permit=await gate.run(generate);
-    if(!permit.acquired)throw new HTTPException(409,{message:'Agent 并发任务未取得执行槽位'});
-    deliveryInput.simulation=permit.value;
-   }
-  }
+  const prepare=dependencies.prepare??(await loadProjectArchive(delivery))?.prepare;
+  if(prepare)await prepare(deliveryInput,{pool,workflowId,storageRoot:root,frozen,expectedLegacyAgentConfig:dependencies.expectedLegacyAgentConfig,signal:dependencies.signal});
   dependencies.signal?.throwIfAborted();
   await cachedExternalCall(`publication_delivery:${digest}:${delivery.digest}:${deliveryIdentityDigest}`,()=> (dependencies.deliver??runProjectDelivery)(delivery,deliveryInput,deliveryDir));
-  const supplemental=dependencies.prepareArtifacts?await dependencies.prepareArtifacts(binding):{};
+  let supplemental:Record<string,unknown>={};
+  if(delivery.mode==='script'&&dependencies.prepareArtifacts){
+   try{supplemental=await dependencies.prepareArtifacts(binding);}
+   catch(error){
+    dependencies.signal?.throwIfAborted();
+    logEvent('publication.supplemental_export_failed',{level:'warn',...classifyLogError(error)});
+    supplemental={supplemental_exports:{status:'failed'}};
+   }
+  }
   dependencies.signal?.throwIfAborted();
   if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
   failurePhase='commit';
@@ -215,11 +152,9 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    const currentAccepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
    const currentSnapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(currentModelSet,currentAcceptancePolicy),answerModelSetDigest(currentModelSet));
    if(!currentWorkflow||currentWorkflow.title!==workflow.title||currentWorkflow.project_id!==workflow.project_id||currentWorkflow.parent_name!==workflow.parent_name||currentWorkflow.phase_name!==workflow.phase_name||currentWorkflow.source_key!==workflow.source_key||currentAccepted?.id!==accepted.id||currentAccepted.status!=='succeeded'||currentAccepted.result?.decision!=='accepted'||answerModelSetDigest(currentModelSet)!==answerModelSetDigest(modelSet)||acceptanceSourceDigest(currentSnapshot)!==digest||currentAccepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(currentSnapshot)).decision!=='accepted')throw new HTTPException(409,{message:'生成期间题目、模型或达标依据发生变化，请重新归档'});
-   await verifyFrozenProjectPrompt(currentSnapshot.question?.input?.project_prompt);
   const previous=(await db.query("SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded' AND input->>'source_digest'=$2 AND input->>'acceptance_attempt_id'=$3 AND input->>'delivery_digest'=$4 AND input->>'delivery_identity_digest'=$5 ORDER BY attempt DESC LIMIT 1",[workflowId,digest,accepted.id,delivery.digest,deliveryIdentityDigest])).rows[0];
   if(previous&&!dependencies.attemptId){
    if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
-   await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
    const latestEvent=(await db.query('SELECT event_type FROM ai_distill.workflow_publication_events WHERE workflow_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1',[workflowId])).rows[0];
    if(latestEvent?.event_type!=='archived'){
     const provenance=await readArchiveProvenance(db,workflow.project_id,workflowId,frozen,workflow.project_name,workflow.title);
@@ -229,11 +164,10 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    }
    await db.query('COMMIT');inTransaction=false;withLogContext({attempt_id:previous.id},()=>logEvent('publication.reused',{level:'info',state:'succeeded'}));return {id:previous.id,reused:true,completed:true};
   }
-  await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
   if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
   attemptId=dependencies.attemptId??crypto.randomUUID();
   const provenance=await readArchiveProvenance(db,workflow.project_id,workflowId,frozen,workflow.project_name,workflow.title);
-  const result={source_digest:digest,acceptance_attempt_id:accepted.id,question_version:q.question_version,rubric_version:q.rubric_version,delivery:{mode:delivery.mode,digest:delivery.digest,status:'succeeded'},material_provenance:provenance,...supplemental,archived_at:new Date().toISOString()};
+  const result={source_digest:digest,acceptance_attempt_id:accepted.id,question_version:q.question_version,rubric_version:q.rubric_version,delivery:{mode:delivery.mode,digest:delivery.digest,status:'succeeded',...(delivery.mode==='script'?{output_path:relative(dependencies.exportsRoot??fileURLToPath(new URL('../../assets/out/',import.meta.url)),deliveryDir).split(sep).join('/')}:{})},material_provenance:provenance,...supplemental,archived_at:new Date().toISOString()};
   if(dependencies.attemptId){
    const saved=await db.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE id=$1 AND workflow_id=$3 AND ordinal=8 AND status='running' AND id=(SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$3 AND ordinal=8 ORDER BY attempt DESC LIMIT 1) RETURNING id",[attemptId,JSON.stringify(result),workflowId]);
    if(saved.rowCount!==1)throw new HTTPException(409,{message:'交付任务已取消或被新版本替代，结果未发布'});
@@ -243,11 +177,11 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='succeeded',result=$2,error=NULL,started_at=now(),finished_at=now() WHERE workflow_id=$1 AND ordinal=8",[workflowId,JSON.stringify(result)]);
   await insertPublicationEvent(db,workflowId,workflow.project_id,attemptId,'archived',provenance);
   await db.query("UPDATE ai_distill.workflows SET status='succeeded' WHERE id=$1",[workflowId]);
-  await verifyFrozenProjectPrompt(snapshot.question?.input?.project_prompt);
   dependencies.signal?.throwIfAborted();
   await db.query('COMMIT');inTransaction=false;withLogContext({attempt_id:attemptId},()=>logEvent('publication.completed',{level:'info',state:'succeeded'}));return {id:attemptId,reused:false,completed:true};
  }catch(error){
-  logEvent('publication.failed',{level:'error',state:'failed',failure_phase:failurePhase,...(error instanceof HTTPException?{http_status:error.status}:{}),...classifyLogError(error)});
+  const reasonCode=(error as {reason_code?:unknown})?.reason_code??(error instanceof HTTPException&&error.status===409?`publication_${failurePhase}_conflict_unclassified`:undefined);
+  logEvent('publication.failed',{level:'error',state:'failed',failure_phase:failurePhase,...(error instanceof HTTPException?{http_status:error.status}:{}),...(typeof reasonCode==='string'?{reason_code:reasonCode}:{}),...classifyLogError(error)});
   if(inTransaction)try{await db.query('ROLLBACK');}catch(rollbackError){logEvent('transaction.rollback_failed',{level:'error',transaction_name:'rollback:publishing',...classifyLogError(rollbackError)});console.error('成果发布事务回滚失败，等待核对');}
   throw error;
  }finally{restoreLogContext();if(connectionHeld)db.release();}

@@ -286,3 +286,10 @@ test('redaction failure stores a safe Codex summary while keeping the user-facin
   expect(JSON.stringify(writes)).not.toContain('private provider response');
  }finally{if(priorCodexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=priorCodexHome;await rm(root,{recursive:true,force:true});}
 });
+
+test('registered SiliconFlow provider survives safe logging while unknown values remain hidden',()=>{
+ const base={schema_version:1,event_id:'11111111-1111-4111-8111-111111111111',seq:1,occurred_at:'2026-10-23T00:00:00Z',written_at:'2026-10-23T00:00:00Z',service:'worker',instance_id:'22222222-2222-4222-8222-222222222222',pid:123,event:'attempt.failed'};
+ const record=sanitizeLogRecord({...base,provider:'siliconflow',prompt:'PRIVATE'});
+ expect(record?.provider).toBe('siliconflow');expect(record).not.toHaveProperty('prompt');
+ expect(sanitizeLogRecord({...base,provider:'unregistered-private'})).not.toHaveProperty('provider');
+});

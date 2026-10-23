@@ -174,8 +174,8 @@ describe('命令范围和结果', () => {
       [['monitor','show'],'/api/monitor','GET'],
       [['project','sync','--project',project],`/api/projects/${project}/sync-folder`,'POST',{}],
       [['export','create','--project',project,'--batch','本批'],`/api/projects/${project}/export`,'POST',{batch:'本批'}],
-      [['project','create','--name','测试','--material-root','/tmp/questions','--skill-path','/tmp/skill'], '/api/projects','POST',{name:'测试',description:'',material_root:'/tmp/questions',local_skill_path:'/tmp/skill'}],
-      [['project','create','--name','测试 - 第五期','--parent-name','测试','--phase-name','第五期','--material-root','/tmp/测试/第五期/questions'], '/api/projects','POST',{name:'测试 - 第五期',description:'',material_root:'/tmp/测试/第五期/questions',parent_name:'测试',phase_name:'第五期'}],
+      [['project','create','--name','测试','--material-backend','legacy','--material-root','/tmp/questions','--skill-path','/tmp/skill'], '/api/projects','POST',{name:'测试',description:'',material_backend:'legacy',material_root:'/tmp/questions',local_skill_path:'/tmp/skill'}],
+      [['project','create','--name','测试 - 第五期','--parent-name','测试','--phase-name','第五期','--material-backend','legacy','--material-root','/tmp/测试/第五期/questions'], '/api/projects','POST',{name:'测试 - 第五期',description:'',material_backend:'legacy',material_root:'/tmp/测试/第五期/questions',parent_name:'测试',phase_name:'第五期'}],
     ];
     for(const [args,path,method,body] of matrix) {
       const {client,calls}=fixture((url,init)=>init?.method==='POST'&&url.pathname==='/api/projects'?{id:project}:{workflows:[]});await runCommand(args,client);

@@ -32,7 +32,41 @@ const materialIdentity=(input:Pick<FrozenInput,'redaction_attempt_id'|'material_
 const designContext=(workflow:any)=>{const context={...(workflow.scenario?{scenario:String(workflow.scenario)}:{}),...(workflow.role_perspective?{role_perspective:String(workflow.role_perspective)}:{}),...(workflow.target_level?{target_level:String(workflow.target_level)}:{}),...(Array.isArray(workflow.question_tags)&&workflow.question_tags.length?{question_tags:workflow.question_tags.map(String)}:{})};return Object.keys(context).length?context:undefined;};
 const sourceFiles=(workflow:any)=>Array.isArray(workflow.source_manifest)?workflow.source_manifest.filter((file:any)=>typeof file?.name==='string'&&typeof file?.path==='string').map((file:any)=>({name:file.name,path:file.path})):[];
 const questionId=(workflow:any)=>typeof workflow.source_key==='string'&&workflow.source_key.trim()?workflow.source_key:workflow.title;
-export const inputDigest=(input:Omit<FrozenInput,'digest'>)=>hash(JSON.stringify(input.rule_version_id?{...(input.content_contract?{content_contract:input.content_contract}:{}),...(input.system_authoring_prompt?{system_authoring_prompt:input.system_authoring_prompt}:{}),...(input.project_name!==undefined?{project_name:input.project_name}:{}),title:input.title,...(input.design_context?{design_context:stableDesignContext(input.design_context)}:{}),...(input.authoring_direction?{authoring_direction:input.authoring_direction}:{}),...(input.question_id?{question_id:input.question_id}:{}),...(input.source_files?{source_files:input.source_files}:{}),rule_version_id:input.rule_version_id,rule_attempt_id:input.rule_attempt_id,rule_source_digest:input.rule_source_digest,rule_snapshot_path:input.rule_snapshot_path,rule_files:(input.rule_files??[]).map(file=>({path:file.path,sha256:file.sha256,size_bytes:file.size_bytes})),...materialIdentity(input),materials:input.materials.map(item=>({id:item.id,sha256:item.sha256})),...(input.authoring_contract?{authoring_contract:input.authoring_contract}:{}),...(input.scoring_policy?{scoring_policy:JSON.parse(canonicalJson(input.scoring_policy))}:{}),...(input.hooks?{hooks:JSON.parse(canonicalJson(input.hooks))}:{})}:{...(input.content_contract?{content_contract:input.content_contract}:{}),...(input.system_authoring_prompt?{system_authoring_prompt:input.system_authoring_prompt}:{}),...(input.project_name!==undefined?{project_name:input.project_name}:{}),title:input.title,...(input.design_context?{design_context:stableDesignContext(input.design_context)}:{}),...(input.authoring_direction?{authoring_direction:input.authoring_direction}:{}),...(input.question_id?{question_id:input.question_id}:{}),...(input.source_files?{source_files:input.source_files}:{}),project_prompt:input.project_prompt?{workspace_path:input.project_prompt.workspace_path,skill_path:input.project_prompt.skill_path,source_digest:input.project_prompt.source_digest,files:input.project_prompt.files.map(file=>({path:file.path,sha256:file.sha256,size_bytes:file.size_bytes}))}:null,...materialIdentity(input),materials:input.materials.map(item=>({id:item.id,sha256:item.sha256})),...(input.authoring_contract?{authoring_contract:input.authoring_contract}:{}),...(input.scoring_policy?{scoring_policy:JSON.parse(canonicalJson(input.scoring_policy))}:{}),...(input.hooks?{hooks:JSON.parse(canonicalJson(input.hooks))}:{})}));
+/** 历史摘要使用JSON插入顺序；两条规则来源分支的字段顺序/省略条件不可随意合并或排序。 */
+export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.stringify(input.rule_version_id ? {
+    ...(input.content_contract ? { content_contract: input.content_contract } : {}),
+    ...(input.system_authoring_prompt ? { system_authoring_prompt: input.system_authoring_prompt } : {}),
+    ...(input.project_name !== undefined ? { project_name: input.project_name } : {}),
+    title: input.title,
+    ...(input.design_context ? { design_context: stableDesignContext(input.design_context) } : {}),
+    ...(input.authoring_direction ? { authoring_direction: input.authoring_direction } : {}),
+    ...(input.question_id ? { question_id: input.question_id } : {}),
+    ...(input.source_files ? { source_files: input.source_files } : {}),
+    rule_version_id: input.rule_version_id,
+    rule_attempt_id: input.rule_attempt_id,
+    rule_source_digest: input.rule_source_digest,
+    rule_snapshot_path: input.rule_snapshot_path,
+    rule_files: (input.rule_files ?? []).map(file => ({ path: file.path, sha256: file.sha256, size_bytes: file.size_bytes })),
+    ...materialIdentity(input),
+    materials: input.materials.map(item => ({ id: item.id, sha256: item.sha256 })),
+    ...(input.authoring_contract ? { authoring_contract: input.authoring_contract } : {}),
+    ...(input.scoring_policy ? { scoring_policy: JSON.parse(canonicalJson(input.scoring_policy)) } : {}),
+    ...(input.hooks ? { hooks: JSON.parse(canonicalJson(input.hooks)) } : {})
+} : {
+    ...(input.content_contract ? { content_contract: input.content_contract } : {}),
+    ...(input.system_authoring_prompt ? { system_authoring_prompt: input.system_authoring_prompt } : {}),
+    ...(input.project_name !== undefined ? { project_name: input.project_name } : {}),
+    title: input.title,
+    ...(input.design_context ? { design_context: stableDesignContext(input.design_context) } : {}),
+    ...(input.authoring_direction ? { authoring_direction: input.authoring_direction } : {}),
+    ...(input.question_id ? { question_id: input.question_id } : {}),
+    ...(input.source_files ? { source_files: input.source_files } : {}),
+    project_prompt: input.project_prompt ? { workspace_path: input.project_prompt.workspace_path, skill_path: input.project_prompt.skill_path, source_digest: input.project_prompt.source_digest, files: input.project_prompt.files.map(file => ({ path: file.path, sha256: file.sha256, size_bytes: file.size_bytes })) } : null,
+    ...materialIdentity(input),
+    materials: input.materials.map(item => ({ id: item.id, sha256: item.sha256 })),
+    ...(input.authoring_contract ? { authoring_contract: input.authoring_contract } : {}),
+    ...(input.scoring_policy ? { scoring_policy: JSON.parse(canonicalJson(input.scoring_policy)) } : {}),
+    ...(input.hooks ? { hooks: JSON.parse(canonicalJson(input.hooks)) } : {}) }));
 
 async function basePrerequisites(db:PoolClient,id:string){
  const workflow=(await db.query(workflowSql,[id])).rows[0];
@@ -154,6 +188,50 @@ async function readProjectContext(job:any):Promise<AuthoringRule[]>{
  const files=await readProjectPrompt(job.input.project_prompt);
  return files.map(file=>({path:file.path,bytes:file.bytes}));
 }
+/**
+ * 将一次出题错误投影为可持久化的安全终态；不做重试或状态写入。
+ * 恢复优先使用原检查点；不得用新的异常包装覆盖第一次失败的原因及结构化结果。
+ */
+function buildAuthoringFailure(error: unknown, failurePhase: string): import('../execution-queue/store').StepFailure {
+    if (error instanceof RecordedStepFailure)
+        return { status: 'failed', message: error.failure.message, result: error.failure.result };
+    const unsupported = error instanceof UnsupportedAnswerRequirementsError ? error.requirements : null;
+    const reasonCode = error && typeof error === 'object' && 'reason_code' in error ? error.reason_code : undefined;
+    const safeCode = typeof reasonCode === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(reasonCode) ? reasonCode : null;
+    let message: string;
+    // 优先级与历史错误协议一致：钩子、契约、作答能力，其后才是具体执行错误。
+    if (error instanceof StageHookError)
+        message = '项目钩子执行失败，可查看钩子记录后续跑';
+    else if (reasonCode === 'authoring_contract_changed')
+        message = '普通出题任务契约已更新，请重新派发';
+    else if (unsupported || reasonCode === 'unsupported_answer_requirements')
+        message = '被测作答器仅支持文字输入和文字答案，且不调用工具；作者Codex的工具能力不受此限制';
+    else
+        switch (reasonCode) {
+            case 'attachment_reference_invalid':
+                message = '出题返回的附件 ID 缺失、重复或不属于本题材料，请检查后重试';
+                break;
+            case 'result_missing':
+                message = '出题会话已结束，但未生成 result.json；请检查本次附件路径和私有执行记录';
+                break;
+            case 'result_validation_failed':
+                message = '出题结果未通过程序校验，请检查本次题包结构和评分条目';
+                break;
+            case 'codex_timeout':
+                message = '出题执行超过本次时限，未取得通过校验的完整题目';
+                break;
+            case 'incomplete_turn':
+                message = '出题会话未完整结束，结果未被接收';
+                break;
+            default: message = '出题执行失败、取消或输入已变化，可检查后重试';
+        }
+    const errorCode = error instanceof StageHookError ? 'project_hook_failed' : unsupported ? 'unsupported_answer_requirements' : safeCode;
+    return { status: 'failed', message, result: {
+            ...(errorCode ? { error_code: errorCode } : {}),
+            failure_phase: failurePhase,
+            ...(unsupported ? { answer_requirements: unsupported } : {}),
+        } };
+}
 
 type Authorer=(options:Parameters<typeof runAuthoring>[0])=>Promise<AuthoringResult>;
 async function stillCurrent(pool:Pool,job:any){
@@ -163,53 +241,159 @@ async function stillCurrent(pool:Pool,job:any){
  * 领取当前版本出题尝试，在项目工作目录执行并将完整草稿存入数据库；作答输入单独筛选题面与附件。
  * 提交前再次核对任务输入、项目文件和材料绑定，只有仍匹配的结果才能更新 ordinal 4 状态。
  */
-export async function runNextAuthoring(pool:Pool,root:string,author:Authorer=runAuthoring,signal?:AbortSignal,workflowIds?:string[]){
- if(signal?.aborted)return false;
- const db=await pool.connect();let job:any,staleRows:any[]=[];
- try{
-  await db.query('BEGIN');await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=4 AND ($1::uuid[] IS NULL OR a.workflow_id=ANY($1)) AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a',true)}  ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[workflowIds?.length?workflowIds:null]);
-  for(const row of stale.rows){await recoverInterruptedStageHooks(db,row);const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='出题进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='出题进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=4 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1)",[row.workflow_id]);if(updated.rowCount)staleRows.push(row);}
-  job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=4 AND ($1::uuid[] IS NULL OR a.workflow_id=ANY($1)) AND ${localWaitingSql('a')} ${localClaimSql('a',false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[workflowIds?.length?workflowIds:null])).rows[0];
-  if(!job){await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'authoring',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:4,attempt_id:row.id,operation:'authoring'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false;}
-  await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=COALESCE(started_at,now()),heartbeat_at=now() WHERE id=$1",[job.id]);if(!readStepFailure())await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=4",[job.workflow_id]);await db.query('COMMIT');
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
- for(const row of staleRows)withLogContext({component:'authoring',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:4,attempt_id:row.id,operation:'authoring'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));
- const restoreLogContext=enterLogContext({component:'authoring',workflow_id:job.workflow_id,project_id:job.project_id,ordinal:4,attempt_id:job.id,operation:'authoring',provider:'codex',model:job.config?.model,reasoning_effort:job.config?.reasoning_effort});
- logEvent('attempt.claimed',{level:'info',state:'running'});logEvent('attempt.started',{level:'info',state:'running',material_count:job.input?.materials?.length??0});
- const cancellation=watchTaskCancellation(pool,job.id,signal,false);signal=cancellation.signal;
- let heartbeatFailed=false,lastHeartbeatAt=new Date().toISOString();
- let heartbeatInFlight=false;
- const heartbeat=setInterval(()=>{if(heartbeatInFlight)return;heartbeatInFlight=true;withLogContext({component:'authoring',project_id:job.project_id,workflow_id:job.workflow_id,ordinal:4,attempt_id:job.id},()=>pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id",[job.id]).then(result=>{if(!result.rowCount){if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'warn',reason_code:'attempt_not_running',last_heartbeat_at:lastHeartbeatAt});heartbeatFailed=true;}else{if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info',elapsed_ms:Math.max(0,Date.now()-Date.parse(lastHeartbeatAt))});heartbeatFailed=false;lastHeartbeatAt=new Date().toISOString();}}).catch(error=>{if(!heartbeatFailed){logEvent('heartbeat.write_failed',{level:'error',last_heartbeat_at:lastHeartbeatAt,...classifyLogError(error)});console.error('第四步任务心跳写入失败');}heartbeatFailed=true;}).finally(()=>{heartbeatInFlight=false;}));},10000);
- const directory=join(resolve(root),job.workflow_id,job.id);let output:string|undefined,packageBytes:Buffer|undefined,failurePhase='input_validation';
- try{
-  resumeStepFailure();
-  if(!job.input||inputDigest((( {digest,...frozen}:FrozenInput)=>frozen)(job.input))!==job.input.digest)throw Object.assign(new Error('invalid snapshot'),{reason_code:'authoring_input_digest_invalid'});
-  if(job.input.authoring_contract!==FRESH_AUTHORING_CONTRACT)throw Object.assign(new Error('出题任务契约已更新，请重新派发'),{reason_code:'authoring_contract_changed'});
-  const binding=await stillCurrent(pool,job);
-  if(!binding)throw Object.assign(new Error('stale input'),{reason_code:'authoring_input_binding_changed'});
-  const materials=await readMaterials(pool,root,job,binding.loaded_materials);const projectContextFiles=await readProjectContext(job);
-  if(job.config?.provider!=='codex'||typeof job.config.model!=='string'||!job.config.model.trim()||typeof job.config.reasoning_effort!=='string'||!['low','medium','high','xhigh','max','ultra'].includes(job.config.reasoning_effort))throw new Error('invalid frozen config');
-  logEvent('attempt.input_validated',{level:'info',material_count:materials.length});
-  const legacyRulesInput=job.input.rule_version_id?{version_id:job.input.rule_version_id,source_digest:job.input.rule_source_digest,files:projectContextFiles}:undefined;
-  failurePhase='agent_execution';
-  const hookContext={pool,attempt_id:job.id,workflow_id:job.workflow_id,stage:'authoring' as const,binding_digest:hash(canonicalJson({input:job.input.digest,config:job.config})),input:{title:job.input.title,materials:materials.map((m,i)=>({name:`附件${i+1}`,text:m.text})),...(job.input.scoring_policy?{scoring_policy:job.input.scoring_policy}:{})},hooks:job.input.hooks,signal};
-  const result=await executeWithStageHooks({...hookContext,runMain:additions=>cachedExternalCall('authoring_complete',()=>author({...(job.input.content_contract?{content_contract:job.input.content_contract}:{}),...(job.input.scoring_policy?{scoring_policy:job.input.scoring_policy}:{}),workspace_path:job.input.project_prompt.workspace_path,root:join(directory,'private'),project_name:job.input.project_name,question:job.input.title,authoring_direction:[job.input.design_context?.scenario?`任务场景：${job.input.design_context.scenario}`:null,job.input.design_context?.role_perspective?`角色视角：${job.input.design_context.role_perspective}`:null,job.input.design_context?.target_level?`目标等级：${job.input.design_context.target_level}（设计目标，不代表项目方认证）`:null,job.input.design_context?.question_tags?.length?`设计标签：${job.input.design_context.question_tags.join('、')}`:null,job.input.authoring_direction].filter(Boolean).join('\n')||undefined,question_id:job.input.question_id??job.input.title,source_files:job.input.source_files??[],materials,...(legacyRulesInput?{rules:legacyRulesInput}:{project_context:{source_digest:job.input.project_prompt.source_digest,files:projectContextFiles}}),system_authoring_prompt:job.input.system_authoring_prompt??'',step_prompt:(job.config.prompt??DEFAULT_STEP_PROMPTS[4])+hookAdditionText(additions),model:job.config.model,reasoning_effort:job.config.reasoning_effort,...(job.config.timeout_ms?{timeout_ms:job.config.timeout_ms}:{}),signal,execute:options=>runExternalCall({attempt_id:job.id,operation:'author'},call_id=>runAgent({...options,call_id,task_type:'question_authoring'}))})),outputForHooks:value=>({draft:value.draft})});
-  failurePhase='result_validation';
-  const draft=result.draft;
-  if(!result.codex.session_id)throw new Error('invalid authoring binding');
-  const storedResult={...draft,...(job.input.scoring_policy?{scoring_policy:job.input.scoring_policy}:{}),question_id:result.question_id,question_version:result.question_version,rubric_version:result.rubric_version,codex:{author:result.codex}};
-  failurePhase='result_persistence';
-  if(signal?.aborted)throw new Error('cancelled');const resultBinding=await stillCurrent(pool,job);if(!resultBinding)throw new Error('stale result');await readMaterials(pool,root,job,resultBinding.loaded_materials);
-  const publicPackage=Buffer.from(renderPublicQuestionPackage({question:job.input.title,question_id:job.input.question_id,source_files:job.input.source_files??[],materials},draft));
-  const packagePath=join(directory,'authored_question.md');packageBytes=publicPackage;output=packagePath;await mkdir(directory,{recursive:true,mode:0o700});await writeFile(packagePath,publicPackage,{mode:0o600,flag:'w'});
-  const tx=await pool.connect();try{await tx.query('BEGIN');if(signal?.aborted||!await currentBindings(tx,job)||!(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE",[job.id])).rowCount)throw new Error('inactive');await registerAsyncAfterHooks({...hookContext,pool:tx},{draft:result.draft});await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1",[job.id,JSON.stringify(storedResult),result.codex.session_id]);await tx.query("UPDATE ai_distill.steps SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=4",[job.workflow_id,JSON.stringify(storedResult)]);await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[crypto.randomUUID(),job.workflow_id,job.id,'authored_question',relative(resolve(root),packagePath),hash(publicPackage),publicPackage.length,publicPackage.toString('utf8')]);await tx.query('COMMIT');logEvent('attempt.completed',{level:'info',state:'succeeded'});}catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
- }catch(error){
-  deferLocalPublication(error);
-  logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error),failure_phase:failurePhase});
-  const unsupported=error instanceof UnsupportedAnswerRequirementsError?error.requirements:null;const reasonCode=error&&typeof error==='object'&&'reason_code'in error?(error as {reason_code?:unknown}).reason_code:undefined;const invalidAttachmentReference=reasonCode==='attachment_reference_invalid';const unsupportedAnswerRequirements=reasonCode==='unsupported_answer_requirements';const safeCode=typeof reasonCode==='string'&&/^[a-z][a-z0-9_]{0,79}$/.test(reasonCode)?reasonCode:null;const failureMessage=error instanceof RecordedStepFailure?error.failure.message:error instanceof StageHookError?'项目钩子执行失败，可查看钩子记录后续跑':reasonCode==='authoring_contract_changed'?'普通出题任务契约已更新，请重新派发':unsupported||unsupportedAnswerRequirements?'被测作答器仅支持文字输入和文字答案，且不调用工具；作者Codex的工具能力不受此限制':invalidAttachmentReference?'出题返回的附件 ID 缺失、重复或不属于本题材料，请检查后重试':reasonCode==='result_missing'?'出题会话已结束，但未生成 result.json；请检查本次附件路径和私有执行记录':reasonCode==='result_validation_failed'?'出题结果未通过程序校验，请检查本次题包结构和评分条目':reasonCode==='codex_timeout'?'出题执行超过本次时限，未取得通过校验的完整题目':reasonCode==='incomplete_turn'?'出题会话未完整结束，结果未被接收':'出题执行失败、取消或输入已变化，可检查后重试';const failureResult=error instanceof RecordedStepFailure?error.failure.result:{...(error instanceof StageHookError?{error_code:'project_hook_failed'}:unsupported?{error_code:'unsupported_answer_requirements'}:safeCode?{error_code:safeCode}:{}),failure_phase:failurePhase,...(unsupported?{answer_requirements:unsupported}:{})};saveStepFailure({status:'failed',message:failureMessage,result:failureResult});
-  if(output)try{const artifact=await pool.query("SELECT id FROM ai_distill.artifacts WHERE workflow_id=$1 AND attempt_id=$2 AND kind='authored_question'",[job.workflow_id,job.id]);if(!artifact.rowCount)await rm(output,{force:true});}catch(cleanupError){logEvent('file.cleanup_or_commit_check_failed',{level:'error',file_kind:'authored_question',...classifyLogError(cleanupError)});}
-  const tx=await pool.connect();try{await tx.query('BEGIN');const current=await currentBindings(tx,job);const failed=await tx.query("UPDATE ai_distill.step_attempts SET status='failed',result=$2,error=$3,finished_at=now() WHERE id=$1 AND status='running'",[job.id,JSON.stringify(failureResult),failureMessage]);if(current&&failed.rowCount)await tx.query("UPDATE ai_distill.steps SET status='failed',result=$2,error=$3,finished_at=now() WHERE workflow_id=$1 AND ordinal=4 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL) AND (SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1)=$4",[job.workflow_id,JSON.stringify(failureResult),failureMessage,job.id]);await tx.query('COMMIT');}catch(failure){await tx.query('ROLLBACK');throw failure;}finally{tx.release();}
- }finally{cancellation.dispose();clearInterval(heartbeat);restoreLogContext();}
- return true;
+export async function runNextAuthoring(pool: Pool, root: string, author: Authorer = runAuthoring, signal?: AbortSignal, workflowIds?: string[]) {
+    if (signal?.aborted)
+        return false;
+    const db = await pool.connect();
+    let job: any, staleRows: any[] = [];
+    try {
+        await db.query('BEGIN');
+        await db.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
+        const stale = await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,a.input,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=4 AND ($1::uuid[] IS NULL OR a.workflow_id=ANY($1)) AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a', true)}  ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`, [workflowIds?.length ? workflowIds : null]);
+        for (const row of stale.rows) {
+            await recoverInterruptedStageHooks(db, row);
+            const updated = await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='出题进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id", [row.id]);
+            await db.query("UPDATE ai_distill.steps SET status='failed',error='出题进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=4 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1)", [row.workflow_id]);
+            if (updated.rowCount)
+                staleRows.push(row);
+        }
+        job = (await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=4 AND ($1::uuid[] IS NULL OR a.workflow_id=ANY($1)) AND ${localWaitingSql('a')} ${localClaimSql('a', false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`, [workflowIds?.length ? workflowIds : null])).rows[0];
+        if (!job) {
+            await db.query('COMMIT');
+            for (const row of staleRows)
+                withLogContext({ component: 'authoring', project_id: row.project_id, workflow_id: row.workflow_id, ordinal: 4, attempt_id: row.id, operation: 'authoring' }, () => logEvent('attempt.recovered_interrupted', { level: 'error', state: 'failed', threshold_ms: 300000, ...(row.heartbeat_at ? { last_heartbeat_at: new Date(row.heartbeat_at).toISOString() } : {}) }));
+            return false;
+        }
+        await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=COALESCE(started_at,now()),heartbeat_at=now() WHERE id=$1", [job.id]);
+        if (!readStepFailure())
+            await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=4", [job.workflow_id]);
+        await db.query('COMMIT');
+    }
+    catch (error) {
+        await db.query('ROLLBACK');
+        throw error;
+    }
+    finally {
+        db.release();
+    }
+    for (const row of staleRows)
+        withLogContext({ component: 'authoring', project_id: row.project_id, workflow_id: row.workflow_id, ordinal: 4, attempt_id: row.id, operation: 'authoring' }, () => logEvent('attempt.recovered_interrupted', { level: 'error', state: 'failed', threshold_ms: 300000, ...(row.heartbeat_at ? { last_heartbeat_at: new Date(row.heartbeat_at).toISOString() } : {}) }));
+    const restoreLogContext = enterLogContext({ component: 'authoring', workflow_id: job.workflow_id, project_id: job.project_id, ordinal: 4, attempt_id: job.id, operation: 'authoring', provider: 'codex', model: job.config?.model, reasoning_effort: job.config?.reasoning_effort });
+    logEvent('attempt.claimed', { level: 'info', state: 'running' });
+    logEvent('attempt.started', { level: 'info', state: 'running', material_count: job.input?.materials?.length ?? 0 });
+    const cancellation = watchTaskCancellation(pool, job.id, signal, false);
+    signal = cancellation.signal;
+    let heartbeatFailed = false, lastHeartbeatAt = new Date().toISOString();
+    let heartbeatInFlight = false;
+    const heartbeat = setInterval(() => { if (heartbeatInFlight)
+        return; heartbeatInFlight = true; withLogContext({ component: 'authoring', project_id: job.project_id, workflow_id: job.workflow_id, ordinal: 4, attempt_id: job.id }, () => pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id", [job.id]).then(result => { if (!result.rowCount) {
+        if (!heartbeatFailed)
+            logEvent('heartbeat.write_failed', { level: 'warn', reason_code: 'attempt_not_running', last_heartbeat_at: lastHeartbeatAt });
+        heartbeatFailed = true;
+    }
+    else {
+        if (heartbeatFailed)
+            logEvent('heartbeat.write_recovered', { level: 'info', elapsed_ms: Math.max(0, Date.now() - Date.parse(lastHeartbeatAt)) });
+        heartbeatFailed = false;
+        lastHeartbeatAt = new Date().toISOString();
+    } }).catch(error => { if (!heartbeatFailed) {
+        logEvent('heartbeat.write_failed', { level: 'error', last_heartbeat_at: lastHeartbeatAt, ...classifyLogError(error) });
+        console.error('第四步任务心跳写入失败');
+    } heartbeatFailed = true; }).finally(() => { heartbeatInFlight = false; })); }, 10000);
+    const directory = join(resolve(root), job.workflow_id, job.id);
+    let output: string | undefined, packageBytes: Buffer | undefined, failurePhase = 'input_validation';
+    try {
+        resumeStepFailure();
+        if (!job.input || inputDigest((({ digest, ...frozen }: FrozenInput) => frozen)(job.input)) !== job.input.digest)
+            throw Object.assign(new Error('invalid snapshot'), { reason_code: 'authoring_input_digest_invalid' });
+        if (job.input.authoring_contract !== FRESH_AUTHORING_CONTRACT)
+            throw Object.assign(new Error('出题任务契约已更新，请重新派发'), { reason_code: 'authoring_contract_changed' });
+        const binding = await stillCurrent(pool, job);
+        if (!binding)
+            throw Object.assign(new Error('stale input'), { reason_code: 'authoring_input_binding_changed' });
+        const materials = await readMaterials(pool, root, job, binding.loaded_materials);
+        const projectContextFiles = await readProjectContext(job);
+        if (job.config?.provider !== 'codex' || typeof job.config.model !== 'string' || !job.config.model.trim() || typeof job.config.reasoning_effort !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(job.config.reasoning_effort))
+            throw new Error('invalid frozen config');
+        logEvent('attempt.input_validated', { level: 'info', material_count: materials.length });
+        const legacyRulesInput = job.input.rule_version_id ? { version_id: job.input.rule_version_id, source_digest: job.input.rule_source_digest, files: projectContextFiles } : undefined;
+        failurePhase = 'agent_execution';
+        const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'authoring' as const, binding_digest: hash(canonicalJson({ input: job.input.digest, config: job.config })), input: { title: job.input.title, materials: materials.map((m, i) => ({ name: `附件${i + 1}`, text: m.text })), ...(job.input.scoring_policy ? { scoring_policy: job.input.scoring_policy } : {}) }, hooks: job.input.hooks, signal };
+        const result = await executeWithStageHooks({ ...hookContext, runMain: additions => cachedExternalCall('authoring_complete', () => author({ ...(job.input.content_contract ? { content_contract: job.input.content_contract } : {}), ...(job.input.scoring_policy ? { scoring_policy: job.input.scoring_policy } : {}), workspace_path: job.input.project_prompt.workspace_path, root: join(directory, 'private'), project_name: job.input.project_name, question: job.input.title, authoring_direction: [job.input.design_context?.scenario ? `任务场景：${job.input.design_context.scenario}` : null, job.input.design_context?.role_perspective ? `角色视角：${job.input.design_context.role_perspective}` : null, job.input.design_context?.target_level ? `目标等级：${job.input.design_context.target_level}（设计目标，不代表项目方认证）` : null, job.input.design_context?.question_tags?.length ? `设计标签：${job.input.design_context.question_tags.join('、')}` : null, job.input.authoring_direction].filter(Boolean).join('\n') || undefined, question_id: job.input.question_id ?? job.input.title, source_files: job.input.source_files ?? [], materials, ...(legacyRulesInput ? { rules: legacyRulesInput } : { project_context: { source_digest: job.input.project_prompt.source_digest, files: projectContextFiles } }), system_authoring_prompt: job.input.system_authoring_prompt ?? '', step_prompt: (job.config.prompt ?? DEFAULT_STEP_PROMPTS[4]) + hookAdditionText(additions), model: job.config.model, reasoning_effort: job.config.reasoning_effort, ...(job.config.timeout_ms ? { timeout_ms: job.config.timeout_ms } : {}), signal, execute: options => runExternalCall({ attempt_id: job.id, operation: 'author' }, call_id => runAgent({ ...options, call_id, task_type: 'question_authoring' })) })), outputForHooks: value => ({ draft: value.draft }) });
+        failurePhase = 'result_validation';
+        const draft = result.draft;
+        if (!result.codex.session_id)
+            throw new Error('invalid authoring binding');
+        const storedResult = { ...draft, ...(job.input.scoring_policy ? { scoring_policy: job.input.scoring_policy } : {}), question_id: result.question_id, question_version: result.question_version, rubric_version: result.rubric_version, codex: { author: result.codex } };
+        failurePhase = 'result_persistence';
+        if (signal?.aborted)
+            throw new Error('cancelled');
+        const resultBinding = await stillCurrent(pool, job);
+        if (!resultBinding)
+            throw new Error('stale result');
+        await readMaterials(pool, root, job, resultBinding.loaded_materials);
+        const publicPackage = Buffer.from(renderPublicQuestionPackage({ question: job.input.title, question_id: job.input.question_id, source_files: job.input.source_files ?? [], materials }, draft));
+        const packagePath = join(directory, 'authored_question.md');
+        packageBytes = publicPackage;
+        output = packagePath;
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(packagePath, publicPackage, { mode: 0o600, flag: 'w' });
+        const tx = await pool.connect();
+        try {
+            await tx.query('BEGIN');
+            if (signal?.aborted || !await currentBindings(tx, job) || !(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE", [job.id])).rowCount)
+                throw new Error('inactive');
+            await registerAsyncAfterHooks({ ...hookContext, pool: tx }, { draft: result.draft });
+            await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1", [job.id, JSON.stringify(storedResult), result.codex.session_id]);
+            await tx.query("UPDATE ai_distill.steps SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=4", [job.workflow_id, JSON.stringify(storedResult)]);
+            await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'authored_question', relative(resolve(root), packagePath), hash(publicPackage), publicPackage.length, publicPackage.toString('utf8')]);
+            await tx.query('COMMIT');
+            logEvent('attempt.completed', { level: 'info', state: 'succeeded' });
+        }
+        catch (error) {
+            await tx.query('ROLLBACK');
+            throw error;
+        }
+        finally {
+            tx.release();
+        }
+    }
+    catch (error) {
+        deferLocalPublication(error);
+        logEvent('attempt.failed', { level: 'error', state: 'failed', ...classifyLogError(error), failure_phase: failurePhase });
+        // 先保存终态，再清理产物/结算PG；断网后只补交同一次失败，不重跑作者。
+        const failure = saveStepFailure(buildAuthoringFailure(error, failurePhase));
+        const failureMessage = failure.message, failureResult = failure.result;
+        if (output)
+            try {
+                const artifact = await pool.query("SELECT id FROM ai_distill.artifacts WHERE workflow_id=$1 AND attempt_id=$2 AND kind='authored_question'", [job.workflow_id, job.id]);
+                if (!artifact.rowCount)
+                    await rm(output, { force: true });
+            }
+            catch (cleanupError) {
+                logEvent('file.cleanup_or_commit_check_failed', { level: 'error', file_kind: 'authored_question', ...classifyLogError(cleanupError) });
+            }
+        const tx = await pool.connect();
+        try {
+            await tx.query('BEGIN');
+            const current = await currentBindings(tx, job);
+            const failed = await tx.query("UPDATE ai_distill.step_attempts SET status='failed',result=$2,error=$3,finished_at=now() WHERE id=$1 AND status='running'", [job.id, JSON.stringify(failureResult), failureMessage]);
+            if (current && failed.rowCount)
+                await tx.query("UPDATE ai_distill.steps SET status='failed',result=$2,error=$3,finished_at=now() WHERE workflow_id=$1 AND ordinal=4 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL) AND (SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1)=$4", [job.workflow_id, JSON.stringify(failureResult), failureMessage, job.id]);
+            await tx.query('COMMIT');
+        }
+        catch (failure) {
+            await tx.query('ROLLBACK');
+            throw failure;
+        }
+        finally {
+            tx.release();
+        }
+    }
+    finally {
+        cancellation.dispose();
+        clearInterval(heartbeat);
+        restoreLogContext();
+    }
+    return true;
 }

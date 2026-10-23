@@ -10,7 +10,7 @@ import {randomUUID} from 'node:crypto';
 import {assertMaterialUse,claimMaterialUse,indexLegacyMaterialUse,readPackageSignature} from './uses';
 
 type Db=Pool|PoolClient;
-type LoadedLink={id:string;project_id:string;package_id:string;package_name:string;selected_revision_id:string|null;selected_redaction_id:string|null;current_revision_id:string|null;position:number;lock_version:number;removed_at:string|null;created_at:string;updated_at:string;material_use_id?:string|null;usage_status?:'in_use'|'submitted';use_lock_version?:number};
+type LoadedLink={selected_version_usable?:boolean;id:string;project_id:string;package_id:string;package_name:string;selected_revision_id:string|null;selected_redaction_id:string|null;current_revision_id:string|null;position:number;lock_version:number;removed_at:string|null;created_at:string;updated_at:string;material_use_id?:string|null;usage_status?:'in_use'|'submitted';use_lock_version?:number};
 const conflict=(message:string)=>new HTTPException(409,{message});
 const notFound=(message:string)=>new HTTPException(404,{message});
 
@@ -65,7 +65,17 @@ export async function readLoadedLibraryPackages(pool:Pool,projectId:string,optio
    p.current_revision_id,l.position,l.lock_version,l.removed_at,l.created_at,l.updated_at,l.material_use_id,u.status AS usage_status,u.lock_version AS use_lock_version,
    CASE WHEN l.selected_redaction_id IS NULL THEN 'original'
     WHEN red_job.config_snapshot->'redaction_template'->>'workflow'='codex_plan' OR red.validation_report->>'redaction_template_id'='aliases' THEN 'aliases'
-    ELSE 'mask' END AS selected_processing_mode
+    ELSE 'mask' END AS selected_processing_mode,
+   CASE WHEN l.selected_redaction_id IS NULL THEN EXISTS(
+    SELECT 1 FROM ai_distill.library_revisions selected_rev
+    JOIN ai_distill.library_jobs extraction ON extraction.revision_id=selected_rev.id AND extraction.kind='extract' AND extraction.status='succeeded'
+    WHERE selected_rev.id=l.selected_revision_id AND selected_rev.package_id=l.package_id AND selected_rev.state='ready' AND selected_rev.file_count>0
+     AND (SELECT count(*) FROM ai_distill.library_documents documents WHERE documents.extraction_job_id=extraction.id AND documents.revision_id=selected_rev.id)=selected_rev.file_count)
+   ELSE red.revision_id=l.selected_revision_id AND red_job.status='succeeded' AND red.validation_report->>'usable_for_question'='true'
+    AND ${redactionJobCurrentValidationSql('red_job')}
+    AND EXISTS(SELECT 1 FROM ai_distill.library_jobs extraction WHERE extraction.id=red.extraction_job_id AND extraction.status='succeeded')
+    AND EXISTS(SELECT 1 FROM ai_distill.library_revisions selected_rev WHERE selected_rev.id=red.revision_id AND selected_rev.state='ready')
+   END AS selected_version_usable
   FROM ai_distill.project_library_packages l
   JOIN ai_distill.library_packages p ON p.id=l.package_id
   JOIN ai_distill.projects pr ON pr.id=l.project_id AND pr.deleted_at IS NULL

@@ -35,6 +35,7 @@ ai-distill/
 | --- | --- | --- |
 | 建立主项目/期次 | POST `/api/projects` 可带 `project_group_id`、`phase_no`、`phase_name`；CLI `project create`；组导航见 `/api/project-groups` | 每个 `projects.id` 仍是一份隔离期次工作流；主项目身份用于跨期材料使用规则 |
 | 管理全局材料包 | `/api/material-library/packages`；CLI `library package ...` | 材料库独立于项目，不因某项目删除而删除 |
+| 超限PDF上传前处理 | 本地`prepareLibraryFiles()`；CLI `library files prepare`；见[预处理说明](../cli/README.md#ofd与超限pdf上传前准备) | 复用`server/materials/pdf-split.ts`，生成受管分片、上传清单和来源审计；不改原件、不写数据库；随后通过API上传同包新版本 |
 | 建立不可变文件版本并处理 | `POST /packages/:id/revisions`、`POST /revisions/:id/jobs`；CLI `library revision create`、`library job start/show/cancel` | 入库、提取、脱敏是独立任务；使用幂等请求键，不由 CLI 自行处理正文 |
 | 加载本期材料 | `/api/projects/:id/material-candidates`、`/loaded-materials`；CLI `project material candidates`、`project materials load/update/remove/restore` | 仅加载全局库包的指定脱敏结果或已提取原文版本；修改关系使用 `If-Match` |
 | 建题与永久使用台账 | `POST /loaded-materials/:linkId/questions`、`/material-uses`；CLI `project materials question`、`project material use update` | 创建题目时冻结所选来源；同一主项目不同期不得重复使用材料，返修状态保留事件 |
@@ -117,6 +118,7 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 | 远程作答 | `remote answer start/run/status` | `remote-answers.ts`、`remote-material-routes.ts`、`answer-models/jobs.ts` | SSH 隧道 + 固定 token；服务器执行 server-owned 作答 attempt；状态查询不返回答案正文 |
 | 主项目/期次 | `project-group list/phases/rename/archive/restore`、`project phase-update` | `commands.ts`、`server/project-groups.ts` | 查询和维护主项目期次身份；phase-update 有活动任务时拒绝 |
 | 全局材料库 | `library package/revision/job/documents/redaction/file/processing` | `commands.ts`、`server/material-library/` | 包与版本、入库/提取/脱敏任务、正文查看、原件下载及全库处理设置 |
+| 材料本地预处理 | `library files prepare`；也可直接调用既有`prepareLibraryFiles()` | `server/materials/prepare-library-files.ts`、`pdf-split.ts` | 上传/提取前按大小、页数切割PDF；生成manifest/provenance，业务写入仍经API |
 | 期次材料与来源 | `project material candidates/materials/material uses/legacy-materials` | `commands.ts`、`projects-routes.ts`、`uses.ts`、`legacy-import.ts` | 候选分页、加载/选版/恢复、题目创建、永久使用台账与旧数据导入 |
 | 进程输出 | `--json`、退出码、中断信号 | `index.ts` | 输出统一结果信封；中断等待不会取消已入队的持久任务 |
 

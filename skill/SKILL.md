@@ -9,9 +9,16 @@ description: Use when the user asks to inspect, execute, or improve ai-distill w
 
 CLI 是工作流客户端，不是新的业务执行器：本机命令覆盖项目期次、全局材料库、加载/使用记录、题目状态、步骤派发、等待、达标、归档、导出和下载；远程专用命令覆盖旧材料工作流的服务器入库／脱敏及题目作答；全局库使用独立 library job，并按实际 blob 存储位置校验执行端。命令的权威语法是 `bun run ai-distill --help` 和 [CLI 命令参考](../cli/README.md)，不在多个地图重复维护参数表。远程模式不提供 Agent 出题、评分、达标判定或归档；这些需要由支持相应 worker 的本机工作流执行。本 Skill 规定工作流决策；`projects/<项目>/skill/` 规定项目出题内容，交由现有作者执行器读取。
 
+## 材料上传与提取前检查
+
+- 上传本机PDF或对已有库版本派发提取前，检查每份文件大小和`pdfinfo`页数，并核对当前`server/validation.ts`与MinerU适配器的限制；包已入库不代表原件满足当前提取限制。
+- 超限时复用`server/materials/prepare-library-files.ts`的`prepareLibraryFiles()`，它调用`splitLargePdf()`生成受管分片，校验页数、原件摘要并输出`manifest.json`和`provenance.json`。先处理完整包清单，再通过API创建同包新版本，依次入库、提取、Agent脱敏、加载；不要对同一超限原件反复派发提取。
+- 此处本地文件预处理是入库/提取请求的前置步骤，可直接调用上述现有函数；不写数据库、不调用模型。业务写入仍经HTTP API。用户指定CLI时使用`library files prepare`，参数见[CLI预处理说明](../cli/README.md#ofd与超限pdf上传前准备)。
+- 区分调用链：旧目录同步自动切割；全局材料库上传和提取不自动切割。不要用旧项目sync代替新库预处理，也不要在任务执行中改变已冻结的文件集合。原件保留，失败检查点和新版本分别记录。
+
 ## 材料处理模式
 
-先读`GET /api/projects/:id/material-processing`或步骤4配置的`material_processing_mode`：`aliases`默认化名、`mask` API遮挡、`original`原文。由程序状态选流程，不能用提示词/Skill覆盖。项目材料任务带`project_id`；CLI仅用户要求时使用`library job start --project <期次UUID>`。原文无需脱敏，直接选择成功提取版本；遮挡/化名选匹配的成功结果后建题。待脱敏材料可以先加载本期，再打开带期次上下文的材料页处理。旧题按冻结快照继续作答、评分和交付，不按当前期次设置切换正文。
+先读`GET /api/projects/:id/material-processing`或步骤4配置的`material_processing_mode`：`aliases`默认Agent化名、`original`使用提取原文；`mask`仅历史兼容，新请求禁止。由程序状态选流程，不能用提示词/Skill覆盖。项目材料任务带`project_id`；CLI仅用户要求时使用`library job start --project <期次UUID>`。原文无需脱敏，直接选择成功提取版本；化名选匹配的成功结果后建题，不能把历史遮挡结果冒充化名版本。待脱敏材料可以先加载本期，再打开带期次上下文的材料页处理。旧题按冻结快照继续作答、评分和交付，不按当前期次设置切换正文。
 
 Agent主体表为私有辅助记录；成功标准是程序校验完成并发布`library_redactions`，不是写出计划、消息称完成或临时文件存在。Agent内置本地校验工具只修正本次产物，不调用其他模型；单次最多10分钟，超时停并保留进度，不自动重试。不要在当前聊天手工脱敏后冒称程序验证成功。具体模块与恢复见[材料库](../server/material-library/README.md)。
 

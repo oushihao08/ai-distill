@@ -36,7 +36,8 @@ test('Work archive passes only validated external identity to the archive handle
  const app=setupExecutionRoutes({projectExists:async()=>true,selectWorkflows:async()=>[],readStepStates:async()=>[]},async(_workflowId,_ordinal,context)=>{received=context;return{id,completed:true};});
  const valid=await app.request(`/api/workflows/${id}/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:{task_id:'LAW-012',org:'org-legal'}})});
  expect(valid.status).toBe(200);expect(received).toEqual({delivery_identity:{task_id:'LAW-012',org:'org-legal'}});
- for(const identity of [{task_id:'12',org:'org-legal'},{task_id:'LAW-012',org:'Uppercase'},{task_id:'LAW-012',org:'org-legal',extra:'x'}])expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:identity})})).status).toBe(400);
+ const custom=await app.request(`/api/workflows/${id}/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:{task_id:'CUSTOM-42',org:'Project-B'}})});expect(custom.status).toBe(200);expect(received).toEqual({delivery_identity:{task_id:'CUSTOM-42',org:'Project-B'}});
+ for(const identity of [{task_id:'',org:'org-legal'},{task_id:'LAW-012',org:''},{task_id:'LAW-012',org:'org-legal',extra:'x'}])expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:identity})})).status).toBe(400);
 });
 test('step-eight publication has an execution route and rejects incomplete prerequisites',async()=>{
  const app=setup(sql=>sql.startsWith('SELECT workflow_kind,source_workflow_id')?{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1}:sql.startsWith('SELECT w.project_id')?{rows:[{project_id:id}],rowCount:1}:empty);
@@ -122,7 +123,7 @@ test('project creation validates JSON and trims input before persisting',async()
  for(const body of ['{',JSON.stringify({name:''}),JSON.stringify({name:'x'.repeat(121)}),JSON.stringify({name:123}),JSON.stringify({name:'test',description:123})]){
   expect((await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body})).status).toBe(400);
  }
- const good=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:' test ',description:' text ',material_root:root})});expect(good.status).toBe(201);expect(saved?.slice(1,3)).toEqual(['test','text']);expect(saved?.[12]).toBeNull();expect((await good.json()as any).name).toBe('test');
+ const good=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:' test ',description:' text ',material_backend:'legacy',material_root:root})});expect(good.status).toBe(201);expect(saved?.slice(1,3)).toEqual(['test','text']);expect(saved?.[12]).toBeNull();expect((await good.json()as any).name).toBe('test');
 });
 test('project creation records the parent and phase and reuses that parent skill path',async()=>{
  const root=await mkdtemp(join(tmpdir(),'create-project-phase-'));dirs.push(root);
@@ -134,7 +135,7 @@ test('project creation records the parent and phase and reuses that parent skill
   if(sql.startsWith('INSERT INTO ai_distill.projects')){inserted=values;return{rows:[{id,name:values?.[1],parent_name:values?.[5],phase_name:values?.[6],local_skill_path:values?.[4]}],rowCount:1};}
   return empty;
  });
- const response=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'豆包高经济价值 - 第五期',parent_name:'豆包高经济价值',phase_name:'第五期',material_root:materialRoot})});
+ const response=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'豆包高经济价值 - 第五期',parent_name:'豆包高经济价值',phase_name:'第五期',material_backend:'legacy',material_root:materialRoot})});
  expect(response.status).toBe(201);
  expect(inserted?.slice(5,7)).toEqual(['豆包高经济价值','第五期']);
  expect(inserted?.[4]).toBe(skillPath);
@@ -246,7 +247,7 @@ test('optional redacted DOCX export is separate from workflow steps and safely d
   calls.push(sql);
   if(sql.includes('FROM ai_distill.workflows w JOIN ai_distill.projects p')&&sql.includes('FOR UPDATE OF w'))return{rows:[{workflow_id:id,project_id:id,project_name:'测试项目 - 第五期',parent_name:'测试项目',phase_name:'第五期',title:'问题1',source_key:'题目1',material_root:materialRoot}],rowCount:1};
   if(sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))return{rows:steps,rowCount:steps.length};
-  if(sql.includes("status IN ('waiting','running') LIMIT 1"))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("status IN ('waiting','running')"))return{rows:[],rowCount:0};
   if(sql.includes('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=9'))return{rows:[{status:'succeeded'}],rowCount:1};
   if(sql.includes("ar.kind='redacted_markdown'"))return{rows:[{id:attemptId,status:'succeeded',input:attemptInput,result:{redacted_sha256:sha256},content:markdown,sha256}],rowCount:1};
   if(sql.includes("kind='redacted_index'")){const content=JSON.stringify({redacted_sha256:sha256,materials:[{material_id:source[0]!.material_id,markdown}]});return{rows:[{content,sha256:createHash('sha256').update(content).digest('hex')}],rowCount:1};}
@@ -436,4 +437,37 @@ test('空钩子无需033迁移即可健康，其他必需迁移缺失仍报未�
  const health=async(applied:string[])=>setup(sql=>sql.startsWith('SELECT name FROM ai_distill.schema_migrations')?{rows:applied.map(name=>({name})),rowCount:applied.length}:empty).request('/api/health');
  const optionalMissing=await health(names);expect(optionalMissing.status).toBe(200);expect(await optionalMissing.json()).toMatchObject({schema:'ready'});
  const requiredMissing=await health(names.filter(name=>name!=='032_workflow_authoring_direction.sql'));expect(requiredMissing.status).toBe(503);expect(await requiredMissing.json()).toMatchObject({schema:'migrations_pending',pending_count:1});
+});
+
+
+test('HTTP新期缺省共享材料库并冻结出题专用默认，首期不猜Skill路径',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'library-phase-default-'));dirs.push(root);
+ const saved:any[][]=[],configs:any[][]=[];let scanned=false;
+ const app=setup((sql,values)=>{
+  if(sql.startsWith('INSERT INTO ai_distill.project_groups'))return{rows:[{id:'55555555-5555-4555-8555-555555555555',name:'新主项目'}],rowCount:1};
+  if(sql.startsWith('SELECT authoring_defaults'))return{rows:[{authoring_defaults:{model:'gpt-6.1-sol',reasoning_effort:'low'}}],rowCount:1};
+  if(sql.startsWith('INSERT INTO ai_distill.projects')){saved.push(values as any[]);return{rows:[{id}],rowCount:1};}
+  if(sql.startsWith('INSERT INTO ai_distill.project_step_configs'))configs.push(values as any[]);
+  if(sql.startsWith('INSERT INTO ai_distill.workflows'))scanned=true;
+  return{rows:[],rowCount:0};
+ });
+ const body={name:'新主项目',workspace_path:root,local_skill_path:root};
+ const response=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ expect(response.status).toBe(201);expect(saved[0]?.[3]).toBeNull();expect(saved[0]?.[7]).toBe('material_packages');expect(saved[0]?.[9]).toBe('library_v1');expect(saved[0]?.[12]).toBe(1);expect(scanned).toBe(false);
+ expect(JSON.parse(configs.find(v=>v[1]===4)![2])).toMatchObject({model:'gpt-6.1-sol',reasoning_effort:'low',material_processing_mode:'aliases',material_source_mode:'redacted'});
+ const invalid=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'新主项目',workspace_path:root})});expect(invalid.status).toBe(400);
+});
+
+test('项目详情按本期覆盖或共享Skill报告真实生效路径，两期不串用',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'phase-skill-status-'));dirs.push(root);
+ const shared=join(root,'shared'),phase1=join(root,'one'),phase2=join(root,'two');
+ await mkdir(shared);await mkdir(join(phase1,'skill'),{recursive:true});await mkdir(phase2);
+ await writeFile(join(shared,'SKILL.md'),'---\nname: shared\ndescription: fixture\n---\n共享');
+ await writeFile(join(phase1,'skill','SKILL.md'),'---\nname: override\ndescription: fixture\n---\n本期');
+ const second='22222222-2222-4222-8222-222222222222';
+ const app=setup((sql,values)=>sql.startsWith('SELECT p.*,system_config.model')?{rows:[{id:values?.[0],name:'测试期次',parent_name:'测试主项目',material_backend:'library_v1',material_mode:'material_packages',workspace_path:values?.[0]===id?phase1:phase2,local_skill_path:shared,__step_configs:[]}],rowCount:1}:{rows:[],rowCount:0});
+ const first=await (await app.request(`/api/projects/${id}`)).json() as any;
+ const other=await (await app.request(`/api/projects/${second}`)).json() as any;
+ expect(first.project).toMatchObject({skill_exists:true,effective_skill_path:join(phase1,'skill')});
+ expect(other.project).toMatchObject({skill_exists:true,effective_skill_path:shared});
 });

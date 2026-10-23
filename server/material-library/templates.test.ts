@@ -8,7 +8,7 @@ import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './proc
 const settings=()=>({version:1,extraction:{protocol:'v1',provider_config:{}},redaction:{provider:'codex',model:'existing',reasoning_effort:'medium',prompt:'原有提示词'},execution:{task_timeout_ms:1000,request_timeout_ms:1000},policy:{preserve_dates:true,preserve_amounts:true}});
 test('默认Agent化名模板；显式mask保留原有协议及独立提示词',()=>{
  const s=settings(),before=JSON.stringify(s),mask=resolveLibraryTemplate(s,'mask'),alias=resolveLibraryTemplate(s);
- expect(libraryRedactionTemplates({...s,redaction_templates:[]}).map(t=>t.id)).toEqual(['mask','aliases']);
+ expect(libraryRedactionTemplates({...s,redaction_templates:[]}).map(t=>t.id)).toEqual(['aliases']);
  expect(mask.workflow).toBe('field_mapping');expect(mask.redaction).toEqual(s.redaction);expect(alias.workflow).toBe('codex_plan');expect(alias.redaction.prompt).not.toBe(mask.redaction.prompt);
  const frozen=JSON.parse(JSON.stringify(alias));s.redaction.prompt='更新';expect(resolveLibraryTemplate(s,'mask').digest).not.toBe(mask.digest);expect(resolveLibraryTemplate(s).digest).toBe(frozen.digest);expect(before).not.toBe(JSON.stringify(s));
 });
@@ -25,10 +25,10 @@ test('模板参数只用于脱敏任务；旧请求形状不变',()=>{
  expect(()=>validateLibraryJobRequest({...base,kind:'extract',template_id:'mask'})).toThrow();expect(()=>validateLibraryJobRequest({...base,template_id:'../x'})).toThrow();
 });
 
-test('字段映射仍可显式派发；Agent模板自动入队并冻结数据库提示词与模型',async()=>{
+test('拒绝新字段映射任务；Agent模板自动入队并冻结数据库提示词与模型',async()=>{
  const {mkdtemp,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
  const {saveLibraryProcessingSettings}=await import('./settings'),{enqueueLibraryJob}=await import('./jobs');
- const root=await mkdtemp(join(tmpdir(),'library-template-queue-'));const alias=resolveLibraryTemplate(settings(),'aliases');const s={...settings(),redaction_templates:[{id:'strict',name:'另一项目',workflow:'field_mapping',redaction:{...settings().redaction,prompt:'独立规则'}},{id:alias.id,name:alias.name,workflow:alias.workflow,redaction:alias.redaction}]};saveLibraryProcessingSettings(root,0,s);
+ const root=await mkdtemp(join(tmpdir(),'library-template-queue-'));const alias=resolveLibraryTemplate(settings(),'aliases');const s={...settings(),redaction_templates:[{id:'strict',name:'另一项目',workflow:'codex_plan',redaction:{provider:'codex',prompt:'独立规则'}},{id:alias.id,name:alias.name,workflow:alias.workflow,redaction:alias.redaction}]};saveLibraryProcessingSettings(root,0,s);
  let frozen:any;
  const query=async(sql:string,v:any[]=[])=>{
   if(sql.startsWith('SELECT id,processing_settings'))return{rows:[{id:'package'}]};
@@ -42,13 +42,15 @@ test('字段映射仍可显式派发；Agent模板自动入队并冻结数据库
  const pool={connect:async()=>({query,release(){}})} as any;
  const body={kind:'redact',execution_target:'local',request_key:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',extraction_job_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',template_id:'strict'};
  try{
+  await expect(enqueueLibraryJob(pool,'package','revision',{...body,template_id:'mask'},root)).rejects.toThrow('已退役');
+  expect(frozen).toBeUndefined();
   await enqueueLibraryJob(pool,'package','revision',body,root);
-  expect(frozen.settings.redaction.prompt).toBe('独立规则');expect(frozen.redaction_template.id).toBe('strict');
-  s.redaction_templates[0]!.redaction.prompt='后来的规则';saveLibraryProcessingSettings(root,1,s);expect(frozen.settings.redaction.prompt).toBe('独立规则');
+  expect(frozen.settings.redaction.prompt).toBe('独立规则');
+  expect(()=>saveLibraryProcessingSettings(root,1,{...s,redaction_templates:[{id:'old',name:'旧流程',workflow:'field_mapping',redaction:settings().redaction}]})).toThrow('已退役');
   await expect(enqueueLibraryJob(pool,'package','revision',{...body,template_id:'aliases'},root)).resolves.toMatchObject({id:'queued'});
   expect(frozen.redaction_template.workflow).toBe('codex_plan');expect(frozen.settings.redaction.provider).toBe('codex');expect(frozen.settings.redaction.model).toBeTruthy();
   expect(frozen.settings.redaction.prompt).toBe(alias.redaction.prompt);
-  await expect(enqueueLibraryJob(pool,'package','revision',{...body,template_id:'mask'},root)).resolves.toMatchObject({id:'queued'});
+  await expect(enqueueLibraryJob(pool,'package','revision',{...body,template_id:'mask'},root)).rejects.toThrow('已退役');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 import {resolveMaterialProcessingMode,materialProcessingSourceMode,redactionProcessingMode} from '../../shared/material-library';
@@ -64,10 +66,11 @@ test('persisted material processing mode defaults to aliases and retains origina
 test('project job routing reads persisted mode and rejects prompt/template overrides',async()=>{
  const db={query:async()=>({rows:[{id:'phase',config:{material_processing_mode:'mask'}}]})} as any;
  expect(await readProjectMaterialProcessingMode(db,'phase')).toBe('mask');
- expect(projectRedactionTemplate('mask')).toBe('mask');
+ expect(()=>projectRedactionTemplate('mask')).toThrow('已退役');
  expect(projectRedactionTemplate('aliases')).toBe('aliases');
+ expect(projectRedactionTemplate('aliases','custom-agent-template')).toBe('custom-agent-template');
  expect(()=>projectRedactionTemplate('original')).toThrow('无需派发脱敏');
- expect(()=>projectRedactionTemplate('mask','aliases')).toThrow('不一致');
+ expect(()=>projectRedactionTemplate('mask','aliases')).toThrow('已退役');
 });
 test('project mode freezes real queue lane: API mask, Agent aliases, and no original redaction',async()=>{
  const {mkdtemp,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
@@ -88,7 +91,7 @@ test('project mode freezes real queue lane: API mask, Agent aliases, and no orig
  const pool={connect:async()=>({query,release(){}})} as any;
  const body={kind:'redact',execution_target:'local',request_key:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',extraction_job_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',project_id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc'};
  try{
-  await enqueueLibraryJob(pool,'package','revision',body,root);expect(written).toMatchObject({lane:'api',input:{material_processing_mode:'mask'},config:{redaction_template:{id:'mask'}}});
+  await expect(enqueueLibraryJob(pool,'package','revision',body,root)).rejects.toThrow('已退役');expect(written).toBeUndefined();
   mode='aliases';await enqueueLibraryJob(pool,'package','revision',body,root);expect(written).toMatchObject({lane:'agent',input:{material_processing_mode:'aliases'},config:{redaction_template:{id:'aliases'}}});
   mode='original';written=undefined;await expect(enqueueLibraryJob(pool,'package','revision',body,root)).rejects.toThrow('无需派发脱敏');expect(written).toBeUndefined();
  }finally{await rm(root,{recursive:true,force:true});}

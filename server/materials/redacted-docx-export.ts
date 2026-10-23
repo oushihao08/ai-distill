@@ -184,7 +184,7 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
  return{attempt_id:String(row.id),redacted_sha256:String(row.sha256),markdown:String(row.content),materialMarkdown,materialDocuments};
 }
 
-async function contextForExport(db:Pool|PoolClient,workflowId:string,requireCompleted:boolean):Promise<ExportContext>{
+async function contextForExport(db:Pool|PoolClient,workflowId:string,requireCompleted:boolean,options:{allowPublicationInProgress?:boolean}={}):Promise<ExportContext>{
  const workflow=(await db.query('SELECT w.id AS workflow_id,w.project_id,w.title,w.source_key,w.workflow_kind,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources s WHERE s.workflow_id=w.id) AS has_library_snapshot,p.name AS project_name,p.parent_name,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w',[workflowId])).rows[0];
  if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
  if(requireCompleted){
@@ -193,8 +193,10 @@ async function contextForExport(db:Pool|PoolClient,workflowId:string,requireComp
   // 材料库题目只有4–8；按统一步骤注册表检查适用步骤，不能要求不存在的旧入库/脱敏记录。
   const materialBackend=workflow.has_library_snapshot?'library_v1':workflow.material_backend??'legacy';
   const required=getWorkflowStepDefinitions(materialBackend,workflow.workflow_kind??'question');
-  if(required.some(step=>!['succeeded','skipped'].includes(String(statuses.get(step.ordinal))))||statuses.get(8)!=='succeeded')throw new HTTPException(409,{message:'请先完成当前工作流并归档达标题目'});
-  const active=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal<>10 AND status IN ('waiting','running') LIMIT 1",[workflowId])).rowCount;
+  const requiredCurrent=options.allowPublicationInProgress?required.filter(step=>step.ordinal!==8):required;
+  const publicationStepReady=options.allowPublicationInProgress?['running','succeeded'].includes(String(statuses.get(8))):statuses.get(8)==='succeeded';
+  if(requiredCurrent.some(step=>!['succeeded','skipped'].includes(String(statuses.get(step.ordinal))))||!publicationStepReady)throw new HTTPException(409,{message:'请先完成当前工作流并归档达标题目'});
+  const active=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal<>10 AND status IN ('waiting','running') AND NOT ($2::boolean AND ordinal=8) LIMIT 1",[workflowId,Boolean(options.allowPublicationInProgress&&statuses.get(8)==='running')])).rowCount;
   if(active)throw new HTTPException(409,{message:'当前仍有工作流任务执行中'});
  }
  const redaction=await readCurrentRedactionForDocx(db,workflowId);
@@ -205,11 +207,11 @@ async function contextForExport(db:Pool|PoolClient,workflowId:string,requireComp
 }
 
 /** Archive one DOCX per current material using the source mode frozen on the question; never changes workflow steps. */
-export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,storageRoot:string,projectExportsRoot:string,expectedMode?:'redacted'|'original'){
+export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,storageRoot:string,projectExportsRoot:string,expectedMode?:'redacted'|'original',options:{allowPublicationInProgress?:boolean}={}){
  const db=await pool.connect();let tx=false;const changes:FileChange[]=[];
  try{
   await db.query('BEGIN');tx=true;
-  const context=await contextForExport(db,workflowId,true);
+  const context=await contextForExport(db,workflowId,true,options);
   const materialMode=context.material_mode??'redacted',artifactKind=materialMode==='original'?'original_docx':'redacted_docx';
   if(expectedMode&&materialMode!==expectedMode)throw new HTTPException(409,{message:expectedMode==='redacted'?'当前题目冻结为未脱敏材料，请使用材料 DOCX 导出入口':'当前题目冻结为脱敏材料，不能按原文 DOCX 导出'});
   const location=await archiveLocation(projectExportsRoot,context.parent_name||context.project_name,context.phase_name??'',context.phase_name?(context.source_key||context.title):context.title,materialMode);

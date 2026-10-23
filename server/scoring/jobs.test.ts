@@ -12,7 +12,7 @@ import {scoreExecutionInstructions} from './executor';
 import type {Pool} from 'pg';
 import {createHash} from 'node:crypto';
 import {inputDigest} from '../answer-models/input';
-import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
+import {mkdtemp,rm,mkdir,writeFile,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 // SQL替身不得继承工作台local模式并向真实队列登记意图。
@@ -102,7 +102,7 @@ test('enqueue rejects a model bundle with no successful answer',async()=>{
 });
 test('missing answer cannot create score attempt',async()=>{const a=fake({unready:true});await expect(enqueueScore(a.pool,'workflow')).rejects.toThrow();expect(a.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);});
 test('idle scoring worker does not call Codex',async()=>{const a=fake({empty:true});let called=false;expect(await runNextScore(a.pool,'unused',async c=>{called=true;return grade(c);})).toBe(false);expect(called).toBe(false);});
-test('valid grade saves report, binding, usage, session and downloadable artifact',async()=>fixture(async root=>{const a=fake();await runNextScore(a.pool,root,grade);expect(a.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(true);const saved=a.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'));expect(saved?.values[1]).toBe('succeeded');expect(JSON.parse(saved!.values[2])).toMatchObject({validation:{valid:true},report:{binding:context.binding},session_id:'grade-session',usage:{input_tokens:5}});}));
+test('valid grade saves report, binding, usage, session and downloadable artifact',async()=>fixture(async root=>{const a=fake();await runNextScore(a.pool,root,grade);const artifact=a.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))!;const bytes=await readFile(join(root,String(artifact.values[4])));expect(createHash('sha256').update(bytes).digest('hex')).toBe(artifact.values[5]);expect(JSON.parse(bytes.toString())).toMatchObject({validation:{valid:true}});expect(a.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(true);const saved=a.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'));expect(saved?.values[1]).toBe('succeeded');expect(JSON.parse(saved!.values[2])).toMatchObject({validation:{valid:true},report:{binding:context.binding},session_id:'grade-session',usage:{input_tokens:5}});}));
 test('API score claims only API-configured attempts and freezes provider and model in the published result',async()=>fixture(async root=>{
  const a=fake({provider:'api'});let received:any;
  const apiGrade=async(c:any,o:any)=>{received=o;return grade(c);};

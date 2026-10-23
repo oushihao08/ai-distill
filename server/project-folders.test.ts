@@ -75,6 +75,7 @@ test('authoring persists three processing modes with one consistent material sou
  for(const mode of ['original','mask','aliases'] as const)expect(validateStepConfigForExecution(4,{...base,material_processing_mode:mode})).toMatchObject({material_processing_mode:mode,material_source_mode:mode==='original'?'original':'redacted'});
  expect(validateStepConfigForExecution(4,{...base,material_source_mode:'original'})).toMatchObject({material_processing_mode:'original'});
  expect(()=>validateStepConfigForExecution(4,{...base,material_processing_mode:'aliases',material_source_mode:'original'})).toThrow('不一致');
+ expect(()=>validateStepConfig(4,{...base,material_processing_mode:'mask'})).toThrow('已退役');
 });
 
 test('评分步骤可选择 API 且仅冻结经验证的 API 连接参数',()=>{

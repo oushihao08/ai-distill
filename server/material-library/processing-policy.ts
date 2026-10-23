@@ -14,8 +14,9 @@ export async function readProjectMaterialProcessingMode(db:Pool|PoolClient,proje
 /** 项目上下文优先于客户端模板；原文模式不派脱敏，避免页面选择与执行分叉。 */
 export function projectRedactionTemplate(mode:MaterialProcessingMode,requested?:string){
  if(mode==='original')throw new HTTPException(409,{message:'本期使用原文，无需派发脱敏；请使用已成功提取的原文版本'});
- if(requested&&requested!==mode)throw new HTTPException(409,{message:'所选脱敏方式与本期材料处理设置不一致'});
- return mode;
+ if(mode==='mask')throw new HTTPException(409,{message:'API遮挡脱敏已退役，请先明确修改本期材料处理设置'});
+ // 模式决定方法；模板只定制同一Agent方法的提示词，具体workflow由入队校验。
+ return requested??mode;
 }
 
 /** 原始成功与后续复核分开；旧结果无复核记录时保持原可用性。仅供内部固定SQL别名使用。 */

@@ -51,7 +51,7 @@ test('post-Agent cleanup preserves mapped identifiers and compiles exact cleanup
  page.text=page.structure.map((block:any)=>block.text).join('\n');files[0]!.text_sha256=createHash('sha256').update(page.text).digest('hex');
  plan.edits.push({target_id:'f1p1b3f1',source_text:'12345678',occurrence:1,kind:'identifier',keep_prefix:''});plan.documents[0]!.ranges[0]!.last_block_id='f1p1b4';
  const out=compileAgentMaterialPlan(plan,files,identity),text=out.prepared.documents[0]!.text;
- expect(text).toContain('12****78');expect(text).toContain('10000元，2023年1月1日');expect(text).not.toMatch(/NO TEXT|221|-22-|15:24:08/);
+ expect(text).toContain('12****78');expect(text).toContain('10000元，2023年1月1日');expect(text).not.toMatch(/NO TEXT|15:24:08/);expect(text).toContain('221\n-22-');
  for(const edit of out.plan.edits)expect(page.text.slice(edit.start,edit.end)).toBe(edit.source_text);
 });
 test('rejects overlapping identities, uncovered blocks and aliases colliding with original names',()=>{

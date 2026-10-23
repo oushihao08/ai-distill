@@ -45,10 +45,18 @@ workflow-config.ts 的可选 content_contract=work_legal_v1 供出题阶段显�
 
 `agent-material-plan.ts`定义Agent整包语义输出及编译器：生成稳定字段/块ID，展开已确认的固定主体映射，应用类型化遮盖，自动计算UTF-16和编辑后分册坐标；精确图像占位标记及独立字段“无法识别”由程序清除，编译后仍有标记则拒绝发布，再调用原prepared-structure完整校验。`agent-material-plan.test.ts`仅用合成资料验证此契约。
 
+精确编辑重叠仍以`agent_edit_overlap`拒绝；异常的`validation_details`仅包含冲突字段ID、原计划编辑数组的零起始序号及字段内坐标，供Agent私有校验器定位修正，不包含主体原称、号码或正文，不改变发布标准。
+
+文书标题残留主体原称时，`agent_title_contains_identity`的私有定位信息包含文书ID及文书/主体/变体的零起始序号，不回显标题和原称。
+
 识别编号/电话编辑还须检查完整原字段中的金额和百分比范围；即使Agent仅提交不含单位的数字或其子串，碰到这些业务值也以`agent_business_value_edit`拒绝发布，防止“334666元”的数字部分被误当识别编号。
 
-`material-library.ts`同时定义三模式`MaterialProcessingMode`及兼容解析/来源映射/结果分类函数，供后端和页面共用。处理意图与original/redacted快照来源是不同层次：mask和aliases均冻结redacted，原文冻结original；执行后端不写进处理方式枚举。
+`material-library.ts`区分当前可保存两模式`NewMaterialProcessingMode`与含历史mask的`MaterialProcessingMode`及兼容解析/来源映射/结果分类函数，供后端和页面共用。处理意图与original/redacted快照来源是不同层次：mask和aliases均冻结redacted，原文冻结original；执行后端不写进处理方式枚举。
 
-`scan-noise.ts`提供脱敏后统一清理方法`cleanRedactionText()`：将明确OCR占位标记、数字前缀扫描时间戳、扫描/打印时间标签及独立数字行（包括`-22-`）替换为空串，保留换行；支持大小写和常见空格/下划线变体。固定列表包括NO TEXT、NO TEXT DETECTED、NO TEXT FOUND、QR Code、Image、Barcode、Bar Code、UNREADABLE等，不泛删`[证据1]`等正文。数字行不作用于表格/列表/公式/代码块；明确金额、数量或编号标签后的值及已被Agent遮盖的编号保留。普通正文日期、带单位金额、小数和`1、`条目不匹配。
+`scan-noise.ts`提供脱敏后统一清理方法`cleanRedactionText()`：将明确OCR占位标记、数字前缀扫描时间戳、扫描/打印时间标签替换为空串；普通独立数字行（包括`-22-`）默认保留，保留换行；支持大小写和常见空格/下划线变体。固定列表包括NO TEXT、NO TEXT DETECTED、NO TEXT FOUND、QR Code、Image、Barcode、Bar Code、UNREADABLE等，不泛删`[证据1]`等正文。数字行不作用于表格/列表/公式/代码块；明确金额、数量或编号标签后的值及已被Agent遮盖的编号保留。普通正文日期、带单位金额、小数和`1、`条目不匹配。
 
-`findScanNoiseEdits()`将同一清理规则转为冻结原文精确坐标，供Agent计划编译并验证文书覆盖；`cleanScanNoisePages()`按结构字段生成清理副本，供API映射返回后调用并重建正文/索引。两者不修改冻结提取原文或既有发布结果。跨页扫描签名/页角序列仍作为补充规则；测试包含坐标、幂等、单位/日期、表格和映射后编号保留。
+`findScanNoiseEdits()`将同一清理规则转为冻结原文精确坐标，供Agent计划编译并验证文书覆盖；`cleanScanNoisePages()`按结构字段生成清理副本，供API映射返回后调用并重建正文/索引。两者不修改冻结提取原文或既有发布结果。数字删除仅由有结构证据的跨页扫描签名/页角序列触发；单凭有限字段白名单不能认定数字为垃圾。跨页扫描签名/页角序列；测试包含坐标、幂等、单位/日期、表格和映射后编号保留。
+
+API供应商标识唯一枚举为types.ts的MODEL_API_PROVIDERS；钩子配置和安全日志复用此值集合，入口仍独立校验端点、密钥和模型能力。
+
+`project-creation.ts`由服务端只读回执接口复用的创建参数匹配器（目录先由服务端规范化），按主项目/期号查候选后严格比较关键参数，冲突不冒记成功；无网络和写入副作用。

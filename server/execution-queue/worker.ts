@@ -64,6 +64,8 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
  // 单飞后台对账：慢查询不占据每个通道的领取前置，失败后退避，禁止叠加轮次。
  const sync=()=>{if(reconciliation||Date.now()<nextSync||signal.aborted)return;
   reconciliation=(async()=>{
+   // 活着的消费者也恢复本机已死亡的执行者；未知调用仍进入needs_review。
+   try{q.recover();}catch(error){logEvent('queue.recovery_failed',{level:'error',component:'local_execution_queue',...classifyLogError(error)});}
    for(const reconcile of [reconcileRegistrations,synchronizeLocalCancellations,reconcileFinishedJobs]){
     if(signal.aborted)break;
     try{await reconcile(pool,q);}catch(error){logEvent('queue.reconciliation_failed',{level:'error',component:'local_execution_queue',...classifyLogError(error)});}
@@ -87,7 +89,8 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
      :kind==='library'?"jsonb_build_object('executor_kind',j.executor_kind,'execution_target',j.execution_target)":"'{}'::jsonb";
     const query:QueryConfig&{query_timeout:number}={text:`SELECT j.id,${projection} AS job FROM ai_distill.${tables[kind]} j WHERE j.id=ANY($1::uuid[])`,query_timeout:15000};
     const rows=(await pool.query(query,[selected.map(j=>j.id)])).rows;
-    for(const row of rows){const candidate=selected.find(j=>j.id===row.id);if(candidate&&canRunLocalTask(mode,candidate,row.job,target,workflowIds)){allowedIds.push(candidate.id);metadataById.set(candidate.id,row.job);}}
+    const candidatesById=new Map(selected.map(candidate=>[candidate.id,candidate]));
+    for(const row of rows){const candidate=candidatesById.get(row.id);if(candidate&&canRunLocalTask(mode,candidate,row.job,target,workflowIds)){allowedIds.push(candidate.id);metadataById.set(candidate.id,row.job);}}
    }
   }
   if(signal.aborted)return false;

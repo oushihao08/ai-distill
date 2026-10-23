@@ -1,6 +1,6 @@
 /**
  * 文件职责：在已由 worker 槽位保护的执行通道中运行材料库入库、提取和脱敏任务。
- * 关键入口：`runNextLibraryJob()` 领取匹配任务；默认Agent按语义计划整包脱敏，显式旧模板继续字段映射。
+ * 关键入口：`runNextLibraryJob()` 领取匹配任务；默认Agent按语义计划整包脱敏，旧字段映射仅用于历史冻结任务收尾。
  * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
 import {deferLocalPublication,readLibraryFailure,saveLibraryFailure} from '../execution-queue/runtime';

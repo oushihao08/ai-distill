@@ -18,7 +18,7 @@ export const AGENT_MATERIAL_PLAN_SCHEMA=object({
  documents:array(object({id:string,title:string,ranges:array(object({first_block_id:string,last_block_id:string})),duplicate_of:{type:['string','null']}})),
  unresolved:array(object({target_id:string,kind:{enum:['identity','boundary','extraction','noise']},blocking:{type:'boolean'},reason:string})),
 });
-function fail(code:string):never{throw Object.assign(new Error('Agent材料计划校验失败'),{reason_code:code});}
+function fail(code:string,validation_details?:Record<string,unknown>):never{throw Object.assign(new Error('Agent材料计划校验失败'),{reason_code:code,...(validation_details?{validation_details}:{})});}
 /** 输入仅一次展开正文；字段ID定位编辑，块ID定位分册，避免要求模型计算字符数。 */
 export function agentMaterialSource(files:PreparationFile[]){
  const fields=new Map<string,{file_id:string;page:number;text:string;start:number;end:number}>();
@@ -104,14 +104,24 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
  }
  // 全称/简称在同一主体的同一位置重叠时使用最长称呼；不同主体或其他编辑重叠仍拒绝。
  edits.sort((a,b)=>a.file_id.localeCompare(b.file_id)||a.page-b.page||a.start-b.start||b.end-a.end);
+ // 私有校验器只返回定位ID、条目序号和字段内坐标，不回显原称、号码或正文。
+ const describeEdit=(edit:any)=>{
+  const field=[...fields].find(([,f])=>f.file_id===edit.file_id&&f.page===edit.page&&f.start<=edit.start&&f.end>=edit.end);
+  const target_id=field?.[0];
+  const entity_index=edit.entity_id?value.entities.findIndex(entity=>entity.id===edit.entity_id):-1;
+  return{target_id:target_id??null,page:edit.page,start:edit.start-(field?.[1].start??0),end:edit.end-(field?.[1].start??0),
+   plan_edit_indices:value.edits.flatMap((candidate,index)=>candidate.target_id===target_id&&candidate.source_text===edit.source_text?[index]:[]),
+   ...(entity_index>=0?{entity_index,entity_variant_indices:value.entities[entity_index]!.variants.flatMap((variant,index)=>variant.text===edit.source_text?[index]:[])}:{})};
+ };
  const exact:any[]=[];
- for(const edit of edits){const prior=exact.at(-1);if(prior&&prior.file_id===edit.file_id&&prior.page===edit.page&&prior.end>edit.start){if(prior.entity_id&&prior.entity_id===edit.entity_id&&prior.end>=edit.end)continue;fail('agent_edit_overlap');}exact.push(edit);}
+ for(const edit of edits){const prior=exact.at(-1);if(prior&&prior.file_id===edit.file_id&&prior.page===edit.page&&prior.end>edit.start){if(prior.entity_id&&prior.entity_id===edit.entity_id&&prior.end>=edit.end)continue;fail('agent_edit_overlap',{left:describeEdit(prior),right:describeEdit(edit)});}exact.push(edit);}
  const shift=(file:string,page:number,pos:number)=>pos+exact.filter(e=>e.file_id===file&&e.page===page&&e.end<=pos).reduce((n,e)=>n+e.replacement_text.length-(e.end-e.start),0);
  const used=new Set<string>();
  const documentIds=new Set(value.documents.map(document=>document.id));
- const documents=value.documents.map(doc=>{
+ const documents=value.documents.map((doc,document_index)=>{
   if(doc.duplicate_of!==null&&(!documentIds.has(doc.duplicate_of)||doc.duplicate_of===doc.id))fail('agent_duplicate_reference_invalid');
-  if(value.entities.some(e=>e.variants.some(v=>doc.title?.includes(v.text))))fail('agent_title_contains_identity');
+  const entity_index=value.entities.findIndex(e=>e.variants.some(v=>doc.title?.includes(v.text)));
+  if(entity_index>=0)fail('agent_title_contains_identity',{document_index,document_id:doc.id,entity_index,variant_index:value.entities[entity_index]!.variants.findIndex(v=>doc.title?.includes(v.text))});
   const segments:{file_id:string;page:number;start:number;end:number}[]=[];
   for(const range of doc.ranges){
    const a=blocks.findIndex(b=>b.id===range.first_block_id),b=blocks.findIndex(b=>b.id===range.last_block_id);

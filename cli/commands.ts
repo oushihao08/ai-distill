@@ -47,6 +47,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   batch create --project UUID (--ids UUID,... | --all) --size 数量 --to STEP_KEY --out 清单路径
   batch skip --file 清单路径 --ids UUID,... --reason 原因（仅记录本轮跳过，不取消任务）
   project create --name 显示名称 [--material-backend legacy --material-root 绝对路径 | --material-backend library_v1 --workspace-path 绝对路径] [--parent-name 主项目 --phase-name 期数 --phase-no N] [--project-group UUID] [--skill-path 绝对路径] [--settings-file JSON]
+    默认 library_v1、期号1、Agent化名；需要 --workspace-path，首期明确 --skill-path；旧目录须显式 --material-backend legacy。
   project phase-update --project UUID --phase-no N --phase-name 期名 --expected-name 当前完整名称
   project-group rename|archive|restore --group UUID [--name 主项目名称]
   library package create --name 名称 [--description 说明] [--tags a,b]
@@ -224,7 +225,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const steps=object(settings.steps,'步骤设置');
         for(const [key,value] of Object.entries(steps)){
           const step=getStepDefinition(key);
-          if(!step?.visible||![4,5,6,9].includes(step.ordinal))throw new CliError(`不支持通过设置文件修改步骤：${key}`);
+          if(!step?.visible||![4,5,6].includes(step.ordinal))throw new CliError(`不支持通过设置文件修改步骤：${key}`);
           if(value===null){if(![4,6,9].includes(step.ordinal))throw new CliError(`步骤 ${key} 不支持恢复默认`);operations.push({key:`steps.${key}`,path:`/api/projects/${projectId}/steps/${step.ordinal}/config`,method:'DELETE'});}
           else operations.push({key:`steps.${key}`,path:`/api/projects/${projectId}/steps/${step.ordinal}/config`,method:'PUT',body:object(value,`步骤 ${key} 设置`)});
         }
@@ -407,7 +408,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         return {outcome:'complete',data,business:{execution_status:decision?.status??null,...decisionResult}};
       }
       case 'project create': {
-        const backend=flags.has('material-backend')?required('material-backend'):'legacy';
+        const backend=flags.has('material-backend')?required('material-backend'):'library_v1';
         if(!['legacy','library_v1'].includes(backend))throw new CliError('material-backend 须为 legacy 或 library_v1');
         const root=flags.has('material-root')?required('material-root'):undefined;
         const workspace=flags.has('workspace-path')?required('workspace-path'):undefined;
@@ -415,22 +416,32 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         if((backend==='legacy'&&(!root||!root.startsWith('/')))||(backend==='library_v1'&&(!workspace||!workspace.startsWith('/')))
           ||(root&&!root.startsWith('/'))||(workspace&&!workspace.startsWith('/'))||(skill&&!skill.startsWith('/')))throw new CliError('目录须为本机绝对路径；legacy 需要 material-root，library_v1 需要 workspace-path');
         const settings=flags.has('settings-file')?await readJsonFile(required('settings-file'),'项目设置'):undefined;
-        const materialMode=flags.has('material-mode')?required('material-mode'):'question_folders';
+        const materialMode=flags.has('material-mode')?required('material-mode'):(backend==='legacy'?'question_folders':'material_packages');
         if(!['question_folders','material_packages'].includes(materialMode))throw new CliError('material-mode 须为 question_folders 或 material_packages');
+        if(backend==='library_v1'&&materialMode!=='material_packages')throw new CliError('共享材料库使用material_packages；旧目录模式须显式选择legacy');
         let parentName=flags.has('parent-name')?required('parent-name'):undefined;
         if(flags.has('project-group')&&parentName===undefined){
           const detail=object(await get(`/api/project-groups/${uuid('project-group')}/phases`),'主项目');
           if(typeof detail.group?.name!=='string'||!detail.group.name.trim())throw new CliError('主项目响应缺少名称，未创建期次',{kind:'invalid_response'});
           parentName=detail.group.name;
         }
+        if(backend==='library_v1'&&parentName===undefined)parentName=required('name');
         const body={name:required('name'),description:flags.get('description')??'',...(flags.has('material-backend')?{material_backend:backend}:{}),
           ...(root?{material_root:root}:{}),...(workspace?{workspace_path:workspace}:{}),
           ...(flags.has('material-mode')?{material_mode:materialMode}:{}),
           ...(parentName!==undefined?{parent_name:parentName} : {}),
           ...(flags.has('phase-name')?{phase_name:required('phase-name')} : {}),
-          ...(flags.has('phase-no')?{phase_no:positiveInteger(required('phase-no'),'期数')} : {}),
+          ...(flags.has('phase-no')?{phase_no:positiveInteger(required('phase-no'),'期数')} : backend==='library_v1'?{phase_no:1}:{}),
           ...(flags.has('project-group')?{project_group_id:uuid('project-group')} : {}),...(skill?{local_skill_path:skill}:{})};
-        const created=object(await post('/api/projects',body),'项目创建');
+        let created:Record<string,any>;
+        try{created=object(await post('/api/projects',body),'项目创建');}
+        catch(error){
+          if(!body.phase_no||!body.parent_name)throw error;
+          const receipt=await post('/api/projects/creation-receipt',body);
+          const recovered=receipt?.project;
+          if(!recovered)throw error;
+          created=object(recovered,'恢复项目创建回执');
+        }
         const projectId=id(created.project?.id??created.id,'project');
         if(settings){let setup;try{setup=await applySettings(projectId,settings);}catch(error){return{outcome:'partial',data:{project:created,setup:{outcome:'not_applied',error:error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'}},note:'项目已创建；设置校验失败，没有自动删除项目。'}};}let readiness;try{readiness=await projectSettings(projectId);}catch(error){return{outcome:'partial',data:{project:created,setup,readiness_error:error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'}}};}data={project:created,setup,readiness};if(setup.outcome==='partial')return{outcome:'partial',data};}
         else {try{const readiness=await projectSettings(projectId);data={project:created,readiness:{...readiness.readiness,notes:readiness.notes}};}catch(error){return{outcome:'partial',data:{project:created,setup:{outcome:'not_applied',reason:'未提供 --settings-file'},readiness_error:error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'}}};}}

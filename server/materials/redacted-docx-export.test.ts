@@ -12,14 +12,14 @@ import {spawnSync} from 'node:child_process';
 import type {Pool} from 'pg';
 import {STEP_REGISTRY} from '@shared/step-registry';
 import {redactionInputDigest} from './redaction-jobs';
-import {exportRedactedDocx,isLibraryDocxPath} from './redacted-docx-export';
+import {exportCurrentMaterialDocx,exportRedactedDocx,isLibraryDocxPath} from './redacted-docx-export';
 
 const workflowId='11111111-1111-4111-8111-111111111111',attemptId='22222222-2222-4222-8222-222222222222',materialId='33333333-3333-4333-8333-333333333333';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const roots:string[]=[];
 afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 
-async function fixture(options:{incomplete?:boolean;active?:boolean;stale?:boolean;sourceKey?:string;parentName?:string;phaseName?:string;failInsert?:boolean;reversedSources?:boolean;invalidIndex?:boolean;structured?:boolean;invalidStructure?:boolean}={}){
+async function fixture(options:{incomplete?:boolean;active?:boolean;publicationInProgress?:boolean;stale?:boolean;sourceKey?:string;parentName?:string;phaseName?:string;failInsert?:boolean;reversedSources?:boolean;invalidIndex?:boolean;structured?:boolean;invalidStructure?:boolean}={}){
  const root=`${tmpdir()}/redacted-docx-${crypto.randomUUID()}`,materialRoot=join(root,'project','questions'),storageRoot=join(root,'managed'),projectExportsRoot=join(root,'assets','out'),calls:{sql:string;values?:unknown[]}[]=[];roots.push(root);
  const original=Buffer.from('original attachment');await mkdir(join(storageRoot,'sources'),{recursive:true});await writeFile(join(storageRoot,'sources','source.pdf'),original);
  const sources=[{material_id:materialId,source_sha256:hash(original),artifact_id:'44444444-4444-4444-8444-444444444444',artifact_sha256:'extraction-hash'}],markdown='【附件 1】\n\n【原附件第 1 页】\n脱敏文本';
@@ -28,11 +28,11 @@ async function fixture(options:{incomplete?:boolean;active?:boolean;stale?:boole
  const manifestArtifacts:{id:string;attempt_id:string;sha256:string;storage_path:string;content:string}[]=[],input={materials:inputMaterials,digest:redactionInputDigest(inputMaterials)},docxArtifacts:{id:string;attempt_id:string;sha256:string;storage_path:string;material_id:string}[]=[];
  const indexMaterials=sources.map((source,i)=>{const materialMarkdown=`附件${i+1}的脱敏正文`,document={format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'p1-b1',kind:'heading',level:1,text:materialMarkdown}]}]};return{material_id:source.material_id,markdown:materialMarkdown,...(options.structured?{document,structure_sha256:options.invalidStructure?'wrong':hash(JSON.stringify(document))}:{})};});
  const index=JSON.stringify({...(options.structured?{format:'redacted-index-v2'}:{}),redacted_sha256:options.invalidIndex?'wrong-hash':hash(markdown),materials:indexMaterials});
- const steps=STEP_REGISTRY.filter(stage=>stage.visible).map(stage=>({ordinal:stage.ordinal,status:options.incomplete&&stage.ordinal===8?'waiting':'succeeded'}));
+ const steps=STEP_REGISTRY.filter(stage=>stage.visible).map(stage=>({ordinal:stage.ordinal,status:options.publicationInProgress&&stage.ordinal===8?'running':options.incomplete&&stage.ordinal===8?'waiting':'succeeded'}));
  const client={release(){},async query(sql:string,values?:unknown[]){calls.push({sql,values});
   if(sql.includes('FROM ai_distill.workflows w JOIN ai_distill.projects'))return{rows:[{workflow_id:workflowId,project_id:'project',project_name:'豆包高经',parent_name:options.parentName,phase_name:options.phaseName,title:'问题1',source_key:options.sourceKey??'题目1',material_root:materialRoot}],rowCount:1};
   if(sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))return{rows:steps,rowCount:steps.length};
-  if(sql.includes("status IN ('waiting','running') LIMIT 1"))return{rows:options.active?[{id:'active-attempt'}]:[],rowCount:options.active?1:0};
+  if(sql.includes("status IN ('waiting','running')")&&sql.includes('step_attempts')){const active=Boolean(options.active&&!(values?.[1]===true&&options.publicationInProgress));return{rows:active?[{id:'active-attempt'}]:[],rowCount:active?1:0};}
   if(sql.includes('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=9'))return{rows:[{status:'succeeded'}],rowCount:1};
   if(sql.includes("kind='redacted_index'"))return{rows:[{content:index,sha256:hash(index)}],rowCount:1};
   if(sql.includes("ar.kind='redacted_markdown'"))return{rows:[{id:attemptId,status:'succeeded',input,result:{redacted_sha256:hash(markdown)},content:markdown,sha256:hash(markdown)}],rowCount:1};
@@ -101,6 +101,14 @@ test('active workflow attempt rejects export before writing any file or artifact
  await expect(exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('当前仍有工作流任务');
  expect(f.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
  expect(await Bun.file(join(f.root,'project','outputs')).exists()).toBe(false);
+});
+
+test('publication may export supplemental DOCX during its own running ordinal 8 only',async()=>{
+ const f=await fixture({active:true,publicationInProgress:true});await mkdir(f.materialRoot,{recursive:true});
+ await expect(exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('请先完成当前工作流');
+ const result=await exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{allowPublicationInProgress:true});
+ expect(result.artifacts).toHaveLength(1);
+ expect(f.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toBe(true);
 });
 
 test('stale material digest rejects export without changing workflow state',async()=>{

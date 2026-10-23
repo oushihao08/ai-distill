@@ -36,11 +36,11 @@ bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本
 
 ## 共享材料库与期次
 
-两种脱敏流程的入口不同：字段遮罩用`library job start --kind redact --template mask --extraction-job UUID`并查询job到终态；默认Agent整包化名使用`library job start --kind redact --extraction-job UUID`，省略模板时选择aliases/codex_plan；通过现有Agent消费池生成语义计划、程序编译并保存。模板每次从共用配置数据库读取并冻结，单任务最多10分钟，到限停止且不自动重试。显式`--template mask`保留旧字段映射。人工精确计划仍可用`library documents export/import`校验导入。两条路径的成功结果都用同一个`--redaction UUID`加载及建题；原文路径用`--revision UUID`，无需先脱敏。
+材料处理仅两种：默认Agent化名使用`library job start --kind redact --extraction-job UUID --project 期次UUID`；原文无需脱敏，直接使用成功提取版本。新任务模板固定codex_plan，历史mask读取保留但不得再派发。任务读取并冻结数据库提示词，最多10分钟，到限不自动重试。
 
 计划导入和导出共用服务端采用的格式校验；模板身份与摘要须成对提供。旧计划完全不带模板字段时保留兼容。导出成功只证明来源、精确编辑及覆盖有效；正式导入还需核对当前模板、活动任务和数据库事务。重放原导入请求须保留原plan与request-key，不能修改plan后复用旧key。
 
-全局材料包不隶属于单个项目；主项目用稳定 group ID 关联多个期次，每期仍是独立 project/workflow 范围。创建新期次用 `project create --material-backend library_v1 --workspace-path <绝对路径> --parent-name <主项目> --phase-name <期名> --phase-no <正整数>`，或用 `--project-group UUID` 关联已有主项目。若不指定 backend，保持旧 legacy 项目创建行为。
+全局材料包不隶属于单个项目；主项目用稳定 group ID 关联多个期次，每期仍是独立 project/workflow 范围。创建新期次用 `project create --material-backend library_v1 --workspace-path <绝对路径> --parent-name <主项目> --phase-name <期名> --phase-no <正整数>`，或用 `--project-group UUID` 关联已有主项目。缺省backend为library_v1；旧目录创建须显式指定legacy。首期必须以--skill-path明确共享Skill目录，后续期次复用主项目既有路径。
 
 仅指定`--project-group`时，CLI先读取该ID的当前主项目名称再创建期次；显式给出`--parent-name`仍由服务端核对一致性。不能用期次显示名称代替主项目名称。
 
@@ -241,18 +241,22 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/remote-materials.test
 
 ## 选择脱敏模板
 
-`library template list`及`library template show --template ID`读取提示词、workflow、digest；不要从旧笔记推断当前规则。`library job start --kind redact ... --template ID`按数据库模板选择实际流程；省略模板默认aliases/codex_plan，自动进入本机Agent消费池。Agent模型和推理强度沿用系统Agent设置并在入队冻结。Agent读取整包、维护私有固定虚构姓名表、保留法院名称并输出字段/结构块语义计划；程序计算偏移、校验并在现有事务保存。最多10分钟，到限停止保留私有进度，不自动重试。显式mask继续原字段映射；CLI本身不调用模型。
+`library template list`及`library template show --template ID`读取提示词、workflow、digest；不要从旧笔记推断当前规则。`library job start --kind redact ... --template ID`按数据库模板选择实际流程；省略模板默认aliases/codex_plan，自动进入本机Agent消费池。Agent模型和推理强度沿用系统Agent设置并在入队冻结。Agent读取整包、维护私有固定虚构姓名表、保留法院名称并输出字段/结构块语义计划；程序计算偏移、校验并在现有事务保存。最多10分钟，到限停止保留私有进度，不自动重试。显式mask或旧字段映射新任务会被拒绝；CLI本身不调用模型。
 
 新计划在既有`codex-material-export-v1`上增加`template_id`和`template_digest`。单文件documents show返回structure及field_ranges，原页UTF-16编辑必须位于单个字段内，分册定位替换后正文且不切断表格/列表。export与import均校验模板摘要和结构；import保存新版本，不切换项目选版。无模板旧计划保留文本兼容，不能声称保留表格结构。
 
-共用processing show/apply的redaction_templates数组每项包含id/name/workflow/redaction；mask不可重定义，改旧模板用原redaction字段。field_mapping的redaction与原模型配置格式相同，codex_plan仅接受`{provider:"codex",prompt:"本项目规则"}`。每个模板可有独立提示词；修改仅影响之后的新任务。
+共用设置的新模板只支持codex_plan，每项仅配置provider=codex与prompt；旧字段映射模板不允许新保存。读取设置不改写历史任务或结果。
 
 ### 期次材料处理模式
 
-`project settings apply`的`steps.author_question.material_processing_mode`支持`aliases`（默认化名）、`mask`（API遮挡）和`original`（不脱敏）；与旧`material_source_mode`同时提交时必须一致。配置仍经现有步骤API保存到数据库。`library job start --project <期次UUID>`把期次上下文交给服务器选择处理流程，不用提示词指示改流程；原文模式无需redact任务。CLI只调用API，不实现脱敏，也不把阶段文件当作已入库。模式、来源冻结与恢复边界见[材料库说明](../server/material-library/README.md#期次三种处理模式)。
+`project settings apply`的`steps.author_question.material_processing_mode`仅支持`aliases`（默认Agent化名）和`original`（不脱敏）；历史`mask`不得重新保存为新流程；与旧`material_source_mode`同时提交时必须一致。配置仍经现有步骤API保存到数据库。`library job start --project <期次UUID>`把期次上下文交给服务器选择处理流程，不用提示词指示改流程；原文模式无需redact任务。CLI只调用API，不实现脱敏，也不把阶段文件当作已入库。模式、来源冻结与恢复边界见[材料库说明](../server/material-library/README.md#期次两种处理模式)。
 
 ## OFD与超限PDF上传前准备
 
 显式本机文件操作：`bun run ai-distill library files prepare --manifest /绝对路径/原件清单.json --out /绝对路径/新输出目录`。清单仍为`{"files":[{"path":"原件.ofd","redaction_mode":"model"}]}`，相对路径以清单目录为基准。输出目录必须不存在；保留原件，生成PDF/分片、可供`library revision create --manifest`使用的清单和逐文件来源摘要。不自动上传或启动提取/脱敏；redaction_mode为兼容声明，不意味着运行脱敏。
 
 OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；预处理不会自动安装。页数检查成功不证明视觉一致，须抽查转换页面。原OFD保留在源路径，上传清单使用转换件；来源审计只在本地provenance保存，当前数据库不新增OFD原件到PDF的来源字段。重复上传仍按版本与request-key契约处理，不得用新键盲重试。
+
+### HTTP客户端维护边界
+
+`client.ts`的`response()`负责地址/传输边界，`readJsonResponse()`统一JSON与multipart响应解析和安全错误，`download()`单独处理二进制。公共解析不能增加自动写重试、泄露非JSON正文或丢失`request_id`及`outcome_unknown`。CLI仍只是HTTP客户端，不在解析层计算业务状态或访问数据库。

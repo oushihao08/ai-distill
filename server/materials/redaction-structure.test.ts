@@ -23,10 +23,10 @@ test('大题预算字段计数与结构化脱敏实际目标一致',()=>{
  ]}]};
  expect(countStructuredRedactionFields([mixed])).toBe(3);
 });
-test('AI returns no cleanup mappings and the postprocessor still removes fixed numeric noise',async()=>{
+test('API postprocessing removes explicit placeholders but preserves unproven business numbers',async()=>{
  let calls=0;const text='正文\n1\n234\n-22-\n[NO TEXT]\n[证据1]334666元\n开庭时间2025-04-25 15:24:08';
  const result=await redactExtractedMaterials({directory:'unused',materials:[material(text)],config,executeApi:async request=>{calls++;expect(JSON.parse(request.messages.at(-1)!.content as string).targets[0].text).toContain('\n234\n');return response(request);}});
- expect(calls).toBe(1);expect(result.materials[0]!.pages[0]!.text).toBe('正文\n\n\n\n\n[证据1]334666元\n开庭时间2025-04-25 15:24:08');
+ expect(calls).toBe(1);expect(result.materials[0]!.pages[0]!.text).toBe('正文\n1\n234\n-22-\n\n[证据1]334666元\n开庭时间2025-04-25 15:24:08');
 });
 
 test('精确编号匹配不扩大到删除标点后相同的其他编号或小数',async()=>{

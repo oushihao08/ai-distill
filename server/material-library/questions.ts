@@ -78,7 +78,7 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
  const pkg=(await db.query('SELECT id,name,deleted_at FROM ai_distill.library_packages WHERE id=$1 FOR UPDATE',[packageId])).rows[0];
  if(!pkg||pkg.deleted_at)throw conflict('材料包已归档或不存在，不能建题');
  await db.query('SELECT g.id FROM ai_distill.project_groups g JOIN ai_distill.projects p ON p.project_group_id=g.id WHERE p.id=$1 FOR UPDATE OF g',[projectId]);
- const project=(await db.query('SELECT id,name,material_backend,workspace_path,local_skill_path,question_tags,deleted_at,project_group_id FROM ai_distill.projects WHERE id=$1 FOR UPDATE',[projectId])).rows[0];
+ const project=(await db.query('SELECT id,name,material_backend,workspace_path,local_skill_path,question_tags,deleted_at,project_group_id,parent_name FROM ai_distill.projects WHERE id=$1 FOR UPDATE',[projectId])).rows[0];
  if(!project||project.deleted_at)throw new HTTPException(404,{message:'项目不存在'});
  const packageLevel=/(?:^|[-_\s])L([2-5])(?=$|[-_\s])/i.exec(String(pkg.name))?.[1];
  if(packageLevel&&input.target_level!==`L${packageLevel}`)throw conflict(`材料包标题标注为L${packageLevel}，题目目标等级须为L${packageLevel}`);
@@ -89,11 +89,12 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
  const activeQuestion=(await db.query(`SELECT q.workflow_id
   FROM ai_distill.question_library_sources q JOIN ai_distill.workflows w ON w.id=q.workflow_id
   WHERE q.project_id=$1 AND q.package_id=$2 AND w.deleted_at IS NULL LIMIT 1`,[projectId,packageId])).rows[0];
- if(activeQuestion)throw conflict('该材料包已创建题目；每个材料包只能保留一道活动题');
+ if(activeQuestion&&singleQuestionPerPackage(project))throw conflict('Work法律全场景每个材料包只能对应一道题，请在原题返修');
  if(project.project_group_id)await assertMaterialUse(db,projectId,packageId,link.material_use_id);
  if(Number(link.lock_version)!==input.expected_link_version)throw conflict('材料选择已更新，请刷新项目后重试');
  const authorConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[projectId])).rows[0]?.config;
  const processingMode=resolveMaterialProcessingMode(authorConfig),materialMode=materialProcessingSourceMode(processingMode);
+ if(processingMode==='mask')throw conflict('旧遮挡模式已退役，请明确选择Agent化名或提取原文后再建新题');
  if(materialMode==='original'){
   if(input.redaction_id||input.revision_id!==link.selected_revision_id||link.selected_redaction_id!==null||!link.selected_revision_id)throw conflict('未脱敏提取版本与本期设置或当前材料选择不一致');
   const extraction=(await db.query(`SELECT e.id,r.file_count FROM ai_distill.library_revisions r
@@ -245,4 +246,9 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
   }
   throw error;
  }
+}
+
+/** Work项目明确一包一道；其他主项目不继承此业务限制。历史题目与来源不改写。 */
+export function singleQuestionPerPackage(project:{parent_name?:string|null;name?:string|null}){
+ return(project.parent_name??project.name?.split(' - ')[0])==='Work法律全场景';
 }

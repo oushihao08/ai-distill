@@ -15,7 +15,7 @@
 | `extraction-checkpoint.ts` | 私有单文件检查点读写；同版本显式重试可复用，异常降级继续，不发布或派发任务 |
 | `redaction-runner.ts` | 按已冻结方式执行遮挡/化名脱敏并事务发布，复用旧结构输出 |
 | `execution-shared.ts` | 执行器共用摘要、私有目录及提取结构校验 |
-| `processing-policy.ts` | 从期次配置读取三模式并约束派发模板；不调用模型 |
+| `processing-policy.ts` | 从期次配置读取当前两模式及历史mask身份并约束派发模板；不调用模型 |
 | `agent-redaction.ts` | 单次限时Agent调用及最终程序编译；不入队、不自动重试 |
 | `agent-redaction-artifacts.ts` | 私有输入、同源检查点、固定结果文件及本地校验工具准备 |
 | `agent-redaction-validator.ts` | 打包到任务内的只读校验CLI，供Agent在同次调用内修正错误；不写库 |
@@ -37,14 +37,14 @@ Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symli
 
 包名称/说明/标签与处理设置分开。历史`library_packages.processing_settings`保留兼容初始快照，不再作为新任务执行配置，也不从包详情返回；包创建/更新接口拒绝单包处理配置写入。未保存共用配置时，从数据库系统提示词与当前系统模型/提取默认组合完整配置。保存后的共用设置只影响之后派发的新任务，历史任务与题目快照不回写。
 
-## 期次三种处理模式
+## 期次两种处理模式
 
 设置权威字段是出题步骤（ordinal 4）JSON配置中的`material_processing_mode`；由现有步骤设置API持久化，UI/CLI共用，不由Skill或提示词决定。`GET /api/projects/:id/material-processing`读取实际模式。旧`material_source_mode=original`兼容原文；无设置默认`aliases`。
 
 | 值 | 处理入口 | 建题及后续来源 |
 | --- | --- | --- |
 | `original` | 成功入库/提取后不派发脱敏 | 冻结提取原文与结构；出题、作答、评分、交付共用该快照 |
-| `mask` | 带`project_id`派发任务，程序选择mask模板和已配置API模型 | 仅选择遮挡结果，冻结为redacted |
+历史`mask`只保留读取和既有冻结来源；新保存、新任务拒绝旧遮挡，不自动解释为aliases。
 | `aliases`（默认） | 带`project_id`派发任务，程序选择整包化名模板，当前由本机Agent执行 | 仅选择化名整理结果，冻结为redacted |
 
 材料任务请求可带`project_id`：服务端从该期次配置选流程，拒绝不一致的客户端模板，原文模式不派脱敏；新任务冻结模式及处理配置，历史任务不切换。未带项目上下文的全局库操作仍可显式选择模板，供不同项目共享已处理版本。API遮挡模型未配置时报告配置缺口，不改用Codex。化名方法与执行适配器分离：当前接`runAgent`，未来API Agent后端可实现同一任务/结果接口，尚未宣称该后端已实现。
@@ -122,9 +122,9 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 旧文本计划只产出编辑后文字，由导入入口构建明确的段落结构；不沿用编辑前的表格/段落对象。整包模板计划才通过结构编辑器生成编辑后结构，避免正文与旧结构不一致，也避免把旧文本计划冒记成保留原结构。
 
-模板与材料包、项目身份分开。`GET /redaction-templates`读取模板提示词、workflow及digest；`mask`固定引用原有共用`redaction`配置，无项目上下文时旧请求可显式template_id=mask，省略则使用aliases默认流程。共用设置可保存最多20项`redaction_templates`，每项id/name/workflow/redaction独立；新安装或已保存空数组时提供内置Codex整包模板；不保存密钥。
+模板与材料包、项目身份分开。`GET /redaction-templates`读取模板提示词、workflow及digest；目录仅列当前Agent模板；旧mask解析只为历史兼容保留，新请求显式mask被拒绝。省略模板时使用aliases。共用设置可保存最多20项`redaction_templates`，每项id/name/prompt独立，workflow固定codex_plan；新安装或已保存空数组时提供内置Codex整包模板；不保存密钥。
 
-- `field_mapping`：普通redact请求可指定template_id；入队冻结选中提示词、模型配置和模板摘要，worker不再读取当前模板。
+- `field_mapping`：仅历史冻结任务与结果兼容，不再允许新派发或新保存模板。
 - `codex_plan`：默认aliases模板，省略template_id也选择它。每次入队读取共用SQLite配置数据库中的提示词并冻结模板及系统Agent模型；既有Agent消费池整包执行，不调用字段映射API。`shared/agent-material-plan.ts`将字段片段与结构块范围编译为既有精确计划，再做无重叠/全文覆盖/结构校验。主体对应表和阶段进度保留在`jobs/<job-id>/private/`（700/600），不进入题目或交付。任务领取至发布最多10分钟，截止停止子进程并以agent_redaction_timeout终结，不自动重试。显式重试只复用同输入/模板/模型的私有进度。人工CLI精确计划导入仍须绑定template_id/template_digest，保留原幂等行为。
 
 模板计划沿原提取structure应用字段内编辑，保留行列和rowSpan/columnSpan。跨字段编辑、切断表格或列表、正文覆盖/结构投影不一致均拒绝；原始结构缺失不得静默回退。CLI原文单文件返回structure和field_ranges供定位。索引prepared_documents包含分册document，供通用材料DOCX和Work五件套共用；旧文本型分册仍走兼容渲染。结构保留不等于原始OCR结构准确，须渲染核查异常表格。
@@ -142,6 +142,8 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 边界不清的连续附件可完整保留为组合文书；身份归并不明时不强行合并，敏感名称使用独立主体ID和字段作用域化名。未确认的归并或精确分册写私有非阻断疑点；隐私片段未安全处理或正文无法完整覆盖仍阻断。该处理由本次数据库模板指导Agent决定，编译器不擅自把blocking改为false。
 
 Agent完整语义计划交付到固定私有文件`output/material-plan.json`（结构见任务内`plan-schema.json`），最终消息仅声明`plan_file`；执行器在Agent正常完成后读取该文件并编译发布。阶段文件或成功消息本身不等于发布完成，缺文件、空计划、源文覆盖缺失仍失败；不从聊天摘要补造正文，也不要求模型再在最终消息重复整份大JSON。
+
+私有`validate-plan.mjs`在重叠或标题残留原称时同时输出`validation_details`，包含冲突字段/文书ID、零起始计划编辑或主体/变体序号及字段内坐标，帮助Agent修正具体条目；不输出原文，不自动删除冲突编辑或放宽校验。
 
 `agent-redaction.test.ts`验证数据库重新读取、私有主体表保存及限时取消；`shared/agent-material-plan.test.ts`验证合成姓名、法院/金额/日期保留、号码/地址、文书边界和合并单元格。这些测试不证明真实卷宗无脱敏遗漏，真实运行须另外记录时长、来源覆盖、主体及文书分界。
 

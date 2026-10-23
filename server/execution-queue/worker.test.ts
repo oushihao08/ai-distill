@@ -72,3 +72,20 @@ test('local worker modes preserve hook, executor target and scoped step affinity
  expect(canRunLocalTask('api',{...job,route:'publish',lane:'internal'},{},'local')).toBe(false);
  expect(canRunLocalTask('local',{...job,route:'publish',lane:'internal'},{workflow_id:'own',ordinal:8},'local',['own'])).toBe(true);
 });
+
+test('already-running worker recovers a newly orphaned owner but never replays unknown calls or touches live owners',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'queue-live-recovery-')),q=localQueue(root),before=process.env.EXECUTION_QUEUE_MODE,c=new AbortController();let worker:Promise<void>|undefined;
+ const pool={query:async(input:string|{text:string})=>{const sql=typeof input==='string'?input:input.text;
+  if(sql.includes('to_regclass'))return{rows:[{available:true,app:`ai-distill-executor:${q.executorId}`}]};
+  if(sql.includes('SELECT j.status'))return{rows:[{status:'running'}]};return{rows:[]};
+ }} as unknown as Pool;
+ try{
+  process.env.EXECUTION_QUEUE_MODE='local';worker=runLocalQueueWorker(pool,root,c.signal,{agent:1,llmApi:1},async()=>true,'api');
+  await Bun.sleep(60); // after the startup recovery, insert a later orphan
+  const dead=randomUUID(),live=randomUUID();
+  for(const id of [dead,live]){q.intent(id,'step','api','invalid-test-route');q.confirm(id);q.claim('api');q.db.query("INSERT INTO calls VALUES(?,?,'started',NULL,NULL)").run(id,'0:external');}
+  q.db.query('UPDATE jobs SET pid=? WHERE id=?').run(2147483647,dead);
+  const deadline=Date.now()+9000;while(q.get(dead)?.state==='running'&&Date.now()<deadline)await Bun.sleep(25);
+  expect(q.get(dead)?.state).toBe('needs_review');expect(q.get(live)?.state).toBe('running');expect(q.hasUnknownCall(dead)).toBe(true);expect(q.pending('api')).toHaveLength(0);
+ }finally{c.abort();if(worker)await worker;q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;await rm(root,{recursive:true,force:true});}
+},12000);

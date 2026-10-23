@@ -181,7 +181,9 @@ export interface CreateLibraryQuestionRequest {
   question_tags?: string[];
 }
 /** 期次持久化的材料处理意图；化名方法与实际Agent执行后端分离。 */
-export type MaterialProcessingMode='original'|'mask'|'aliases';
+export type NewMaterialProcessingMode='original'|'aliases';
+/** mask只用于历史配置/快照读取；新写入仅接受NewMaterialProcessingMode。 */
+export type MaterialProcessingMode=NewMaterialProcessingMode|'mask';
 /** 老客户端的original设置继续生效；未指定的新期次默认整包化名。 */
 export function resolveMaterialProcessingMode(config?:{material_processing_mode?:unknown;material_source_mode?:unknown}|null):MaterialProcessingMode{
  const value=config?.material_processing_mode;

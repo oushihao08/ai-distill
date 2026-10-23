@@ -4,7 +4,7 @@
 文件阅读、归档汇总和处理历史分别由子组件负责，技术编号不在主界面展开。
 -->
 <script setup lang="ts">
-import {api} from '../api/client';
+import {api,apiPostIntent} from '../api/client';
 import {readMaterialFolderSelection} from '../utils/material-folder';
 import {dateLabel} from '../utils/format';
 import LibraryPackageUseMarker from '../components/LibraryPackageUseMarker.vue';
@@ -107,7 +107,7 @@ async function uploadFiles(){
 async function runJob(revision:LibraryRevision,kind:'intake'|'extract'|'redact',templateId?:string){
  if(!selected.value||busy.value)return;
  busy.value=true;actionError.value='';actionMessage.value='';
- try{const extraction=kind==='redact'?revision.jobs.find(job=>job.kind==='extract'&&job.status==='succeeded'):undefined;if(kind==='redact'&&!extraction)throw new Error('请先完成识别原文');await api(`/material-library/revisions/${revision.id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,...(contextProjectId.value?{project_id:contextProjectId.value}:{}),...(kind==='redact'&&templateId?{template_id:templateId}:{}),request_key:crypto.randomUUID(),execution_target:'local',...(extraction?{extraction_job_id:extraction.id}:{})})});actionMessage.value=`${kind==='intake'?'入库':kind==='extract'?'识别原文':'脱敏'}任务已派发。完成后点击刷新查看结果。`;await refreshAll();}
+ try{const extraction=kind==='redact'?revision.jobs.find(job=>job.kind==='extract'&&job.status==='succeeded'):undefined;if(kind==='redact'&&!extraction)throw new Error('请先完成识别原文');await apiPostIntent(`/material-library/revisions/${revision.id}/jobs`,{kind,...(contextProjectId.value?{project_id:contextProjectId.value}:{}),...(kind==='redact'&&templateId?{template_id:templateId}:{}),execution_target:'local',...(extraction?{extraction_job_id:extraction.id}:{})});actionMessage.value=`${kind==='intake'?'入库':kind==='extract'?'识别原文':'脱敏'}任务已派发。完成后点击刷新查看结果。`;await refreshAll();}
  catch(cause){actionError.value=cause instanceof Error?cause.message:'派发处理任务失败';}
  finally{busy.value=false;}
 }

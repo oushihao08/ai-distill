@@ -1,6 +1,6 @@
 /**
  * 职责：解析主项目的可选交付脚本，并在归档校验通过后以独立进程执行。
- * 关键入口：`resolveProjectDelivery()` 固定脚本版本；`runProjectDelivery()` 接收当前题目快照并等待脚本完成。
+ * 关键入口：`resolveProjectDelivery()` 固定脚本版本；`loadProjectArchive()`读取可选项目准备入口；`runProjectDelivery()`执行交付。
  * 使用场景：`publishWorkflow()` 在写入 ordinal 8 成功状态前调用；未配置脚本时执行内置空函数。
  */
 import {logEvent} from '../logging';
@@ -9,12 +9,19 @@ import {spawn} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {lstat,readFile,readdir,realpath,mkdir,writeFile,chmod} from 'node:fs/promises';
 import {basename,dirname,isAbsolute,join,relative,resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 
 const projectsRoot=resolve(dirname(fileURLToPath(import.meta.url)),'../../projects');
 const sha256=(bytes:Uint8Array|string)=>createHash('sha256').update(bytes).digest('hex');
 export interface ProjectDelivery {mode:'script'|'noop';digest:string;path?:string;projectRoot?:string}
+/** 项目可选的归档准备入口；只由受信任的项目脚本实现自身要求。 */
+export interface ProjectArchiveContext {pool:Pool;workflowId:string;storageRoot:string;frozen:any;expectedLegacyAgentConfig?:{model:string;reasoning_effort:string};signal?:AbortSignal}
+export interface ProjectArchiveModule {
+ readConfig?:(pool:Pick<Pool,'query'>,projectId:string,workflowId:string)=>Promise<{model:string;reasoning_effort:string}|null>;
+ prepare?:(input:DeliveryInput,context:ProjectArchiveContext)=>Promise<void>;
+}
 export interface DeliveryInput {version:1;project_id:string;workflow_id:string;title:string;source_digest:string;delivery_digest:string;question_version:string;rubric_version:string;question:{content_contract?:string;task_metadata?:unknown;input_files?:unknown;deliverables?:unknown;reference_outputs?:unknown;research_records?:unknown;task_requirements?:unknown;content_status?:unknown;delivery_identity?:{task_id:string;org:string};task_name:unknown;task_type:unknown;header:unknown;question:unknown;attachment_ids:unknown;rubric:unknown;answer_approach:unknown;reference_answer:unknown;scoring_policy?:unknown};acceptance:unknown;attachments:{id:string;sha256:string;name:string;text:string;material_mode?:'redacted'|'original';documents?:RedactedDocumentStructure[];prepared_documents?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[];original_files?:{name:string;sha256:string;content_base64:string}[]}[];simulation?:{deliverable_type:'F1'|'F2'|'F3'|'F4'|'F5';deliverable_title:string;deliverable_markdown:string;harbor_files:{path:string;markdown:string;sheets:{name:string;columns:string[];rows:(string|number|boolean)[][]}[]}[];research_entries:{id:string;query:string;title:string;url:string;finding:string;version_or_date:string;used_in:string}[];unresolved:string[];generated_at:string;model:string;reasoning_effort:string;actual_search_queries:string[];actually_opened_urls:string[]}}
 
 async function deliveryFiles(projectRoot:string,entry:string){
@@ -41,9 +48,17 @@ async function deliveryFiles(projectRoot:string,entry:string){
  }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;await add(entry,relative(projectRoot,entry));}
  const entryRelative=relative(projectRoot,entry);
  if(!files.some(item=>item.path===entryRelative))await add(entry,entryRelative);
- if(basename(projectRoot)==='Work法律全场景')for(const path of ['materials/交付规范.md','skill c/assets/模拟专家交付物与检索轨迹模板.md']){
-  const absolute=join(projectRoot,path);
-  try{await lstat(absolute);await add(absolute,path);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+ // 规则依赖由项目声明；公共层不维护某个项目的文件名或业务要求。
+ let dependencies:unknown;
+ try{dependencies=JSON.parse(await readFile(join(scripts,'delivery-dependencies.json'),'utf8'));}
+ catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new HTTPException(409,{message:'项目交付依赖清单无效'});}
+ if(dependencies!==undefined){
+  if(!Array.isArray(dependencies)||dependencies.some(path=>typeof path!=='string'||isAbsolute(path)||path.includes('\\')||path.split('/').some(part=>!part||part==='.'||part==='..')))throw new HTTPException(409,{message:'项目交付依赖清单无效'});
+  for(const path of new Set(dependencies as string[])){
+   const absolute=join(projectRoot,path);
+   try{const actual=await realpath(absolute);if(!actual.startsWith(`${projectRoot}/`))throw new HTTPException(409,{message:'项目交付依赖路径越界'});if(!files.some(file=>file.path===path))await add(absolute,path);}
+   catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  }
  }
  return files.sort((a,b)=>a.path.localeCompare(b.path,'en'));
 }
@@ -66,6 +81,18 @@ export async function resolveProjectDelivery(parentName:unknown):Promise<Project
 }
 
 async function noopDelivery(_input:DeliveryInput){return;}
+
+/** 无项目准备文件时直接放行；项目准备代码在服务端运行，不向交付子进程传入凭证。 */
+export async function loadProjectArchive(delivery:ProjectDelivery):Promise<ProjectArchiveModule|undefined>{
+ if(delivery.mode==='noop'||!delivery.projectRoot)return;
+ const path=join(delivery.projectRoot,'scripts','archive.ts');
+ let info:Awaited<ReturnType<typeof lstat>>;
+ try{info=await lstat(path);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+ if(!info.isFile()||info.isSymbolicLink()||info.size>1024*1024||await realpath(path)!==path)throw new HTTPException(409,{message:'项目归档准备入口无效'});
+ const currentFiles=await deliveryFiles(delivery.projectRoot,delivery.path!);
+ if(sha256(JSON.stringify(currentFiles))!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
+ return await import(`${pathToFileURL(path).href}?digest=${delivery.digest}`) as ProjectArchiveModule;
+}
 
 /** 子进程只接收当前题目数据，不继承数据库凭证；非零退出不允许本次归档成功。outputDir 为该题成果目录。 */
 export async function runProjectDelivery(delivery:ProjectDelivery,input:DeliveryInput,outputDir:string):Promise<void>{

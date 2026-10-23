@@ -4,7 +4,7 @@ import {mkdtemp,rm,mkdir,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
-import {redactionInputDigest,runNextRedaction} from './redaction-jobs';
+import {redactionInputDigest,runNextRedaction,enqueueRedaction} from './redaction-jobs';
 import {REDACTION_PROTOCOL_VERSION} from './redaction';
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 test('派发锁争用回滚并退回轮询，不领取任务或永久占住消费者',async()=>{
@@ -139,4 +139,23 @@ test('执行期间附件变更，晚到结果不提交成功',async()=>{
   await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(r:any)=>{f.setChanged();return{text:JSON.stringify({fields:JSON.parse(r.messages.at(-1).content).targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any;});
   expect(f.saved.some(s=>s.status==='succeeded')).toBe(false);expect(f.artifacts()).toBe(0);
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+
+test('旧目录不能新派字段映射任务，既有冻结尝试仍可恢复回执',async()=>{
+ let previous=false,writes=0;
+ const query=async(sql:string)=>{
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:'fixture',codex_reasoning_effort:'low'}]};
+  if(sql.startsWith('SELECT w.project_id'))return{rows:[{project_id:'project'}]};
+  if(sql.startsWith('SELECT ordinal,status'))return{rows:[{ordinal:1,status:'succeeded'},{ordinal:2,status:'succeeded'},{ordinal:9,status:'waiting',enabled:true}]};
+  if(sql.startsWith('SELECT DISTINCT ON(m.id)'))return{rows:[{material_id:'material',source_sha256:'hash',artifact_id:'artifact',artifact_sha256:'text'}]};
+  if(sql.startsWith('SELECT count(*)'))return{rows:[{count:1}]};
+  if(sql.startsWith('SELECT config'))return{rows:[{config:{provider:'codex',model:'fixture',reasoning_effort:'low',prompt:'历史脱敏'}}]};
+  if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return{rows:previous?[{id:'old-attempt'}]:[]};
+  if(sql.startsWith('INSERT')||sql.startsWith('UPDATE'))writes++;
+  return{rows:[]};
+ };
+ const pool={query,connect:async()=>({query,release(){}})} as any;
+ await expect(enqueueRedaction(pool,'workflow')).rejects.toThrow('已退役');expect(writes).toBe(0);
+ previous=true;expect(await enqueueRedaction(pool,'workflow')).toMatchObject({id:'old-attempt',reused:true});expect(writes).toBe(0);
 });

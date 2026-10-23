@@ -35,15 +35,15 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `task-signal.ts` | `watchTaskCancellation()` 合并查询持久任务状态并取消失效执行；`withTaskSignal()` 传递调用链信号 |
 | `external-call.ts` | `runExternalCall()` 将一次调用关联到attempt或library_job及call_id，传递安全日志；不重试收费请求 |
 | `logging.ts` | `createStructuredLogger()`、`logEvent()` 与上下文入口：安全字段投影、JSONL轮转保留、健康及致命错误记录 |
-| `validation.ts` | UUID/文字/标签/source key及PDF/DOCX/TXT/MD类型和大小边界；不代替内容解析 |
+| `validation.ts` | HTTP请求预算（普通101MiB、库级版本上传201MiB含1MiB封装余量；业务文件仍限100/200MiB）、UUID/文字/标签/source key及PDF/DOCX/TXT/MD类型和大小边界；不代替内容解析 |
 | `project-groups.ts` | `resolveProjectGroup()` / `registerProjectGroupRoutes()`：稳定主项目、期次导航、归档恢复；`updatePhaseIdentity()` 修改身份前后比较业务摘要 |
 | `project-folders.ts` | 旧目录扫描/登记；`workflowStepReadiness()` 共用前置条件；`projectStepSummary()` 汇总；阶段配置校验和批量分块 |
 | `material-package-questions.ts` | 旧项目内材料包兼容：列成功脱敏版本并复制私有题目快照；不等同于全局材料库包 |
 | `question-materials.ts` | `readQuestionMaterials()`：校验共享材料题冻结的原文/脱敏来源，或读取旧题成功脱敏；新库缺快照不回退旧ordinal9 |
 | `intake.ts` | `receiveMaterials()`：旧上传/目录接收、原件及指纹、材料修改后下游失效；库级上传另由material-library管理 |
 | `intake-jobs.ts` | `enqueueIngestion()` / `enqueueIntake()` 与 `runNextIntake()`：持久目录接收及接续提取，按执行端领取 |
-| `system-step-prompts.ts` | 系统四类默认提示词读取/保存；新项目创建时复制，既有项目与在途尝试不被全局修改回写 |
-| `rule-files.ts` | 工作区清单、有效Skill选择、实际文件读取/摘要校验及受限资料写入；归档校验历史Skill指纹自洽 |
+| `system-step-prompts.ts` | 当前出题/作答/评分默认提示词与历史脱敏提示词兼容读取；出题专用model/effort独立保存，新期步骤4显式复制，既有期次与其他模型配置不回写 |
+| `rule-files.ts` | 工作区清单、有效Skill选择、实际文件读取/摘要校验及受限资料写入；独立历史审计/报表可校验Skill指纹，通用归档不据此增加门槛 |
 | `rules.ts` | `readProjectRules()`、`editProjectRuleFile()`、`adoptProjectSkill()`：资料管理和候选采用，期次覆盖优先；不向评分者传入Skill |
 | `rule-loading.ts` | 停用的编号规则绑定兼容入口；明确410，不创建新规则版本或隐藏步骤 |
 | `step-dispatch.ts` | `dispatchWorkflowStep()`：稳定ordinal映射到现有业务入口，本身不做队列或达标判断 |
@@ -130,3 +130,7 @@ worker 对同类队列的并发可用性查询共用一个进行中的探测；�
 ## 每机独立执行
 
 `execution-queue/`提供每机SQLite执行队列、归属登记与结果对账；local模式不再扫描共享等待队列，PG仍保存业务状态与历史。启用、兼容、取消及切换的唯一说明见[每机执行队列](execution-queue/README.md)。API/worker入口默认local，显式legacy用于升级过渡；各台电脑需更新并重启，隔离测试不代表实体双机已启用。
+
+系统出题专用默认存于`system_codex_config.authoring_defaults`（048迁移）；系统步骤提示词接口一并读取/原子保存，新期将显式创建设置或系统出题默认写入步骤4。不回写已有期次，不改变作答、评分、脱敏默认。
+
+`project-creation-recovery.ts`提供只读创建回执恢复；网页与CLI调用`POST /api/projects/creation-receipt`，使用与创建相同的目录规范化，并核对主项目/期号、关键字段及显式出题默认值。此接口只SELECT，不重新创建或删除。项目详情的`skill_exists`按实际生效的本期覆盖/共享路径判断，路径读取失败作为局部提示，不整体阻断详情。
