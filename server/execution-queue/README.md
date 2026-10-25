@@ -36,7 +36,7 @@ SQLite使用WAL/FULL同步及短事务，目录0700、文件0600；不能放在�
 - `POST /api/system/execution-queue/:id/reconcile-failed`：仅供本机故障对账，提交 `{failure_event_id,failure_instance_id}`。要求本机队列任务已停止且处于`needs_review`、存在未决调用、指定worker实例的结构化日志含匹配的`attempt.failed`且没有后续成功事件，同时PG中的归属、代次、最新attempt和step仍匹配并处于`running`；全部通过后在一个事务内将attempt和step结算为`failed`，不重放调用。保留供应商的可重试标记，但设置本次`retryable=false`以阻止隐式重试；日志扫描受50文件/20 MiB限制，超限或证据不完整即拒绝。
 - `GET /api/monitor`：local_execution_queue提供本机实际状态；活动任务过滤为本机正在执行，待登记/同步/核实单列；全局业务列表仍共享，不按本机队列隐藏其他机成果。
 
-CLI继续调用原HTTP派发入口，不直连SQLite或PG。新的本机队列管理尚无独立CLI命令，不能编造命令。
+CLI继续调用原HTTP派发入口，不直连SQLite或PG。本机队列管理CLI见下方容量与状态投影章节。
 
 ## 切换与恢复边界
 
@@ -62,3 +62,27 @@ worker.test.ts使用临时SQLite、SQL替身和随机端口本机HTTP服务验�
 `WORKER_WORKFLOW_IDS`传入local消费器，在SQLite原子领取前通过业务元数据过滤；仅领取所列工作流的出题、作答、评分和交付，不触碰其余已排队记录或库级任务。mode、execution_target与API任务的本地脚本亲和性同时核对，不能把启动提示当作范围已生效。
 
 材料库已知失败也在当前本机代次保存安全终态（failed/cancelled、原因、原租约），数据库恢复后只按原任务/租约补结算，不重新领取、不重新读取原件、不重跑提取/脱敏、不延长预算。未命中原租约时不覆盖新的执行者；损坏或无法确认的记录继续待核实。检查点保留在私有SQLite，不通过监控API返回。
+
+## 容量与步骤状态投影
+
+`store.reserveIntents()`在SQLite立即事务内为整组新任务预留待领取名额；多模型按模型attempt计数，混合通道任一不足时整组不派发。运行上限与待领取上限分别为N，不相加成一个上限。新pending_registration预留计入waiting；历史无预留的待登记意图保留，不自动挤占名额。登记确认、取消和显式续跑沿用同一容量检查。
+
+上限读取现有配置；仍存活的消费者已登记槽位上限优先，保存设置尚未重启时不按新值虚增队列。API返回429/code=local_queue_full/dispatched=false并带lane/limit/waiting/requested；批量逐题返回capacity_exceeded。只有同连接ROLLBACK已确认且PG归属复查确定未提交时，释放该事务预留；回执不明保留意图和容量，不按超时自动删除。
+
+`status.ts`将活动尝试的归属元信息投影到`steps[].executions`：本机用SQLite的queued/running/needs_review/result_pending_commit等状态，他机明确标注other_executor，缺记录或代次不同显示待核实；读取不改云端结果或自动重派。多模型保留全部活动尝试，不只取最新一条。本机步骤运行/排队汇总只计本机活动；全局成功结果继续共享。
+
+CLI已有`queue show`和`queue cancel --job UUID`，仅调用同一HTTP入口；旧任务认领和有日志证据的失败对账仍使用上述HTTP契约。`advice`为050启用的独立手动建议任务，不是步骤ordinal，使用同一Agent容量与归属保护。
+
+他机活动仅能读取共享尝试标记，executions.source=shared_attempt并明确待核实，本机不据此声称供应商正在生成；source=local_queue才来自所属SQLite。取消手动建议将业务状态记skipped并保留取消原因，不清除原题或建议历史。
+
+local步骤投影存在但活动尝试为空、共享step仍为running时，页面显示“共享状态待核实”；不按残留字段冒记本机运行，也不自动改成成功/失败。
+
+## 长期运行的周期读取
+
+worker监控和`/api/monitor`只投影活动、待登记、待同步及待核实任务，不将已结束历史明细周期性搬入内存。材料库历史状态数量由SQLite聚合，保留原统计语义；显式`queue show`仍可读取完整本机队列。
+
+登记、取消和结果对账每类每轮最多20条，按`created_at,id`稳定键翻页，读到末尾后回到开头；长期未决前页不阻塞后页。恢复仅读取running。SQLite启动时补充状态/顺序、kind/状态及未同步取消索引，兼容既有队列，不删除历史与未知调用记录；不涉及PG迁移。
+
+这减少历史增长引起的扫描和JS对象分配，不代表已证明网络延迟或供应商断流的根因。取消检查仍按连接池合并，任务心跳仍遵守原有间隔和同一任务不重叠规则。
+
+未开始的评分如需取消后重新显式派发，使用服务端[未领取评分取消契约](../README.md#未领取评分的显式取消)。此入口不迁移归属、不处理running或未知调用；取消本机SQLite仍用原queue取消接口。

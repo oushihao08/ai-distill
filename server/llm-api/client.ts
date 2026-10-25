@@ -92,15 +92,22 @@ function readWithAbort(reader:ReadableStreamDefaultReader<Uint8Array>,signal:Abo
   reader.read().then(value=>{if(settled)return;settled=true;cleanup();resolve(value as AbortableReadResult);},error=>{if(settled)return;settled=true;cleanup();reject(error);});
  });
 }
+/** 截止/取消错误重新归类时保留已净化的流证据，不带入供应商响应正文。 */
+function streamFailureEvidence(error:unknown){
+ const {stream_events,stream_bytes,saw_done,saw_finish,stream_eof}=classifyLogError(error);
+ return{stream_events,stream_bytes,saw_done,saw_finish,stream_eof};
+}
 async function parseStreamingCompletion(response:Response,config:ModelApiConfig,started_at:string,started:number,signal:AbortSignal):Promise<ModelApiResult>{
  const reader=response.body?.getReader();
  if(!reader)throw new ModelApiError('invalid_response',false,response.status,null,requestId(response,null),'missing_stream_body');
  const openRouter=new URL(config.base_url).hostname==='openrouter.ai';
  const dashScopeQwen=config.provider==='qwen'&&!openRouter;
  const decoder=new TextDecoder();let buffer='',dataLines:string[]=[],text='',model:string|null=null,completion_id:string|null=null,usage:Record<string,unknown>|null=null,finished=false,done=false;
+ let streamEvents=0,streamBytes=0,sawFinish=false,streamEnd='reading';
+ const streamDetails=()=>({stream_events:streamEvents,stream_bytes:streamBytes,saw_done:done,saw_finish:sawFinish,stream_eof:streamEnd});
  let firstReasoningAt:number|undefined,lastReasoningAt:number|undefined,maxGap=0,eventCount=0,activitySource:ReasoningActivityEvidence['source']|undefined,firstEventAt:string|undefined,lastEventAt:string|undefined;
  const activity=():ReasoningActivityEvidence|undefined=>firstReasoningAt===undefined||lastReasoningAt===undefined||!activitySource?undefined:{source:activitySource,first_event_at:firstEventAt!,last_event_at:lastEventAt!,span_ms:Math.max(0,Math.round(lastReasoningAt-firstReasoningAt)),max_gap_ms:maxGap,event_count:eventCount};
- const invalid=(reason_code:string)=>new ModelApiError('invalid_response',false,response.status,null,requestId(response,null),reason_code,activity());
+ const invalid=(reason_code:string)=>Object.assign(new ModelApiError('invalid_response',false,response.status,null,requestId(response,null),reason_code,activity()),streamDetails());
  const observe=(source:ReasoningActivityEvidence['source'])=>{
   const elapsed=performance.now()-started,at=new Date().toISOString();
   if(firstReasoningAt===undefined){firstReasoningAt=elapsed;firstEventAt=at;activitySource=source;}
@@ -110,7 +117,8 @@ async function parseStreamingCompletion(response:Response,config:ModelApiConfig,
  };
  const handleEvent=(raw:string)=>{
   const payload=raw.trim();if(!payload)return;
-  if(payload==='[DONE]'){done=true;return;}
+  streamEvents++;
+  if(payload==='[DONE]'){done=true;streamEnd='done';return;}
   let data:unknown;try{data=JSON.parse(payload);}catch{throw invalid('invalid_stream_json');}
   if(!isRecord(data)||data.error!==undefined)throw invalid('invalid_stream_event');
   if(typeof data.model==='string')model=data.model;
@@ -120,7 +128,7 @@ async function parseStreamingCompletion(response:Response,config:ModelApiConfig,
   if(data.choices.length===0)return;
   if(data.choices.length!==1||!isRecord(data.choices[0]))throw invalid(data.choices.length>1?'unexpected_choice_count':'invalid_choice_shape');
   const choice=data.choices[0];
-  if(choice.finish_reason!==undefined&&choice.finish_reason!==null){if(choice.finish_reason!=='stop')throw Object.assign(invalid('incomplete_finish_reason'),{finish_reason:['length','content_filter','tool_calls'].includes(String(choice.finish_reason))?choice.finish_reason:'unknown'});finished=true;}
+  if(choice.finish_reason!==undefined&&choice.finish_reason!==null){sawFinish=true;if(choice.finish_reason!=='stop')throw Object.assign(invalid('incomplete_finish_reason'),{finish_reason:['length','content_filter','tool_calls'].includes(String(choice.finish_reason))?choice.finish_reason:'unknown'});finished=true;}
   const delta=choice.delta;
   if(delta===undefined||delta===null)return;
   if(!isRecord(delta))throw invalid('invalid_stream_delta');
@@ -137,11 +145,17 @@ async function parseStreamingCompletion(response:Response,config:ModelApiConfig,
  try{
   while(!done){
    const {done:ended,value}=await readWithAbort(reader,signal);
-   if(ended){buffer+=decoder.decode();for(const line of buffer.split(/\r?\n/))consumeLine(line);buffer='';if(dataLines.length)handleEvent(dataLines.join('\n'));break;}
+   if(ended){streamEnd='eof';buffer+=decoder.decode();for(const line of buffer.split(/\r?\n/))consumeLine(line);buffer='';if(dataLines.length)handleEvent(dataLines.join('\n'));break;}
+   streamBytes+=value.byteLength;
    buffer+=decoder.decode(value,{stream:true});
    const lines=buffer.split(/\r?\n/);buffer=lines.pop()??'';for(const line of lines)consumeLine(line);
   }
- }catch(error){if(error instanceof ModelApiError)throw error;throw new ModelApiError('network',true,response.status,null,requestId(response,null),networkFailureReason(error),activity());}
+ }catch(error){if(error instanceof ModelApiError)throw error;streamEnd='error';throw Object.assign(new ModelApiError('network',true,response.status,null,requestId(response,null),networkFailureReason(error),activity()),streamDetails());}
+ finally{
+  // [DONE]或异常后不再持有响应读取器；清理不延长调用截止，也不改变有效结束条件。
+  void reader.cancel().catch(error=>logEvent('model_api.stream_cleanup_failed',{level:'warn',...classifyLogError(error)}));
+  reader.releaseLock();
+ }
  if(!finished)throw Object.assign(invalid('incomplete_finish_reason'),{finish_reason:'missing'});
  if(!text.trim())throw invalid('empty_content');
  return{provider:config.provider,text,requested_model:config.model,model,request_id:requestId(response,{id:completion_id}),completion_id,usage,started_at,finished_at:new Date().toISOString(),duration_ms:Math.max(0,Math.round(performance.now()-started)),...(activity()?{generation_activity:activity()!}:{})};
@@ -228,10 +242,9 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
    withLogContext(callContext,()=>logEvent('model_api.call.completed',{level:'info',elapsed_ms:result.duration_ms,token_usage:result.usage,output_bytes:Buffer.byteLength(result.text)}));
    return result;
   } catch (error) {
-   withLogContext(callContext,()=>logEvent('model_api.call.failed',{level:'error',elapsed_ms:Math.round(performance.now()-started),...classifyLogError(error)}));
-   if (abortKind) throw abortError();
-   if (error instanceof ModelApiError) throw error;
-   throw new ModelApiError('network', true,null,null,null,networkFailureReason(error));
+   const failure=abortKind?Object.assign(abortError(),streamFailureEvidence(error)):error instanceof ModelApiError?error:new ModelApiError('network',true,null,null,null,networkFailureReason(error));
+   withLogContext(callContext,()=>logEvent('model_api.call.failed',{level:'error',elapsed_ms:Math.round(performance.now()-started),...classifyLogError(failure)}));
+   throw failure;
   } finally {
    clearTimeout(timer);
    input.signal?.removeEventListener('abort', cancel);
@@ -246,7 +259,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   const timer=setTimeout(()=>{timedOut=true;controller.abort();},input.timeout_ms??3600000);
   input.signal?.addEventListener('abort',cancel,{once:true});if(input.signal?.aborted)cancel();
   try{const result=await withModelApiSlot(()=>client.complete({...input,signal:controller.signal}),{env,signal:controller.signal,queue_timeout_ms:input.queue_timeout_ms,onAcquired:wait_ms=>{queue_wait_ms=wait_ms;}});return{...result,queue_wait_ms};}
-  catch(error){if(timedOut){const wait=record(error)&&typeof error.queue_wait_ms==='number'?error.queue_wait_ms:queue_wait_ms;const timeoutError=error instanceof ModelApiError?new ModelApiError('timeout',true,error.http_status,error.provider_code,error.request_id,'local_deadline',error.generation_activity,error.generation_id):new ModelApiError('timeout',true,null,null,null,'local_deadline');throw Object.assign(timeoutError,{queue_wait_ms:wait});}throw error;}
+  catch(error){if(timedOut){const wait=record(error)&&typeof error.queue_wait_ms==='number'?error.queue_wait_ms:queue_wait_ms;const timeoutError=error instanceof ModelApiError?new ModelApiError('timeout',true,error.http_status,error.provider_code,error.request_id,'local_deadline',error.generation_activity,error.generation_id):new ModelApiError('timeout',true,null,null,null,'local_deadline');throw Object.assign(timeoutError,{...streamFailureEvidence(error),queue_wait_ms:wait});}throw error;}
   finally{clearTimeout(timer);input.signal?.removeEventListener('abort',cancel);}
  };
  return{complete,async completeJson<T>(input:ModelApiRequest,validate:(value:unknown)=>T):Promise<ModelApiResult&{result:T}>{

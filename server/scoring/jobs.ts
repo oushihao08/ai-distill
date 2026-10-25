@@ -3,7 +3,8 @@
  * 关键方法与用途：`enqueueScore()` 按答案冻结上下文；`runNextScore()` 执行单个模型评分并聚合当前集合；摘要函数去重输入。
  * 使用场景：`app.ts` 派发，`worker.ts` 消费持久化评分队列。
  */
-import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {assertWorkflowNotArchived} from '../workflow-archive-guard';
+import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {runExternalCall} from '../external-call';
@@ -36,7 +37,7 @@ const workflowSql="SELECT w.project_id,p.local_skill_path,p.workspace_path,p.par
 export async function enqueueScore(pool:Pool,id:string){
  const db=await pool.connect();
  try{
-  await db.query('BEGIN');const w=(await db.query(workflowSql,[id])).rows[0];if(!w)throw new HTTPException(404,{message:'工作流不存在'});
+  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);const w=(await db.query(workflowSql,[id])).rows[0];if(!w)throw new HTTPException(404,{message:'工作流不存在'});
   const answerStep=(await db.query("SELECT status,result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=5",[id])).rows[0];
   const bundle=Array.isArray(answerStep?.result?.models)?answerStep.result.models as any[]:null;
   const terminalAnswerStatuses=['succeeded','failed','skipped'];
@@ -66,16 +67,16 @@ export async function enqueueScore(pool:Pool,id:string){
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
-   await registerLocalJob(db,attempt,'step',config.provider==='api'?'api':'agent','score');
    queued.push({id:attempt,reused:false,answer_attempt_id:answerId});
   }
-  if(queued.every(item=>item.reused)){await db.query('COMMIT');for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
+  await registerLocalJobs(db,queued.filter(item=>!item.reused).map(item=>({id:item.id,kind:'step' as const,lane:config.provider==='api'?'api' as const:'agent' as const,route:'score'})));
+  if(queued.every(item=>item.reused)){await db.query('COMMIT');forgetLocalRegistrations(db);for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=6",[id]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal>6 AND ordinal<=8",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='评分更新，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal>6 AND ordinal<=8 AND status IN ('waiting','running')",[id]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[id]);
-  await db.query('COMMIT');for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent(item.reused?'attempt.reused':'attempt.enqueued',{level:'info',state:item.reused?'reused':'waiting'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:false}:{id:queued[0]!.id,reused:false};
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent(item.reused?'attempt.reused':'attempt.enqueued',{level:'info',state:item.reused?'reused':'waiting'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:false}:{id:queued[0]!.id,reused:false};
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
 }
 interface ScoreRun {report:unknown;session_id:string;usage:unknown;duration_ms:number;execution_request?:unknown;raw_text?:string}
 type Grader=(context:ScoreContext,options:any)=>Promise<ScoreRun>;
@@ -149,17 +150,17 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
         }
         job = (await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=6 AND COALESCE(a.config->>'provider','codex')=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${affinity} AND ${localWaitingSql('a')} ${localClaimSql('a', false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`, [provider, workflowIds?.length ? workflowIds : null])).rows[0];
         if (!job) {
-            await db.query('COMMIT');
+            await db.query('COMMIT');forgetLocalRegistrations(db);
         }
         else {
             await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=COALESCE(started_at,now()),heartbeat_at=now() WHERE id=$1", [job.id]);
             if (!readStepFailure())
                 await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=6", [job.workflow_id]);
-            await db.query('COMMIT');
+            await db.query('COMMIT');forgetLocalRegistrations(db);
         }
     }
     catch (error) {
-        await db.query('ROLLBACK');
+        await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);
         throw error;
     }
     finally {
@@ -270,11 +271,11 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
             job.status = status;
             job.result = publication;
             scoreStepStatus = await refreshScoreStep(tx, job);
-            await tx.query('COMMIT');
+            await tx.query('COMMIT');forgetLocalRegistrations(tx);
             logEvent('attempt.completed', { level: validation.valid ? 'info' : 'error', state: status, output_bytes: bytes.length, token_usage: invocation.usage, ...(!validation.valid ? { failure_phase: 'result_validation' } : {}) });
         }
         catch (error) {
-            await tx.query('ROLLBACK');
+            await tx.query('ROLLBACK');await releaseRolledBackRegistrations(tx);
             throw error;
         }
         finally {
@@ -307,10 +308,10 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
                 scoreStepStatus = await refreshScoreStep(tx, job);
                 shouldJudge = true;
             }
-            await tx.query('COMMIT');
+            await tx.query('COMMIT');forgetLocalRegistrations(tx);
         }
         catch (error) {
-            await tx.query('ROLLBACK');
+            await tx.query('ROLLBACK');await releaseRolledBackRegistrations(tx);
             throw error;
         }
         finally {

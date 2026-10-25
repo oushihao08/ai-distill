@@ -17,6 +17,7 @@ import {libraryRedactionTemplates} from '../../shared/redaction-templates';
 import {resolveLibraryTemplate} from './templates';
 import {importPreparedLibraryMaterials} from './prepared-import';
 import {revalidateAgentLibraryRedaction} from './redaction-review';
+import {importMineruExtraction} from './mineru-import';
 
 function versionHeader(value:string|undefined){
  if(!value)throw new HTTPException(428,{message:'缺少 If-Match 材料包版本'});
@@ -73,6 +74,7 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
  });
  app.get(`${prefix}/jobs/:id`,async c=>c.json(await readLibraryJob(pool,uuid(c.req.param('id')))));
  app.post(`${prefix}/revisions/:id/prepared-redactions`,async c=>c.json(await importPreparedLibraryMaterials(pool,uuid(c.req.param('id')),await jsonBody(c),storageRoot),201));
+ app.post(`${prefix}/revisions/:id/mineru-extractions`,async c=>{const result=await importMineruExtraction(pool,storageRoot,uuid(c.req.param('id')),await jsonBody(c));return c.json(result,result.reused?200:201);});
  app.post(`${prefix}/jobs/:id/cancel`,async c=>c.json(await cancelLibraryJob(pool,uuid(c.req.param('id')))));
  app.post(`${prefix}/packages/:id/revisions`,async c=>{
   const packageId=uuid(c.req.param('id')),ifMatch=versionHeader(c.req.header('If-Match'));

@@ -73,7 +73,8 @@ export function createPool(env = process.env) {
   const requireBinding = url.searchParams.get('channel_binding') === 'require';
   for (const key of ['sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'channel_binding']) url.searchParams.delete(key);
   const pool = new Pool({ ...(localQueueEnabled()?{application_name:`ai-distill-executor:${localQueue(storageDirectory(env)).executorId}`}:{application_name:'ai-distill-legacy'}), connectionString: url.toString(), ssl: { rejectUnauthorized: true }, enableChannelBinding: requireBinding, max: 4, idleTimeoutMillis: 10000, connectionTimeoutMillis: 15000 });
-  const clients=new WeakSet<object>();let connectionUnavailable=false;
+  const clients=new WeakSet<object>(),freshClients=new WeakSet<object>();let connectionUnavailable=false;
+  pool.on('connect',(client:object)=>{freshClients.add(client);});
   const installClient=(client:any)=>{
     if(!client||typeof client!=='object'||clients.has(client))return;clients.add(client);
     const original=client.query.bind(client);
@@ -94,16 +95,18 @@ export function createPool(env = process.env) {
   const originalConnect=(pool as any).connect.bind(pool);
   (pool as any).connect=(...args:any[])=>{
     const started=performance.now(),callbackIndex=args.findIndex(arg=>typeof arg==='function');
+    const before={pool_total_before:pool.totalCount,pool_idle_before:pool.idleCount,pool_waiting_before:pool.waitingCount};
     const acquired=(error:unknown,client?:any,release?:unknown)=>{
       const duration_ms=Math.round(performance.now()-started);
-      if(error){connectionUnavailable=true;const code=safeDbCode(error);logEvent('db.connection.failed',{level:'error',duration_ms,...classifyLogError(error),...(code?{error_code:code}:{})});}
-      else{installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',duration_ms});connectionUnavailable=false;}if(duration_ms>=250)logEvent('db.connection.waited',{level:'warn',duration_ms});}
+      const metrics={...before,pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:Boolean(client&&freshClients.delete(client))};
+      if(error){connectionUnavailable=true;const code=safeDbCode(error);logEvent('db.connection.failed',{level:'error',duration_ms,...metrics,...classifyLogError(error),...(code?{error_code:code}:{})});}
+      else{installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',duration_ms,...metrics});connectionUnavailable=false;}if(duration_ms>=250)logEvent('db.connection.waited',{level:'warn',duration_ms,...metrics});}
     };
     if(callbackIndex>=0){const callback=args[callbackIndex];args[callbackIndex]=(...values:any[])=>{acquired(values[0],values[1],values[2]);callback(...values);};return originalConnect(...args);}
     try{return originalConnect(...args).then((client:any)=>{acquired(undefined,client);return client;},(error:unknown)=>{acquired(error);throw error;});}
     catch(error){acquired(error);throw error;}
   };
-  pool.on('acquire',(client:any)=>{installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info'});connectionUnavailable=false;}});
+  pool.on('acquire',(client:any)=>{installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:freshClients.has(client)});connectionUnavailable=false;}});
   pool.on('error',(error:unknown)=>{connectionUnavailable=true;const code=safeDbCode(error);logEvent('db.pool.error',{level:'error',...classifyLogError(error),...(code?{error_code:code}:{})});console.error('数据库连接异常，请检查连接配置或网络；连接信息未输出。');});
   return pool;
 }

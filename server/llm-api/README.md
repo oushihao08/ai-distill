@@ -65,7 +65,7 @@ SiliconFlow 请求默认使用 SSE 流式传输并请求 usage，复用现有完
 
 `readModelApiDefaults()`未配置LLM_API_PROVIDER时仍使用源码OpenRouter默认；显式环境覆盖可选SiliconFlow。文档描述的是解析回退，不证明部署环境当前默认值。不得读取或打印.env来证明密钥。Qwen旧门面可按已有密钥推断OpenRouter，通用解析不沿用该推断。
 
-`readModelApiCatalog()`直接解析全部enabled系统模型配置，只处理API配置；当前未过滤Codex条目或逐条跳过无效配置。若目录混入Codex/非法配置，该API可能整体失败，不能声称它始终返回所有可用模型。端点身份去重只比较provider/base_url/model，不比较思考参数或路由。
+`readModelApiCatalog()`读取enabled系统模型并过滤Codex条目，只解析API配置；非法API配置仍明确报错，不静默跳过。端点身份去重只比较provider/base_url/model，不比较思考参数或路由。
 
 SSE收到stop并取得正文即可接受，不强制存在[DONE]；推理活动时序是观测元数据，不证明供应商连续生成，也不自动授权免评分。`request_id`只保留UUID形态；供应商其他格式ID可能显示为空，不能解释成供应商没返回ID。
 

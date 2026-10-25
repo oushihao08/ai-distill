@@ -12,6 +12,7 @@ import {ApiClient, CliError} from './client';
 import {batchSize,batchView,createBatch,readBatch,skipBatch} from './batches';
 import {exportFailedQuestions} from './failed-export';
 import {exportPreparedMaterials} from './material-export';
+import {feishuTarget,readFeishuConfig,syncFeishuBatch,FEISHU_REQUEST_TIMEOUT_MS} from './feishu';
 import {validateMaterialPreparationPlan} from '../shared/material-preparation';
 
 export const HELP = `ai-distill：工作流工具（全部命令支持 --json；仅本机命令接受 --api http://127.0.0.1:3700）
@@ -71,6 +72,9 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   project delete --project UUID --confirm-name 项目完整名称
   project settings apply --project UUID --file JSON
   project sync --project UUID（刷新来源清单并按页数／大小切割超限PDF，可能使旧结果失效）
+  queue show | queue cancel --job UUID
+  advice show --workflow UUID
+  advice generate (--workflow UUID | --project UUID (--ids UUID,... | --all))
   step dispatch STEP_KEY --project UUID (--ids UUID,... | --all)
   export create --project UUID [--batch 批次]
 下载（仅写指定的新本机文件，不覆盖）：
@@ -79,6 +83,12 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   library documents import --plan Codex处理计划.json --request-key UUID（正式保存新的库级脱敏结果）
   artifact download --artifact UUID --out 路径 | export download --export UUID --out 路径
   siriser download --workflow UUID --out 五件套ZIP路径（需该题已有当前有效归档）
+飞书交付（仅豆包；新接口需API/worker重载后可用）：
+  feishu config show --project UUID
+  feishu config set --project UUID --base-token BASE --table TABLE
+  feishu table create --project UUID --name 新表名 [--base-token BASE]（不改变默认目标）
+  feishu sync --workflow UUID [--base-token BASE --table TABLE]
+  feishu sync-batch --project UUID --ids UUID,... --out 新进度文件.json [--base-token BASE --table TABLE]
 STEP_KEY 使用 step list；不使用页面序号。派发只执行一个步骤，不自动继续。
 attempt wait 默认仅返回状态元信息；完整正文使用 attempt show 或 wait --full。
 退出码：0 完成/派发已接受（不等于业务达标），1 命令/HTTP 错误，2 部分失败/未就绪，3 等待到期仍运行，130 中断。
@@ -164,9 +174,13 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'question list':['project'],'question show':['workflow'],'question delete':['project','workflow','confirm-title'],'question create':['material-package','redaction-attempt','title','scenario','role','level','direction'],'workflow status':['project','ids','all'],
       'material text':['workflow','material','redacted-only'],'rules list':['project'],'rules file':['project','path'],
       'models catalog':[],'models show':['project'],'attempt show':['attempt'],'attempt wait':['ids','timeout','full'],
+      'queue show':[],'queue cancel':['job'],'advice show':['workflow'],'advice generate':['workflow','project','ids','all'],
       'result list':[],'result show':['workflow'],'step list':[],'step dispatch':['project','ids','all'],
       'export list':['project'],'export create':['project','batch'],'export download':['export','out'],
       'siriser download':['workflow','out'],
+      'feishu config show':['project'],'feishu config set':['project','base-token','table'],
+      'feishu table create':['project','name','base-token'],'feishu sync':['workflow','base-token','table'],
+      'feishu sync-batch':['project','ids','out','base-token','table'],
       'export failed':['project','ids','all'],
       'export review':['project','ids'],
       'artifact download':['artifact','out'],'monitor show':[],
@@ -264,6 +278,25 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
     };
     let data: any;
     switch(command) {
+      case 'feishu config show': data=await readFeishuConfig(api,uuid('project'),signal);break;
+      case 'feishu config set': {
+        const project=uuid('project'),target=feishuTarget(required('base-token'),required('table'))!;
+        await readFeishuConfig(api,project,signal);
+        data=await api.json(`/api/projects/${project}/feishu-delivery`,'PUT',{default_target:target},signal,{},FEISHU_REQUEST_TIMEOUT_MS);break;
+      }
+      case 'feishu table create': {
+        const project=uuid('project');await readFeishuConfig(api,project,signal);
+        data=await api.json(`/api/projects/${project}/feishu-tables`,'POST',{table_name:required('name'),...(flags.has('base-token')?{base_token:required('base-token')}:{})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);break;
+      }
+      case 'feishu sync': {
+        const workflow=uuid('workflow').toLowerCase(),target=feishuTarget(flags.get('base-token'),flags.get('table'));
+        const detail=await get(`/api/workflows/${workflow}?view=status`),project=id(detail.workflow?.project_id,'项目');
+        await readFeishuConfig(api,project,signal);
+        data=await api.json(`/api/workflows/${workflow}/feishu-sync`,'POST',target?{target}:{},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
+        return{outcome:data.status==='succeeded'?'complete':'partial',data};
+      }
+      case 'feishu sync-batch': return await syncFeishuBatch(api,uuid('project'),[...new Set(ids().map(value=>value.toLowerCase()))],required('out'),feishuTarget(flags.get('base-token'),flags.get('table')),signal);
+
       case 'batch create': {
         const size=batchSize(required('size'));
         const target=getStepDefinition(required('to'));
@@ -489,6 +522,20 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'attempt show': data=await get(`/api/attempts/${uuid('attempt')}`);break;
       case 'attempt wait': return await waitAttempts(api,ids(),duration(flags.has('timeout')?required('timeout'):'1h'),signal,flags.has('full'));
       case 'result list': data=await get('/api/results');break;
+      case 'queue show': data=await get('/api/system/execution-queue');break;
+      case 'queue cancel': data=await post(`/api/system/execution-queue/${uuid('job')}/cancel`);break;
+      case 'advice show': data=await get(`/api/workflows/${uuid('workflow')}/revision-advice`);break;
+      case 'advice generate': {
+        const generate=async(workflow:string)=>{try{return await post(`/api/workflows/${workflow}/revision-advice`);}catch(error){if(error instanceof CliError&&error.detail.kind==='http_error'&&typeof error.detail.http_status==='number'&&error.detail.http_status>=400&&error.detail.http_status<500)throw new CliError(error.message,{...error.detail,outcome_unknown:false,dispatched:false});throw error;}};
+        if(flags.has('workflow')){if(['project','ids','all'].some(key=>flags.has(key)))throw new CliError('--workflow不可与项目批量范围并用');data=await generate(uuid('workflow'));break;}
+        const {project,selected}=await scope(4);const results:any[]=[];let full=false,unknown=false;
+        for(const workflow of selected){
+          if(full||unknown){results.push({workflow_id:workflow,status:'not_dispatched',reason:full?'本机待领取容量已满':'上项回执未知，停止继续派发'});continue;}
+          try{const result=await generate(workflow);results.push({workflow_id:workflow,status:'queued',...object(result,'返修建议')});}
+          catch(error){const detail=error instanceof CliError?error.detail:{};full=detail.code==='local_queue_full';unknown=detail.outcome_unknown===true;results.push({workflow_id:workflow,status:full?'capacity_exceeded':'not_dispatched',error:error instanceof Error?error.message:'派发失败',...detail});}
+        }
+        return{outcome:results.every(row=>row.status==='queued')?'complete':'partial',project_id:project,results,advice_attempt_ids:results.filter(row=>row.status==='queued').map(row=>row.id)};
+      }
       case 'monitor show': data=await get('/api/monitor');break;
       case 'step dispatch': {
         const step=getStepDefinition(words[2]);
@@ -507,7 +554,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
             failed=true;batches.push({workflow_ids:workflowIds,error:error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'},unsubmitted_workflow_ids:selected.slice(i+100)});break;
           }
         }
-        return {outcome:failed||results.some(r=>!['queued','succeeded'].includes(r.status))?'partial':'complete',
+        return {outcome:failed||results.some(r=>!['queued','succeeded','already_accepted','already_archived'].includes(r.status))?'partial':'complete',
           step_key:step.key,project_id:project,selected_workflow_ids:selected,batches,dispatch:results,
           attempt_ids:[...new Set<string>(results.flatMap(r=>[r.attempt_id,...(r.attempt_ids??[])].filter(Boolean)))]};
       }

@@ -135,3 +135,19 @@ Agent主体表为私有辅助记录；成功标准是程序校验完成并发布
 - 下载/导出：报告生成记录、文件路径及实际结果，不以命令成功代替文件已交付。
 
 按用户要求控制详细程度，只披露任务必要内容，不把部分成功汇总成全部完成。
+
+## 本机状态、容量与手动建议
+
+- 先读本机`GET /api/system/execution-queue`及`steps[].executions`，以SQLite状态判断本机排队/运行；其他执行端明确标注，缺记录、代次不符或needs_review保持待核实。共享steps/attempts的running不能直接当作本机占用，不能因本机无记录就给云端记成功/失败或接管他机任务。
+- 新派发按实际模型attempt预留容量；每通道运行<=N、待领取<=N分别计算，N来自当前生效配置。429/local_queue_full/dispatched=false和批量capacity_exceeded明确未派发；等待空位后仍须用户原范围内显式操作，不制造空任务或自动收费重试。批量出题/作答/评分的already_accepted表示保留当前达标成果并跳过。
+- 仅用户明确要求时，通过`POST /api/workflows/:id/revision-advice`生成手动返修建议；读取当前出题/作答/评分、冻结来源，独立Agent任务不会自动出题。`GET`同一路径查看历史和有效标记。下一次出题会冻结并拼接同版成功建议文本，历史全文不重新注入作者。旧建议不跟随新题，不能降低评分要求制造达标。
+- 建议、容量、CLI和恢复细节分别以[建议模块](../server/revision-advice/README.md)、[执行队列](../server/execution-queue/README.md)、[CLI](../cli/README.md)为准；050存在或隔离验收通过不等于业务环境已启用。写请求超时后先查原任务/状态，不直接重复派发；未知模型调用不自动重放。
+
+手动建议任务用建议GET接口或CLI的advice show跟踪，不将advice_attempt_ids送入原步骤attempt wait。他机状态来自共享尝试标记，本机不能确认其实际进度；它不占本机容量。
+
+## 豆包飞书交付
+
+- 仅豆包项目使用本模块。先读取当前期次飞书配置和用户指定目标；HTTP契约见[归档模块](../server/publishing/README.md#豆包飞书交付)，用户明确要求CLI时使用[CLI飞书命令](../cli/README.md#豆包飞书交付)。不擅自重载服务。
+- 默认追加到已配置表。用户要求N条进入新表时，先固定恰好N个已达标且归档成功的workflow ID，再创建一张同字段新表，保存target后逐题同步；不扩大清单、不改默认目标、不手工重写题面或附件。
+- CLI新表命令返回target后，sync-batch必须显式携带该target及新进度文件；不要每题建表。单题sync使用同一服务端生成/同步方法。旧API未加载新能力时停止，不忽略指定目标而写默认表。
+- 只把succeeded回执计为提交成功。同步失败与本地归档分开；unknown/dispatching先核对远端，不自动重发。pending尚未上传。补传只包含明确需要的ID，保留原进度和每个目标表回执。

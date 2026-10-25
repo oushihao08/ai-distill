@@ -28,3 +28,5 @@
 部分脚本将运行结果写到 `docs/evidence/`；它只是脚本输出路径，不是当前规范或当前能力的权威来源。本任务不扫描或修改 `docs/`。临时 schema 隔离的是脚本中被改写的 SQL，并不表示其不会读取真实输入、调用外部模型或写其他路径；具体边界以源码为准。
 
 `verify-local-queue.ts`：`bun --no-env-file scripts/verification/verify-local-queue.ts --port <本机临时PG端口> --out <证据JSON>`；只接受127.0.0.1、queue_verify专用空库，顺序应用真实迁移并在finally删除schema，使用两份临时SQLite和两个PG执行身份验证归属、HTTP取消/认领、TXT入库提取及结果对账。不读取.env、不调用模型、不操作业务库，不能替代实体双机和真实模型验收。
+
+`verify-runtime-consistency.ts`仅接受本机显式端口的`queue_verify`空库，应用全部真实迁移，以双SQLite/PG身份和合成建议执行器核对手动建议、作者冻结复用、达标批量跳过和本机状态投影；不调用真实模型。运行参数`--port <端口> --out <证据JSON>`，可选`--serve`在13700/13701启动隔离API供浏览器验收；收到TERM/INT后停止API、删除schema和临时文件。仅在空专用库运行，不接业务.env。

@@ -13,6 +13,8 @@ import{registerWorkflowExecutionRoutes}from'./workflow-execution-routes';
 import{waitForAttempt}from'./attempts';
 import type{WorkflowStepOrdinal,StepDispatchTask}from'./step-dispatch';
 import type{WorkflowStepState}from'./project-folders';
+import {QueueCapacityError} from './execution-queue/store';
+import {localQueue} from './execution-queue/runtime';
 import{createHash}from'node:crypto';
 import{redactionInputDigest}from'./materials/redaction-jobs';
 import{scanProjectPrompt}from'./rule-files';
@@ -22,7 +24,7 @@ const dirs:string[]=[];
 beforeEach(async()=>{try{dirs.push(await mkdtemp(join(tmpdir(),'ai-distill-routes-')));}catch(error){throw error;}});
 afterEach(async()=>{try{for(const dir of dirs.splice(0))await rm(dir,{recursive:true,force:true});}catch(error){throw error;}});
 function setup(query:(sql:string,values?:unknown[])=>unknown|Promise<unknown>){
- const client={query:async(sql:string,values?:unknown[])=>{try{return await query(sql,values);}catch(error){throw error;}},release(){}};
+ const client={query:async(input:string|{text:string},values?:unknown[])=>{const sql=typeof input==='string'?input:input.text;try{return await query(sql,values);}catch(error){throw error;}},release(){}};
  return createApp({query:client.query,connect:async()=>client}as unknown as Pool,dirs.at(-1)!);
 }
 function setupExecutionRoutes(repository:{projectExists:(projectId:string)=>Promise<boolean>;selectWorkflows:(projectId:string,workflowIds?:string[])=>Promise<{id:string;project_id:string}[]>;readStepStates:(projectId:string,workflowIds:string[])=>Promise<(WorkflowStepState&{workflow_id:string})[]>},dispatch:(workflowId:string,ordinal:WorkflowStepOrdinal,context?:{delivery_identity:{task_id:string;org:string}})=>Promise<StepDispatchTask>,batchChunkSize=100,wait?:typeof waitForAttempt){
@@ -31,6 +33,30 @@ function setupExecutionRoutes(repository:{projectExists:(projectId:string)=>Prom
  return app;
 }
 const empty={rows:[],rowCount:0};
+test('single dispatch reports full local queue as 429 with an explicit non-dispatch receipt',async()=>{
+ const app=setup(async()=>empty);app.get('/api/test-capacity',()=>{throw new QueueCapacityError('agent',4,4,1);});
+ const response=await app.request('/api/test-capacity');expect(response.status).toBe(429);
+ expect(await response.json()).toMatchObject({code:'local_queue_full',lane:'agent',limit:4,waiting:4,requested:1,dispatched:false});
+});
+test('batch preserves library snapshot readiness and reports capacity overflow separately from failure',async()=>{
+ const ids=['22222222-2222-4222-8222-222222222222','33333333-3333-4333-8333-333333333333'];
+ const repository={projectExists:async()=>true,selectWorkflows:async()=>ids.map(id=>({id,project_id:'11111111-1111-4111-8111-111111111111'})),readStepStates:async()=>ids.flatMap(workflow_id=>[9,4].map(ordinal=>({workflow_id,ordinal,status:'waiting',enabled:true,active:false,workflow_kind:'question' as const,library_source:true})))};
+ const app=setupExecutionRoutes(repository,async workflowId=>{if(workflowId===ids[1])throw new QueueCapacityError('agent',1,1,1);return{id:crypto.randomUUID()};});
+ const response=await app.request(`/api/projects/${id}/steps/4/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:ids})});
+ expect(response.status).toBe(202);const data=await response.json() as any;
+ expect(data.results.map((row:any)=>row.status)).toEqual(['queued','capacity_exceeded']);
+ expect(data.results[1].attempt_id).toBeUndefined();expect(data.results[1].reason).toContain('未派发');
+});
+test('batch author, answer and score never dispatch a currently accepted question',async()=>{
+ let calls=0;
+ const repository={projectExists:async()=>true,selectWorkflows:async()=>[{id,project_id:id}],readStepStates:async()=>[4,5,6,7].map(ordinal=>({workflow_id:id,ordinal,status:ordinal===7?'succeeded':'waiting',enabled:true,active:false,result:ordinal===7?{decision:'accepted'}:null}))};
+ const app=setupExecutionRoutes(repository,async()=>{calls++;return{id:crypto.randomUUID()};});
+ for(const ordinal of [4,5,6]){
+  const response=await app.request(`/api/projects/${id}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:[id]})});
+  expect((await response.json() as any).results).toEqual([{workflow_id:id,status:'already_accepted',reason:'当前题目已达标，已跳过'}]);
+ }
+ expect(calls).toBe(0);
+});
 test('Work archive passes only validated external identity to the archive handler',async()=>{
  let received:unknown;
  const app=setupExecutionRoutes({projectExists:async()=>true,selectWorkflows:async()=>[],readStepStates:async()=>[]},async(_workflowId,_ordinal,context)=>{received=context;return{id,completed:true};});
@@ -470,4 +496,32 @@ test('项目详情按本期覆盖或共享Skill报告真实生效路径，两期
  const other=await (await app.request(`/api/projects/${second}`)).json() as any;
  expect(first.project).toMatchObject({skill_exists:true,effective_skill_path:join(phase1,'skill')});
  expect(other.project).toMatchObject({skill_exists:true,effective_skill_path:shared});
+});
+
+
+test('manual advice migration is optional for existing workflow health and absence is explicit',async()=>{
+ const names=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql')&&name!=='050_manual_revision_advice.sql');
+ const app=setup(sql=>sql.startsWith('SELECT name FROM ai_distill.schema_migrations')?{rows:names.map(name=>({name})),rowCount:names.length}:sql.includes('revision_advice_attempts')?{rows:[{available:false}],rowCount:1}:empty);
+ expect((await app.request('/api/health')).status).toBe(200);
+ const response=await app.request(`/api/workflows/${id}/revision-advice`);expect(await response.json()).toEqual({available:false,attempts:[]});
+});
+
+
+test('local monitor excludes terminal history from items but preserves library result totals',async()=>{
+ const before=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='local';
+ const q=localQueue(dirs.at(-1)!);
+ try{
+  const insert=q.db.prepare("INSERT INTO jobs(id,kind,lane,state,route,created_at,updated_at) VALUES(?,'library','internal',?,'extract',?,?)");
+  q.db.transaction(()=>{for(let i=0;i<10000;i++)insert.run(crypto.randomUUID(),'committed',i,i);})();
+  const active=crypto.randomUUID(),review=crypto.randomUUID();insert.run(active,'queued',10001,10001);insert.run(review,'needs_review',10002,10002);
+  q.list=()=>{throw new Error('monitor must not materialize terminal history');};
+  const app=setup(sql=>{
+   if(sql.includes("to_regclass('ai_distill.library_jobs')"))return{rows:[{available:true}],rowCount:1};
+   if(sql.includes('count(*) FILTER'))return{rows:[{queued:'0',running:'0',succeeded:'0',failed:'0',cancelled:'0',items:[]}],rowCount:1};
+   return empty;
+  });
+  const response=await app.request('/api/monitor');expect(response.status).toBe(200);const body=await response.json();
+  expect(body.local_execution_queue.items.map((j:{id:string})=>j.id)).toEqual([active,review]);
+  expect(body.material_library.totals).toMatchObject({succeeded:10000,queued:1,running:0});
+ }finally{q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;}
 });

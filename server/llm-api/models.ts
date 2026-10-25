@@ -13,7 +13,7 @@ export async function readModelApiCatalog(db:Pool){
  try{
   const defaults=readModelApiDefaults();
   const rows=await db.query('SELECT name,config FROM ai_distill.system_answer_models WHERE enabled=true ORDER BY name,id');
-  const models:ModelApiOption[]=rows.rows.map(row=>({name:row.name,config:resolveModelApiConfig(row.config,{}),is_default:false}));
+  const models:ModelApiOption[]=rows.rows.filter(row=>row.config?.provider!=='codex').map(row=>({name:row.name,config:resolveModelApiConfig(row.config,{}),is_default:false}));
   const match=models.find(item=>identity(item.config)===identity(defaults));
   if(match)match.is_default=true;
   else models.unshift({name:defaults.provider==='openrouter'&&defaults.model==='z-ai/glm-5.3-flash'?'GLM-5.3-Flash':defaults.model,config:defaults,is_default:true});

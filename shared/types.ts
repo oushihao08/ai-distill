@@ -1,6 +1,7 @@
 /** 文件职责：定义前后端共用的项目、工作流、材料、步骤、尝试、规则和 API 返回类型。
  * 关键契约与用法：导出 StepStatus/statusLabels 等状态定义及 Project、WorkflowDetail、ProjectStage、RuleVersion 等接口；web/src/types/api.ts 重导出，服务端路由和前端页面据此保持字段一致，类型不代替运行时校验。
  */
+import type {StepExecution} from './execution-state';
 import type {WorkflowConfig} from './workflow-config';
 import type {AcceptanceResult} from './workflow-results';
 import type {MaterialBackend,QuestionMaterialOrigin} from './material-library';
@@ -13,8 +14,8 @@ export interface ResultLibraryItem { workflow_id:string;project_id:string;projec
 export interface Material { id: string; original_name: string; sha256: string; size_bytes: number; content_type: string; processing_status: string; redaction_mode: 'model' | 'declared_redacted'; created_at: string; }
 export interface MaterialTextPage { page: number; text: string; method: string; issues?: string[] }
 export interface MaterialTextDetail { material: Pick<Material, 'id' | 'original_name' | 'processing_status' | 'sha256'>; format: string; provider: string; pages: MaterialTextPage[]; redaction_status: 'redacted' | 'not_redacted'; redacted_text?: string; redacted_pages?: (Pick<MaterialTextPage, 'page' | 'text'> & Partial<Pick<MaterialTextPage, 'method' | 'issues'>>)[] }
-export interface Step { ordinal: number; position?:number; display_position?:number; step_key?:string; enabled?:boolean; active?:boolean; name: string; status: StepStatus; implemented: boolean; result: Record<string, unknown> | null; error: string | null; started_at: string | null; finished_at: string | null; ready?:boolean; ready_reason?:string|null; }
-export interface Attempt { id: string; ordinal: number; status: StepStatus;  error: string | null; input: unknown; config?:unknown; result: unknown; started_at: string; finished_at: string | null; }
+export interface Step { executions?:StepExecution[]; ordinal: number; position?:number; display_position?:number; step_key?:string; enabled?:boolean; active?:boolean; name: string; status: StepStatus; implemented: boolean; result: Record<string, unknown> | null; error: string | null; started_at: string | null; finished_at: string | null; ready?:boolean; ready_reason?:string|null; }
+export interface Attempt { id: string; ordinal: number; status: StepStatus;  error: string | null; input: unknown; config?:unknown; result: unknown; started_at: string; heartbeat_at?:string|null; finished_at: string | null; }
 export interface PublicationHistoryItem {id:string;project_id:string;workflow_id:string;attempt_id:string;event_type:'archived'|'withdrawn';provenance:{project_id:string;project_name?:string|null;workflow_id:string;workflow_title?:string|null;standard_material_package_name?:string|null;material_origin:QuestionMaterialOrigin;materials:{artifact_id:string;sha256:string}[];source_files?:{file_id:string;material_id:string;original_name:string;sha256:string}[]};created_at:string;project_name:string;workflow_title:string}
 export interface WorkflowDetail { artifacts: {id:string;kind:string;attempt_id:string|null;created_at:string;question_version?:string|null;filename?:string|null}[]; workflow: Workflow; project: Project; materials: Material[]; steps: Step[]; attempts: Attempt[]; publication_history?:PublicationHistoryItem[];source_material_package?:{id:string;title:string}|null;question_material_origin?:QuestionMaterialOrigin|null;material_package_questions?:Pick<Workflow,'id'|'title'|'created_at'|'source_redaction_attempt_id'|'source_redaction_sha256'>[]; }
 

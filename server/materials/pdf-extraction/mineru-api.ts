@@ -142,19 +142,31 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
   const startedAt = this.now();
   const fetchOptions = { signal: controller.signal };
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
-  let tempZipPath: string | undefined, diagnosticDirectory: string | undefined, completed=false;
+  const diagnosticId=crypto.randomUUID();
+  const diagnosticDirectory=resolve(storageDirectory(this.env),'.mineru-diagnostics',diagnosticId);
+  let tempZipPath: string | undefined, completed=false,batchId:string|undefined,phase='request_upload_url',providerState:string|undefined;
+  const recordPhase=async(nextPhase:string,state?:string)=>{
+   phase=nextPhase;if(state!==undefined)providerState=state;
+   await writeFile(resolve(diagnosticDirectory,'metadata.json'),JSON.stringify({source_sha256:sha256,page_count:pageCount,input_format:this.inputFormat,batch_id:batchId,phase,provider_state:providerState,observed_at:new Date().toISOString()}),{mode:0o600});
+   logEvent('extraction.api.phase',{level:'info',provider:this.id,diagnostic_id:diagnosticId,failure_phase:phase,state:providerState??phase,duration_ms:Math.max(0,this.now()-startedAt)});
+  };
   try {
+   await mkdir(diagnosticDirectory,{recursive:true,mode:0o700});
+   await recordPhase('request_upload_url');
    const request = await this.fetcher(`${API_ROOT}/file-urls/batch`, {
     ...fetchOptions, method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ files: [{ name: basename(path), data_id: sha256 }], model_version: 'vlm' }),
    });
    const uploadData = responseData(await checkedJson(request, '上传地址申请'));
-   const batchId = uploadData.batch_id, urls = uploadData.file_urls;
-   if (typeof batchId !== 'string' || !Array.isArray(urls) || typeof urls[0] !== 'string') throw new Error('MinerU API上传地址响应缺字段');
+   const urls = uploadData.file_urls;
+   if (typeof uploadData.batch_id !== 'string' || !Array.isArray(urls) || typeof urls[0] !== 'string') throw new Error('MinerU API上传地址响应缺字段');
+   batchId=uploadData.batch_id;
    const uploadUrl = new URL(urls[0]);
    if (uploadUrl.protocol !== 'https:') throw new Error('MinerU API上传地址无效');
+   await recordPhase('upload_file');
    const upload = await this.fetcher(uploadUrl, { ...fetchOptions, method: 'PUT', body: bytes });
    if (!upload.ok) throw new Error(`MinerU API文件上传返回HTTP ${upload.status}`);
+   await recordPhase('poll_result');
 
    let zipUrl: string | undefined;
    const deadline = startedAt + API_TIMEOUT_MS;
@@ -164,6 +176,8 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
     const data = responseData(await checkedJson(poll, '任务查询'));
     const rows = Array.isArray(data.extract_result) ? data.extract_result : [];
     const item = rows.find(result => isRecord(result) && (result.data_id === sha256 || result.file_name === basename(path)));
+    const state=isRecord(item)&&['waiting-file','pending','running','done','failed','converting'].includes(String(item.state))?String(item.state):'missing_result_item';
+    if(state!==providerState)await recordPhase('poll_result',state);
     if (isRecord(item)) {
      if (item.state === 'failed') throw new Error('MinerU API解析任务失败');
      if (item.state === 'done') { zipUrl = resultZipUrl({ extract_result: [item] }); break; }
@@ -172,12 +186,12 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    }
    if (!zipUrl) throw new Error('MinerU API任务超过30分钟');
 
+   await recordPhase('download_result');
    const zipResponse = await this.fetcher(zipUrl, { ...fetchOptions, headers: { Accept: 'application/octet-stream' } });
    if (!zipResponse.ok) throw new Error(`MinerU API结果下载返回HTTP ${zipResponse.status}`);
    const zipBytes = new Uint8Array(await zipResponse.arrayBuffer());
    if (!zipBytes.length || zipBytes.byteLength > MAX_RESULT_ZIP_BYTES) throw new Error('MinerU API结果包大小无效');
-   diagnosticDirectory = resolve(storageDirectory(this.env), '.mineru-diagnostics', crypto.randomUUID());
-   await mkdir(diagnosticDirectory, { recursive: true, mode: 0o700 });
+   await recordPhase('read_result');
    tempZipPath = resolve(diagnosticDirectory, 'result.zip');
    await writeFile(tempZipPath, zipBytes, { mode: 0o600, flag: 'wx' });
    const listingBytes = await runUnzip(['-Z1', tempZipPath], 2 * 1024 * 1024,controller.signal);
@@ -194,13 +208,13 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    completed=true;
    return { pages, sha256, provider: this.id };
   } catch (error) {
-   logEvent('extraction.api.failed', { level: 'error', provider: this.id, reason: safeFailureReason(error) });
+   logEvent('extraction.api.failed', { level: 'error', provider: this.id, reason_code: safeFailureReason(error),failure_phase:phase,state:providerState,diagnostic_id:diagnosticId,duration_ms:Math.max(0,this.now()-startedAt) });
    if(controller.signal.aborted&&!signal?.aborted)throw Object.assign(new Error('MinerU API任务超过30分钟'),{reason_code:'provider_timeout'});
    throw error;
   } finally {
    clearTimeout(timer);
    signal?.removeEventListener('abort', abort);
-   if (diagnosticDirectory && completed) await rm(diagnosticDirectory, { recursive: true, force: true });
+   if (completed) await rm(diagnosticDirectory, { recursive: true, force: true });
   }
  }
 }
@@ -219,7 +233,7 @@ export class MineruApiFirstPdfExtractor implements PdfExtractionProvider {
   try { return await this.api.extract(path, signal); }
   catch (apiError) {
    if (signal?.aborted || !permitsCliFallback(apiError)) throw apiError;
-   logEvent('extraction.cli.fallback.started', { level: 'warn', provider: 'mineru-cli', reason: safeFailureReason(apiError) });
+   logEvent('extraction.cli.fallback.started', { level: 'warn', provider: 'mineru-cli', reason_code: safeFailureReason(apiError) });
    return await this.cli.extract(path, signal);
   }
  }

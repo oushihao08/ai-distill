@@ -76,13 +76,15 @@ async function runStep(step:ProjectStage,fromPackages=false){
   const result=await api<{results:{workflow_id:string;status:string;reused?:boolean;attempt_ids?:string[];reason?:string}[]}>(`/projects/${route.params.id}/steps/${step.ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(step.ordinal===4?{workflow_ids:fromPackages?createdIds:questionWorkflows.value.map(question=>question.id)}:{})});
   const queued=result.results.filter(item=>item.status==='queued').length;
   const completed=result.results.filter(item=>item.status==='succeeded').length;
+  const acceptedSkipped=result.results.filter(item=>item.status==='already_accepted').length;
   const notReady=result.results.filter(item=>item.status==='not_ready').length;
+  const capacityExceeded=result.results.filter(item=>item.status==='capacity_exceeded').length;
   const failed=result.results.filter(item=>item.status==='failed'||item.status==='not_found').length;
   const taskCount=(item:{attempt_ids?:string[]})=>item.attempt_ids?.length??1;
   const newTasks=result.results.filter(item=>item.status==='queued'&&!item.reused).reduce((sum,item)=>sum+taskCount(item),0);
   const reusedTasks=result.results.filter(item=>item.status==='queued'&&item.reused).reduce((sum,item)=>sum+taskCount(item),0);
-  batchFailures.value.push(...result.results.filter(item=>item.status==='failed'||item.status==='not_found'||item.status==='not_ready').map(item=>({workflow_id:item.workflow_id,title:data.value?.workflows.find(workflow=>workflow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看服务端日志'})));
-  message.value=`${fromPackages?'从材料包建题并出题':step.name}批量执行结果：新建 ${createdIds.length} 道题，新派发 ${newTasks} 个任务（${queued} 道题），复用 ${reusedTasks} 个已有任务，已完成 ${completed} 道，未就绪 ${notReady} 道，失败 ${failed+batchFailures.value.filter(item=>materialPackages.value.some(pkg=>pkg.id===item.workflow_id)).length} 道。`;
+  batchFailures.value.push(...result.results.filter(item=>['failed','not_found','not_ready','capacity_exceeded'].includes(item.status)).map(item=>({workflow_id:item.workflow_id,title:data.value?.workflows.find(workflow=>workflow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看服务端日志'})));
+  message.value=`${fromPackages?'从材料包建题并出题':step.name}批量执行结果：新建 ${createdIds.length} 道题，新派发 ${newTasks} 个任务（${queued} 道题），复用 ${reusedTasks} 个已有任务，已完成 ${completed} 道，已达标跳过 ${acceptedSkipped} 道，未就绪 ${notReady} 道，容量不足未派发 ${capacityExceeded} 道，失败 ${failed+batchFailures.value.filter(item=>materialPackages.value.some(pkg=>pkg.id===item.workflow_id)).length} 道。`;
   await refresh();
  }catch(cause){error.value=cause instanceof Error?cause.message:'执行失败';await refresh();}finally{busy.value=null;}
 }
@@ -101,6 +103,7 @@ async function savedTags(){tagsOpen.value=false;await refresh();}
 <template><Column :gap="16">
  <RouterLink :to="data?.project.project_group_id?`/project-groups/${data.project.project_group_id}`:'/'" class="link-text text-sm">← 所属主项目的期次</RouterLink>
  <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
+ <v-btn v-if="error&&!data" color="primary" :loading="loading" :disabled="loading" @click="refresh">重新读取</v-btn>
   <p v-if="loading&&!data" class="text-muted">正在读取项目…</p>
  <template v-if="data">
   <Row x="between" wrap :gap="12"><Column :gap="6" class="min-w-0"><h1 class="text-2xl font-bold text-ink-heading break-words">{{ data.project.name }}</h1><p class="text-xs text-muted">第 {{ data.project.phase_no??'—' }} 期 · 题目、作答模型与评测结果属于本期</p><p v-if="data.project.description" class="text-sm text-muted">{{ data.project.description }}</p></Column><Row wrap :gap="8"><v-btn @click="modelSettingsOpen=true">本期作答模型</v-btn><v-btn @click="openMaterialsSettings">主项目资料与 skill</v-btn><v-btn :disabled="busy!==null" @click="editOpen=true">编辑本期配置</v-btn><v-btn :loading="loading" @click="refresh">刷新</v-btn><v-btn color="error" :disabled="busy!==null" @click="deleteOpen=true">删除本期</v-btn></Row></Row>

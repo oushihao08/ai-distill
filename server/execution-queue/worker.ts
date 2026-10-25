@@ -9,6 +9,7 @@ import {runNextAnswer} from '../answer-models/jobs';
 import {createAnswerClient} from '../answer-models/dispatch';
 import {runNextScore} from '../scoring/jobs';
 import {runIndependentApiScore} from '../scoring/executor';
+import {runNextRevisionAdvice} from '../revision-advice/jobs';
 import {runNextProjectSkill} from '../skill-generation/jobs';
 import {runNextIntake} from '../intake-jobs';
 import {runNextExtraction} from '../materials/jobs';
@@ -20,7 +21,7 @@ import {logEvent,classifyLogError} from '../logging';
 import {localQueue,withLocalExecution,reconcileRegistrations,cloudJobState,isTransientCommitFailure,PendingLocalCommit,assertLocalQueueEnvironment,reconcileTerminalOutcome,synchronizeLocalCancellations,reconcileFinishedJobs} from './runtime';
 import type {QueueJob,Lane} from './store';
 async function dispatch(pool:Pool,root:string,job:QueueJob,signal:AbortSignal,metadata?:Record<string,any>){
- const table=job.kind==='library'?'library_jobs':job.kind==='skill'?'project_skill_attempts':job.kind==='hook'?'hook_runs':job.kind==='remote'?'remote_material_operations':'step_attempts';
+ const table=job.kind==='library'?'library_jobs':job.kind==='skill'?'project_skill_attempts':job.kind==='hook'?'hook_runs':job.kind==='remote'?'remote_material_operations':job.kind==='advice'?'revision_advice_attempts':'step_attempts';
  const raw=metadata??(await pool.query(`SELECT to_jsonb(j) AS job FROM ai_distill.${table} j WHERE id=$1`,[job.id])).rows[0]?.job;
  if(!raw)return false;const target=raw.execution_target??'local';
  if(job.kind==='library')return runNextLibraryJob(pool,root,raw.executor_kind,target,signal,job.id);
@@ -29,6 +30,7 @@ async function dispatch(pool:Pool,root:string,job:QueueJob,signal:AbortSignal,me
   case 'authoring':return runNextAuthoring(pool,root,undefined,signal);
   case 'answer':return runNextAnswer(pool,root,createAnswerClient().answer,signal,'all',target,raw.config?.provider==='codex'?'codex':'api');
   case 'score':return runNextScore(pool,root,raw.config?.provider==='api'?runIndependentApiScore:undefined,signal,undefined,raw.config?.provider==='api'?'api':'codex','all');
+  case 'advice':return runNextRevisionAdvice(pool,root,signal);
   case 'skill':return runNextProjectSkill(pool,root,undefined,signal);
   case 'intake':return runNextIntake(pool,root,undefined,signal,target);
   case 'extract':return runNextExtraction(pool,root,undefined,undefined,signal,target);
@@ -40,7 +42,7 @@ async function dispatch(pool:Pool,root:string,job:QueueJob,signal:AbortSignal,me
 }
 /** worker模式只决定可消费任务；任务仍须属于本机队列，工作流范围只允许显式步骤。 */
 export function canRunLocalTask(mode:string,job:QueueJob,raw:{workflow_id?:string;execution_target?:string;ordinal?:number;input?:{hooks?:unknown}},target:string,workflowIds?:string[]){
- if(workflowIds&&(!raw.workflow_id||!workflowIds.includes(raw.workflow_id)||job.kind!=='step'||![4,5,6,8].includes(raw.ordinal??0)))return false;
+ if(workflowIds&&(!raw.workflow_id||!workflowIds.includes(raw.workflow_id)||!(job.kind==='advice'||job.kind==='step'&&[4,5,6,8].includes(raw.ordinal??0))))return false;
  if(job.kind==='remote')return !workflowIds&&target==='server'&&['all','api','server','materials'].includes(mode);
  if((raw.execution_target??'local')!==target)return false;
  if(mode==='all')return true;
@@ -80,13 +82,13 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
   {
    const candidates=q.pending(lane);
    allowedIds=[];
-   const tables={step:'step_attempts',library:'library_jobs',skill:'project_skill_attempts',hook:'hook_runs',remote:'remote_material_operations'} as const;
+   const tables={step:'step_attempts',library:'library_jobs',skill:'project_skill_attempts',hook:'hook_runs',remote:'remote_material_operations',advice:'revision_advice_attempts'} as const;
    for(const kind of Object.keys(tables) as (keyof typeof tables)[]){
     const selected=candidates.filter(j=>j.kind===kind);if(!selected.length)continue;
     // 领取前只取亲和性字段，不批量搬运题面、附件、答案或结果JSON。
     const projection=kind==='step'
      ?"jsonb_build_object('workflow_id',j.workflow_id,'ordinal',j.ordinal,'execution_target',j.execution_target,'config',jsonb_build_object('provider',j.config->>'provider'),'input',jsonb_build_object('hooks',CASE WHEN j.input->'hooks' IS NOT NULL AND j.input->'hooks'<>'null'::jsonb THEN '{}'::jsonb ELSE NULL END))"
-     :kind==='library'?"jsonb_build_object('executor_kind',j.executor_kind,'execution_target',j.execution_target)":"'{}'::jsonb";
+     :kind==='advice'?"jsonb_build_object('workflow_id',j.workflow_id)":kind==='library'?"jsonb_build_object('executor_kind',j.executor_kind,'execution_target',j.execution_target)":"'{}'::jsonb";
     const query:QueryConfig&{query_timeout:number}={text:`SELECT j.id,${projection} AS job FROM ai_distill.${tables[kind]} j WHERE j.id=ANY($1::uuid[])`,query_timeout:15000};
     const rows=(await pool.query(query,[selected.map(j=>j.id)])).rows;
     const candidatesById=new Map(selected.map(candidate=>[candidate.id,candidate]));

@@ -17,7 +17,7 @@ export function useResource<T>(path: string) {
   inFlight=(async()=>{
    do{
     refreshAgain=false;error.value='';controller=new AbortController();
-    try{data.value=await api<T>(path,{signal:controller.signal});}
+    try{const result=await api<T>(path,{signal:controller.signal});if(!disposed&&!controller.signal.aborted)data.value=result;}
     catch(cause){if(!controller.signal.aborted)error.value=cause instanceof Error?cause.message:'读取失败';}
    }while(refreshAgain&&!disposed);
   })();

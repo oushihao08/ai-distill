@@ -20,8 +20,11 @@ const safeChangedFields=new Set(['credential_home','model','reasoning_effort','e
 const allowed=new Set(['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','ordinal','call_id','session_id','operation','provider','model','reasoning_effort','library_package_id','library_revision_id','library_job_id','library_file_id','build_id','child_pid','timeout_ms','elapsed_ms','wall_elapsed_ms','timer_lateness_ms','exit_code','signal','error_kind','reason_code','finish_reason','failure_phase','retryable','http_status','material_count','page_count','input_bytes','output_bytes','token_usage','method','route','status_code','duration_ms','query_name','transaction_name','artifact_id','target_id','changed_fields','file_kind','dropped_count','state','queue_wait_ms','attempt_count','batch_index','last_heartbeat_at','threshold_ms','error_code','error_constraint','process_state','event_type','event_count','level','material_id','page','expected_count','actual_count','expected_page','actual_page','source_empty','diagnostic_id'
 ]);
 const correlationKeys=['request_id','operation_id','component','project_id','workflow_id','attempt_id','skill_attempt_id','library_package_id','library_revision_id','library_job_id','library_file_id','ordinal','call_id','operation','provider','model','reasoning_effort'] as const;
+for(const field of ['pool_total','pool_idle','pool_waiting','pool_total_before','pool_idle_before','pool_waiting_before','new_connection','stream_events','stream_bytes','saw_done','saw_finish','stream_eof'])allowed.add(field);
 const lifecycleEvents=new Set(['service.shutdown_requested','service.stopped','library_job.cancelled','library_job.recovery_degraded']);
-function shouldPersist(level:unknown,event:string){return level==='error'||lifecycleEvents.has(event)||level==='warn'&&(event==='db.query.slow'||event==='db.connection.waited');}
+// 每次尝试的有限阶段回执；不开放逐token、工具、页级进度或逐条SQL事务日志。
+const executionEvents=new Set(['attempt.enqueued','attempt.reused','attempt.claimed','attempt.input_validated','attempt.completed','call.started','call.completed','model_api.call.started','model_api.call.completed','heartbeat.write_failed','heartbeat.write_recovered','db.connection.recovered','extraction.api.phase','extraction.api.completed','extraction.cli.fallback.started']);
+function shouldPersist(level:unknown,event:string){return level==='error'||lifecycleEvents.has(event)||executionEvents.has(event)||level==='warn'&&(event==='db.query.slow'||event==='db.connection.waited');}
 function safeString(key:string,value:string){
  if(value.length>(key==='route'?240:160)||/[\r\n\0]/.test(value)||/^(sk-[A-Za-z0-9_-]{12,}|Bearer\s|postgres(?:ql)?:\/\/)/i.test(value))return false;
  if(key==='route')return /^\/[A-Za-z0-9_./:-]*$/.test(value);
@@ -156,16 +159,22 @@ export function installFatalErrorLogging(){
  process.on('unhandledRejection',reason=>{logEventSync('process.unhandled_rejection',{level:'error',component:'runtime',event_type:'unhandledRejection',...classifyLogError(reason)});process.exit(1);});
 }
 export function loggerHealth(){return active?.health()??Promise.resolve<LoggerHealth>({status:'degraded',instance_id:'unconfigured',last_success_at:null,dropped_count:0,error_kind:'filesystem'});}
-export function classifyLogError(error:unknown):{error_kind:'authentication'|'quota'|'rate_limit'|'network'|'timeout'|'provider'|'configuration'|'cancelled'|'invalid_response'|'unknown';http_status?:number;retryable?:boolean;reason_code?:string;finish_reason?:string}{
+export function classifyLogError(error:unknown):{error_kind:'authentication'|'quota'|'rate_limit'|'network'|'timeout'|'provider'|'configuration'|'cancelled'|'invalid_response'|'unknown';http_status?:number;retryable?:boolean;reason_code?:string;finish_reason?:string;stream_events?:number;stream_bytes?:number;saw_done?:boolean;saw_finish?:boolean;stream_eof?:string}{
  const value=error&&typeof error==='object'?error as {kind?:unknown;status?:unknown;message?:unknown;retryable?:unknown;code?:unknown;http_status?:unknown;reason_code?:unknown}:{};
  const status=value.http_status??value.status;
  const finish=typeof (value as {finish_reason?:unknown}).finish_reason==='string'?(value as {finish_reason:string}).finish_reason:'';
  const finish_reason=['length','content_filter','tool_calls','unknown','missing'].includes(finish)?finish:finish?'unknown':undefined;
- const details={...(typeof status==='number'&&Number.isInteger(status)&&status>=100&&status<=599?{http_status:status}:{}),...(typeof value.reason_code==='string'&&/^[a-z][a-z0-9_]{0,79}$/.test(value.reason_code)?{reason_code:value.reason_code}:{}),...(finish_reason?{finish_reason}:{})};
+ const streamValue=error&&typeof error==='object'?error as Record<string,unknown>:{};
+ const stream={...(typeof streamValue.stream_events==='number'&&Number.isSafeInteger(streamValue.stream_events)&&streamValue.stream_events>=0?{stream_events:streamValue.stream_events}:{}),...(typeof streamValue.stream_bytes==='number'&&Number.isSafeInteger(streamValue.stream_bytes)&&streamValue.stream_bytes>=0?{stream_bytes:streamValue.stream_bytes}:{}),...(typeof streamValue.saw_done==='boolean'?{saw_done:streamValue.saw_done}:{}),...(typeof streamValue.saw_finish==='boolean'?{saw_finish:streamValue.saw_finish}:{}),...(typeof streamValue.stream_eof==='string'&&['reading','done','eof','error'].includes(streamValue.stream_eof)?{stream_eof:streamValue.stream_eof}:{})};
+ const details={...stream,...(typeof status==='number'&&Number.isInteger(status)&&status>=100&&status<=599?{http_status:status}:{}),...(typeof value.reason_code==='string'&&/^[a-z][a-z0-9_]{0,79}$/.test(value.reason_code)?{reason_code:value.reason_code}:{}),...(finish_reason?{finish_reason}:{})};
  const kinds=['authentication','quota','rate_limit','network','timeout','provider','configuration','cancelled','invalid_response'] as const;
  if(typeof value.kind==='string'&&(kinds as readonly string[]).includes(value.kind))return{error_kind:value.kind as typeof kinds[number],...details,...(typeof value.retryable==='boolean'?{retryable:value.retryable}:{})};
  const message=typeof value.message==='string'?value.message.toLowerCase():'';
  const code=typeof value.code==='string'?value.code:'';
+ // 只记录固定分类，不输出SQLite路径、原始错误或配置内容。
+ if(code==='SQLITE_BUSY'||message.includes('database is locked')||message.includes('database is busy'))return{error_kind:'unknown',...details,reason_code:'sqlite_busy',retryable:true};
+ if(code==='SQLITE_LOCKED'||message.includes('database table is locked'))return{error_kind:'unknown',...details,reason_code:'sqlite_locked',retryable:true};
+ if(error instanceof Error&&error.name==='AgentConcurrencyConfigurationError')return{error_kind:'configuration',...details,reason_code:'worker_concurrency_mismatch',retryable:false};
  const error_kind=message.includes('超时')||message.includes('timeout')?'timeout':message.includes('取消')||message.includes('cancel')?'cancelled':message.includes('认证')||message.includes('登录')?'authentication':message.includes('quota')||message.includes('额度')?'quota':message.includes('网络')||message.includes('network')||message.includes('fetch failed')||/^ECONN|^EHOST|^ENET|^EPIPE/.test(code)?'network':message.includes('校验')||message.includes('invalid')?'invalid_response':'unknown';
  return{error_kind,...details,...(typeof value.retryable==='boolean'?{retryable:value.retryable}:{}),...(!value.retryable&&(error_kind==='network'||error_kind==='timeout')?{retryable:true}:{})};
 }

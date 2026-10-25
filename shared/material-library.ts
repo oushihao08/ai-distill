@@ -166,6 +166,7 @@ export interface CreateLibraryJobRequest {
   previous_job_id?: string;
   template_id?: string;
   project_id?: string;
+  agent_settings?: {model:string;reasoning_effort:string};
 }
 
 export interface CreateLibraryQuestionRequest {

@@ -3,8 +3,11 @@
  * 关键方法与用途：`createApp()` 注册并组合项目、题目、配置、步骤、下载与报表路由。
  * 使用场景：由 `index.ts` 创建本地服务实例；路由处理器调用各业务模块完成读写。
  */
+import {enqueueRevisionAdvice,listRevisionAdvice} from './revision-advice/jobs';
+import {executionAttemptProjection,projectStepExecutions} from './execution-queue/status';
 import {registerExecutionQueueRoutes} from './execution-queue/routes';
 import {localQueueEnabled,localQueue,withLocalQueueRoot} from './execution-queue/runtime';
+import {QueueCapacityError} from './execution-queue/store';
 import {answerModelSummaryProjection,stepResultProjection,readWorkflowAttempts,readProjectWorkflowViews,projectWorkflowViewsFromSnapshot,readWorkflowStepHistory} from './workflow-view';
 import {readModelApiCatalog} from './llm-api';
 import { Hono, type Context } from 'hono';
@@ -30,12 +33,14 @@ import {scoreExecutionInstructions} from './scoring/executor';
 import {enqueueAuthoring} from './authoring/jobs';
 import {enqueueProjectSkill,listProjectSkillAttempts} from './skill-generation/jobs';
 import {enqueueAnswer} from './answer-models/jobs';
-import {listAnswerModels,registerAnswerModel,setAnswerModelEnabled,readProjectModelSet,saveProjectModelSet} from './answer-models/model-set';
+import {listAnswerModels,registerAnswerModel,setAnswerModelEnabled,readProjectModelSet,saveProjectModelSet,initializeDefaultAnswerModel} from './answer-models/model-set';
 import {mergeAnswerGenerationPolicyIntoStepConfig,parseAnswerGenerationPolicyMinutes,readAnswerGenerationPolicyFromStepConfig,serializeAnswerGenerationPolicyMinutes} from './answer-models/generation-policy';
 import {runAcceptance} from './decisions/jobs';
 import {readPublicationHistory,readSiriserArchive,withdrawPublication} from './publishing/jobs';
 import {buildProjectExport,verifyProjectAuthoringRules,workbookSha256,withProjectExportLock} from './reporting/export';
 import {enqueuePublication} from './publishing/tasks';
+import {syncArchivedWorkflowToFeishu} from './publishing/feishu';
+import {registerFeishuTargetRoutes,validateFeishuTarget} from './publishing/feishu-targets';
 import {readArchivedWorkflowWorkbook} from './reporting/archive-workbook';
 import {exportCurrentMaterialDocx,exportRedactedDocx,readCurrentMaterialDocx} from './materials/redacted-docx-export';
 import { enqueueExtraction } from './materials/jobs';
@@ -57,8 +62,8 @@ import {registerProjectGroupRoutes,resolveProjectGroup,validatePhaseNumber} from
 import {documentBlocksToText} from './materials/pdf';
 
 const repositoryRoot=resolve(fileURLToPath(new URL('../',import.meta.url)));
-// 空钩子沿用旧表；033仅在启用可执行钩子时需要，不能使既有文字流程的健康检查失败。
-const requiredMigrations=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql')&&name!=='033_workflow_hooks.sql'&&(name!=='047_local_execution_dispatch.sql'||localQueueEnabled())).sort();
+// 钩子与手动建议结构按功能启用；缺少可选结构不阻断既有文字流程健康检查。
+const requiredMigrations=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql')&&name!=='033_workflow_hooks.sql'&&name!=='050_manual_revision_advice.sql'&&(name!=='047_local_execution_dispatch.sql'||localQueueEnabled())).sort();
 const projectExportsRoot=resolve(repositoryRoot,'assets/out');
 const projectPhaseLabel=(parentName:string,phaseName:string)=>phaseName?`${parentName} - ${phaseName}`:parentName;
 
@@ -148,6 +153,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    } catch (error) { throw error; }
  });
  app.onError((error, c) => {
+   if(error instanceof QueueCapacityError)return c.json({error:error.message,code:error.code,lane:error.lane,limit:error.limit,waiting:error.waiting,requested:error.requested,dispatched:false},429);
    const status=requestErrorStatus(error);
    if(status>=500)logEvent('request.error',{level:'error',...requestFields(c),status_code:status,...classifyLogError(error)});
    if (error instanceof HTTPException) return c.json({ error: error.message }, error.status);
@@ -227,14 +233,15 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  });
  registerExecutionQueueRoutes(app,pool,storageRoot);
  app.get('/api/monitor', async c => { try {
-  const local_execution_queue=localQueueEnabled()?{executor_id:localQueue(storageRoot).executorId,items:localQueue(storageRoot).list().map(({id,kind,lane,state,cancel_requested})=>({id,kind,lane,state,cancel_requested}))}:null;
+  const executionQueue=localQueueEnabled()?localQueue(storageRoot):null;
+  const local_execution_queue=executionQueue?{executor_id:executionQueue.executorId,items:executionQueue.monitorJobs().map(({id,kind,lane,state,cancel_requested})=>({id,kind,lane,state,cancel_requested}))}:null;
   const [monitor,active_workflow_tasks,material_library,logging]=await Promise.all([
    readWorkerMonitor(storageRoot),
    readActiveWorkflowTasks(pool,local_execution_queue?.items.filter(job=>job.kind==='step'&&job.state==='running').map(job=>job.id)).then(items=>({status:'known' as const,items})).catch(error=>{logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable' as const,items:[] as Awaited<ReturnType<typeof readActiveWorkflowTasks>>};}),
-   readMaterialLibraryQueue(pool),
+   readMaterialLibraryQueue(pool,local_execution_queue?.items.filter(job=>job.kind==='library').map(job=>job.id)),
    loggerHealth(),
   ]);
-  if(local_execution_queue){const own=new Set(local_execution_queue.items.map(j=>j.id));const running=new Set(local_execution_queue.items.filter(j=>j.state==='running').map(j=>j.id));active_workflow_tasks.items=active_workflow_tasks.items.filter(j=>running.has(j.attempt_id));if(material_library.status==='known'){material_library.items=material_library.items.filter(j=>own.has(j.job_id));material_library.totals={...material_library.totals,queued:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='queued').length,running:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='running').length,succeeded:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='committed').length,failed:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='failed').length,cancelled:local_execution_queue.items.filter(j=>j.kind==='library'&&j.state==='cancelled').length};}}
+  if(local_execution_queue){const own=new Set(local_execution_queue.items.map(j=>j.id));const running=new Set(local_execution_queue.items.filter(j=>j.state==='running').map(j=>j.id));active_workflow_tasks.items=active_workflow_tasks.items.filter(j=>running.has(j.attempt_id));if(material_library.status==='known'){const counts=executionQueue!.stateCounts('library');material_library.items=material_library.items.filter(j=>own.has(j.job_id));material_library.totals={...material_library.totals,queued:counts.queued??0,running:counts.running??0,succeeded:counts.committed??0,failed:counts.failed??0,cancelled:counts.cancelled??0};}}
   return c.json({...monitor,active_workflow_tasks,material_library,logging,local_execution_queue});
  } catch(error) { throw error; } });
  app.get('/api/health', async c => {
@@ -264,7 +271,8 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  });
  app.put('/api/projects/:id/answer-models',async c=>{
   const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
-  return c.json({models:await saveProjectModelSet(pool,uuid(c.req.param('id')),body?.models)});
+  if(body?.future_only!==undefined&&typeof body.future_only!=='boolean')throw new HTTPException(400,{message:'future_only须为布尔值'});
+  return c.json({models:await saveProjectModelSet(pool,uuid(c.req.param('id')),body?.models,{futureOnly:body?.future_only===true})});
  });
  app.get('/api/projects/:id/answer-generation-policy',async c=>{
   const id=uuid(c.req.param('id'));
@@ -357,6 +365,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     const authoringDefaults=body?.authoring_defaults===undefined?await readSystemAuthoringDefaults(db):validateAuthoringDefaults(body.authoring_defaults);
     const promptOrdinals:readonly (4|5|6|9)[]=materialBackend==='library_v1'?[4,5,6]:[4,5,6,9];
     for(const ordinal of promptOrdinals)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:prompts[ordinal],...(ordinal===4?{...authoringDefaults,material_processing_mode:'aliases',material_source_mode:'redacted'}:{})})]);
+    await initializeDefaultAnswerModel(db,id);
     if(materialRoot)await registerQuestionFolders(db,id,name,questions,materialMode);
     await db.query('COMMIT'); return c.json(result.rows[0],201);
    } catch(error) { await db.query('ROLLBACK'); if(error&&typeof error==='object'&&'code'in error&&error.code==='23505'){const constraint='constraint'in error?String(error.constraint):'';throw new HTTPException(409,{message:constraint==='projects_group_phase_no'?'该主项目已登记相同期号，请核对已有期次':constraint==='project_groups_name_key'?'主项目名称已存在，请选择已有主项目':'项目记录发生唯一性冲突，请刷新并核对已有记录'});}throw error; } finally { db.release(); }
@@ -613,7 +622,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    const config=validateStepConfig(ordinal,raw);
    if(ordinal!==7){
     const saved=ordinal===5
-     ?await pool.query(`INSERT INTO ai_distill.project_step_configs AS current_config(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config || CASE WHEN current_config.config ? 'answer_generation_policy' THEN jsonb_build_object('answer_generation_policy',current_config.config->'answer_generation_policy') ELSE '{}'::jsonb END,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)])
+     ?await pool.query(`INSERT INTO ai_distill.project_step_configs AS current_config(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config || CASE WHEN current_config.config ? 'answer_generation_policy' THEN jsonb_build_object('answer_generation_policy',current_config.config->'answer_generation_policy') ELSE '{}'::jsonb END || CASE WHEN current_config.config ? 'preserve_answer_model_snapshots' THEN jsonb_build_object('preserve_answer_model_snapshots',current_config.config->'preserve_answer_model_snapshots','previous_answer_models',current_config.config->'previous_answer_models') ELSE '{}'::jsonb END,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)])
      :await pool.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)]);
     if(!saved.rowCount)throw new HTTPException(404,{message:'项目不存在'});return c.json(saved.rows[0]);
    }
@@ -696,7 +705,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      if(project.deleted_at)project.deleted_at=new Date(project.deleted_at);
      const [materials, steps, attempts, artifacts, materialPackageQuestions, sourceMaterialPackage,publicationHistory,questionMaterialOrigin] = await Promise.all([
        pool.query("SELECT id,original_name,sha256,size_bytes,content_type,processing_status,redaction_mode,created_at FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL ORDER BY created_at,id", [id]),
-       pool.query(`SELECT ordinal,step_key,display_position,enabled,name,status,implemented,${stepResultProjection('s',content)} AS result,error,started_at,finished_at FROM ai_distill.steps s WHERE workflow_id=$1 ORDER BY display_position NULLS LAST,ordinal`, [id]),
+       pool.query(`SELECT ordinal,step_key,display_position,enabled,name,status,implemented,${stepResultProjection('s',content)} AS result,error,started_at,finished_at,${executionAttemptProjection('s')} AS execution_attempts FROM ai_distill.steps s WHERE workflow_id=$1 ORDER BY display_position NULLS LAST,ordinal`, [id]),
        readWorkflowAttempts(pool,id,content),
        pool.query("SELECT ar.id,ar.kind,ar.attempt_id,ar.created_at,CASE WHEN ar.kind IN ('redacted_docx','original_docx') THEN regexp_replace(ar.storage_path,'^.*/','') END AS filename,a.result->>'question_version' AS question_version FROM ai_distill.artifacts ar LEFT JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE ar.workflow_id=$1 AND ar.kind IN ('source_markdown','source_index','redacted_markdown','redacted_index','redacted_docx','original_docx','authored_question','model_answer','score_report','published_result') ORDER BY ar.created_at DESC,ar.id", [id]),
        workflowData.workflow_kind==='material_package'
@@ -713,13 +722,15 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      const hasPdf=materials.rows.some(material=>/\.(pdf|docx)$/i.test(String(material.original_name)));
      const extraction=steps.rows.find(step=>step.ordinal===2);
      const visibleSteps=steps.rows.filter(step=>![2,3,10].includes(step.ordinal)).map(step=>step.ordinal===1&&hasPdf&&extraction&&extraction.status!=='skipped'?{...step,status:extraction.status,result:extraction.result??step.result,error:extraction.error??step.error,started_at:extraction.started_at??step.started_at,finished_at:extraction.finished_at??step.finished_at}:step).map((step,index)=>({...step,display_position:index+1,position:index+1}));
-     const workflowStates=new Map<number,WorkflowStepState>(visibleSteps.map(step=>[step.ordinal,{ordinal:step.ordinal,status:step.status,result:step.result,enabled:Boolean(step.enabled),workflow_kind:workflowData.workflow_kind,source_workflow_id:workflowData.source_workflow_id,active:attempts.rows.some(attempt=>attempt.ordinal===step.ordinal&&['waiting','running'].includes(attempt.status))||(step.ordinal===1&&hasPdf&&attempts.rows.some(attempt=>attempt.ordinal===2&&['waiting','running'].includes(attempt.status)))}]));
-     const stepsWithReadiness=visibleSteps.map(step=>{const eligibility=workflowStepReadiness(step.ordinal,workflowStates);return{...step,ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};});
+     const workflowStates=new Map<number,WorkflowStepState>(visibleSteps.map(step=>[step.ordinal,{ordinal:step.ordinal,status:step.status,result:step.result,enabled:Boolean(step.enabled),workflow_kind:workflowData.workflow_kind,source_workflow_id:workflowData.source_workflow_id,library_source:Boolean(questionMaterialOrigin.rows.length),active:attempts.rows.some(attempt=>attempt.ordinal===step.ordinal&&['waiting','running'].includes(attempt.status))||(step.ordinal===1&&hasPdf&&attempts.rows.some(attempt=>attempt.ordinal===2&&['waiting','running'].includes(attempt.status)))}]));
+     const stepsWithReadiness=visibleSteps.map(step=>{const eligibility=workflowStepReadiness(step.ordinal,workflowStates);const {execution_attempts,...state}=step;return{...state,executions:projectStepExecutions(execution_attempts),ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};});
      const source=questionMaterialOrigin.rows[0];
      const materialOrigin=source?{kind:'library_v1',material_mode:source.material_mode==='original'?'original':'redacted',package_id:String(source.package_id),revision_id:String(source.revision_id),redaction_id:source.redaction_id===null?null:String(source.redaction_id),snapshot_digest:String(source.snapshot_digest)}:null;
      return c.json({ artifacts: artifacts.rows, workflow: workflowData, project, materials: materials.rows.map(m => ({ ...m, size_bytes: Number(m.size_bytes) })), steps: stepsWithReadiness, attempts: attempts.rows, material_package_questions: materialPackageQuestions.rows,source_material_package:sourceMaterialPackage.rows[0]??null,publication_history:publicationHistory,question_material_origin:materialOrigin });
    } catch (error) { throw error; }
  });
+ app.get('/api/workflows/:id/revision-advice',async c=>c.json(await listRevisionAdvice(pool,uuid(c.req.param('id')))));
+ app.post('/api/workflows/:id/revision-advice',async c=>c.json(await enqueueRevisionAdvice(pool,uuid(c.req.param('id'))),202));
  app.patch('/api/workflows/:id/authoring-direction',async c=>{
   const id=uuid(c.req.param('id'));
   let body:unknown;try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'请求内容须为 JSON'});}
@@ -757,6 +768,15 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const workflowId=uuid(c.req.param('id'));
   const result=await exportRedactedDocx(pool,workflowId,storageRoot,assetExportRoot);
   return c.json(result,result.reused?200:201);
+ });
+ // 显式补传已归档题目；不重新评分或归档，不隐式补传整个项目。
+ app.post('/api/workflows/:id/feishu-sync',async c=>{
+  const raw=await c.req.text();let body:Record<string,unknown>={};
+  if(raw.trim()){try{const parsed=JSON.parse(raw);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('invalid');body=parsed;}catch{throw new HTTPException(400,{message:'请提交有效JSON对象'});}}
+  if(Object.keys(body).some(key=>key!=='target'))throw new HTTPException(400,{message:'只允许指定target'});
+  const target=body.target===undefined?undefined:validateFeishuTarget(body.target);
+  const result=await syncArchivedWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,true);
+  return c.json(result,result.status==='failed'?502:200);
  });
  app.post('/api/workflows/:id/material-docx',async c=>{
   const workflowId=uuid(c.req.param('id'));
@@ -963,6 +983,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const {bytes,filename}=await readSiriserArchive(pool,uuid(c.req.param('id')),assetExportRoot);
   return new Response(Uint8Array.from(bytes).buffer,{headers:{'Content-Type':'application/zip','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,'Cache-Control':'no-store'}});
  });
+ registerFeishuTargetRoutes(app,pool);
  registerWorkflowHookRoutes(app,pool);
  registerWorkflowExecutionRoutes(app,{
   pool,

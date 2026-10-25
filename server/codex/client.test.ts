@@ -95,7 +95,9 @@ test('Codex result validation failure records a safe terminal call failure',asyn
   await expect(runCodex({...f.options,validate:()=>{throw Object.assign(new Error('reject this role result'),{kind:'invalid_response',reason_code:'page_count_mismatch'});}})).rejects.toThrow('结果');await logger.flush();
   const day=new Date().toISOString().slice(0,10),directory=join(f.root,'log-root','logs',day),files=await readdir(directory),records=(await readFile(join(directory,files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
   const started=records.find(record=>record.event==='call.failed');
-  expect(started?.call_id).toMatch(/^[0-9a-f-]{36}$/);expect(records.every(record=>record.level==='error')).toBe(true);
+  expect(started?.call_id).toMatch(/^[0-9a-f-]{36}$/);expect(started?.level).toBe('error');
+  expect(records).toContainEqual(expect.objectContaining({event:'call.started',call_id:started?.call_id}));
+  expect(JSON.stringify(records)).not.toContain('reject this role result');
   expect(records).toContainEqual(expect.objectContaining({event:'call.failed',call_id:started?.call_id,operation:'codex_exec',error_kind:'invalid_response',reason_code:'page_count_mismatch'}));
  }finally{await logger.close();await rm(f.root,{recursive:true,force:true});}
 });
@@ -187,4 +189,18 @@ test('fresh authoring timeout preserves the project directory and its inputs',as
  const f=await fixture('wait');
  try{await expect(runCodex({...f.options,execution_profile:'fresh_authoring',working_directory:f.root,timeout_ms:3000})).rejects.toThrow('超时');expect(await Bun.file(join(f.root,'AGENTS.md')).text()).toBe('host workspace instructions');expect(await Bun.file(join(f.options.directory,'input/material.md')).text()).toBe('public input');}
  finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('repeated Agent success, failure, cancellation and timeout leave no registered live child',async()=>{
+ const active=new Set<number>(),spawned:number[]=[];
+ for(const mode of ['success','exit_failure','cancel','timeout']){
+  const f=await fixture(mode==='cancel'||mode==='timeout'?'wait':mode),controller=new AbortController();let current:number|undefined,starts=0;
+  const onProcess=(pid:number|null)=>{if(pid===null){if(current)active.delete(current);current=undefined;}else{current=pid;active.add(pid);spawned.push(pid);if(mode==='cancel'&&++starts===2)queueMicrotask(()=>controller.abort());}};
+  try{
+   const pending=runCodex({...f.options,onProcess,signal:controller.signal,timeout_ms:3000});
+   if(mode==='success')await pending;else await expect(pending).rejects.toThrow(mode==='cancel'?'取消':mode==='timeout'?'超时':'执行');
+   expect(active.size).toBe(0);
+  }finally{controller.abort();await rm(f.root,{recursive:true,force:true});}
+ }
+ for(const pid of spawned)expect(()=>process.kill(pid,0)).toThrow();
 });

@@ -1,5 +1,5 @@
 /**
- * 职责：注册单题步骤派发、项目批量派发和 attempt 等待 API。
+ * 职责：注册单题/批量派发、attempt等待及显式取消 API；未知调用取消须用户确认原执行端停止。
  * 关键方法：registerWorkflowExecutionRoutes 连接 HTTP 输入／响应与就绪判定；业务派发由 app 提供。
  * 使用场景：createApp 完成全局中间件后注册工作流执行路由。
  */
@@ -9,10 +9,11 @@ import type {Pool} from 'pg';
 import {STEP_REGISTRY} from '../shared/step-registry';
 import {logEvent} from './logging';
 import {readBatchChunkSize,readProjectWorkflowStepRows,splitIntoBatches,workflowStepReadiness,type WorkflowStepState} from './project-folders';
-import {waitDuration,waitForAttempt} from './attempts';
+import {cancelStoppedExecutorAttempt,cancelWaitingScore,waitDuration,waitForAttempt} from './attempts';
 import {uuid} from './validation';
 import type {StepDispatchTask,WorkflowStepOrdinal} from './step-dispatch';
 import {validateAnswerScore} from './scoring/context';
+import {QueueCapacityError} from './execution-queue/store';
 
 interface RouteDependencies {
  pool:Pool;
@@ -87,6 +88,16 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChu
   if(view!==undefined&&view!=='status'&&view!=='full')throw new HTTPException(400,{message:'任务视图须为status或full'});
   return c.json(await wait(pool,uuid(c.req.param('id')),waitDuration(c.req.query('wait_ms')),c.req.raw.signal,view));
  });
+ app.post('/api/attempts/:id/cancel-waiting-score',async c=>{
+  const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'取消参数须为JSON'});});
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==2||typeof body.workflow_id!=='string'||typeof body.executor_id!=='string')throw new HTTPException(400,{message:'必须明确指定workflow_id和executor_id'});
+  return c.json(await cancelWaitingScore(pool,uuid(c.req.param('id')),uuid(body.workflow_id),uuid(body.executor_id)));
+ });
+ app.post('/api/attempts/:id/cancel-stopped-executor',async c=>{
+  const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'取消参数须为JSON'});});
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==5||typeof body.workflow_id!=='string'||typeof body.executor_id!=='string'||body.executor_stopped!==true||body.acknowledge_unknown_result!==true||body.expected_heartbeat_at!==null&&(typeof body.expected_heartbeat_at!=='string'||!Number.isFinite(Date.parse(body.expected_heartbeat_at))))throw new HTTPException(400,{message:'须明确workflow_id/executor_id/expected_heartbeat_at，并确认executor_stopped与acknowledge_unknown_result'});
+  return c.json(await cancelStoppedExecutorAttempt(pool,uuid(c.req.param('id')),uuid(body.workflow_id),uuid(body.executor_id),body.expected_heartbeat_at));
+ });
  app.post('/api/projects/:id/steps/:ordinal/run-batch',async c=>{
   const projectId=uuid(c.req.param('id'));
   const ordinal=Number(c.req.param('ordinal'));
@@ -100,24 +111,28 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChu
   const selected=await data.selectWorkflows(projectId,requestedIds);
   const byId=new Map(selected.map(row=>[row.id,row]));
   const workflowIds=requestedIds??selected.map(row=>row.id);
-  const results:{workflow_id:string;status:'queued'|'succeeded'|'not_ready'|'failed'|'not_found';attempt_id?:string;attempt_ids?:string[];reused?:boolean;reason?:string}[]=[];
+  const results:{workflow_id:string;status:'queued'|'succeeded'|'not_ready'|'failed'|'not_found'|'capacity_exceeded'|'already_accepted'|'already_archived';attempt_id?:string;attempt_ids?:string[];reused?:boolean;reason?:string}[]=[];
   for(const workflowBatch of splitIntoBatches(workflowIds,batchChunkSize)){
    const validIds=workflowBatch.filter(workflowId=>byId.get(workflowId)?.project_id===projectId);
    const stateRows=validIds.length?await data.readStepStates(projectId,validIds):[];
    const statesByWorkflow=new Map<string,Map<number,WorkflowStepState>>();
    for(const row of stateRows){
     if(!statesByWorkflow.has(row.workflow_id))statesByWorkflow.set(row.workflow_id,new Map());
-    statesByWorkflow.get(row.workflow_id)!.set(row.ordinal,{ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id});
+    statesByWorkflow.get(row.workflow_id)!.set(row.ordinal,{ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source)});
    }
    const batchResults=await Promise.all(workflowBatch.map(async workflowId=>{
     const row=byId.get(workflowId);
     if(!row||row.project_id!==projectId)return{workflow_id:workflowId,status:'not_found' as const};
-    const eligibility=workflowStepReadiness(ordinal,statesByWorkflow.get(workflowId)??new Map());
+    const states=statesByWorkflow.get(workflowId)??new Map<number,WorkflowStepState>(),acceptance=states.get(7);
+    if([4,5,6,7,8].includes(ordinal)&&states.get(8)?.status==='succeeded')return{workflow_id:workflowId,status:'already_archived' as const,reason:'当前题目已归档，已跳过'};
+    if([4,5,6].includes(ordinal)&&acceptance?.status==='succeeded'&&acceptance.result?.decision==='accepted')return{workflow_id:workflowId,status:'already_accepted' as const,reason:'当前题目已达标，已跳过'};
+    const eligibility=workflowStepReadiness(ordinal,states);
     if(!eligibility.ready)return{workflow_id:workflowId,status:'not_ready' as const,reason:eligibility.reason};
     try{
      const task=await dispatch(workflowId,ordinal as WorkflowStepOrdinal);
      return{workflow_id:workflowId,status:task.completed?'succeeded' as const:'queued' as const,attempt_id:task.id,...(task.ids?{attempt_ids:task.ids}:{}),reused:task.reused??false};
     }catch(error){
+     if(error instanceof QueueCapacityError)return{workflow_id:workflowId,status:'capacity_exceeded' as const,reason:error.message};
      if(error instanceof HTTPException&&error.status===409)return{workflow_id:workflowId,status:'not_ready' as const,reason:error.message};
      if(error instanceof HTTPException&&error.status===404)return{workflow_id:workflowId,status:'not_found' as const};
      return{workflow_id:workflowId,status:'failed' as const,reason:'派发失败，请检查任务记录和服务端日志'};
@@ -125,7 +140,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChu
    }));
    results.push(...batchResults);
   }
-  for(const state of ['queued','succeeded','not_ready','failed','not_found'] as const){
+  for(const state of ['queued','succeeded','not_ready','failed','not_found','capacity_exceeded','already_accepted','already_archived'] as const){
    const count=results.filter(result=>result.status===state).length;
    logEvent('batch.result',{level:state==='failed'||state==='not_found'?'warn':'info',component:'batch_dispatch',project_id:projectId,ordinal,state,expected_count:workflowIds.length,actual_count:count,batch_size:batchChunkSize});
   }

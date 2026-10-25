@@ -272,3 +272,31 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 ### HTTP客户端维护边界
 
 `client.ts`的`response()`负责地址/传输边界，`readJsonResponse()`统一JSON与multipart响应解析和安全错误，`download()`单独处理二进制。公共解析不能增加自动写重试、泄露非JSON正文或丢失`request_id`及`outcome_unknown`。CLI仍只是HTTP客户端，不在解析层计算业务状态或访问数据库。
+
+## 本机状态、容量与手动建议
+
+`queue show`读取本机队列及容量；`queue cancel --job UUID`请求取消本机记录。`workflow status`的steps.executions区分本机/其他执行端/未归属，业务成果仍为共享结果。容量429的local_queue_full表示明确未派发，CLI保留lane、上限、占用及请求数；不会自动重试POST。批量4/5/6的already_accepted计为已跳过，不触发新尝试。
+
+`advice show --workflow UUID`读取建议；`advice generate --workflow UUID`手动派发。批量用`advice generate --project UUID --all`或`--ids UUID,...`，遇到容量不足或写入回执未知后停止后续派发，并保留已取得的ID。相同依据复用；下一次出题冻结有效建议。CLI仍仅是HTTP客户端，不直连PG或SQLite。功能结构、版本和恢复边界以[建议模块](../server/revision-advice/README.md)及[队列模块](../server/execution-queue/README.md)为准。
+
+建议任务不属于原步骤attempt等待接口；以`advice show --workflow UUID`跟踪，批量结果使用`advice_attempt_ids`，不要将它们交给`attempt wait`。
+
+## 豆包飞书交付
+
+命令入口为`feishu config show/set`、`feishu table create`、`feishu sync`及`feishu sync-batch`；完整旗标以HELP为准。实现位于`cli/feishu.ts`与`commands.ts`，只调用本机HTTP API，不读取飞书App Secret、不直连数据库。HTTP契约及字段唯一来源见[飞书交付](../server/publishing/README.md#豆包飞书交付)。当前仅豆包启用，不能将其当作Work交付入口。
+
+- 查询或更换该期默认表：`feishu config show/set`；set核对既有表字段后保存配置，不自动补传旧题。
+- 一次性交付N题到新表：固定N个当前已达标、已归档的workflow ID；先运行`feishu table create`，记录返回的base_token/table_id，再运行`feishu sync-batch`显式传入这两个ID。只建一张表，不为每道题单独建表，不改变期次默认目标。
+- 默认表已有具体ID时，单题`feishu sync`或批次可省略目标旗标；显式`--base-token`和`--table`必须成对提供。同一表内更新原记录；不同表分别记账。
+- `sync-batch`只接受明确`--ids`，不提供`--all`。预先核对整批归属/达标/归档，再依次上传。`--out`须为不存在的新JSON文件，父目录须存在；发送前记录dispatching，逐题保存回执。complete表示全部成功；partial/退出码2保留succeeded、failed、in_progress、unknown及pending。
+- 不自动重试。unknown或遗留dispatching先核对远端和服务端归档尝试中的feishu_deliveries；pending没有发送。显式补传时只指定需补传ID并用新的进度文件，不能把原批次未知请求当成未执行。
+- 未指明目标的批次会先读取并固定期次默认具体表ID；尚只有按期名路由、没有具体表ID时，先明确创建/选择目标，不在批次中途自动改向。
+- CLI先查后端能力标记；旧API返回404或未声明target_override时停止，不降级到可能忽略目标参数的旧同步接口。源码支持不等于服务已加载，重载仍须单独授权。
+
+飞书写请求的CLI等待预算为180秒，普通请求仍为35秒；服务入口仅为飞书配置、建表和单题同步请求放宽到180秒空闲连接时限。远端HTTP本身仍受90秒截止控制；超时不是失败未写入的证明，CLI不会自动重发。
+
+批量步骤执行返回 `already_archived` 表示该题已归档并被跳过，CLI 将其视为正常跳过；单题重复出题、作答、评分、判定或归档由服务端返回409，不会清空已有结果。
+
+飞书批次结果中的`verified`、`verification_failed`、`verification_incomplete`分别统计程序核对通过、明确差异和未完成；具体差异见每题`receipt.verification`。旧API无verification的成功回执不算核对通过。
+
+核对失败的HTTP502会再读同题归档安全回执；只有目标表一致、核对时间不早于本次派发时才采用差异详情，旧回执不冒记本次结果。读取失败或未知外部请求保留unknown，未派发项仍为pending，不自动重发。

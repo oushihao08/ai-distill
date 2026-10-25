@@ -3,6 +3,12 @@ import {describe, expect, test} from 'bun:test';
 import {ApiClient, CliError} from './client';
 
 describe('本机 API 客户端', () => {
+  test('容量拒绝明确表示未派发，保留容量回执且不重试',async()=>{
+    let calls=0;const client=new ApiClient(undefined,async()=>{calls++;return Response.json({error:'本机待领取容量不足，未派发',code:'local_queue_full',dispatched:false,lane:'agent',limit:4,waiting:4,requested:1},{status:429});});
+    try{await client.json('/api/workflows/one/author','POST',{});throw new Error('expected failure');}
+    catch(error){expect(error).toBeInstanceOf(CliError);expect((error as CliError).detail).toMatchObject({code:'local_queue_full',outcome_unknown:false,dispatched:false,lane:'agent',limit:4});}
+    expect(calls).toBe(1);
+  });
   test('JSON和multipart共享成功、HTTP错误及无效响应契约', async () => {
     for (const multipart of [false, true]) {
       for (const scenario of ['success', 'http', 'invalid'] as const) {

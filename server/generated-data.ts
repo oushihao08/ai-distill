@@ -3,6 +3,7 @@
  * 关键方法与用途：`clearGeneratedData()` 锁定工作流、隔离文件并清除处理数据，保留工作流身份与来源清单。
  * 使用场景：由 `app.ts` 的重置接口调用；活动任务存在时拒绝竞争性清理。
  */
+import {adviceAvailable} from './revision-advice/jobs';
 import type {Pool} from 'pg';
 import {isLibraryDocxPath} from './materials/redacted-docx-export';
 import {HTTPException} from 'hono/http-exception';
@@ -36,6 +37,8 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string,
   const attempts=(await db.query('SELECT id,status,ordinal FROM ai_distill.step_attempts WHERE workflow_id=$1 FOR UPDATE',[id])).rows;
   const remoteOperation=(await db.query("SELECT id FROM ai_distill.remote_material_operations WHERE workflow_id=$1 AND status IN ('waiting','running') FOR UPDATE",[id])).rows[0];
   if(remoteOperation)throw new HTTPException(409,{message:'远程材料操作正在进行，结束后才能重置工作流'});
+  const hasAdvice=await adviceAvailable(db);
+  if(hasAdvice&&(await db.query("SELECT id FROM ai_distill.revision_advice_attempts WHERE workflow_id=$1 AND status IN ('waiting','running') LIMIT 1",[id])).rowCount)throw new HTTPException(409,{message:'返修建议任务正在排队或执行，不能重置工作流'});
   if(attempts.some(a=>['waiting','running'].includes(a.status)))throw new HTTPException(409,{message:'题目任务正在排队或运行，结束后才能重置整条工作流'});
   attemptIds=attempts.map(a=>a.id);
   if(attemptIds.some(value=>!uuid.test(value)))throw new Error('invalid persisted attempt ID');
@@ -88,6 +91,7 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string,
   }
 
   await db.query('DELETE FROM ai_distill.artifacts WHERE workflow_id=$1',[id]);
+  if(hasAdvice)await db.query('DELETE FROM ai_distill.revision_advice_attempts WHERE workflow_id=$1',[id]);
   if(attemptIds.length)await db.query('DELETE FROM ai_distill.step_attempts WHERE workflow_id=$1',[id]);
   await db.query('DELETE FROM ai_distill.materials WHERE workflow_id=$1',[id]);
   for(const exportRow of exports){

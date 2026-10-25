@@ -3,6 +3,8 @@
  * 关键方法与用途：`readAcceptanceSnapshot()` 读取当前版本证据；`buildAcceptanceInput()` 组装纯决策输入；`runAcceptance()` 锁定并保存第七阶段结果；指纹函数固定来源。
  * 使用场景：由HTTP单步/批量入口或评分队列终态后调用；每次判断保存新尝试，不调用模型。
  */
+import {assertWorkflowNotArchived} from '../workflow-archive-guard';
+import {readWorkflowModelSet} from '../answer-models/workflow-models';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {buildAcceptanceConfig,decideAcceptance,type AcceptanceConfig,type AcceptanceInput,type ModelAssessment} from './acceptance';
@@ -89,11 +91,11 @@ export function buildEvaluationRecordRefs(snapshot:AcceptanceSnapshot,modelScore
 export async function runAcceptance(pool:Pool,workflowId:string){
  const db:PoolClient=await pool.connect();let restoreLogContext=()=>{};
  try{
-  await db.query('BEGIN');
+  await db.query('BEGIN');await assertWorkflowNotArchived(db,workflowId);
   const workflow=(await db.query(workflowSql,[workflowId])).rows[0];
   if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
   restoreLogContext=enterLogContext({component:'acceptance',workflow_id:workflowId,project_id:workflow.project_id,ordinal:7,operation:'acceptance'});
-  const modelSet:Awaited<ReturnType<typeof readProjectModelSet>>=await readProjectModelSet(db,workflow.project_id);
+  const modelSet:Awaited<ReturnType<typeof readProjectModelSet>>=await readWorkflowModelSet(db,workflow.project_id,workflowId);
   let config:AcceptanceConfig,modelSetDigest:string|undefined;
   const configRaw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
   if(modelSet.length){

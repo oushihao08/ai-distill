@@ -62,3 +62,5 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 `047_local_execution_dispatch.sql`新增执行器归属/代次登记和五类任务UPDATE保护；不迁移历史记录、不自动认领旧队列。配套客户端以实际PG application_name声明执行归属。启用和切换见`server/execution-queue/README.md`。
 
 `048_system_authoring_defaults.sql`为现有系统配置增加出题专用默认JSON字段，仅供新期复制，不回写既有数据。定向执行入口见运行脚本说明。
+
+`050_manual_revision_advice.sql`新增独立手动建议任务表、活动防重索引及advice归属保护；不改步骤ordinal、题目、作答、评分或自动推进。未应用时建议入口明确不可用，原出题可继续。须按目标环境核实迁移，不从隔离库验收推断业务库已应用。

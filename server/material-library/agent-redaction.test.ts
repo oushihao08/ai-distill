@@ -17,9 +17,23 @@ test('persisted template is reread on each request instead of cached markdown/de
 });
 test('one Agent call receives frozen template and stores a private reusable identity map',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'agent-preparation-'));let calls=0;
- try{const out=await prepareAgentLibraryMaterials({...options(directory),execute:async task=>{calls++;expect(task.prompt).toContain('本次数据库冻结提示词');expect(task.timeout_ms).toBeLessThanOrEqual(600000);expect(task.schema?.properties).toHaveProperty('plan_file');await mkdir(join(directory,'output'),{recursive:true});await writeFile(join(directory,'output','material-plan.json'),JSON.stringify({entities:[{id:'p',kind:'person',alias:'周文远',variants:[{text:'赵安',targets:[]}]}],edits:[],documents:[{id:'d',title:'申请书',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]}));const validator=Bun.spawn([process.execPath,'validate-plan.mjs'],{cwd:directory,stdout:'pipe',stderr:'pipe'});expect(await validator.exited).toBe(0);expect(JSON.parse(await new Response(validator.stdout).text()).valid).toBe(true);return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:'fixture'} as any;}});
+ try{const out=await prepareAgentLibraryMaterials({...options(directory),execute:async task=>{calls++;expect(task.prompt).toContain('本次数据库冻结提示词');expect(task.prompt).toContain('valid:false');expect(task.prompt).not.toContain('先将主体表写output/subject-map.json');expect(task.timeout_ms).toBeLessThanOrEqual(600000);expect(task.schema?.properties).toHaveProperty('plan_file');await mkdir(join(directory,'output'),{recursive:true});await writeFile(join(directory,'output','material-plan.json'),JSON.stringify({entities:[{id:'p',kind:'person',alias:'周文远',variants:[{text:'赵安',targets:[]}]}],edits:[],documents:[{id:'d',title:'申请书',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]}));const validator=Bun.spawn([process.execPath,'validate-plan.mjs'],{cwd:directory,stdout:'pipe',stderr:'pipe'});expect(await validator.exited).toBe(0);expect(JSON.parse(await new Response(validator.stdout).text()).valid).toBe(true);return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:'fixture'} as any;}});
   expect(calls).toBe(1);expect(out.prepared.documents[0]!.text).toBe('周文远向北京市东城区人民法院申请100元');
   const map=join(directory,'主体对应表.private.json');expect(JSON.parse(await readFile(map,'utf8')).entities[0].alias).toBe('周文远');expect((await stat(map)).mode&0o777).toBe(0o600);
+ }finally{await rm(directory,{recursive:true,force:true});}
+});
+test('failed validation stores source-free findings for a bounded continuation',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'agent-validation-feedback-'));
+ const source='原告：赵安，男，身份证号：110101199001011234';
+ try{
+  await expect(prepareAgentLibraryMaterials({...options(directory),files:[{...options(directory).files[0]!,pages:[{page:1,text:source,structure:[{id:'b',kind:'paragraph' as const,text:source}]}]}],execute:async()=>{
+   await mkdir(join(directory,'output'),{recursive:true});
+   await writeFile(join(directory,'output','material-plan.json'),JSON.stringify({entities:[],edits:[],documents:[{id:'d',title:'申请书',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]}));
+   return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,model:'fixture'} as any;
+  }})).rejects.toMatchObject({reason_code:'agent_sensitive_value_remaining'});
+  const feedback=await readFile(join(directory,'output','validation-feedback.json'),'utf8');
+  expect(feedback).not.toContain('赵安');expect(feedback).not.toContain('110101199001011234');
+  expect(JSON.parse(feedback)).toMatchObject({reason_code:'agent_sensitive_value_remaining',findings:[{kind:'identifier',page:1},{kind:'party_name',page:1}]});
  }finally{await rm(directory,{recursive:true,force:true});}
 });
 test('hard budget aborts the active executor without retrying',async()=>{
@@ -52,4 +66,18 @@ test('revalidation withdraws unusable Agent results without rewriting source or 
   expect(await revalidateAgentLibraryRedaction(pool,root,'redaction')).toMatchObject({usable_for_question:true});
   expect(patches.map(p=>p.valid)).toEqual([false,true]);expect(queries.filter(q=>q.startsWith('UPDATE')).every(q=>q.startsWith('UPDATE ai_distill.library_jobs'))).toBe(true);
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('a continuation can reuse only the final plan without five separate progress artifacts',async()=>{
+ const first=await mkdtemp(join(tmpdir(),'agent-single-plan-')),next=await mkdtemp(join(tmpdir(),'agent-single-plan-next-'));
+ const plan={entities:[{id:'p',kind:'person',alias:'周文远',variants:[{text:'赵安',targets:[]}]}],edits:[],documents:[{id:'d',title:'申请书',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
+ try{
+  await prepareAgentLibraryMaterials({...options(first),execute:async()=>{await mkdir(join(first,'output'),{recursive:true});await writeFile(join(first,'output','material-plan.json'),JSON.stringify(plan));return{result:{plan_file:'output/material-plan.json'},model:'fixture'} as any;}});
+  const out=await prepareAgentLibraryMaterials({...options(next),previous_directory:first,execute:async task=>{
+   expect(task.prompt).toContain('只需将完整计划保存');
+   const saved=JSON.parse(await readFile(join(next,'resume','material-plan.json'),'utf8'));expect(saved.entities[0].alias).toBe('周文远');
+   await mkdir(join(next,'output'),{recursive:true});await writeFile(join(next,'output','material-plan.json'),JSON.stringify(saved));return{result:{plan_file:'output/material-plan.json'},model:'fixture'} as any;
+  }});
+  expect(out.prepared.documents[0]!.text).toContain('周文远');
+ }finally{await rm(first,{recursive:true,force:true});await rm(next,{recursive:true,force:true});}
 });

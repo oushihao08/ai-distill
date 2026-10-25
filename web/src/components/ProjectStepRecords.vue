@@ -4,6 +4,8 @@
 -->
 
 <script setup lang="ts">
+import {workflowStepDisplay} from '../utils/workflow-status';
+import RevisionAdvice from './RevisionAdvice.vue';
 import { api } from '../api/client';
 import { dateLabel } from '../utils/format';
 import type { ProjectStage, Step, Workflow } from '../types/api';
@@ -48,7 +50,7 @@ const rows = computed(() => props.workflows.map(flow => {
  const ready = step?.ready === true;
  const decision = String(step?.result?.decision ?? '');
  const decisionLabels: Record<string, string> = { accepted: '达标', repair: '未达标', waiting: '等待判定条件', quarantine: '隔离' };
- const state = failures.value[flow.id] ? '读取失败' : !detail ? '读取中' : !step ? '未进入'
+ const state = failures.value[flow.id] ? '读取失败' : !detail ? '读取中' : !step ? '未进入' : step.executions&&(step.executions.length||step.status==='running') ? workflowStepDisplay(detail,props.step.ordinal).label
   : props.step.ordinal===7&&decision==='waiting'&&ready ? '就绪'
   : props.step.ordinal===7&&decision ? decisionLabels[decision]??decision
   : step.status === 'succeeded' ? '完成' : step.status === 'failed' ? '失败'
@@ -74,7 +76,7 @@ onUnmounted(() => { controller?.abort(); });
   <p v-if="loading" class="text-xs text-muted" role="status">正在读取{{ recordNoun }}状态…</p>
   <Column class="w-full overflow-x-auto max-h-640px overflow-y-auto">
    <v-table density="comfortable" class="min-w-900px w-full">
-    <thead><tr><th scope="col">{{ recordNoun }}</th><th scope="col">本步状态</th><th scope="col">处理结果</th><th scope="col">问题 / 未进入原因</th><th scope="col">完成时间</th><th scope="col">操作</th></tr></thead>
+    <thead><tr><th scope="col">{{ recordNoun }}</th><th scope="col">本步状态</th><th scope="col">处理结果</th><th scope="col">问题 / 未进入原因</th><th scope="col">完成时间</th><th v-if="step.ordinal===4" scope="col">返修建议</th><th scope="col">操作</th></tr></thead>
     <tbody>
      <template v-for="row in visibleRows" :key="row.flow.id">
       <tr>
@@ -85,10 +87,10 @@ onUnmounted(() => { controller?.abort(); });
        </td>
        <td class="min-w-220px max-w-320px text-sm break-words" :class="row.state==='失败'?'text-danger':'text-muted'">{{ row.issue }}</td>
        <td class="whitespace-nowrap text-xs">{{ row.step?.finished_at ? dateLabel(row.step.finished_at) : '—' }}</td>
-       <td><v-btn variant="text" color="primary" :to="`/workflows/${row.flow.id}`">查看{{ recordNoun }}详情</v-btn></td>
+       <td v-if="step.ordinal===4"><RevisionAdvice :workflow-id="row.flow.id" :disabled="row.detail?.steps.find(item=>item.ordinal===7)?.result?.decision==='accepted'||row.detail?.steps.some(item=>[4,5,6].includes(item.ordinal)&&item.active)"/></td><td><v-btn variant="text" color="primary" :to="`/workflows/${row.flow.id}`">查看{{ recordNoun }}详情</v-btn></td>
       </tr>
      </template>
-     <tr v-if="!visibleRows.length"><td colspan="6" class="text-muted py-16">{{ loading?'正在读取…':`没有符合条件的${recordNoun}` }}</td></tr>
+     <tr v-if="!visibleRows.length"><td :colspan="step.ordinal===4?7:6" class="text-muted py-16">{{ loading?'正在读取…':`没有符合条件的${recordNoun}` }}</td></tr>
     </tbody>
    </v-table>
   </Column>

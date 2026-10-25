@@ -41,6 +41,8 @@ API下载结果后暂存`result.zip`及`response.json`；成功返回会删除�
 
 API的上传/轮询/下载由30分钟AbortSignal与轮询截止控制；`runUnzip`子进程接入API同一取消/截止信号，读取时累计检查输出上限，超限回收本次子进程；没有额外放宽时限。CLI自身及本地外层均设置30分钟；PDF预检还依赖Poppler。文档中的时限不保证所有子进程总耗时严格封顶。
 
+API在申请上传地址前建立私有诊断目录，`metadata.json`只保存来源摘要、页数、输入格式、云端batch ID、当前阶段及供应商状态，不保存令牌、上传/下载签名地址或正文；成功删除目录，失败保留以便只读查询原批次。安全日志持久化上传/轮询/下载阶段与供应商状态变化，同一排队状态不重复写日志；失败使用`reason_code`、`failure_phase`及`diagnostic_id`。`mineru-diagnostics.test.ts`用HTTP替身验证这些证据与敏感内容隔离。
+
 API优先的回退资格按`permitsCliFallback()`分类（HTTP5xx、TypeError、指定超时/中止异常等），且外部取消时不回退；认证、无效JSON、结构解析或业务任务失败不靠CLI重传修复。DOCX直接API，不走PDF回退。
 
 PDF分片属于上层旧目录同步`../pdf-split.ts`，不是本模块自动给所有上传拆片。其缓存键绑定输入和限制，但已有分片复用仅检查文件列表/大小，不逐个重新计算内容摘要或页数；后续材料入库仍独立校验所选文件。

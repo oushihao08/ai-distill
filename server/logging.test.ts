@@ -12,6 +12,15 @@ import {REDACTION_PROTOCOL_VERSION} from './materials/redaction';
 import {createWorkerShutdown} from './worker-pool';
 import {classifyLogError,configureLogger,createStructuredLogger,currentLogger,installFatalErrorLogging,sanitizeLogRecord,withLogContext} from './logging';
 
+test('容量查询的SQLite锁与并发配置错误保留固定诊断码，不泄露原始错误',()=>{
+ const busy=classifyLogError({code:'SQLITE_BUSY',message:'private/path database is locked secret'});
+ expect(busy).toEqual({error_kind:'unknown',reason_code:'sqlite_busy',retryable:true});
+ expect(classifyLogError({code:'SQLITE_LOCKED',message:'private'})).toEqual({error_kind:'unknown',reason_code:'sqlite_locked',retryable:true});
+ const mismatch=new Error('private configuration');mismatch.name='AgentConcurrencyConfigurationError';
+ expect(classifyLogError(mismatch)).toEqual({error_kind:'configuration',reason_code:'worker_concurrency_mismatch',retryable:false});
+ expect(JSON.stringify([busy,classifyLogError(mismatch)])).not.toContain('private');
+});
+
 test('shutdown events are durable, ordered and idempotent without enabling progress noise',async()=>{
  const root=await mkdtemp(join(tmpdir(),'worker-stop-log-')),logger=configureLogger({root,service:'worker'}),controller=new AbortController(),shutdown=createWorkerShutdown(controller,10);
  try{
@@ -292,4 +301,14 @@ test('registered SiliconFlow provider survives safe logging while unknown values
  const record=sanitizeLogRecord({...base,provider:'siliconflow',prompt:'PRIVATE'});
  expect(record?.provider).toBe('siliconflow');expect(record).not.toHaveProperty('prompt');
  expect(sanitizeLogRecord({...base,provider:'unregistered-private'})).not.toHaveProperty('provider');
+});
+test('persists bounded execution milestones while keeping progress and payloads out',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'milestone-logs-'));const logger=createStructuredLogger({root,service:'worker'});
+ try{
+  const milestones=['attempt.enqueued','attempt.claimed','attempt.input_validated','model_api.call.started','model_api.call.completed','attempt.completed'];
+  for(const event of milestones)logger.log(event,{level:'info',attempt_id:'11111111-1111-4111-8111-111111111111',duration_ms:12,prompt:'PRIVATE',answer:'PRIVATE'});
+  for(const event of ['worker.progress','token.received','file.write.started','transaction.started'])logger.log(event,{level:'info'});
+  await logger.flush();const files=await readdir(join(root,'logs',new Date().toISOString().slice(0,10)));const records=(await readFile(join(root,'logs',new Date().toISOString().slice(0,10),files[0]!), 'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+  expect(records.map(record=>record.event)).toEqual(milestones);expect(JSON.stringify(records)).not.toContain('PRIVATE');
+ }finally{await logger.close();await rm(root,{recursive:true,force:true});}
 });

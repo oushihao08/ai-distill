@@ -58,3 +58,36 @@ test('a step cancellation query failure does not prevent project skill cancellat
   expect(JSON.stringify(records)).not.toContain('step query failure');
  }finally{step.dispose();skill.dispose();await logger.close();await rm(root,{recursive:true,force:true});}
 });
+
+test('many watchers share one slow read, never overlap and release the in-flight client after disposal',async()=>{
+ let selects=0,acquired=0,released=0,active=0,maxActive=0,finishRead!:()=>void,readStarted!:()=>void;
+ const started=new Promise<void>(resolve=>{readStarted=resolve;});
+ const pool={connect:async()=>{acquired++;active++;maxActive=Math.max(maxActive,active);return{
+  query:async(input:{text:string;values?:string[][]})=>{
+   if(input.text.startsWith('SELECT')){selects++;expect(input.values?.[0]).toHaveLength(100);readStarted();await new Promise<void>(resolve=>{finishRead=resolve;});return{rows:input.values![0]!.map(id=>({id,status:'running'}))};}
+   return{rows:[]};
+  },release(){released++;active--;},
+ };}} as any;
+ const upstream=new AbortController(),watchers=Array.from({length:100},(_,i)=>watchTaskCancellation(pool,`synthetic-${i}`,upstream.signal,false,2));
+ try{
+  await started;await Bun.sleep(15);expect(selects).toBe(1);expect(acquired).toBe(1);expect(maxActive).toBe(1);
+  for(const watcher of watchers)watcher.dispose();finishRead();await Bun.sleep(15);
+  expect(selects).toBe(1);expect(released).toBe(1);expect(active).toBe(0);
+  upstream.abort();expect(watchers.every(watcher=>!watcher.signal.aborted)).toBe(true);
+ }finally{for(const watcher of watchers)watcher.dispose();finishRead?.();}
+});
+
+test('repeated task batches do not retain polling work or clients after completion',async()=>{
+ let selects=0,clients=0,maxClients=0;let observed!:()=>void;
+ const pool={connect:async()=>{clients++;maxClients=Math.max(maxClients,clients);return{query:async(input:{text:string;values?:string[][]})=>{
+  if(input.text.startsWith('SELECT')){selects++;observed();return{rows:input.values![0]!.map(id=>({id,status:'running'}))};}return{rows:[]};
+ },release(){clients--;}};}} as any;
+ for(let batch=0;batch<40;batch++){
+  const read=new Promise<void>(resolve=>{observed=resolve;});
+  const watchers=Array.from({length:25},(_,i)=>watchTaskCancellation(pool,`batch-${batch}-${i}`,undefined,false,1));
+  try{await read;}finally{for(const watcher of watchers)watcher.dispose();}
+  // Let COMMIT/release and scheduler completion run before the next lifecycle.
+  await Bun.sleep(1);expect(clients).toBe(0);
+ }
+ const completedReads=selects;await Bun.sleep(10);expect(selects).toBe(completedReads);expect(maxClients).toBe(1);expect(selects).toBe(40);
+});

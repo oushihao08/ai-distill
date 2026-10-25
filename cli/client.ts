@@ -22,13 +22,14 @@ export class ApiClient {
     this.base=url.origin;
   }
 
-  private async response(path: string, method: string, body?: BodyInit, signal?: AbortSignal, headers:Record<string,string>={}) {
+  private async response(path: string, method: string, body?: BodyInit, signal?: AbortSignal, headers:Record<string,string>={},timeoutMs=35000) {
     if (!path.startsWith('/api/') || path.includes('\\') || path.includes('#')) throw new CliError('API 路径无效');
+    if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>180000)throw new CliError('请求超时须为1至180000毫秒');
     const url=new URL(path,this.base);
     if (url.origin!==this.base) throw new CliError('API 路径越界');
     try {
       return await this.fetcher(url.href, {
-        method, redirect:'error', signal:signal ? AbortSignal.any([signal,AbortSignal.timeout(35000)]) : AbortSignal.timeout(35000),
+        method, redirect:'error', signal:signal ? AbortSignal.any([signal,AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         headers:{...headers,...(this.token?{Authorization:`Bearer ${this.token}`}:{})},
         body,
       });
@@ -48,14 +49,15 @@ export class ApiClient {
     }
     if(!response.ok){
       const message=typeof value?.error==='string'?value.error:typeof value?.message==='string'?value.message:'API 请求失败';
+      if(value?.code==='local_queue_full'&&value.dispatched===false)throw new CliError(message,{...detail,kind:'http_error',code:'local_queue_full',outcome_unknown:false,dispatched:false,lane:value.lane,limit:value.limit,waiting:value.waiting,requested:value.requested});
       throw new CliError(message,{...detail,kind:'http_error'});
     }
     return value;
   }
 
-  async json(path:string,method='GET',body?:unknown,signal?:AbortSignal,headers:Record<string,string>={}):Promise<any>{
+  async json(path:string,method='GET',body?:unknown,signal?:AbortSignal,headers:Record<string,string>={},timeoutMs=35000):Promise<any>{
     const response=await this.response(path,method,body===undefined?undefined:JSON.stringify(body),signal,
-      {...(body===undefined?{}:{'Content-Type':'application/json'}),...headers});
+      {...(body===undefined?{}:{'Content-Type':'application/json'}),...headers},timeoutMs);
     return this.readJsonResponse(response,method);
   }
 

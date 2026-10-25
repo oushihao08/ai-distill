@@ -9,7 +9,8 @@ import {basename,dirname,join} from 'node:path';
 import {buildDocx,preparedTextDocument,REDACTED_DOCX_RENDERER_VERSION,type RedactedDocumentStructure} from '../../../../server/document-generation/docx';
 import {buildXlsx,type WorkbookSheet} from '../../../../server/document-generation/xlsx';
 import {documentBlocksToText} from '../../../../server/materials/pdf';
-import {assertWorkBusinessRequirements,assertWorkSubmissionReady,type WorkContent} from '../../../../server/authoring/work-contract';
+import {assertWorkBusinessRequirements,assertWorkSubmissionReady,workLevelWarnings,type WorkContent} from '../../../../server/authoring/work-contract';
+import {inspectPdfScan} from './scan-metadata';
 
 /** 根据作者声明的格式写完整成果；五件套不依赖先创建Harbor目录。 */
 export async function deliverableBytes(file:Simulation['harbor_files'][number]){
@@ -42,7 +43,23 @@ const sha=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('
 const safe=(value:unknown)=>typeof value==='string'?value.trim():'';
 const json=(value:unknown)=>JSON.stringify(value??'',null,2);
 const fileNames=['任务说明.docx','题目信息表.docx','评分要点.xlsx','input_files','golden_output'];
-const SIRISER_CONFIRMATION_RENDERER_VERSION='siriser-confirmation-office-v7';
+const SIRISER_CONFIRMATION_RENDERER_VERSION='siriser-confirmation-office-v8';
+/** 历史题只识别明确标注的时点和约束，保持完整原题面；不拿开庭日或法条年份猜基准日。 */
+export function legacyInstruction(question:string){
+ const patterns=[/基准(?:时间点|日期|日)\s*(?:[:：]|为|是)?\s*(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})/g,/(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})日?\s*(?:为|作为|这一)?(?:本次|本案|判断|业务|准备|办理){0,3}基准(?:时间点|日期|日)/g];
+ const dates=patterns.flatMap(pattern=>[...question.matchAll(pattern)].map(match=>`${match[1]}-${match[2]!.padStart(2,'0')}-${match[3]!.padStart(2,'0')}`));
+ const unique=[...new Set(dates)],date=unique[0];
+ const baselineDate=unique.length===1&&date&&Number.isFinite(Date.parse(date))&&new Date(date).toISOString().slice(0,10)===date?date:'';
+ const hardConstraints:string[]=[],requests=question.split(/\n\s*\n/).filter(p=>/^(?:#{1,6}\s*)?(?:\d+[.、）)]\s*|[-*]\s+)/.test(p));
+ let active=false;
+ for(const line of question.split('\n')){
+  const heading=/^\s*(?:#{1,6}\s*)?(?:\d+[.、]\s*)?(?:硬性约束|硬约束|特别约定|约束条件)\s*[:：]?\s*(.*)$/.exec(line);
+  if(heading){active=true;if(heading[1]?.trim())hardConstraints.push(heading[1].trim());continue;}
+  if(active&&/^\s*(?:#{1,6}\s+|(?:背景|委托方诉求|交付物要求|成果要求|基准日|附件说明)(?:\s*[:：]|\s*$))/.test(line)){active=false;}
+  if(active&&line.trim()){const item=line.trim().replace(/^(?:\d+[.、）)]|[-*])\s*/,'');if(item)hardConstraints.push(item);}
+ }
+ return{baselineDate,hardConstraints,requests:requests.length?requests:['按上述委托任务及以下成果清单完成工作。']};
+}
 async function writeAtomic(path:string,bytes:Uint8Array|string){
  const temporary=join(dirname(path),`.${randomUUID()}.tmp`);
  try{await writeFile(temporary,bytes,{mode:0o600,flag:'wx'});await rename(temporary,path);}finally{await rm(temporary,{force:true});}
@@ -317,22 +334,21 @@ export async function generateSiriserConfirmation(parent:string,input:PackageInp
  const name=`法律-${code}-${date}-${expertName}`,packageRootName=`${input.source_digest.slice(0,16)}-${input.delivery_digest.slice(0,16)}-${SIRISER_CONFIRMATION_RENDERER_VERSION}`,root=join(parent,'Siriser五件套',packageRootName),target=join(root,name),statePath=join(parent,'Siriser五件套.json');
  const sceneCategory:Record<string,string>={LS02:'1.1 案件受理与策略',LS03:'1.1 案件受理与策略',LS04:'1.2 庭审与文书',LS05:'1.2 庭审与文书'};
  // 保持完整原题面，诉求拆分只提取已存在段落；不使用另一轮模型重写任务。
- const question=safe(q.question),paragraphs=question.split(/\n\s*\n/),requests=paragraphs.filter(p=>/^(?:#{1,6}\s*)?(?:\d+[.、）)]\s*|[-*]\s+)/.test(p));
- const baseline=/(?:基准日|基准日期)\s*[:：]\s*(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})/.exec(question);
+ const question=safe(q.question),legacy=legacyInstruction(question),structured=m.instruction;
  const projected=await Promise.all(q.input_files.map((file,index)=>sourceDocumentFiles(file.name,input.attachments[index]!.text,input.attachments[index]!.prepared_documents)));
  const originalInputFiles=input.attachments.flatMap(attachment=>attachment.material_mode==='original'?(attachment.original_files??[]):[]);
  if(input.attachments.some(attachment=>attachment.material_mode==='original'&&!attachment.original_files?.length))throw new Error('原文模式缺少已校验的原件字节');
  if(originalInputFiles.length&&input.attachments.some(attachment=>attachment.material_mode!=='original'))throw new Error('原文与脱敏附件混合时不能合并物理输入文件');
  if(input.attachments.length>1&&input.attachments.some(attachment=>attachment.material_mode==='original'))throw new Error('多份逻辑附件的原件映射不明确，拒绝错配');
  const projectionNote=projected.some(files=>files.length>1)?'\n\n材料定位说明：合订附件按完整文书分册；文件名前缀“附件N”仍对应题面同一附件，各分册名称见附件文件清单，正文不添加原页定位或处理标记。未增加或删减原文。':'';
- const instruction={background:question+projectionNote,requests:requests.length?requests:['按上述委托任务及以下成果清单完成工作。'],deliverableReqs:q.deliverables.map(f=>`${f.path}（${f.required?'必交':'选交'}）：${f.description}`).join('\n'),baselineDate:baseline?`${baseline[1]}-${baseline[2]!.padStart(2,'0')}-${baseline[3]!.padStart(2,'0')}`:'',hardConstraints:paragraphs.filter(p=>/^(?:基准日|硬性约束|特别约定|约束条件)\s*[:：]/.test(p)),commissionerType:'professional',tone:'法律专业人士'};
- const metadata={title:safe(q.task_name)||input.title,domain:'法律',claimCode:code,taskType:safe(q.task_type).match(/^F[1-5]/)?.[0]??'',longevity:m.target_level,businessArea:sceneCategory[code]??m.domain_l2??'',summary:safe(q.task_name)||input.title,abilities:m.capabilities,dependsVl:m.vl_dependency,vlFiles:m.vl_dependency?(originalInputFiles.length?originalInputFiles.map(file=>file.name):projected.flat().map(f=>f.name)):[],hasScan:false,scanFiles:[],taskDesc:`${m.level_basis.explanation}\n${m.generation_note}`,expertHours:m.level_basis.estimated_hours,dataSource:m.source_note,neededTools:m.tools,neededKnowledge:m.professional_knowledge};
+ const instruction={background:(structured?.background??question)+projectionNote,requests:structured?.requests??legacy.requests,deliverableReqs:q.deliverables.map(f=>`${f.path}（${f.required?'必交':'选交'}）：${f.description}`).join('\n'),baselineDate:structured?structured.baseline_date??'':legacy.baselineDate,hardConstraints:structured?.hard_constraints??legacy.hardConstraints,commissionerType:'professional',tone:'法律专业人士'};
+ const metadata:Record<string,unknown>={title:safe(q.task_name)||input.title,domain:'法律',claimCode:code,taskType:safe(q.task_type).match(/^F[1-5]/)?.[0]??'',longevity:m.target_level,businessArea:sceneCategory[code]??m.domain_l2??'',summary:safe(q.task_name)||input.title,abilities:m.capabilities,dependsVl:m.vl_dependency,vlFiles:m.vl_dependency?(originalInputFiles.length?originalInputFiles.map(file=>file.name):projected.flat().map(f=>f.name)):[],taskDesc:m.level_basis.explanation,expertHours:m.level_basis.estimated_hours,dataSource:`${m.source_note}\n${m.generation_note}`,neededTools:m.tools,neededKnowledge:m.professional_knowledge};
  const anchors:Record<string,string[]>={F1:['Q3','Q4'],F2:['Q2','Q3'],F3:['Q1','Q4'],F4:['Q4','Q6'],F5:['Q1','Q5']};
  const items=(q.rubric as RubricItem[]).map(item=>{
   if(!item.id||!item.metadata||typeof item.metadata!=='object')throw new Error('Work评分条目缺少原始字段');
   return{id:item.id,...item.metadata};
  });
- const rubric={task_id:name,domain:'法律',task_type:q.task_type,difficulty_tier:m.target_level,anchor_dimensions:anchors[metadata.taskType]??[],items};
+ const rubric={task_id:name,domain:'法律',task_type:q.task_type,difficulty_tier:m.target_level,anchor_dimensions:anchors[String(metadata.taskType)]??[],items};
  const contentHash=sha(JSON.stringify({input_format:originalInputFiles.length?'original-files-v1':REDACTED_DOCX_RENDERER_VERSION,confirmation_renderer:SIRISER_CONFIRMATION_RENDERER_VERSION,question:q,attachments:input.attachments.map(({original_files,...attachment})=>({...attachment,...(original_files?{original_files:original_files.map(({name,sha256})=>({name,sha256}))}:{})})),projection:projected.map(files=>files.map(({name,ranges})=>({name,ranges}))),expertName,date}));
  await mkdir(root,{recursive:true,mode:0o700});
  const previous=await lstat(target).catch(error=>(error as NodeJS.ErrnoException).code==='ENOENT'?undefined:Promise.reject(error));
@@ -352,6 +368,12 @@ export async function generateSiriserConfirmation(parent:string,input:PackageInp
   await writeAtomic(statePath,JSON.stringify(state,null,2)+'\n');
   return{directory:target,zip_path:zipPath,filename:`${name}.zip`,sha256:state.zip_sha256,files:files.length,reused:true};
  }
+ const scanChecks:{name:string;status:'scanned'|'not_scanned'|'unknown';reason:string}[]=[];
+ for(const file of originalInputFiles)scanChecks.push({name:file.name,...(file.name.toLowerCase().endsWith('.pdf')?await inspectPdfScan(Buffer.from(file.content_base64,'base64')):{status:'unknown',reason:'非PDF原件未执行扫描属性检测'})});
+ const scanFiles=scanChecks.filter(check=>check.status==='scanned').map(check=>check.name),scanUnknown=scanChecks.some(check=>check.status==='unknown');
+ // DOCX投影无扫描原件；未知原件不伪造false，也不自动改写作者的视觉依赖声明。
+ if(scanFiles.length||!scanUnknown){metadata.hasScan=!!scanFiles.length;metadata.scanFiles=scanFiles;}
+ const qualityWarnings=[...workLevelWarnings(m),...(!structured?['历史题未提供结构化任务说明，使用兼容提取；未识别的语义约束需人工核对']:[]),...scanChecks.filter(check=>check.status==='unknown').map(check=>`${check.name}扫描属性未知：${check.reason}`),...(scanFiles.length&&!m.vl_dependency?['原件含无文字层扫描页；视觉依赖声明为false，请核对候选实际输入及OCR工具能力']:[])];
  const temp=join(root,`.${randomUUID()}.tmp`),folder=join(temp,name);
  await mkdir(join(folder,'input_files'),{recursive:true,mode:0o700});await mkdir(join(folder,'golden_output'),{mode:0o700});
  try{
@@ -383,7 +405,7 @@ export async function generateSiriserConfirmation(parent:string,input:PackageInp
   const bytes=markZipFilenamesUtf8(await readFile(zipPath));await writeFile(zipPath,bytes,{mode:0o600});
   const relativeZip=`Siriser五件套/${packageRootName}/${name}.zip`;
   const inputMode=input.attachments[0]?.material_mode??'redacted';
-  const state={format:'siriser_confirmation_v1',input_format:originalInputFiles.length?(originalInputFiles.every(file=>file.name.toLowerCase().endsWith('.pdf'))?'pdf':'original'):'docx',material_mode:inputMode,input_renderer:originalInputFiles.length?'original-byte-copy-v1':REDACTED_DOCX_RENDERER_VERSION,confirmation_renderer:SIRISER_CONFIRMATION_RENDERER_VERSION,workflow_id:input.workflow_id,source_digest:input.source_digest,delivery_digest:input.delivery_digest,question_version:input.question_version,rubric_version:input.rubric_version,content_sha256:contentHash,filename:`${name}.zip`,zip_relative_path:relativeZip,zip_sha256:sha(bytes),zip_bytes:bytes.length,files,physical_input_files:originalInputFiles.length||projected.flat().length,input_projection:originalInputFiles.length?input.attachments.map((attachment,index)=>({source_name:q.input_files![index]!.name,material_mode:'original',files:(attachment.original_files??[]).map(({name,sha256})=>({name,sha256}))})):projected.map((files,index)=>({source_name:q.input_files![index]!.name,material_mode:input.attachments[index]?.material_mode??'redacted',structure_mode:input.attachments[index]!.documents?.length?'structured':'legacy-markdown',source_sha256:sha(input.attachments[index]!.text),files:files.map(({name,ranges,text})=>({name,ranges,sha256:sha(text)}))})),declared_document_entries:m.level_basis.documents.length,submission_ready:false,submitted:false};
+  const state={format:'siriser_confirmation_v1',input_format:originalInputFiles.length?(originalInputFiles.every(file=>file.name.toLowerCase().endsWith('.pdf'))?'pdf':'original'):'docx',material_mode:inputMode,input_renderer:originalInputFiles.length?'original-byte-copy-v1':REDACTED_DOCX_RENDERER_VERSION,confirmation_renderer:SIRISER_CONFIRMATION_RENDERER_VERSION,workflow_id:input.workflow_id,source_digest:input.source_digest,delivery_digest:input.delivery_digest,question_version:input.question_version,rubric_version:input.rubric_version,content_sha256:contentHash,filename:`${name}.zip`,zip_relative_path:relativeZip,zip_sha256:sha(bytes),zip_bytes:bytes.length,files,physical_input_files:originalInputFiles.length||projected.flat().length,input_projection:originalInputFiles.length?input.attachments.map((attachment,index)=>({source_name:q.input_files![index]!.name,material_mode:'original',files:(attachment.original_files??[]).map(({name,sha256})=>({name,sha256}))})):projected.map((files,index)=>({source_name:q.input_files![index]!.name,material_mode:input.attachments[index]?.material_mode??'redacted',structure_mode:input.attachments[index]!.documents?.length?'structured':'legacy-markdown',source_sha256:sha(input.attachments[index]!.text),files:files.map(({name,ranges,text})=>({name,ranges,sha256:sha(text)}))})),declared_document_entries:m.level_basis.documents.length,quality_warnings:qualityWarnings,scan_checks:scanChecks,submission_ready:false,submitted:false};
   await rename(folder,target);await rename(zipPath,join(root,`${name}.zip`));
   await writeFile(join(root,`${name}.state.json`),JSON.stringify(state,null,2)+'\n',{mode:0o600});await writeFile(statePath,JSON.stringify(state,null,2)+'\n',{mode:0o600});
   return{directory:target,zip_path:join(root,`${name}.zip`),filename:`${name}.zip`,sha256:state.zip_sha256,files:files.length,reused:false};

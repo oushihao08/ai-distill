@@ -43,6 +43,6 @@ onMounted(load);
  <Row :gap="8"><v-select :model-value="templateId" label="编辑脱敏模板" :items="templates.map(t=>({title:t.name,value:t.id}))" @update:model-value="selectTemplate"/><v-btn :disabled="busy" @click="addTemplate">新增模板</v-btn></Row>
  <v-text-field v-if="currentTemplate" v-model="currentTemplate.name" label="模板名称" :disabled="busy"/>
  <v-alert type="info" density="compact">新脱敏任务统一使用Agent整包化名。模型沿用系统Agent设置，最多执行10分钟；私有主体表固定化名，法院名称保留。历史结果与题目快照不改写。</v-alert>
- <v-textarea v-model="prompt" label="脱敏提示词" rows="8" auto-grow :disabled="busy"/>
+ <v-textarea v-model="prompt" label="脱敏提示词" rows="8" no-resize :disabled="busy"/>
  </template><Row x="end" wrap :gap="8"><v-btn :disabled="busy||loading" @click="defaults">恢复系统默认到草稿</v-btn><v-btn color="primary" type="submit" :loading="busy" :disabled="busy||invalid">保存设置</v-btn></Row>
 </Column></v-form></template>

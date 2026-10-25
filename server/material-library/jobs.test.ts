@@ -32,17 +32,29 @@ test('complete issue-free extraction is eligible and retains the original docume
  expect(documents).toEqual([{page_count:1,issues:[],pages:[{text:'完整测试正文'}]}]);
 });
 
-test('new extraction task freezes provider selection before worker execution',async()=>{
- const previous=process.env.PDF_EXTRACTION_PROVIDER;let frozen:any;
+test('PDF extraction budget covers MinerU API plus its CLI fallback and freezes provider selection',async()=>{
+ const previous=process.env.PDF_EXTRACTION_PROVIDER,previousKey=process.env.MINERU_KEY,previousQueue=process.env.EXECUTION_QUEUE_MODE;let frozen:any;
  const query=async(sql:string,values:any[]=[])=>{
   if(sql.startsWith('SELECT id,processing_settings'))return{rows:[{id:'package',processing_settings:{redaction:{provider:'api'},extraction:{protocol:'v1'},execution:{task_timeout_ms:1200000}},deleted_at:null}]};
   if(sql.startsWith('SELECT id,package_id,state'))return{rows:[{id:'revision',package_id:'package',state:'ready',manifest_sha256:'hash',file_count:1}]};
-  if(sql.startsWith('SELECT f.id'))return{rows:[{id:'file',original_name:'synthetic.txt',storage_target:'local',position:1,sha256:'hash',size_bytes:1}]};
+  if(sql.startsWith('SELECT f.id'))return{rows:[{id:'file',original_name:'synthetic.pdf',storage_target:'local',position:1,sha256:'hash',size_bytes:1}]};
   if(sql.startsWith('INSERT INTO ai_distill.library_jobs')){frozen=JSON.parse(values[9]);return{rows:[{id:'new-job'}]};}
   return{rows:[],rowCount:0};
  };
- try{process.env.PDF_EXTRACTION_PROVIDER='mineru-cli';await enqueueLibraryJob({connect:async()=>({query,release(){}})} as any,'package','revision',{kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local'});process.env.PDF_EXTRACTION_PROVIDER='mineru-api';expect(frozen.pdf_provider).toBe('mineru-cli');}
- finally{if(previous===undefined)delete process.env.PDF_EXTRACTION_PROVIDER;else process.env.PDF_EXTRACTION_PROVIDER=previous;}
+ try{process.env.MINERU_KEY='fixture';process.env.EXECUTION_QUEUE_MODE='legacy';process.env.PDF_EXTRACTION_PROVIDER='mineru-cli';await enqueueLibraryJob({connect:async()=>({query,release(){}})} as any,'package','revision',{kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local'});process.env.PDF_EXTRACTION_PROVIDER='mineru-api';expect(frozen.pdf_provider).toBe('mineru-cli');expect(frozen.settings.execution.task_timeout_ms).toBe(3900000);}
+ finally{if(previous===undefined)delete process.env.PDF_EXTRACTION_PROVIDER;else process.env.PDF_EXTRACTION_PROVIDER=previous;if(previousKey===undefined)delete process.env.MINERU_KEY;else process.env.MINERU_KEY=previousKey;if(previousQueue===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previousQueue;}
+});
+
+test('PDF claim preserves the full provider and fallback execution budget',async()=>{
+ const previousQueue=process.env.EXECUTION_QUEUE_MODE,updates:any[]=[];
+ const job={id:'job',kind:'extract',input_snapshot:{files:[{original_name:'case.pdf'}]},config_snapshot:{settings:{execution:{task_timeout_ms:3900000}}}};
+ const client={query:async(sql:string,values:any[]=[])=>{
+  if(sql.startsWith('SELECT j.*,p.name'))return{rows:[job]};
+  if(sql.startsWith('UPDATE ai_distill.library_jobs SET status=\'running\'')){updates.push(values);return{rows:[{id:'job'}],rowCount:1};}
+  return{rows:[],rowCount:0};
+ },release(){}};
+ try{process.env.EXECUTION_QUEUE_MODE='legacy';await claimLibraryJob({query:async()=>({rows:[{available:true}] }),connect:async()=>client} as any,'api','server');expect(updates[0]?.[2]).toBe(3900000);}
+ finally{if(previousQueue===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previousQueue;}
 });
 
 test('requires an explicit successful extraction reference for redaction requests',()=>{

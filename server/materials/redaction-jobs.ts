@@ -3,7 +3,7 @@
  * 关键方法与用途：`enqueueRedaction()` 冻结原文与模型配置；`runNextRedaction()` 消费任务并保存当前版本清洁附件；摘要函数固定输入。
  * 使用场景：`app.ts` 派发，`worker.ts` 执行；不会改写来源文件。
  */
-import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
+import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {runExternalCall} from '../external-call';
 import {runAgent} from '../agent';
 import {createModelApiClient} from '../llm-api';
@@ -77,7 +77,7 @@ export async function enqueueRedaction(pool:Pool,id:string,executionTarget:'loca
   const digest=redactionInputDigest(input.materials);
   // A settings change invalidates the current step, even when an older attempt used identical settings.
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=9 AND execution_target=$5 AND input->>'digest'=$2 AND config=$3::jsonb AND status IN ('waiting','running','succeeded') AND (status<>'succeeded' OR $4::boolean) ORDER BY attempt DESC LIMIT 1",[id,digest,JSON.stringify(config),gate.find(row=>row.ordinal===9)?.status==='succeeded',executionTarget])).rows[0];
-  if(previous){await db.query('COMMIT');withLogContext({component:'redaction',workflow_id:id,project_id:workflow.project_id,ordinal:9,attempt_id:previous.id,operation:'redaction_enqueue'},()=>logEvent('attempt.reused',{level:'info',state:'waiting'}));return{id:previous.id,reused:true};}
+  if(previous){await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'redaction',workflow_id:id,project_id:workflow.project_id,ordinal:9,attempt_id:previous.id,operation:'redaction_enqueue'},()=>logEvent('attempt.reused',{level:'info',state:'waiting'}));return{id:previous.id,reused:true};}
   // 旧冻结尝试可读/复用并由worker收尾；不再新建旧字段映射模型任务。
   if(!manualOnly)throw new HTTPException(409,{message:'旧字段映射脱敏已退役，请将材料入共享材料库后选择Agent化名或提取原文'});
   // The workflow lock serializes dispatch. Never let changed inputs start a second writer while
@@ -92,8 +92,8 @@ export async function enqueueRedaction(pool:Pool,id:string,executionTarget:'loca
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='脱敏输入或设置变化，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal IN (4,5,6,7,8,10) AND status IN ('waiting','running')",[id]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[id]);
   await registerLocalJob(db,attempt,'step',config.provider==='codex'?'agent':'api','redact');
-  await db.query('COMMIT');withLogContext({component:'redaction',workflow_id:id,project_id:workflow.project_id,ordinal:9,attempt_id:attempt,operation:'redaction_enqueue'},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting',material_count:sources.length}));return{id:attempt,reused:false};
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'redaction',workflow_id:id,project_id:workflow.project_id,ordinal:9,attempt_id:attempt,operation:'redaction_enqueue'},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting',material_count:sources.length}));return{id:attempt,reused:false};
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
 }
 
 async function readSource(pool:Pool,item:any,workflowId:string,timeoutMs:number):Promise<ExtractedMaterial>{
@@ -122,12 +122,12 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
   const stale=await db.query(`SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=9 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a',true)}  FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget]);
   for(const row of stale.rows){const updated=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error='脱敏进程中断，可重试',finished_at=now() WHERE id=$1 AND status='running' RETURNING id",[row.id]);await db.query("UPDATE ai_distill.steps SET status='failed',error='脱敏进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=9 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)",[row.workflow_id]);if(updated.rowCount)staleRows.push(row);}
   job=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 AND s.enabled WHERE a.ordinal=9 AND a.execution_target=$2 AND ${localWaitingSql('a')} AND w.deleted_at IS NULL AND ($1::boolean IS NULL OR (COALESCE(a.config->>'provider','codex')='codex')=$1) ${localClaimSql('a',false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[backend===undefined?null:backend==='codex',executionTarget])).rows[0];
-  if(!job){await db.query('COMMIT');for(const row of staleRows)withLogContext({component:'redaction',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:9,attempt_id:row.id,operation:'redaction'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false;}
+  if(!job){await db.query('COMMIT');forgetLocalRegistrations(db);for(const row of staleRows)withLogContext({component:'redaction',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:9,attempt_id:row.id,operation:'redaction'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));return false;}
   await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await db.query("UPDATE ai_distill.steps SET status='running',error=NULL,started_at=now() WHERE workflow_id=$1 AND ordinal=9",[job.workflow_id]);
-  await db.query('COMMIT');
+  await db.query('COMMIT');forgetLocalRegistrations(db);
   withLogContext({component:'redaction',workflow_id:job.workflow_id,project_id:job.project_id,ordinal:9,attempt_id:job.id,operation:'redaction'},()=>{logEvent('attempt.claimed',{level:'info',state:'running'});logEvent('attempt.started',{level:'info',state:'running'});});
- }catch(error){await db.query('ROLLBACK');if(error&&typeof error==='object'&&'code'in error&&error.code==='55P03'){logEvent('redaction.claim.deferred',{level:'warn',reason_code:'dispatch_lock_busy'});return false;}throw error;}finally{db.release();}
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);if(error&&typeof error==='object'&&'code'in error&&error.code==='55P03'){logEvent('redaction.claim.deferred',{level:'warn',reason_code:'dispatch_lock_busy'});return false;}throw error;}finally{db.release();}
  for(const row of staleRows)withLogContext({component:'redaction',project_id:row.project_id,workflow_id:row.workflow_id,ordinal:9,attempt_id:row.id,operation:'redaction'},()=>logEvent('attempt.recovered_interrupted',{level:'error',state:'failed',threshold_ms:300000,...(row.heartbeat_at?{last_heartbeat_at:new Date(row.heartbeat_at).toISOString()}:{})}));
  const restoreLogContext=enterLogContext({component:'redaction',workflow_id:job.workflow_id,project_id:job.project_id,ordinal:9,attempt_id:job.id,operation:'redaction'});
  const cancellation=watchTaskCancellation(pool,job.id,signal,false);signal=cancellation.signal;
@@ -218,10 +218,10 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
    await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1",[job.id,JSON.stringify(result),output.session_id]);
    await tx.query("UPDATE ai_distill.steps SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=9",[job.workflow_id,JSON.stringify(result)]);
    await tx.query("UPDATE ai_distill.materials SET processing_status='redacted' WHERE workflow_id=$1 AND deleted_at IS NULL",[job.workflow_id]);
-   await tx.query('COMMIT');
+   await tx.query('COMMIT');forgetLocalRegistrations(tx);
    withLogContext({...taskContext,provider,model},()=>logEvent('state_update.committed',{level:'info',state:'succeeded',material_count:materials.length,page_count:result.page_count,output_bytes:files.reduce((sum,file)=>sum+file.size_bytes,0)}));
    if(output.checkpoint_path)try{await rm(output.checkpoint_path,{force:true});}catch(cleanupError){withLogContext(taskContext,()=>logEvent('file.cleanup_or_commit_check_failed',{level:'warn',file_kind:'redaction_checkpoint',...classifyLogError(cleanupError)}));}
-  }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
+  }catch(error){await tx.query('ROLLBACK');await releaseRolledBackRegistrations(tx);throw error;}finally{tx.release();}
  }catch(error){
   deferLocalPublication(error);
   if(latestProgress){latestProgress={...latestProgress,phase:'failed'};}

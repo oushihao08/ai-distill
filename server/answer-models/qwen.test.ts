@@ -16,6 +16,23 @@ test('OpenRouter冻结路由实际传到HTTP请求，不允许回退或忽略输
 const env = { QWEN_API_KEY: 'test-only-secret' };
 const config = { provider: 'qwen' as const, base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' };
 const input: QwenAnswerInput = { config, question: '计算剩余应付金额。', materials: [{ name: '附件一', text: '应付100元，已付40元。' }] };
+test('SiliconFlow truncated streams preserve end evidence without accepting partial output',async()=>{
+ const sf={provider:'siliconflow' as const,base_url:'https://api.siliconflow.com/v1',model:'fixture/model'};
+ const event=(choice:unknown)=>`data: ${JSON.stringify({choices:[choice]})}\n\n`;
+ for(const done of [false,true]){
+  const body=event({delta:{content:'PRIVATE PARTIAL'}})+(done?'data: [DONE]\n\n':'');
+  const client=createModelApiClient({SILICONFLOW_API_KEY:'fixture'},async()=>new Response(body,{headers:{'Content-Type':'text/event-stream'}}));
+  let captured:any;try{await client.complete({config:sf,messages:[{role:'user',content:'fixture'}]});}catch(error){captured=error;}
+  expect(captured?.reason_code).toBe('incomplete_finish_reason');expect(captured?.finish_reason).toBe('missing');expect(captured?.saw_done).toBe(done);expect(captured?.saw_finish).toBe(false);expect(captured?.stream_eof).toBe(done?'done':'eof');expect(captured?.stream_bytes).toBe(Buffer.byteLength(body));expect(captured?.stream_events).toBe(done?2:1);
+ }
+});
+test('a complete stream releases its reader after DONE even if the server keeps the transport open',async()=>{
+ let cancelled=false;const chunk='data: '+JSON.stringify({choices:[{delta:{content:'complete'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n';
+ const body=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(new TextEncoder().encode(chunk));},cancel(){cancelled=true;}});
+ const client=createModelApiClient({SILICONFLOW_API_KEY:'fixture'},async()=>new Response(body,{headers:{'Content-Type':'text/event-stream'}}));
+ const result=await client.complete({config:{provider:'siliconflow',base_url:'https://api.siliconflow.com/v1',model:'fixture/model'},messages:[{role:'user',content:'fixture'}],timeout_ms:500});
+ expect(result.text).toBe('complete');expect(cancelled).toBe(true);expect(body.locked).toBe(false);
+});
 const routerConfig = { ...config, base_url: 'https://openrouter.ai/api/v1', model: 'qwen/qwen-plus' };
 test('OpenRouter key alone resolves a Qwen gateway configuration without exposing the key', () => {
  expect(resolveQwenConfig({}, { OPEN_ROUTER_KEY: 'router-test-secret' })).toEqual(routerConfig);
@@ -318,4 +335,11 @@ test('timeout covers a stalled response body using native fetch', async () => {
   await new Promise(resolve => setTimeout(resolve, 20));
   expect(aborted).toBe(true);
  } finally { server.stop(true); }
+});
+
+test('stream deadline remains a timeout and retains safe stream evidence after error normalization',async()=>{
+ const body=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"synthetic partial"},"finish_reason":null}]}\n\n'));}});
+ const client=createModelApiClient({SILICONFLOW_API_KEY:'fixture'},async()=>new Response(body,{headers:{'Content-Type':'text/event-stream'}}));
+ let failure:any;try{await client.complete({config:{provider:'siliconflow',base_url:'https://api.siliconflow.com/v1',model:'fixture/model'},messages:[{role:'user',content:'synthetic'}],timeout_ms:30});}catch(error){failure=error;}
+ expect(failure?.kind).toBe('timeout');expect(failure?.reason_code).toBe('local_deadline');expect(failure?.stream_events).toBe(1);expect(failure?.stream_bytes).toBeGreaterThan(0);expect(failure?.saw_done).toBe(false);expect(failure?.saw_finish).toBe(false);expect(failure?.stream_eof).toBe('error');expect(body.locked).toBe(false);
 });

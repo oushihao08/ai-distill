@@ -3,7 +3,7 @@
  * 关键入口：createRemoteMaterialOperation、readRemoteMaterialOperation、runNextRemoteMaterialOperation。
  * 使用场景：本机 CLI 经受限 API 发起一次组合操作，即使客户端断线仍由服务器继续处理。
  */
-import {registerLocalJob,localClaimSql,localQueueEnabled} from './execution-queue/runtime';
+import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localQueueEnabled} from './execution-queue/runtime';
 import {createHash,randomUUID} from 'node:crypto';
 import {HTTPException} from 'hono/http-exception';
 import type {Pool} from 'pg';
@@ -58,8 +58,8 @@ export async function createRemoteMaterialOperation(pool:Pool,workflowId:string,
   created=(await registration.query(`INSERT INTO ai_distill.remote_material_operations(id,workflow_id,mode,request_key,source_digest,stage,material_digest,redaction_config_digest)
   VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(workflow_id,request_key) DO NOTHING RETURNING *`,[randomUUID(),workflowId,mode,requestKey,sourceDigest,stage,initialMaterialDigest,redactionConfig?.digest??null])).rows[0];
   if(created)await registerLocalJob(registration,created.id,'remote','remote','remote');
-  await registration.query('COMMIT');
- }catch(error){await registration.query('ROLLBACK');if((error as {code?:string}).code==='23505')throw new HTTPException(409,{message:'这道题已有进行中的远程材料操作'});throw error;}finally{registration.release();}
+  await registration.query('COMMIT');forgetLocalRegistrations(registration);
+ }catch(error){await registration.query('ROLLBACK');await releaseRolledBackRegistrations(registration);if((error as {code?:string}).code==='23505')throw new HTTPException(409,{message:'这道题已有进行中的远程材料操作'});throw error;}finally{registration.release();}
  if(created)return created;
  const concurrent=(await pool.query('SELECT * FROM ai_distill.remote_material_operations WHERE workflow_id=$1 AND request_key=$2',[workflowId,requestKey])).rows[0];
  if(concurrent?.mode!==mode||concurrent?.source_digest!==sourceDigest)throw new HTTPException(409,{message:'请求标识对应的材料版本已变化'});

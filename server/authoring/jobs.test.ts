@@ -44,6 +44,9 @@ async function projectFixture(){
 
  const query=async(sql:string,values:any[]=[]):Promise<any>=>{
   calls.push({sql,values});
+  // 跟随现有归档保护的行锁查询；模拟未归档/已归档状态，不能用空结果误判所有题目不存在。
+  if(sql==='SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE')return{rows:state.deleted?[]:[{id:values[0]}],rowCount:state.deleted?0:1};
+  if(sql==='SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8')return{rows:state.archived?[{status:'succeeded'}]:[],rowCount:state.archived?1:0};
   if(state.library){
    if(sql.startsWith('SELECT p.material_backend'))return{rows:[{material_backend:'library_v1',has_library_snapshot:true}],rowCount:1};
    if(sql.startsWith('SELECT project_id,package_id,revision_id'))return{rows:[library().row],rowCount:1};
@@ -73,6 +76,10 @@ async function projectFixture(){
  return{root,skill,pool,state,calls,get saved(){return saved;}};
 }
 const authored={question_id:'题目1',draft:{task_name:'金额核算',task_type:'计算',header:{industry_l1:'行业',industry_l2:'细分',task_form:'single_round' as const,occupation_l1:'法律',occupation_l2:'法务'},question:'金额是多少？',attachment_ids:['attachment'],answer_approach:'核对材料',reference_answer:'100元',answer_requirements:{input_mode:'text' as const,output_mode:'text' as const,tools:[]},rubric:[{id:'R1',criterion:'准确写明金额',max_score:1}]},question_version:'qv1',rubric_version:'rv1',package_text:'题面',codex:{session_id:'new-session',usage:null,duration_ms:1}};
+
+test('既有归档保护保持：已归档和已删除题目不能因Work结构升级被重出',async()=>{
+ for(const flag of ['archived','deleted']){const f=await projectFixture();try{f.state[flag]=true;await expect(enqueueAuthoring(f.pool,'workflow')).rejects.toThrow(flag==='archived'?'已归档':'不存在');expect(f.saved).toBeUndefined();}finally{await rm(f.root,{recursive:true,force:true});}}
+});
 
 test('上传材料原文件名从数据库传入作者并用于公开题包表头',async()=>{
  const f=await projectFixture();try{
@@ -173,6 +180,8 @@ test('project author enqueue freezes the database project name and current file 
   await writeFile(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'low'}]}]}));
   const project_prompt=await scanProjectPrompt(root,skill);let saved:any;
   const query=async(sql:string,values:any[]=[]):Promise<any>=>{
+   if(sql==='SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE')return{rows:[{id:values[0]}],rowCount:1};
+   if(sql==='SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8')return{rows:[],rowCount:0};
    if((sql.startsWith('SELECT w.project_id')||sql.startsWith('SELECT w.*')))return{rows:[{project_id:'project',project_name:'数据库项目名称',title:'题目1',source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}]};
    if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redaction'}]};
    if(sql.startsWith('SELECT ar.id'))return{rows:[{id:'attachment',sha256:'a'.repeat(64)}],rowCount:1};
@@ -337,4 +346,12 @@ test('local failure survives failed DB settlement and recovery never invokes aut
   const writes=f.calls.filter(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed',result="));
   expect(writes).toHaveLength(1);expect(writes[0]!.values[2]).toContain('result.json');
  }finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;q.close();await rm(f.root,{recursive:true,force:true});}
+});
+
+// PostgreSQL JSONB重排建议对象键后，活动出题仍按同一冻结输入复用。
+test('manual advice digest survives JSONB key ordering without changing legacy digests',()=>{
+ const base={title:'合成题',materials:[],revision_advice:{id:'advice',source_digest:'source',authoring_version:'q1',text:'修正时间',digest:'digest'}};
+ const reordered={...base,revision_advice:Object.fromEntries(Object.entries(base.revision_advice).reverse())};
+ expect(inputDigest(base as any)).toBe(inputDigest(reordered as any));
+ expect(inputDigest({title:'合成题',materials:[]})).not.toBe(inputDigest(base as any));
 });

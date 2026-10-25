@@ -24,17 +24,30 @@ export async function prepareAgentLibraryMaterials(options:Options){
   if(signal.aborted)throw signal.reason;
   const output=await (options.execute??runAgent)<{plan_file:string}>({task_type:'material_preparation',directory:options.directory,model:options.model,reasoning_effort:options.reasoning_effort,schema:completionSchema,
    timeout_ms:Math.max(1,budget-(performance.now()-started)),signal,
-   prompt:options.template.redaction.prompt+'\n\n本次输入在source.json，文件/页/块/字段ID均已给出。完整计划结构见plan-schema.json。review-hints.json提供程序定位的可能主体字段和文书起点，仅作导航、非穷举，不是身份或边界结论；须核对实际原文，不能遗漏其他主体或按提示数量硬拆。用工具成组阅读全部字段，不逐页发起其他模型或等待外部复核。可用计算工具定位和整理，不要改写输入。若有resume目录，其中进度已由程序确认同输入同模板同模型：先读取其主体表、文书计划、编辑和未决项；已有完整计划时复用后校验，补齐遗漏和不合格项，不重复建立已确认的化名。\n'+
-    '把entities、edits、documents、unresolved四个完整数组写入output/material-plan.json（不是最终回复），遵守plan-schema.json。entities.variants.targets为空表示已确认该原称在全包指向同一主体，由程序展开全部出现；有同名歧义时必须列出具体target_id。edits只列其他脱敏/清理片段，occurrence为0表示该字段内全部字面出现，正整数表示从1起的第几次出现，keep_prefix仅地址填写确认可保留的行政区划前缀，其余填空串；星号由程序生成。\n'+
-    'documents.ranges用完整块first_block_id/last_block_id界定，跨页文书合并，可包含多个文件范围；全部块恰好分配一次，重复扫描保留为有duplicate_of关联的文书，不按行拆表。未修改的块也必须归入文书。仅未列明且无法确认的噪声保留；数据库模板明确列出的垃圾必须列入删除编辑，提交计划前对完整source逐项核对。只把局部确实不清的连续附件保留为组合文书，仍须拆分其他可辨认文书，不能把整卷一概合并来代替识别。身份不明不合并但仍需对姓名敏感片段作用域化名。身份/边界unresolved.target_id必须是本次真实字段ID或块ID，不能用all/source.json等整包概述；未确认归并不等于保留原名。blocking遵守本次数据库模板，不把已安全处理的疑点设为阻断。\n'+
-    '先将主体表写output/subject-map.json，再及时保存output/document-plan.json、output/edits.json、output/unresolved.json、output/progress.json；完成时合并为output/material-plan.json，使用UTF-8 JSON。返回前运行'+validatorCommand+'，这是程序提供的只读精确校验工具，不调用其他模型；若返回错误码就在本次会话内修正对应条目后再校验，保持总预算。Windows隔离目录中的其他JS文件也使用node --preserve-symlinks-main --preserve-symlinks运行，避免运行时对无权访问的父目录进行真实路径探测。校验通过后最终回复只返回{"plan_file":"output/material-plan.json"}，不要重复完整计划，也不能用空数组代替计划。不抄回全文、不计算字符偏移、不改变法院名称。预算包含读取、输出和检查，请在剩余时间内完成；超时不自动重试。',
+   prompt:options.template.redaction.prompt+`
+
+【本次执行接口】
+- 读取source.json的全部字段与结构块；review-hints.json只是导航，plan-schema.json是计划格式。
+- 只需将完整计划保存为output/material-plan.json，可用工具辅助整理，不修改输入。entities记录化名及原称；variants.targets=[]表示已确认可全包替换，有同名歧义时列具体target_id。
+- edits用target_id和连续原文source_text定位，occurrence=0表示该字段内全部出现，正整数表示从1起的第几次；kind按Schema选择，credential表示凭据全遮。地址的keep_prefix只填可保留行政区划，无法确认填空串，其他类别也填空串。程序负责字符坐标、遮盖和确定格式还原。
+- documents.ranges以first_block_id和last_block_id指定完整文书起止，全部块恰好归属一次，跨页合并、同页多件分开。unresolved按具体字段或块记录疑点。
+- 若有resume，先读取已有计划和validation-feedback.json，沿用已确认化名并修正反馈位置，仍须核对全包；可按需保存进度，不要求另写分项文件。
+- 在本次执行预算内运行${validatorCommand}。它直接接受上述计划，内部坐标转换无需你处理。返回valid:false就修正实际条目后再校验；valid:true后最终只返回{"plan_file":"output/material-plan.json"}。超时保留计划，不自行重试。`,
    validate(value){if(!value||typeof value!=='object'||(value as any).plan_file!=='output/material-plan.json')throw Object.assign(new Error('Agent材料计划文件声明缺失'),{reason_code:'agent_plan_file_missing'});return value as {plan_file:string};},
   });
   const plan=await readAgentRedactionPlan(options.directory);
   await writePrivateJson(join(options.directory,'semantic-plan.private.json'),plan);
   await writePrivateJson(join(options.directory,'主体对应表.private.json'),{...identity,fingerprint,entities:plan.entities});
   if(signal.aborted)throw signal.reason;
-  const compiled=compileAgentMaterialPlan(plan,options.files,identity);
+  let compiled:ReturnType<typeof compileAgentMaterialPlan>;
+  try{compiled=compileAgentMaterialPlan(plan,options.files,identity);}catch(error){
+   const failure=error as {reason_code?:string;validation_details?:{findings?:unknown[]}};
+   if(failure.reason_code==='agent_sensitive_value_remaining'&&Array.isArray(failure.validation_details?.findings)){
+    const findings=failure.validation_details.findings.flatMap((item:any)=>item&&typeof item.kind==='string'&&typeof item.page==='number'? [{kind:item.kind,page:item.page,...(typeof item.target_id==='string'?{target_id:item.target_id}:{})}]:[]);
+    await writePrivateJson(join(options.directory,'output','validation-feedback.json'),{reason_code:failure.reason_code,findings});
+   }
+   throw error;
+  }
   if(signal.aborted||performance.now()-started>=budget)throw timeoutError();
   await writePrivateJson(join(options.directory,'exact-plan.private.json'),compiled.plan);
   return {...compiled,provider:output.provider,session_id:output.session_id,usage:output.usage,duration_ms:Math.round(performance.now()-started),model:output.model,entity_count:plan.entities.length,unresolved_count:plan.unresolved.length};

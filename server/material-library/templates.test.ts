@@ -5,6 +5,7 @@ import {validateProcessingSettings} from './service';
 import {validateLibraryJobRequest} from './jobs';
 import {libraryRedactionTemplates} from '../../shared/redaction-templates';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
+import {withLocalQueueRoot} from '../execution-queue/runtime';
 const settings=()=>({version:1,extraction:{protocol:'v1',provider_config:{}},redaction:{provider:'codex',model:'existing',reasoning_effort:'medium',prompt:'原有提示词'},execution:{task_timeout_ms:1000,request_timeout_ms:1000},policy:{preserve_dates:true,preserve_amounts:true}});
 test('默认Agent化名模板；显式mask保留原有协议及独立提示词',()=>{
  const s=settings(),before=JSON.stringify(s),mask=resolveLibraryTemplate(s,'mask'),alias=resolveLibraryTemplate(s);
@@ -37,20 +38,22 @@ test('拒绝新字段映射任务；Agent模板自动入队并冻结数据库提
   if(sql.startsWith('SELECT id,status,input_digest'))return{rows:[{id:'extraction',status:'succeeded'}]};
   if(sql.startsWith('SELECT d.id AS document_id'))return{rows:[{file_id:'file',source_sha256:'source',page_count:1,issues:[]}]};
   if(sql.startsWith('INSERT INTO ai_distill.library_jobs')){frozen=JSON.parse(v[9]);return{rows:[{id:'queued'}]};}
+  if(sql.startsWith('INSERT INTO ai_distill.execution_dispatches'))return{rows:[{executor_id:v[2]}]};
   return{rows:[],rowCount:0};
  };
  const pool={connect:async()=>({query,release(){}})} as any;
+ const enqueue=(body:unknown)=>withLocalQueueRoot(root,()=>enqueueLibraryJob(pool,'package','revision',body,root));
  const body={kind:'redact',execution_target:'local',request_key:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',extraction_job_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',template_id:'strict'};
  try{
-  await expect(enqueueLibraryJob(pool,'package','revision',{...body,template_id:'mask'},root)).rejects.toThrow('已退役');
+  await expect(enqueue({...body,template_id:'mask'})).rejects.toThrow('已退役');
   expect(frozen).toBeUndefined();
-  await enqueueLibraryJob(pool,'package','revision',body,root);
+  await enqueue(body);
   expect(frozen.settings.redaction.prompt).toBe('独立规则');
   expect(()=>saveLibraryProcessingSettings(root,1,{...s,redaction_templates:[{id:'old',name:'旧流程',workflow:'field_mapping',redaction:settings().redaction}]})).toThrow('已退役');
-  await expect(enqueueLibraryJob(pool,'package','revision',{...body,template_id:'aliases'},root)).resolves.toMatchObject({id:'queued'});
+  await expect(enqueue({...body,template_id:'aliases'})).resolves.toMatchObject({id:'queued'});
   expect(frozen.redaction_template.workflow).toBe('codex_plan');expect(frozen.settings.redaction.provider).toBe('codex');expect(frozen.settings.redaction.model).toBeTruthy();
   expect(frozen.settings.redaction.prompt).toBe(alias.redaction.prompt);
-  await expect(enqueueLibraryJob(pool,'package','revision',{...body,template_id:'mask'},root)).rejects.toThrow('已退役');
+  await expect(enqueue({...body,template_id:'mask'})).rejects.toThrow('已退役');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 import {resolveMaterialProcessingMode,materialProcessingSourceMode,redactionProcessingMode} from '../../shared/material-library';
@@ -86,13 +89,15 @@ test('project mode freezes real queue lane: API mask, Agent aliases, and no orig
   if(sql.startsWith('SELECT id,status,input_digest'))return{rows:[{id:'extraction',status:'succeeded'}]};
   if(sql.startsWith('SELECT d.id AS document_id'))return{rows:[{file_id:'file',source_sha256:'source',page_count:1,issues:[]}]};
   if(sql.startsWith('INSERT INTO ai_distill.library_jobs')){written={input:JSON.parse(v[7]),config:JSON.parse(v[9]),lane:v[10]};return{rows:[{id:'queued'}]};}
+  if(sql.startsWith('INSERT INTO ai_distill.execution_dispatches'))return{rows:[{executor_id:v[2]}]};
   return{rows:[],rowCount:0};
  };
  const pool={connect:async()=>({query,release(){}})} as any;
+ const enqueue=(body:unknown)=>withLocalQueueRoot(root,()=>enqueueLibraryJob(pool,'package','revision',body,root));
  const body={kind:'redact',execution_target:'local',request_key:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',extraction_job_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',project_id:'cccccccc-cccc-4ccc-8ccc-cccccccccccc'};
  try{
-  await expect(enqueueLibraryJob(pool,'package','revision',body,root)).rejects.toThrow('已退役');expect(written).toBeUndefined();
-  mode='aliases';await enqueueLibraryJob(pool,'package','revision',body,root);expect(written).toMatchObject({lane:'agent',input:{material_processing_mode:'aliases'},config:{redaction_template:{id:'aliases'}}});
-  mode='original';written=undefined;await expect(enqueueLibraryJob(pool,'package','revision',body,root)).rejects.toThrow('无需派发脱敏');expect(written).toBeUndefined();
+  await expect(enqueue(body)).rejects.toThrow('已退役');expect(written).toBeUndefined();
+  mode='aliases';await enqueue(body);expect(written).toMatchObject({lane:'agent',input:{material_processing_mode:'aliases'},config:{redaction_template:{id:'aliases'}}});
+  mode='original';written=undefined;await expect(enqueue(body)).rejects.toThrow('无需派发脱敏');expect(written).toBeUndefined();
  }finally{await rm(root,{recursive:true,force:true});}
 });

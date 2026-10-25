@@ -3,7 +3,7 @@
  * 入口：resumeHookAttempt() 恢复原失败尝试；registerWorkflowHookRoutes() 装配 Hono 路由。
  * 约束：只恢复程序标记的钩子失败；不自动重复未知主模型调用，不读取或返回私有脚本快照。
  */
-import {rearmLocalJob,registerLocalJob} from './execution-queue/runtime';
+import {releaseRolledBackRegistrations,forgetLocalRegistrations,rearmLocalJob,registerLocalJob} from './execution-queue/runtime';
 import type {Pool} from 'pg';
 import type {Hono} from 'hono';
 import {HTTPException} from 'hono/http-exception';
@@ -21,7 +21,7 @@ export async function resumeHookAttempt(pool:Pool,id:string,acknowledgeSideEffec
   const row=(await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id
    WHERE a.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL FOR UPDATE OF w,a`,[id])).rows[0];
   if(!row||![4,5,6].includes(row.ordinal)||row.result?.error_code!=='project_hook_failed')throw conflict('本次尝试不是可续跑的钩子失败');
-  if(['waiting','running'].includes(row.status)){await db.query('COMMIT');return {id,reused:true};}
+  if(['waiting','running'].includes(row.status)){await db.query('COMMIT');forgetLocalRegistrations(db);return {id,reused:true};}
   if(row.status!=='failed')throw conflict('本次尝试状态不允许续跑');
   const hooks=(await db.query(`SELECT h.* FROM ai_distill.hook_runs h WHERE h.attempt_id=$1 AND h.mode IN ('sync','checkpoint') AND ${activeHookParentSql(true)} ORDER BY h.created_at FOR UPDATE OF h`,[id])).rows;
   if(!hooks.length)throw conflict('输入已失效或没有可续跑的失败钩子');
@@ -43,8 +43,8 @@ export async function resumeHookAttempt(pool:Pool,id:string,acknowledgeSideEffec
   await db.query("UPDATE ai_distill.project_exports SET status='stale',error='钩子续跑，当前结果待更新',finished_at=now() WHERE project_id=$1 AND status IN ('running','succeeded')",[row.project_id]);
   await registerLocalJob(db,id,'step',row.ordinal===4||row.config?.provider==='codex'||row.ordinal===6&&row.config?.provider!=='api'?'agent':'api',({4:'authoring',5:'answer',6:'score'} as Record<number,string>)[row.ordinal]);
   await rearmLocalJob(db,id);
-  await db.query('COMMIT');return {id,reused:false};
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);return {id,reused:false};
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
 }
 /** 附加任务独立重试，不触碰主模型任务或达标状态。 */
 export async function retryAsyncHook(pool:Pool,id:string,acknowledgeSideEffects:boolean){
@@ -53,7 +53,7 @@ export async function retryAsyncHook(pool:Pool,id:string,acknowledgeSideEffects:
   await db.query('BEGIN');if(!await hasTable(db))throw conflict('钩子执行表尚未安装，请先应用033迁移');
   const row=(await db.query(`SELECT h.* FROM ai_distill.hook_runs h WHERE h.id=$1 AND h.mode='async' AND ${activeHookParentSql()} FOR UPDATE OF h`,[id])).rows[0];
   if(!row)throw conflict('附加任务不存在或输入已失效');
-  if(['waiting','running'].includes(row.status)){await db.query('COMMIT');return {id,reused:true};}
+  if(['waiting','running'].includes(row.status)){await db.query('COMMIT');forgetLocalRegistrations(db);return {id,reused:true};}
   if(!['failed','needs_review'].includes(row.status))throw conflict('附加任务状态不允许重试');
   if(!row.idempotent&&!acknowledgeSideEffects)throw conflict('钩子副作用状态需要核实；确认可再次执行后才能重试');
   const saved=await db.query(`UPDATE ai_distill.hook_runs h SET history=history||jsonb_build_array(jsonb_build_object('status',status,'error',error,'started_at',started_at,'finished_at',finished_at)),status='waiting',error=NULL,finished_at=NULL
@@ -61,8 +61,8 @@ export async function retryAsyncHook(pool:Pool,id:string,acknowledgeSideEffects:
   if(!saved.rowCount)throw conflict('附加任务输入已失效');
   await registerLocalJob(db,id,'hook','hook','hook');
   await rearmLocalJob(db,id);
-  await db.query('COMMIT');return {id,reused:false};
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);return {id,reused:false};
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
 }
 function acknowledgment(body:unknown){
  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>key!=='acknowledge_side_effects')||('acknowledge_side_effects' in body&&typeof body.acknowledge_side_effects!=='boolean'))throw new HTTPException(400,{message:'重试参数无效'});

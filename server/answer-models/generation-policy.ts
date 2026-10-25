@@ -38,7 +38,7 @@ export function readAnswerGenerationPolicyFromStepConfig(value:unknown):AnswerGe
 
 export function answerProviderConfigFromStepConfig(value:unknown):Record<string,unknown>{
  if(!record(value))return{};
- const{answer_generation_policy:_,workflow:_workflow,prompt:_prompt,...provider}=value;
+ const{answer_generation_policy:_,workflow:_workflow,prompt:_prompt,preserve_answer_model_snapshots:_snapshots,previous_answer_models:_previous,...provider}=value;
  return provider;
 }
 

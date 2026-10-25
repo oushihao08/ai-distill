@@ -14,7 +14,7 @@
 | `runner.ts` | 领取后的调度、心跳、取消与截止；入库和提取执行；`executeExtraction`/`runClaimedJob`支持隔离行为验证 |
 | `extraction-checkpoint.ts` | 私有单文件检查点读写；同版本显式重试可复用，异常降级继续，不发布或派发任务 |
 | `redaction-runner.ts` | 按已冻结方式执行遮挡/化名脱敏并事务发布，复用旧结构输出 |
-| `execution-shared.ts` | 执行器共用摘要、私有目录及提取结构校验 |
+| `execution-shared.ts` | 执行器共用摘要、私有目录、提取结构校验及正文发布前保守清理；有改动时同时保留原始OCR对象与精确编辑审计 |
 | `processing-policy.ts` | 从期次配置读取当前两模式及历史mask身份并约束派发模板；不调用模型 |
 | `agent-redaction.ts` | 单次限时Agent调用及最终程序编译；不入队、不自动重试 |
 | `agent-redaction-artifacts.ts` | 私有输入、同源检查点、固定结果文件及本地校验工具准备 |
@@ -22,6 +22,7 @@
 | `redaction-review.ts` | 显式复核Agent已发布产物，将当前结论及历史追加到job.result_summary，不改不可变产物或任务成功历史 |
 | `worker-once.ts` | 验收入口，只消费HTTP已创建的指定本机Agent材料job UUID，复用共享Agent槽位与正式事务，不领取其他任务 |
 | `prepared-import.ts` | 导入Codex已审阅的原文编辑/分册计划：校验完整提取来源、精确编辑、范围覆盖与请求幂等，在同一事务保存新任务及脱敏结果；不OCR、不调用模型、不改旧结果 |
+| `mineru-import.ts` | 导入MinerU桌面端content_list：核对完整版本原件摘要与PDF页数，复用结构转换，事务保存提取文档与来源摘要；不重跑OCR、不脱敏 |
 | `preview.ts` | 按文件/成功提取任务/成功脱敏结果身份按需读取正文，校验摘要；单文件脱敏通过索引定位，拒绝任意blob读取 |
 | `original-preview.ts` | PDF/TXT等原件直接查看，DOCX由隔离LibreOffice生成只读PDF副本；串行转换、60秒时限、按源摘要和渲染版本缓存 |
 | `projects.ts`、`questions.ts` | 项目加载与选版/移除；按期次所选模式从脱敏结果或 MinerU 提取版本建立完整题目私有快照 |
@@ -33,11 +34,17 @@
 
 原件位于`<STORAGE_DIR>/material-library/blobs/`；共用处理设置位于同目录下私有`processing-settings.sqlite3`；DOCX预览缓存位于`previews/`，转换临时目录和用户profile使用后删除。所有SQLite配置供同一STORAGE_DIR的本机API实例共用；未承诺多台独立API自动同步本地配置。worker读取已冻结的PostgreSQL任务快照，不在执行中重新读取本地共用配置。
 
+普通提取和MinerU桌面导入在发布`library_documents`前共同调用`storeExtractedDocument()`，复用脱敏后的`cleanScanNoisePages()`。只处理确定扫描水印、OCR占位标记、有跨页证据的页角码及确定的格式转义；不自动删除普通数字、业务日期、含义不明的符号或“乱码”。页、块、表格和列表结构不删除。发生修改时，原始OCR以不可变文本对象保存，正文对象的`cleanup`记录原始对象ID、摘要及每处原文坐标/替换；无改动不增加原始副本。发布正文和`text_sha256`按清理结果一致计算，原文件字节、摘要及OCR issues保留。此行为只作用于新提取发布，不回写旧结果；原文模式的新题也使用该确定清理后的提取正文。
+
+Agent只须提交`output/material-plan.json`，包含主体、编辑、文书和未决项；分项进度文件可选。程序生成私有对应表和精确坐标，恢复时复用同源计划。语义编辑`credential`用于验证码/密码全遮；地址`keep_prefix`可为空，表示无法确认行政区划而全遮地址片段。业务提示词来自本次冻结模板；运行器仅追加文件位置、Schema及校验命令，不再次复制业务规则。模板更新不改变已冻结任务，源码修改须由重新启动的服务加载。
+
 文件对象的摘要、大小、MIME、存储目标和类型保持不可变；在上传端已核验完全相同的字节并写入受管路径后，允许修复该文件对象的`storage_path`定位值。数据库迁移`049_allow_verified_library_blob_path_repair.sql`仅开放此单字段更新，不开放文件对象删除或其他字段修改。
 
 Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symlinks-main --preserve-symlinks validate-plan.mjs`，避免MXC默认拒绝读取父目录时运行时真实路径探测失败。其他平台继续使用`bun validate-plan.mjs`。调用命令由程序提供，不修改数据库中的业务脱敏规则。
 
 包名称/说明/标签与处理设置分开。历史`library_packages.processing_settings`保留兼容初始快照，不再作为新任务执行配置，也不从包详情返回；包创建/更新接口拒绝单包处理配置写入。未保存共用配置时，从数据库系统提示词与当前系统模型/提取默认组合完整配置。保存后的共用设置只影响之后派发的新任务，历史任务与题目快照不回写。
+
+PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API的30分钟时限后还有一次最多30分钟的CLI回退及处理余量；纯文本提取和脱敏任务仍按共用设置执行，Agent整包脱敏另受10分钟上限约束。该预算是整包总时限，多文件处理仍可能因供应商慢而失败。
 
 ## 期次两种处理模式
 
@@ -54,6 +61,10 @@ Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symli
 本期可先加载已提取、尚待脱敏的材料，点击“处理材料”进入带期次上下文的材料页。处理成功后选择匹配版本再建题；不恢复通用自动推进。改变本期模式只影响新题；既有题目依然按题目快照执行，禁止作答/评分临时重读当前模式并切换材料。成功消息或阶段文件不等于发布成功：以library_jobs.succeeded和library_redactions可读结果为准。
 
 ## 页面与接口
+
+化名脱敏的`POST /revisions/:id/jobs`请求可显式提供`agent_settings:{model,reasoning_effort}`，仅覆盖该次任务并参与幂等摘要及配置冻结；省略时沿用系统Agent默认，绝不保存回系统或项目设置。只允许用于redact任务，模型真实可用性以本机Codex调用为准。模型改变会使原有同模型检查点失配，保留previous_job_id追溯，但重新审阅整包建立计划。
+
+`POST /revisions/:id/mineru-extractions` 导入本机已入库PDF的MinerU桌面端提取结果，不重新OCR。JSON为`{request_key,files:[{file_id,source_sha256,page_count,content_list}]}`，必须完整覆盖版本所有文件；`content_list`使用带`page_idx`的`*_content_list.json`或逐页数组，不能传`layout.json`。程序复用MinerU结构转换器，验证原件摘要、大小、PDF真实页数和可处理正文，在同一事务保存成功extract任务和全部library_documents；保留OCR issues并标明`mineru-desktop`及`model_invoked:false`。相同请求键和内容返回原任务，内容改变需新键；活动任务期间拒绝导入。来源对应是用户提供的桌面结果与原件配对声明，摘要/页数校验不证明OCR逐字准确。导入后复用现有Codex化名、分册、建题和DOCX链路，不更改期次来源设置或旧题。
 
 `POST /revisions/:id/prepared-redactions` 接收 `{request_key,plan}`，由 CLI `library documents import` 调用。协议与坐标见 `cli/README.md`；原文编辑/代称计划私有保存在任务配置，不由普通任务详情返回。安全分册正文和范围进入不可变脱敏索引 `prepared_documents`，随题目来源冻结。带 `codex_plan` 模板摘要的计划按MinerU已提取结构保存分册文书；旧版不带模板的计划继续按提取页文本兼容导入，标记 `structure_mode=extracted-page-text`，不宣称保留表格合并结构。`usable_for_question` 表示机械校验可处理，不能证明主体归并、脱敏或OCR内容人工验收通过。
 
@@ -146,6 +157,8 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 Agent完整语义计划交付到固定私有文件`output/material-plan.json`（结构见任务内`plan-schema.json`），最终消息仅声明`plan_file`；执行器在Agent正常完成后读取该文件并编译发布。阶段文件或成功消息本身不等于发布完成，缺文件、空计划、源文覆盖缺失仍失败；不从聊天摘要补造正文，也不要求模型再在最终消息重复整份大JSON。
 
 私有`validate-plan.mjs`在重叠或标题残留原称时同时输出`validation_details`，包含冲突字段/文书ID、零起始计划编辑或主体/变体序号及字段内坐标，帮助Agent修正具体条目；不输出原文，不自动删除冲突编辑或放宽校验。
+
+编译器发现原文残留的姓名、证件号、电话或地址时，会在本次私有`output/validation-feedback.json`保存类别、页码和字段ID，不保存敏感原文。显式续作仅在同输入/模板/模型指纹匹配时将它复制到`resume/`，提示Agent逐项修复；它不自动修改脱敏计划，也不改变发布门禁。
 
 `agent-redaction.test.ts`验证数据库重新读取、私有主体表保存及限时取消；`shared/agent-material-plan.test.ts`验证合成姓名、法院/金额/日期保留、号码/地址、文书边界和合并单元格。这些测试不证明真实卷宗无脱敏遗漏，真实运行须另外记录时长、来源覆盖、主体及文书分界。
 

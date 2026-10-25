@@ -5,6 +5,39 @@ import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import * as generator from './generate-five-piece';
+import {renderWorkInstruction} from '../../../../server/authoring/work-contract';
+// 最小图像PDF，无文字层；验证真实Poppler与导出路径，不依赖用户案件文件。
+function imagePdfFixture(){
+ const contents='q 200 0 0 200 0 0 cm /Im0 Do Q';
+ const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>','<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>',`<< /Length ${contents.length} >>\nstream\n${contents}\nendstream`,'<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 3 >>\nstream\nabc\nendstream'];
+ let text='%PDF-1.4\n';const offsets=[0];objects.forEach((object,index)=>{offsets.push(text.length);text+=`${index+1} 0 obj\n${object}\nendobj\n`;});
+ const xref=text.length;text+=`xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map(offset=>`${String(offset).padStart(10,'0')} 00000 n \n`).join('')}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;return Buffer.from(text);
+}
+
+test('旧题基准日兼容真实反馈措辞，约束支持标题和编号，不从开庭日期推测',()=>{
+ for(const text of ['准备基准日为2021年3月16日，拟于2021年3月17日开庭','以2021年3月16日为本次判断基准日','在2021年3月16日这一业务基准日','基准日期：2021-03-16'])expect(generator.legacyInstruction(text).baselineDate).toBe('2021-03-16');
+ expect(generator.legacyInstruction('拟于2021年3月17日开庭').baselineDate).toBe('');
+ expect(generator.legacyInstruction('基准日2021年2月29日').baselineDate).toBe('');
+ expect(generator.legacyInstruction('基准日2021年3月16日，基准日2021年3月17日').baselineDate).toBe('');
+ expect(generator.legacyInstruction('## 硬性约束\n1. 仅使用已形成材料\n2. 不补造事实\n\n## 成果要求\n提交正文').hardConstraints).toEqual(['仅使用已形成材料','不补造事实']);
+});
+
+test('Work新结构从公开题面到五件套分字段同源，原始Rubric与历史目录保留',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'siriser-structured-'));
+ try{
+  const instruction={background:'甲委托律师核对附件材料。',requests:['给出本案证据审查意见'],baseline_date:'2021-03-16',hard_constraints:['不将未来材料作为当时已知事实']};
+  const deliverables=[{id:'D1',path:'意见.docx',format:'docx',description:'律师证据审查意见',required:true}];
+  const input:any={title:'合成证据审查',workflow_id:'fixture',source_digest:'a'.repeat(64),delivery_digest:'b'.repeat(64),question_version:'q1',rubric_version:'r1',question:{content_contract:'work_legal_v1',task_name:'证据审查',task_type:'F2 审查审核',question:renderWorkInstruction(instruction,deliverables),task_metadata:{instruction,scenario:'LS02 证据审查',target_level:'L2',capabilities:['证据评估'],professional_knowledge:['证据规则'],vl_dependency:false,source_note:'合成来源',generation_note:'内部生成记录',tools:[],level_basis:{documents:[{id:'d1',attachment_id:'a',locator:'第1页',description:'证据'}],necessary_steps:['审查证据'],estimated_hours:1,explanation:'合成工作量，仅测试投影'}},content_status:{status:'complete',issues:[]},deliverables,reference_outputs:[{deliverable_id:'D1',content:'证据审查意见\n\n经核对，当前材料存在需核验的证明范围。',sheets:[]}],input_files:[{attachment_id:'a',name:'附件1',description:'材料'}],research_records:[{id:'s1',query:'证据规则',source_url:null,source_title:'未取得',version:'待核',findings:'未采用',verification_status:'unverified',supports:[]}],rubric:Array.from({length:30},(_,i)=>({id:`R2-P${i+1}`,metadata:{statement:'合成独立条件',score:3,dimension:'2-交付物内容质量/Q1事实与证据梳理准确性',evaluated_files:['意见.docx'],trigger_count:null}}))},attachments:[{name:'附件1',text:'合成证据正文',material_mode:'redacted'}]};
+  const original=JSON.stringify(input),result=await generator.generateSiriserConfirmation(root,input,{expertName:'测试',date:'20261025'});
+  const projected=JSON.parse(await readFile(join(result.directory,'instruction.json'),'utf8'));
+  expect(projected.background).toBe(instruction.background);expect(projected.requests).toEqual(instruction.requests);expect(projected.baselineDate).toBe(instruction.baseline_date);expect(projected.hardConstraints).toEqual(instruction.hard_constraints);
+  expect(projected.deliverableReqs).toContain('意见.docx');expect(projected.background).not.toContain('合成独立条件');
+  expect(JSON.parse(await readFile(join(result.directory,'rubric.json'),'utf8')).items).toEqual(input.question.rubric.map((r:any)=>({id:r.id,...r.metadata})));
+  const metadata=JSON.parse(await readFile(join(result.directory,'metadata.json'),'utf8'));expect(metadata.hasScan).toBe(false);expect(metadata.scanFiles).toEqual([]);expect(metadata.taskDesc).not.toContain('内部生成记录');expect(metadata.dataSource).toContain('内部生成记录');
+  const state=JSON.parse(await readFile(join(root,'Siriser五件套.json'),'utf8'));expect(state.quality_warnings.length).toBeGreaterThan(0);expect(state.confirmation_renderer).toBe('siriser-confirmation-office-v8');expect(JSON.stringify(input)).toBe(original);
+  const reused=await generator.generateSiriserConfirmation(root,input,{expertName:'测试',date:'20261025'});expect(reused.reused).toBe(true);expect(reused.sha256).toBe(result.sha256);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
 
 test('新旧Work交付均在写目录前拒绝不足30项，不能复用旧缓存绕过',async()=>{
  const root=await mkdtemp(join(tmpdir(),'siriser-admission-'));
@@ -88,10 +121,10 @@ test('原文模式将输入 PDF 原字节写入 input_files，并校验摘要',a
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-test('Work原文确认稿ZIP实际包含未改写PDF，状态记录来源格式为PDF',async()=>{
+test.each([true,false])('Work原文确认稿保留原字节与扫描检测（可读扫描PDF=%s）',async readable=>{
  const root=await mkdtemp(join(tmpdir(),'siriser-original-zip-'));
  try{
-  const bytes=Buffer.from('%PDF-1.7\noriginal fixture\n%%EOF\n'),sha256=createHash('sha256').update(bytes).digest('hex');
+  const bytes=readable?imagePdfFixture():Buffer.from('%PDF-1.7\noriginal fixture\n%%EOF\n'),sha256=createHash('sha256').update(bytes).digest('hex');
   const digest='a'.repeat(64),item={id:'R1-P01',criterion:'事实核对',rule:'逐项核验来源',metadata:{statement:'核验材料事实',score:3,type:'binary',evaluated_files:['意见.docx']}};
   const input:any={title:'原文输入测试',workflow_id:'22222222-2222-4222-8222-222222222222',source_digest:digest,delivery_digest:'b'.repeat(64),question_version:'q1',rubric_version:'r1',question:{content_contract:'work_legal_v1',task_name:'事实核对',task_type:'F1 法律意见',question:'请核验卷宗中的事实并提出意见.docx。',content_status:{status:'complete',issues:[]},rubric:Array.from({length:30},(_,i)=>({...item,id:`R2-P${i+1}`})),task_metadata:{scenario:'LS02 证据审查',domain_l2:'诉讼证据',capabilities:['事实核验'],vl_dependency:true,professional_knowledge:['证据规则'],tools:['文书编辑'],target_level:'L2',source_note:'冻结材料',generation_note:'本地合成测试',level_basis:{estimated_hours:1,explanation:'核对两份材料',documents:[{id:'D1',attachment_id:'attachment',locator:'首页',description:'原始文书'}]}},input_files:[{attachment_id:'attachment',name:'卷宗',description:'原始卷宗'}],deliverables:[{id:'opinion',path:'意见.docx',format:'docx',description:'法律意见',required:true}],reference_outputs:[{deliverable_id:'opinion',content:'# 法律意见\n\n核对完成。',sheets:[]}],research_records:[{id:'S1',query:'证据规则',source_url:'https://example.test/rule',source_title:'规则正文',version:'测试版本',findings:'测试检索记录',verification_status:'verified',supports:['opinion']} ]},attachments:[{name:'材料-001.md',text:'冻结提取正文',material_mode:'original',original_files:[{name:'原卷.pdf',sha256,content_base64:bytes.toString('base64')}]}]};
   const result=await generator.generateSiriserConfirmation(root,input,{expertName:'测试',date:'20261021'});
@@ -101,6 +134,9 @@ test('Work原文确认稿ZIP实际包含未改写PDF，状态记录来源格式�
   expect(exit).toBe(0);expect(Buffer.from(output)).toEqual(bytes);
   const state=JSON.parse(await readFile(join(result.directory,'..','法律-LS02-20261021-测试.state.json'),'utf8'));
   expect(state.input_format).toBe('pdf');expect(state.physical_input_files).toBe(1);
+  const metadata=JSON.parse(await readFile(join(result.directory,'metadata.json'),'utf8'));
+  if(readable){expect(metadata.hasScan).toBe(true);expect(metadata.scanFiles).toEqual(['原卷.pdf']);expect(state.scan_checks[0].status).toBe('scanned');}
+  else{expect(metadata).not.toHaveProperty('hasScan');expect(state.scan_checks[0].status).toBe('unknown');expect(state.quality_warnings.some((v:string)=>v.includes('扫描属性未知'))).toBe(true);}
   const currentState=await readFile(join(root,'Siriser五件套.json'),'utf8'),zipBefore=await readFile(result.zip_path);
   input.question.rubric.pop();
   await expect(generator.generateSiriserConfirmation(root,input,{expertName:'测试',date:'20261021'})).rejects.toThrow('至少30项');

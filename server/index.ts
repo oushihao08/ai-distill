@@ -24,8 +24,10 @@ try{
  const webRoot=resolve(import.meta.dir,'../web/dist');
  const indexFile=Bun.file(join(webRoot,'index.html'));
  if(serveWeb&&!await indexFile.exists())throw new Error('SERVE_WEB=1 但 web/dist/index.html 不存在');
- server = Bun.serve({ hostname: process.env.HOST ?? '127.0.0.1', port: Number(process.env.PORT ?? 3700), fetch: async request => {
+ server = Bun.serve({ hostname: process.env.HOST ?? '127.0.0.1', port: Number(process.env.PORT ?? 3700), fetch: async (request,runtimeServer) => {
   const url=new URL(request.url);
+  // 飞书建表/附件同步的外部截止为90秒；只为这些显式交付请求放宽空闲连接时限。
+  if(/^\/api\/(?:workflows\/[^/]+\/feishu-sync|projects\/[^/]+\/feishu-(?:delivery|tables))$/.test(url.pathname))runtimeServer.timeout(request,180);
   if(url.pathname==='/api'||url.pathname.startsWith('/api/'))return app.fetch(request);
   if(serveWeb&&(request.method==='GET'||request.method==='HEAD')){
    let pathname:string;

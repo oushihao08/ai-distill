@@ -3,7 +3,7 @@
  * 关键入口：`enqueueLibraryJob()` 冻结任务；`assertLibraryExtractionUsable()` 在派发和执行前检查提取完整性；`claimLibraryJob()` 在 worker 持有资源槽后领取；终态更新须匹配 lease_token。
  * 使用场景：材料库 routes 与现有 worker API/Agent/材料消费池；本模块不创建项目步骤或 step_attempt。
  */
-import {registerLocalJob,localClaimSql,localQueueEnabled,localCancellationRequested} from '../execution-queue/runtime';
+import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localQueueEnabled,localCancellationRequested} from '../execution-queue/runtime';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {currentTaskSignal} from '../task-signal';
@@ -12,7 +12,7 @@ import {canonicalJson} from '../../shared/workflow-config';
 import type {CreateLibraryJobRequest,LibraryExecutionTarget,LibraryExecutorKind,LibraryJobKind} from '../../shared/material-library';
 import {readLibraryProcessingSettings} from './settings';
 import {resolveLibraryTemplate} from './templates';
-import {readAgentDefaults} from '../agent';
+import {readAgentDefaults,validateAgentModelSettings} from '../agent';
 import {AGENT_REDACTION_MAX_MS} from '../../shared/redaction-templates';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
 
@@ -21,6 +21,8 @@ const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).di
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const LIBRARY_JOB_LEASE_MS=120_000;
 export const LIBRARY_JOB_HEARTBEAT_MS=15_000;
+// MinerU API may run for 30 minutes, then PDF extraction can use one 30-minute CLI fallback.
+export const LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS=65*60*1000;
 
 /** 检查文件/正文可处理性；OCR提示保留追溯，不能等同于脱敏丢失实质内容。 */
 export function assertLibraryExtractionUsable(documents:Array<{issues:unknown;page_count?:number;pages?:Array<{text:string}>}>){
@@ -43,14 +45,19 @@ export async function hasLibraryQueueWork(pool:Pool,executor:LibraryExecutorKind
 
 export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest{
  if(!value||typeof value!=='object'||Array.isArray(value))throw new HTTPException(400,{message:'材料处理任务参数无效'});
- const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','extraction_job_id','previous_job_id','template_id','project_id'];
+ const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','extraction_job_id','previous_job_id','template_id','project_id','agent_settings'];
  if(Object.keys(body).some(key=>!allowed.includes(key))||!['intake','extract','redact'].includes(String(body.kind))||typeof body.request_key!=='string'||!uuidPattern.test(body.request_key)||!['local','server'].includes(String(body.execution_target)))throw new HTTPException(400,{message:'材料处理任务参数无效'});
  if(body.kind==='redact'&&(typeof body.extraction_job_id!=='string'||!uuidPattern.test(body.extraction_job_id)))throw new HTTPException(400,{message:'脱敏任务必须明确指定成功的文本提取任务'});
  if(body.kind!=='redact'&&body.extraction_job_id!==undefined)throw new HTTPException(400,{message:'仅脱敏任务可以指定文本提取任务'});
  if(body.previous_job_id!==undefined&&(typeof body.previous_job_id!=='string'||!uuidPattern.test(body.previous_job_id)))throw new HTTPException(400,{message:'重试来源任务 ID 无效'});
  if(body.template_id!==undefined&&(body.kind!=='redact'||typeof body.template_id!=='string'||! /^[a-z][a-z0-9_-]{0,47}$/.test(body.template_id)))throw new HTTPException(400,{message:'仅脱敏任务可指定有效模板'});
  if(body.project_id!==undefined&&(typeof body.project_id!=='string'||!uuidPattern.test(body.project_id)))throw new HTTPException(400,{message:'材料处理期次标识无效'});
- return{...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
+ let agentSettings:CreateLibraryJobRequest['agent_settings'];
+ if(body.agent_settings!==undefined){
+  if(body.kind!=='redact'||!body.agent_settings||typeof body.agent_settings!=='object'||Array.isArray(body.agent_settings)||Object.keys(body.agent_settings).some(key=>!['model','reasoning_effort'].includes(key)))throw new HTTPException(400,{message:'仅化名脱敏任务可指定本次Agent模型设置'});
+  agentSettings=validateAgentModelSettings(body.agent_settings);
+ }
+ return{...(agentSettings?{agent_settings:agentSettings}:{}),...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
 }
 
 export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:string;redaction_mode?:'model'|'declared_redacted'}>,settings:{provider?:string}|null,target:LibraryExecutionTarget='local'):LibraryExecutorKind{
@@ -81,20 +88,23 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    FROM ai_distill.library_files f JOIN ai_distill.library_blobs b ON b.id=f.blob_id WHERE f.revision_id=$1 ORDER BY f.position`,[revisionId])).rows as LibraryFileRow[];
   if(files.length!==Number(revision.file_count))throw conflict('材料文件集合清单不完整');
   if(files.some(file=>file.storage_target!==request.execution_target))throw conflict('所选执行位置无法读取文件集合中的全部原件');
-  const intent={version:1,...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
+  const intent={version:1,...(request.agent_settings?{agent_settings:request.agent_settings}:{}),...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
   const requestDigest=hash(intent);
   const previousRequest=(await db.query('SELECT id,input_snapshot FROM ai_distill.library_jobs WHERE package_id=$1 AND request_key=$2',[packageId,request.request_key])).rows[0];
   if(previousRequest){
    if(previousRequest.input_snapshot?.request_digest!==requestDigest)throw conflict('同一任务请求标识对应不同输入');
-   await db.query('COMMIT');return{id:previousRequest.id,reused:true};
+   await db.query('COMMIT');forgetLocalRegistrations(db);return{id:previousRequest.id,reused:true};
   }
   const settings=(await readLibraryProcessingSettings(db,storageRoot)).processing_settings as Record<string,any>;
   const projectMode=request.project_id?await readProjectMaterialProcessingMode(db,request.project_id):undefined;
+  if(request.kind==='extract'&&files.some(file=>['pdf','docx'].includes(fileFormat(file.original_name)))){
+   settings.execution={...settings.execution,task_timeout_ms:Math.max(Number(settings.execution?.task_timeout_ms)||1200000,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS)};
+  }
   const template=request.kind==='redact'?resolveLibraryTemplate(settings,projectMode?projectRedactionTemplate(projectMode,request.template_id):request.template_id):undefined;
   // 请求重放已在上方返回；此处只拒绝新建旧流程，不改写历史任务快照。
   if(template&&template.workflow!=='codex_plan')throw conflict('字段映射脱敏已退役，请选择Agent化名模板');
   if(template?.workflow==='codex_plan'){
-   settings.redaction={...template.redaction,...await readAgentDefaults(db)};
+   settings.redaction={...template.redaction,...(request.agent_settings??await readAgentDefaults(db))};
    settings.execution.task_timeout_ms=Math.min(settings.execution.task_timeout_ms,AGENT_REDACTION_MAX_MS);
   }
   const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:template?.workflow==='codex_plan'?'model':file.redaction_mode})),settings.redaction,request.execution_target);
@@ -129,8 +139,8 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   const result=await db.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,previous_job_id,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
    VALUES($1,$2,$3,$4,'queued',$5,$6,$7,$8::jsonb,$9,$10::jsonb,$11,$12) RETURNING id,status,kind,executor_kind,execution_target,created_at`,[id,packageId,revisionId,request.kind,request.request_key,request.previous_job_id??null,inputDigest,JSON.stringify(inputSnapshot),configDigest,JSON.stringify(configSnapshot),executor,request.execution_target]);
   await registerLocalJob(db,id,'library',executor,`library:${request.kind}`);
-  await db.query('COMMIT');return{...result.rows[0],reused:false};
- }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务入队失败且回滚状态不确定');}throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);return{...result.rows[0],reused:false};
+ }catch(error){try{await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务入队失败且回滚状态不确定');}throw error;}finally{db.release();}
 }
 
 export async function readLibraryJob(pool:Pool,id:string){
@@ -149,8 +159,8 @@ export async function cancelLibraryJob(pool:Pool,id:string){
   if(!job)throw new HTTPException(404,{message:'材料处理任务不存在'});
   if(job.status==='queued')await db.query("UPDATE ai_distill.library_jobs SET status='cancelled',finished_at=now(),result_summary=COALESCE(result_summary,'{}'::jsonb)||jsonb_build_object('execution_stop',jsonb_build_object('reason_code','user_cancelled','observed_at',now())) WHERE id=$1 AND status='queued'",[id]);
   else if(job.status==='running')await db.query("UPDATE ai_distill.library_jobs SET cancel_requested_at=COALESCE(cancel_requested_at,now()),result_summary=COALESCE(result_summary,'{}'::jsonb)||jsonb_build_object('execution_stop',jsonb_build_object('reason_code','user_cancelled','observed_at',COALESCE(cancel_requested_at,now()))) WHERE id=$1 AND status='running'",[id]);
-  await db.query('COMMIT');return readLibraryJob(pool,id);
- }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务取消失败且回滚状态不确定');}throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);return readLibraryJob(pool,id);
+ }catch(error){try{await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务取消失败且回滚状态不确定');}throw error;}finally{db.release();}
 }
 
 /** 只由已经取得对应 worker 槽位的消费者调用；失租旧任务终结，不重新排回队列。 */
@@ -165,14 +175,15 @@ export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,tar
   const job=(await db.query(`SELECT j.*,p.name AS package_name FROM ai_distill.library_jobs j JOIN ai_distill.library_packages p ON p.id=j.package_id
    WHERE j.executor_kind=$1 AND j.execution_target=$2 AND ${localQueueEnabled()?"j.status IN ('queued','running')":"j.status='queued'"} ${localClaimSql('j')} AND p.deleted_at IS NULL ${onlyJobId?'AND j.id=$3::uuid':''}
    ORDER BY j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1`,values)).rows[0];
-  if(!job){await db.query('COMMIT');return null;}
-  const ceiling=job.config_snapshot?.redaction_template?.workflow==='codex_plan'?AGENT_REDACTION_MAX_MS:1800000;
+  if(!job){await db.query('COMMIT');forgetLocalRegistrations(db);return null;}
+  const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:Record<string,unknown>)=>['pdf','docx'].includes(fileFormat(String(file.original_name??''))));
+  const ceiling=job.config_snapshot?.redaction_template?.workflow==='codex_plan'?AGENT_REDACTION_MAX_MS:externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000;
   const leaseToken=randomUUID(),timeout=Math.max(1,Math.min(ceiling,Number(job.config_snapshot?.settings?.execution?.task_timeout_ms)||1200000));
   const claimed=await db.query(`UPDATE ai_distill.library_jobs SET status='running',lease_token=$2,started_at=now(),deadline_at=CASE WHEN status='running' THEN deadline_at ELSE now()+($3::text||' milliseconds')::interval END,heartbeat_at=now(),lease_expires_at=now()+($4::text||' milliseconds')::interval,error_code=NULL,error_message=NULL
    WHERE id=$1 AND ${localQueueEnabled()?"status IN ('queued','running')":"status='queued'"} RETURNING *`,[job.id,leaseToken,timeout,LIBRARY_JOB_LEASE_MS]);
   if(!claimed.rowCount)throw conflict('材料任务已由其他 worker 领取');
-  await db.query('COMMIT');return claimed.rows[0];
- }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务领取失败且回滚状态不确定');}throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);return claimed.rows[0];
+ }catch(error){try{await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务领取失败且回滚状态不确定');}throw error;}finally{db.release();}
 }
 
 export async function heartbeatLibraryJob(pool:Pool,jobId:string,leaseToken:string,progress?:Record<string,unknown>){
@@ -194,8 +205,8 @@ export async function finishLibraryJob(pool:Pool,jobId:string,leaseToken:string,
   const saved=await db.query("UPDATE ai_distill.library_jobs SET status='succeeded',result_summary=$3::jsonb,finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1 AND lease_token=$2 AND status='running' RETURNING id",[jobId,leaseToken,JSON.stringify(resultSummary)]);
   if(saved.rowCount!==1)throw conflict('材料任务提交权已失效，结果未发布');
   signal?.throwIfAborted();
-  await db.query('COMMIT');return true;
- }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务结果提交失败且回滚状态不确定');}throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);return true;
+ }catch(error){try{await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务结果提交失败且回滚状态不确定');}throw error;}finally{db.release();}
 }
 
 export async function failLibraryJob(pool:Pool,jobId:string,leaseToken:string,code:string,message:string,status:'failed'|'cancelled'='failed'){

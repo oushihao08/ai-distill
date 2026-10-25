@@ -5,6 +5,7 @@
  */
 import {HTTPException} from 'hono/http-exception';
 import {resolveAnswerConfig} from './dispatch';
+import {readModelApiDefaults} from '../llm-api';
 import {readConfiguredAgentModelCatalog} from '../agent/config';
 import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
@@ -93,7 +94,7 @@ export async function setAnswerModelEnabled(db:Pool,modelId:string,enabled:unkno
  return saved.rows[0];
 }
 
-export async function saveProjectModelSet(pool:Pool,projectId:string,raw:unknown){
+export async function saveProjectModelSet(pool:Pool,projectId:string,raw:unknown,options:{futureOnly?:boolean}={}){
  if(!Array.isArray(raw)||raw.length<1||raw.length>8)throw new HTTPException(400,{message:'项目须选择1至8个模型'});
  const ids:string[]=[];const thresholds=new Map<string,number|null>();
  for(const item of raw){
@@ -114,7 +115,13 @@ export async function saveProjectModelSet(pool:Pool,projectId:string,raw:unknown
   const changed=answerModelSetDigest(previous)!==answerModelSetDigest(normalized);
   await db.query('DELETE FROM ai_distill.project_answer_models WHERE project_id=$1',[projectId]);
   for(const [position,item] of normalized.entries())await db.query('INSERT INTO ai_distill.project_answer_models(project_id,model_id,minimum_score,position) VALUES($1,$2,$3,$4)',[projectId,item.model_id,item.minimum_score,position]);
-  if(changed){
+  if(options.futureOnly){
+   // 只改变后续派发选择；已有任务和成果继续按各自冻结集合读取。
+   await db.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,5,$2::jsonb)
+    ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config || ai_distill.project_step_configs.config || '{"preserve_answer_model_snapshots":true}'::jsonb,updated_at=now()`,[projectId,JSON.stringify({preserve_answer_model_snapshots:true,previous_answer_models:previous})]);
+  }
+  if(!options.futureOnly)await db.query("UPDATE ai_distill.project_step_configs SET config=config-'preserve_answer_model_snapshots'-'previous_answer_models' WHERE project_id=$1 AND ordinal=5",[projectId]);
+  if(changed&&!options.futureOnly){
    await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE ordinal BETWEEN 5 AND 8 AND workflow_id IN (SELECT id FROM ai_distill.workflows WHERE project_id=$1 AND deleted_at IS NULL)",[projectId]);
    await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='项目模型集合或评分上限已变化，当前结果失效',finished_at=now() WHERE ordinal BETWEEN 5 AND 8 AND status IN ('waiting','running') AND workflow_id IN (SELECT id FROM ai_distill.workflows WHERE project_id=$1 AND deleted_at IS NULL)",[projectId]);
    await db.query("UPDATE ai_distill.project_exports SET status='stale',error='项目模型集合或评分上限已变化',finished_at=now() WHERE project_id=$1 AND status IN ('running','succeeded')",[projectId]);
@@ -122,4 +129,18 @@ export async function saveProjectModelSet(pool:Pool,projectId:string,raw:unknown
   }
   await db.query('COMMIT');return normalized;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+}
+
+/** 新建期次复制系统API默认为作答模型，不推测该项目的分数上限。 */
+export async function initializeDefaultAnswerModel(db:PoolClient,projectId:string){
+ try{
+  const config=readModelApiDefaults();
+  let model=(await db.query('SELECT id,enabled FROM ai_distill.system_answer_models WHERE provider=$1 AND base_url=$2 AND model=$3 ORDER BY created_at,id LIMIT 1',[config.provider,config.base_url,config.model])).rows[0];
+  if(!model){
+   model=(await db.query(`INSERT INTO ai_distill.system_answer_models(id,name,provider,base_url,model,config)
+    VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(provider,base_url,model) DO UPDATE SET model=EXCLUDED.model RETURNING id,enabled`,[crypto.randomUUID(),`${config.provider} · ${config.model}`,config.provider,config.base_url,config.model,JSON.stringify(config)])).rows[0];
+  }
+  if(!model?.enabled)throw new HTTPException(409,{message:'系统默认作答模型已停用'});
+  await db.query('INSERT INTO ai_distill.project_answer_models(project_id,model_id,minimum_score,position) VALUES($1,$2,NULL,0)',[projectId,model.id]);
+ }catch(error){throw error;}
 }

@@ -15,9 +15,9 @@ import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor}
 import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
-import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob} from './jobs';
-import {readLibraryBlob,insertLibraryTextBlob} from './storage';
-import {hash,jobDirectory,ensurePages} from './execution-shared';
+import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS} from './jobs';
+import {readLibraryBlob} from './storage';
+import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-shared';
 import {executeRedaction} from './redaction-runner';
 import {withTaskSignal} from '../task-signal';
 import {cleanupExtractionArtifacts,readExtractionCheckpoint,writeExtractionCheckpoint} from './extraction-checkpoint';
@@ -61,7 +61,7 @@ async function documentExtractor(root:string,jobId:string,provider:unknown){
 }
 
 export async function executeExtraction(pool:Pool,root:string,job:any,signal:AbortSignal,extractorOverride?:DocumentExtractor){
- const files=job.input_snapshot.files as any[],results:{item:any;document:ReturnType<typeof ensurePages>;issues:Record<string,unknown>[];textSha:string;content:string}[]=[];
+ const files=job.input_snapshot.files as any[],results:{item:any;document:ReturnType<typeof ensurePages>;issues:Record<string,unknown>[]}[]=[];
  let extraction:{directory:string;extractor:DocumentExtractor}|null=null;
  for(const [index,item] of files.entries()){
   if(signal.aborted)throw new Error('材料任务已取消');
@@ -81,19 +81,19 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
   }
   if(signal.aborted)throw signal.reason;
   await writeExtractionCheckpoint(root,job,item,document,actualProvider);
-  const content=JSON.stringify(document),text= document.pages.map(page=>page.text).join('\n'),issues=document.pages.flatMap(page=>[
+  const issues=document.pages.flatMap(page=>[
    ...(page.issues??[]).map(kind=>({page:page.page,kind})),
    ...(!page.text.trim()?[{page:page.page,kind:'empty_page'}]:[]),
    ...(/无法辨认|�/.test(page.text)?[{page:page.page,kind:'unreadable'}]:[]),
   ]);
-  results.push({item,document,issues,textSha:hash(text),content});
+  results.push({item,document,issues});
   if(!await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'extract',completed_files:index+1,total_files:files.length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)}))throw stopReason(await libraryStopReason(pool,job)??'lease_lost');
  }
  const summaries=await finishLibraryJob(pool,job.id,job.lease_token,{file_count:results.length,page_count:results.reduce((sum,result)=>sum+result.document.pages.length,0),issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)},async db=>{
   for(const result of results){
-   const blob=await insertLibraryTextBlob(db,result.content,'application/vnd.ai-distill.extracted-document+json');
+   const {blob,document}=await storeExtractedDocument(db,result.document);
    await db.query(`INSERT INTO ai_distill.library_documents(id,revision_id,file_id,extraction_job_id,document_blob_id,source_sha256,text_sha256,page_count,issues)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[crypto.randomUUID(),job.revision_id,result.item.file_id,job.id,blob.id,result.item.source_sha256,result.textSha,result.document.pages.length,JSON.stringify(result.issues)]);
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[crypto.randomUUID(),job.revision_id,result.item.file_id,job.id,blob.id,result.item.source_sha256,hash(document.pages.map(page=>page.text).join('\n')),document.pages.length,JSON.stringify(result.issues)]);
   }
  });
  if(summaries)await cleanupExtractionArtifacts(root,job.id);
@@ -116,7 +116,8 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
  const context={component:'material_library',operation:`library_${job.kind}`,library_package_id:job.package_id,library_revision_id:job.revision_id,library_job_id:job.id};
  const restore=enterLogContext(context);const local=new AbortController(),abort=()=>local.abort(stopReason('worker_shutdown'));signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
  const agentPlan=job.config_snapshot?.redaction_template?.workflow==='codex_plan';
- const deadline=Math.min(new Date(job.deadline_at).getTime(),Date.now()+(agentPlan?AGENT_REDACTION_MAX_MS:1800000));
+ const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:any)=>['pdf','docx'].includes(String(file.original_name??'').split('.').at(-1)?.toLowerCase()??''));
+ const deadline=Math.min(new Date(job.deadline_at).getTime(),Date.now()+(agentPlan?AGENT_REDACTION_MAX_MS:externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000));
  const deadlineTimer=setTimeout(()=>local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded')),Math.max(0,deadline-Date.now()));
  if(deadline<=Date.now())local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded'));
  let heartbeatRunning=false,settled=false;

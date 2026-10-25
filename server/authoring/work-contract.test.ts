@@ -1,8 +1,37 @@
 /** 验证 Work 内容契约的无损保存、判据计分、成果对应与研究隔离；不调用数据库或真实模型。 */
 import {test,expect} from 'bun:test';
 import {validateDraft} from './validate';
-import {assertWorkSubmissionReady} from './work-contract';
+import {assertWorkSubmissionReady,renderWorkInstruction,workLevelWarnings,workQuestionSchema,WORK_DIMENSIONS} from './work-contract';
 const materials=[{id:'a',text:'脱敏材料'}];
+function canonicalDimensions(value:any){for(const item of value.rubric){const key=item.metadata.dimension.match(/^[0-7]-/)?.[0],q=item.metadata.dimension.match(/\/Q\d/)?.[0];item.metadata.dimension=WORK_DIMENSIONS.find(label=>label.startsWith(key)&&(q?label.includes(q):true));}}
+test('新Work任务说明同源生成公开题面，旧题缺省仍兼容且归档拒绝双份正文漂移',()=>{
+ const raw=workFixture();delete raw.question;
+ raw.task_metadata.instruction={background:'律师代表甲，附件中不能确认的授权保留待核。',requests:['根据现卷给出审查意见'],baseline_date:'2021-03-16',hard_constraints:['仅使用基准日当时可获得的材料']};
+ canonicalDimensions(raw);
+ const result:any=validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'});
+ expect(result.question).toBe(renderWorkInstruction(raw.task_metadata.instruction,raw.deliverables));
+ for(const expected of ['2021-03-16','仅使用基准日当时可获得的材料','意见.docx','根据现卷给出审查意见'])expect(result.question).toContain(expected);
+ expect(result.question).not.toContain('本项独立判断的具体标准');
+ expect(validateDraft(result,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toEqual(result);
+ result.question+='额外条件';expect(()=>assertWorkSubmissionReady(result)).toThrow('不一致');
+ expect(()=>validateDraft(result,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('不一致');
+ const legacy=workFixture();expect(validateDraft(legacy,materials,'model_report_v1',{contentContract:'work_legal_v1'}).question).toBe(legacy.question);
+ raw.rubric[1].metadata.dimension='2-/Q2';expect(()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('完整维度名称');
+});
+test('结构化时点不猜填日期，拒绝日历无效值；新schema不要求另填question',()=>{
+ const instruction={background:'真实背景',requests:['审查'],baseline_date:null as string|null,hard_constraints:[]};
+ expect(renderWorkInstruction(instruction,[{id:'a',path:'意见.docx',format:'docx',description:'意见',required:true}])).not.toContain('基准日');
+ instruction.baseline_date='2021-02-29';expect(()=>renderWorkInstruction(instruction,[{id:'a',path:'意见.docx',format:'docx',description:'意见',required:true}])).toThrow('真实');
+ const schema:any=workQuestionSchema({properties:{question:{type:'string'}}});
+ expect(schema.properties).not.toHaveProperty('question');expect(schema.properties.task_metadata.required).toContain('instruction');
+ expect(schema.properties.rubric.items.properties.metadata.properties.dimension.enum).toContain('0-一票否决');
+});
+test('等级依据提示不降级、不改分、不阻断保存，数量不以物理PDF个数判断',()=>{
+ const raw=workFixture();raw.task_metadata.target_level='L4';raw.task_metadata.level_basis.estimated_hours=null;
+ const before=JSON.stringify(raw);const warnings=workLevelWarnings(raw.task_metadata);
+ expect(warnings).toHaveLength(3);expect(warnings.join('\n')).toContain('不能以PDF数代替');expect(JSON.stringify(raw)).toBe(before);
+ expect(()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'})).not.toThrow();
+});
 export function workFixture():any{
  const row=(id:string,dimension:string,score:number|null)=>({id,metadata:{statement:'本项独立判断的具体标准',criterion_type:'Objective',criterion_necessity:'Implicit',dimension,evaluated_files:['意见.docx'],knowledge_points:[],atomic_capabilities:[],priority:score===10?'Critically Important':score===null?'Veto':'Slightly Important',score,type:'binary',points:null,trigger_count:null}});
  const value={content_contract:'work_legal_v1',task_name:'证据审查意见',task_type:'F2 审查审核',header:{industry_l1:'法律服务',industry_l2:'诉讼',task_form:'single_round',occupation_l1:'诉讼律师',occupation_l2:'律师'},question:'作为我方律师，依据附件1出具意见.docx。基准日2026年10月1日。',attachment_ids:['a'],answer_approach:'核对证据与规范，形成意见',task_metadata:{occupation:'诉讼律师',scenario:'LS02',role_perspective:'我方律师',domain_l2:'证据审查',capabilities:['证据评估','风险识别'],professional_knowledge:['证据规则'],vl_dependency:false,source_note:'本次脱敏卷宗',generation_note:'AI模拟专家生成，非真人签署',tools:[],target_level:'L2',level_basis:{documents:[{id:'d1',attachment_id:'a',locator:'第1页',description:'原始独立文书'}],necessary_steps:['核对证据来源'],estimated_hours:1,explanation:'根据本题工作估算，非外部核定'}},input_files:[{attachment_id:'a',name:'附件1',description:'脱敏材料'}],deliverables:[{id:'opinion',path:'意见.docx',format:'docx',description:'证据审查意见',required:true}],reference_outputs:[{deliverable_id:'opinion',content:'完整业务意见正文',sheets:[]}],research_records:[{id:'s1',query:'核对证据规则',source_url:'https://example.org/law',source_title:'法源正文',version:'适用版本',findings:'适用规则内容',verification_status:'verified',supports:['opinion']}],task_requirements:{input_mode:'text',output_mode:'text',tools:[]},content_status:{status:'complete',issues:[]},rubric:[row('R1-P01','1-指令遵循',3),row('R2-P01','2-交付物内容质量/Q2风险识别',10),row('R2-P02','2-交付物内容质量/Q3法源定位',10),row('R2-P03','2-交付物内容质量/Q1事实证据',3),row('R3-P01','3-体例',3),row('R4-P01','4-推理规划',3),{...row('R5-N01','5-安全合规',-7),metadata:{...row('R5-N01','5-安全合规',-7).metadata,priority:'Detrimental'}},row('R0-V01','0-一票否决',null)]};
@@ -85,12 +114,12 @@ test('文件及检索能力需求可以保存完整题目，不由文本 runner 
 test('实际渲染脚本与新Work schema一致，私有研究不进入公开题包',async()=>{
  const {runAuthoring}=await import('./executor');const {mkdtemp,rm,writeFile}=await import('node:fs/promises');const {join}=await import('node:path');const {tmpdir}=await import('node:os');
  const root=await mkdtemp(join(tmpdir(),'work-content-'));try{
-  const raw=workFixture();const result=await runAuthoring({root,workspace_path:root,question:'独立Work测试',content_contract:'work_legal_v1',materials:[{id:'a',text:'脱敏材料',sha256:'a'.repeat(64)}],project_context:{source_digest:'b'.repeat(64),files:[{path:'skill/SKILL.md',text:'按Work模板出题'}]},model:'fixture',reasoning_effort:'medium',scoring_policy:{contract:'model_report_v1',rules_text:'按Work规则评分',reference_answer:'none'},execute:async(call:any)=>{
+  const raw=workFixture();delete raw.question;raw.task_metadata.instruction={background:'甲委托律师审查现卷材料',requests:['提供证据审查意见'],baseline_date:'2021-03-16',hard_constraints:['仅依现有材料办理']};canonicalDimensions(raw);const result=await runAuthoring({root,workspace_path:root,question:'独立Work测试',content_contract:'work_legal_v1',materials:[{id:'a',text:'脱敏材料',sha256:'a'.repeat(64)}],project_context:{source_digest:'b'.repeat(64),files:[{path:'skill/SKILL.md',text:'按Work模板出题'}]},model:'fixture',reasoning_effort:'medium',scoring_policy:{contract:'model_report_v1',rules_text:'按Work规则评分',reference_answer:'none'},execute:async(call:any)=>{
    expect(call.schema.properties).toHaveProperty('reference_outputs');expect(call.schema.properties).not.toHaveProperty('reference_answer');expect(call.prompt).toContain('work_legal_v1');
    expect(call.prompt).not.toContain('不要求被测模型调用外部工具、检索互联网或生成文件');
    const delivery=await Bun.file(join(call.directory,'input/delivery.json')).json();await writeFile(delivery.result_path,JSON.stringify(raw));const child=Bun.spawn(delivery.render_command,{stdout:'pipe',stderr:'pipe'});const err=await new Response(child.stderr).text();expect(err).toBe('');expect(await child.exited).toBe(0);
    return {result:call.validate(raw),session_id:'test',usage:null,duration_ms:1};
-  }} as any);expect((result.draft as any).content_contract).toBe('work_legal_v1');expect(result.package_text).not.toContain('核对证据规则');
+  }} as any);expect((result.draft as any).content_contract).toBe('work_legal_v1');expect(result.package_text).not.toContain('核对证据规则');expect(result.draft.question).toContain('2021-03-16');expect(result.package_text).toContain('意见.docx');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

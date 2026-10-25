@@ -20,6 +20,11 @@ function fixture(reply: (url: URL, init?: RequestInit) => unknown) {
 }
 
 describe('命令范围和结果', () => {
+  test('批量派发将已达标跳过视为明确完成回执，不要求重新创建attempt',async()=>{
+    const {client,calls}=fixture(()=>({results:[{workflow_id:question,status:'already_accepted',reason:'已达标，已跳过'}]}));
+    const result=await runCommand(['step','dispatch','author_question','--project',project,'--ids',question],client);
+    expect(result.outcome).toBe('complete');expect(result.attempt_ids).toEqual([]);expect(result.dispatch[0].status).toBe('already_accepted');expect(calls).toHaveLength(1);
+  });
   test('材料包版本和建题走独立 API，并且普通题目清单排除材料包',async()=>{
     const {client,calls}=fixture((url,init)=>{
       if(url.pathname===`/api/projects/${project}`)return{workflows:[{id:question,workflow_kind:'material_package'},{id:second,workflow_kind:'question',source_workflow_id:question}]};
@@ -455,4 +460,21 @@ test('批量等待公平覆盖整组，不被最前四个长任务阻塞，终�
  const result=await runCommand(['attempt','wait','--ids',ids.join(','),'--timeout','2s'],client);
  expect(result.outcome).toBe('complete');expect(new Set(seen.slice(0,8)).size).toBe(8);
  for(const id of ids.slice(4))expect(reads.get(id)).toBe(1);
+});
+
+test('CLI advice and local queue commands call the same HTTP operations without implicit task execution',async()=>{
+ const {client,calls}=fixture(url=>url.pathname.endsWith('revision-advice')?{available:true,attempts:[]}:{mode:'local',items:[]});
+ expect((await runCommand(['advice','show','--workflow',question],client)).outcome).toBe('complete');
+ await runCommand(['advice','generate','--workflow',question],client);
+ await runCommand(['queue','show'],client);await runCommand(['queue','cancel','--job',attempt],client);
+ expect(calls.map(call=>[call.url.pathname,call.init?.method])).toEqual([[`/api/workflows/${question}/revision-advice`,'GET'],[`/api/workflows/${question}/revision-advice`,'POST'],['/api/system/execution-queue','GET'],[`/api/system/execution-queue/${attempt}/cancel`,'POST']]);
+});
+
+test('CLI advice stops on capacity overflow and keeps known rejections distinct from unknown outcomes',async()=>{
+ const calls:string[]=[];
+ const client=new ApiClient(undefined,async(input,init)=>{const path=new URL(input).pathname;calls.push(`${init?.method} ${path}`);if(init?.method==='GET')return Response.json({workflows:[{id:question,workflow_kind:'question'},{id:second,workflow_kind:'question'}]});return Response.json({error:'本机待领取容量不足',code:'local_queue_full',dispatched:false,lane:'agent',limit:4,waiting:4,requested:1},{status:429});});
+ const result:any=await runCommand(['advice','generate','--project',project,'--all'],client);
+ expect(result.outcome).toBe('partial');expect(result.results).toMatchObject([{status:'capacity_exceeded',outcome_unknown:false,dispatched:false},{status:'not_dispatched'}]);expect(result.advice_attempt_ids).toEqual([]);expect(calls.filter(call=>call.startsWith('POST'))).toHaveLength(1);
+ const rejected=new ApiClient(undefined,async()=>Response.json({error:'当前题目已达标'},{status:409}));
+ await expect(runCommand(['advice','generate','--workflow',question],rejected)).rejects.toMatchObject({detail:{outcome_unknown:false,dispatched:false,http_status:409}});
 });

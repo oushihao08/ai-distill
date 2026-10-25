@@ -3,7 +3,9 @@
  * 关键方法与用途：`readAnswerAttachment()` 兼容旧题数据库脱敏附件；`enqueueAnswer()` 冻结并创建尝试；`runNextAnswer()` 领取、调用供应商并保存结果。
  * 使用场景：`app.ts` 接收用户派发，`worker.ts` 持续调用消费入口。
  */
-import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {assertWorkflowNotArchived} from '../workflow-archive-guard';
+import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {readWorkflowModelSet} from './workflow-models';
 import {canonicalJson,validateWorkflowConfig} from '../../shared/workflow-config';
 import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,registerAsyncAfterHooks,StageHookError,stageHookAffinitySql,type StageWorkerMode} from '../workflow-hook-jobs';
 import {watchTaskCancellation} from '../task-signal';
@@ -50,12 +52,12 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
  if(remoteRequestKey&&!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(remoteRequestKey))throw new HTTPException(400,{message:'请求标识须为 UUID'});
  const db=await pool.connect();
  try{
-  await db.query('BEGIN');
+  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);
   const workflow=(await db.query(activeWorkflow,[id])).rows[0];
   if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
   if(remoteRequestKey){
    const existing=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND execution_target='server' AND input->>'remote_request_key'=$2 ORDER BY attempt",[id,remoteRequestKey])).rows;
-   if(existing.length){await db.query('COMMIT');return{ id:existing[0].id,ids:existing.map((row:any)=>row.id),reused:true };}
+   if(existing.length){await db.query('COMMIT');forgetLocalRegistrations(db);return{ id:existing[0].id,ids:existing.map((row:any)=>row.id),reused:true };}
   }
   const activeTarget=(await db.query("SELECT DISTINCT execution_target FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND status IN ('waiting','running')",[id])).rows;
   if(activeTarget.some((row:any)=>row.execution_target!==executionTarget))throw new HTTPException(409,{message:'当前作答任务由另一执行位置处理'});
@@ -96,19 +98,19 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
  if(previous.rowCount){queued.push({id:previous.rows[0].id,reused:true});continue;}
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,execution_target) SELECT $2,$1::uuid,5,COALESCE(max(attempt),0)+1,'waiting',$3,$4,$5 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=5",[id,attempt,JSON.stringify(input),JSON.stringify(model.config),executionTarget]);
-   await registerLocalJob(db,attempt,'step',model.config.provider==='codex'?'agent':'api','answer');
    queued.push({id:attempt,reused:false});
   }
   const existingQueued=await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND execution_target=$5 AND status IN ('waiting','running') AND (input->>'model_set_digest' IS DISTINCT FROM $2 OR COALESCE(input->'hooks','null'::jsonb) IS DISTINCT FROM $4::jsonb) AND id<>ALL($3::uuid[]) LIMIT 1",[id,modelSetDigest,queued.map(item=>item.id),JSON.stringify(hooks??null),executionTarget]);
   if(existingQueued.rowCount)throw new HTTPException(409,{message:'另一组模型仍在作答，请等待完成后再修改项目模型集合'});
+  await registerLocalJobs(db,queued.flatMap((item,index)=>item.reused?[]:[{id:item.id,kind:'step' as const,lane:models[index]!.config.provider==='codex'?'agent' as const:'api' as const,route:'answer'}]));
   const allReused=queued.every(item=>item.reused);
-  if(allReused){await db.query('COMMIT');for(const [index,item] of queued.entries()){const model=models[index];withLogContext({component:'answer',workflow_id:id,project_id:workflow.project_id,ordinal:5,attempt_id:item.id,operation:'answer_enqueue',provider:model?.config.provider,model:model?.config.model},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));}return hasModelSet?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
+  if(allReused){await db.query('COMMIT');forgetLocalRegistrations(db);for(const [index,item] of queued.entries()){const model=models[index];withLogContext({component:'answer',workflow_id:id,project_id:workflow.project_id,ordinal:5,attempt_id:item.id,operation:'answer_enqueue',provider:model?.config.provider,model:model?.config.model},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));}return hasModelSet?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',error=NULL,result=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=5",[id]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',error=NULL,result=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal>5 AND ordinal<=8",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='作答更新，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal>5 AND ordinal<=8 AND status IN ('waiting','running')",[id]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[id]);
-  await db.query('COMMIT');for(const [index,item] of queued.entries()){const model=models[index];withLogContext({component:'answer',workflow_id:id,project_id:workflow.project_id,ordinal:5,attempt_id:item.id,operation:'answer_enqueue',provider:model?.config.provider,model:model?.config.model},()=>logEvent(item.reused?'attempt.reused':'attempt.enqueued',{level:'info',state:'waiting'}));}return hasModelSet?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:false}:{id:queued[0]!.id,reused:false};
- }catch(error){await db.query('ROLLBACK');if(error instanceof AnswerInputError)throw new HTTPException(409,{message:error.message});if((error instanceof QwenError||error instanceof DomesticError))throw new HTTPException(400,{message:error.message});throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);for(const [index,item] of queued.entries()){const model=models[index];withLogContext({component:'answer',workflow_id:id,project_id:workflow.project_id,ordinal:5,attempt_id:item.id,operation:'answer_enqueue',provider:model?.config.provider,model:model?.config.model},()=>logEvent(item.reused?'attempt.reused':'attempt.enqueued',{level:'info',state:'waiting'}));}return hasModelSet?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:false}:{id:queued[0]!.id,reused:false};
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);if(error instanceof AnswerInputError)throw new HTTPException(409,{message:error.message});if((error instanceof QwenError||error instanceof DomesticError))throw new HTTPException(400,{message:error.message});throw error;}finally{db.release();}
 }
 async function matchesQuestion(db:PoolClient,job:any){
  try{
@@ -121,7 +123,7 @@ async function matchesQuestion(db:PoolClient,job:any){
 }
 async function matchesModelSet(db:PoolClient,job:any){
  if(!Array.isArray(job.input.model_set)||!job.input.model_set.length)return true;
- const current=await readProjectModelSet(db,job.project_id);
+ const current=await readWorkflowModelSet(db,job.project_id,job.workflow_id);
  const digest=answerModelSetDigest(current);
  return digest===job.input.model_set_digest;
 }
@@ -215,7 +217,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         }
         job = (await db.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=5 AND a.execution_target=$1 AND ($2::uuid[] IS NULL OR a.workflow_id=ANY($2)) AND ${providerAffinity} AND ${affinity} AND ${localWaitingSql('a')} ${localClaimSql('a', false)}  ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`, [executionTarget, workflowIds?.length ? workflowIds : null])).rows[0];
         if (!job) {
-            await db.query('COMMIT');
+            await db.query('COMMIT');forgetLocalRegistrations(db);
             for (const row of staleRows)
                 withLogContext({ component: 'answer', project_id: row.project_id, workflow_id: row.workflow_id, ordinal: 5, attempt_id: row.id, operation: 'answer' }, () => logEvent('attempt.recovered_interrupted', { level: 'error', state: 'failed', threshold_ms: 300000, ...(row.heartbeat_at ? { last_heartbeat_at: new Date(row.heartbeat_at).toISOString() } : {}) }));
             return false;
@@ -223,10 +225,10 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=COALESCE(started_at,now()),heartbeat_at=now() WHERE id=$1", [job.id]);
         if (!readStepFailure())
             await db.query("UPDATE ai_distill.steps SET status='running',started_at=now(),error=NULL WHERE workflow_id=$1 AND ordinal=5", [job.workflow_id]);
-        await db.query('COMMIT');
+        await db.query('COMMIT');forgetLocalRegistrations(db);
     }
     catch (error) {
-        await db.query('ROLLBACK');
+        await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);
         throw error;
     }
     finally {
@@ -308,11 +310,11 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
             job.status = 'succeeded';
             job.result = publication;
             await refreshAnswerStep(tx, job);
-            await tx.query('COMMIT');
+            await tx.query('COMMIT');forgetLocalRegistrations(tx);
             logEvent('attempt.completed', { level: 'info', state: 'succeeded', output_bytes: bytes.length, token_usage: result.usage });
         }
         catch (error) {
-            await tx.query('ROLLBACK');
+            await tx.query('ROLLBACK');await releaseRolledBackRegistrations(tx);
             throw error;
         }
         finally {
@@ -355,10 +357,10 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
                 job.result = result;
                 await refreshAnswerStep(tx, job);
             }
-            await tx.query('COMMIT');
+            await tx.query('COMMIT');forgetLocalRegistrations(tx);
         }
         catch (failure) {
-            await tx.query('ROLLBACK');
+            await tx.query('ROLLBACK');await releaseRolledBackRegistrations(tx);
             throw failure;
         }
         finally {

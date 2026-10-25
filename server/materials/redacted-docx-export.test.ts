@@ -30,6 +30,10 @@ async function fixture(options:{incomplete?:boolean;active?:boolean;publicationI
  const index=JSON.stringify({...(options.structured?{format:'redacted-index-v2'}:{}),redacted_sha256:options.invalidIndex?'wrong-hash':hash(markdown),materials:indexMaterials});
  const steps=STEP_REGISTRY.filter(stage=>stage.visible).map(stage=>({ordinal:stage.ordinal,status:options.publicationInProgress&&stage.ordinal===8?'running':options.incomplete&&stage.ordinal===8?'waiting':'succeeded'}));
  const client={release(){},async query(sql:string,values?:unknown[]){calls.push({sql,values});
+  if(sql.startsWith('SELECT p.material_backend'))return{rows:[{material_backend:'legacy',has_library_snapshot:false}]};
+  if(sql.startsWith('SELECT a.id,a.input FROM ai_distill.step_attempts'))return{rows:[{id:attemptId,input}]};
+  if(sql.startsWith('SELECT id,kind,attempt_id,sha256,content'))return{rows:[{id:'77777777-7777-4777-8777-777777777777',kind:'redacted_markdown',attempt_id:attemptId,sha256:hash(markdown),content:markdown}]};
+  if(sql.startsWith('SELECT input FROM ai_distill.step_attempts'))return{rows:[{input}]};
   if(sql.includes('FROM ai_distill.workflows w JOIN ai_distill.projects'))return{rows:[{workflow_id:workflowId,project_id:'project',project_name:'豆包高经',parent_name:options.parentName,phase_name:options.phaseName,title:'问题1',source_key:options.sourceKey??'题目1',material_root:materialRoot}],rowCount:1};
   if(sql.includes('FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal NOT IN'))return{rows:steps,rowCount:steps.length};
   if(sql.includes("status IN ('waiting','running')")&&sql.includes('step_attempts')){const active=Boolean(options.active&&!(values?.[1]===true&&options.publicationInProgress));return{rows:active?[{id:'active-attempt'}]:[],rowCount:active?1:0};}
@@ -46,7 +50,7 @@ async function fixture(options:{incomplete?:boolean;active?:boolean;publicationI
   return{rows:[],rowCount:1};
  }};
  const pool={connect:async()=>client,query:async(sql:string,values?:unknown[])=>sql.startsWith('SELECT material_mode FROM ai_distill.question_library_sources')?{rows:[],rowCount:0}:client.query(sql,values)};
- return{root,materialRoot,storageRoot,projectExportsRoot,calls,docxArtifacts,manifestArtifacts,pool:pool as unknown as Pool};
+ return{root,materialRoot,storageRoot,projectExportsRoot,calls,docxArtifacts,manifestArtifacts,authoringInput:{redaction_attempt_id:attemptId,materials:[{id:'77777777-7777-4777-8777-777777777777',sha256:hash(markdown)}]},pool:pool as unknown as Pool};
 }
 
 test('manual export writes one DOCX artifact without touching workflow state or attempts',async()=>{
@@ -190,3 +194,8 @@ test('脱敏导出不把存在但指纹损坏的原件误当成缺失',async()=>
  const f=await fixture({structured:true});await writeFile(join(f.storageRoot,'sources','source.pdf'),'wrong bytes');
  await expect(exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot)).rejects.toThrow('指纹校验失败');
 });
+
+test('飞书严格导出通过有效出题材料绑定后只生成一份DOCX',async()=>{const f=await fixture();const result=await exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{expectedAuthoringInput:f.authoringInput});expect(result.artifacts).toHaveLength(1);});
+test('严格导出不接受不同出题材料，且不写DOCX',async()=>{const f=await fixture();await expect(exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{expectedAuthoringInput:{...f.authoringInput,materials:[]}})).rejects.toThrow('feishu_authoring_materials_missing');expect(f.docxArtifacts).toHaveLength(0);});
+test('脱敏交付按冻结材料身份核验，原PDF副本跨机器缺失不阻断',async()=>{const f=await fixture();await rm(join(f.storageRoot,'sources','source.pdf'));const result=await exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{expectedAuthoringInput:f.authoringInput});expect(result.artifacts).toHaveLength(1);});
+test('脱敏交付仍拒绝存在但大小或SHA错误的原件副本',async()=>{const f=await fixture();await writeFile(join(f.storageRoot,'sources','source.pdf'),'wrong bytes');await expect(exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{expectedAuthoringInput:f.authoringInput})).rejects.toThrow('当前附件原件指纹校验失败');expect(f.docxArtifacts).toHaveLength(0);});

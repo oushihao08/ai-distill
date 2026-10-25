@@ -7,7 +7,7 @@ import {Database} from 'bun:sqlite';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createAgentConcurrencyGate,readConcurrencySettings} from './concurrency';
+import {createAgentConcurrencyGate,readActiveConcurrencyLimit,readConcurrencySettings} from './concurrency';
 
 async function withGates<T>(run:(root:string,first:ReturnType<typeof createAgentConcurrencyGate>,second:ReturnType<typeof createAgentConcurrencyGate>)=>Promise<T>,limit=2){
  const root=await mkdtemp(join(tmpdir(),'ai-distill-agent-concurrency-'));
@@ -17,6 +17,18 @@ async function withGates<T>(run:(root:string,first:ReturnType<typeof createAgent
 }
 
 function deferred(){let resolve!:()=>void;const promise=new Promise<void>(done=>{resolve=done;});return{promise,resolve};}
+
+it('容量只读上限等待另一个进程的短写锁，保留真实并发上限',async()=>{
+ const {mkdir}=await import('node:fs/promises'),root=await mkdtemp(join(tmpdir(),'capacity-read-lock-'));await mkdir(join(root,'.concurrency'));
+ const path=join(root,'.concurrency','agent-slots.sqlite3'),db=new Database(path);
+ db.exec('CREATE TABLE agent_concurrency_owners(pid INTEGER PRIMARY KEY,token TEXT,concurrency_limit INTEGER)');db.query('INSERT INTO agent_concurrency_owners VALUES(?,?,?)').run(process.pid,'isolated',2);db.close();
+ const code="import {Database} from 'bun:sqlite';const d=new Database(Bun.argv.at(-1));d.exec('BEGIN EXCLUSIVE');console.log('locked');setTimeout(()=>{d.exec('COMMIT');d.close();},150);";
+ const child=Bun.spawn([process.execPath,'--no-env-file','-e',code,path],{stdout:'pipe',stderr:'pipe'});
+ try{
+  const reader=child.stdout.getReader();expect((await reader.read()).done).toBe(false);reader.releaseLock();
+  expect(readActiveConcurrencyLimit(root)).toBe(2);expect(await child.exited).toBe(0);
+ }finally{await child.exited;await rm(root,{recursive:true,force:true});}
+});
 
 describe('worker concurrency settings',()=>{
  it('defaults to two Agent calls and eight model API calls',()=>{

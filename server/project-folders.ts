@@ -3,6 +3,8 @@
  * 关键方法与用途：`scanProjectFolder()`／`scanQuestionFolder()` 扫描只读来源；`registerQuestionFolders()` 登记工作流；`validateStepConfig()` 校验保存设置；`validateStepConfigForExecution()` 校验已保存 Codex 步骤配置而不把模型缓存当执行白名单；`projectStepSummary()` 汇总可派发状态。
  * 使用场景：`app.ts` 提供目录同步与列表接口，入库队列按扫描结果处理材料。
  */
+import {executionAttemptProjection,projectStepExecutions,type ExecutionAttempt} from './execution-queue/status';
+import type {StepExecution} from '../shared/execution-state';
 import {mergeRedactionDefaults,validateRedactionConfig,type RedactionConfig} from './materials/redaction-config';
 import {resolveMaterialProcessingMode,materialProcessingSourceMode,type MaterialProcessingMode} from '../shared/material-library';
 import {resolveModelApiConfig,type ModelApiConfig} from './llm-api';
@@ -28,8 +30,18 @@ import {validateWorkflowConfig,type WorkflowConfig} from '../shared/workflow-con
 export interface FolderFile { name: string; path: string; sha256: string; size: number; split_from?: string }
 export interface QuestionFolder { key: string; files: FolderFile[] }
 const supportedDocument=/\.(pdf|docx|txt|md)$/i;
-export interface WorkflowStepState { ordinal:number;status:string;result?:any;enabled:boolean;active:boolean;has_pdf?:boolean;extraction_status?:string|null;workflow_kind?:'question'|'material_package';source_workflow_id?:string|null;library_source?:boolean }
+export interface WorkflowStepState { execution_attempts?:ExecutionAttempt[];executions?:StepExecution[]; ordinal:number;status:string;result?:any;enabled:boolean;active:boolean;has_pdf?:boolean;extraction_status?:string|null;workflow_kind?:'question'|'material_package';source_workflow_id?:string|null;library_source?:boolean }
+/** 与达标入口共用可比较分数口径；不复算报告、不将旧validation标记作为额外门槛。 */
+function hasComparableScoreResult(result:any){
+ const numeric=(value:unknown)=>typeof value==='number'&&Number.isFinite(value);
+ const comparable=(model:any)=>model?.score_contract==='model_report_v1'?numeric(model.evaluation_percent):numeric(model?.score)&&numeric(model?.max_score)&&model.max_score>0;
+ const expected=Array.isArray(result?.models)?result.models.filter((model:any)=>!['failed','skipped'].includes(model?.answer_status)):[];
+ return expected.length?expected.every(comparable):comparable(result?.report??result);
+}
 export function workflowStepReadiness(ordinal:number,steps:Map<number,WorkflowStepState>):{ready:true}|{ready:false;reason:string}{
+ if([4,5,6,7,8].includes(ordinal)&&steps.get(8)?.status==='succeeded')return{ready:false,reason:'当前题目已归档，已跳过重复执行'};
+ const acceptance=steps.get(7);
+ if([4,5,6].includes(ordinal)&&acceptance?.status==='succeeded'&&acceptance.result?.decision==='accepted')return{ready:false,reason:'当前题目已达标，批量操作不重复执行'};
  const identity=steps.values().next().value as WorkflowStepState|undefined;
  if(identity?.workflow_kind==='material_package'&&![1,2,9].includes(ordinal))return{ready:false,reason:'材料包只执行入库和脱敏'};
  if(identity?.library_source&&[1,2,9].includes(ordinal))return{ready:false,reason:'题目使用已冻结的共享材料包快照'};
@@ -41,19 +53,13 @@ export function workflowStepReadiness(ordinal:number,steps:Map<number,WorkflowSt
  if(!stage.defaultEnabled||!current.enabled)return{ready:false,reason:'此步骤未启用'};
  const status=ordinal===1&&current.has_pdf?current.extraction_status??current.status:current.status;
  const retryingRepair=[4,5,6].includes(ordinal)&&steps.get(7)?.status==='succeeded'&&steps.get(7)?.result?.decision==='repair';
- if(!['waiting','failed'].includes(status)&&!(status==='succeeded'&&retryingRepair))return{ready:false,reason:current.active?'此步骤已有排队或运行任务':status==='succeeded'?'此步骤已完成':'当前步骤状态不可执行'};
+ const retryingUnusableScore=ordinal===6&&status==='succeeded'&&!hasComparableScoreResult(current.result);
+ if(!['waiting','failed'].includes(status)&&!(status==='succeeded'&&(retryingRepair||retryingUnusableScore)))return{ready:false,reason:current.active?'此步骤已有排队或运行任务':status==='succeeded'?'此步骤已完成':'当前步骤状态不可执行'};
  if(current.active)return{ready:false,reason:'此步骤已有排队或运行任务'};
  if(ordinal===5){const issue=workAnswerCapabilityIssue(steps.get(4)?.result);if(issue)return{ready:false,reason:issue};}
  if(ordinal===7){
   // 只检查是否有可比较的最终分数，不复算逐项、不重新引入已移除的评分门槛。
-  const scoring=steps.get(6),models=scoring?.result?.models;
-  const numeric=(value:unknown)=>typeof value==='number'&&Number.isFinite(value);
-  const comparable=(model:any)=>model?.score_contract==='model_report_v1'
-   ?numeric(model.evaluation_percent)
-   :numeric(model?.score)&&numeric(model?.max_score)&&model.max_score>0;
-  const expected=Array.isArray(models)?models.filter((model:any)=>!['failed','skipped'].includes(model?.answer_status)):[];
-  const single=scoring?.result?.report??scoring?.result;
-  if(!(expected.length?expected.every(comparable):comparable(single)))return{ready:false,reason:'尚未取得明确评分分数，请检查评分记录或草稿'};
+  if(!hasComparableScoreResult(steps.get(6)?.result))return{ready:false,reason:'尚未取得明确评分分数，请检查评分记录或草稿'};
  }
  if(ordinal===8){
   const decision=steps.get(7);
@@ -80,8 +86,8 @@ export function splitIntoBatches<T>(values:T[],size:number):T[][]{
 }
 export async function readProjectWorkflowStepRows(pool:Pool,projectId:string,workflowIds?:string[]){
  // 远端数据库逐行传输此状态表成本明显高于单个JSON载荷；外部仍返回相同rows结构。
- const result=await pool.query("SELECT COALESCE(jsonb_agg(to_jsonb(state_rows)),'[]'::jsonb) AS items FROM (SELECT w.id AS workflow_id,w.workflow_kind,w.source_workflow_id,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS library_source,s.ordinal,s.status,s.error,s.started_at,s.finished_at,CASE WHEN s.ordinal=4 THEN jsonb_build_object('content_contract',s.result->'content_contract','content_status',s.result->'content_status','task_requirements',s.result->'task_requirements') WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','aggregate',s.result->'aggregate','reasons',s.result->'reasons') WHEN s.ordinal=6 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','answer_status',m->'answer_status','score_status',m->'score_status','score_contract',m->'score_contract','score',m->'score','max_score',m->'max_score','raw_score',m->'raw_score','full_score',m->'full_score','evaluation_percent',m->'evaluation_percent','veto_triggered',m->'veto_triggered','valid',m->'valid')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx')) AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   (SELECT x.error FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_error,\n   (SELECT x.started_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_started_at,\n   (SELECT x.finished_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_finished_at,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx'))))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position) state_rows",[projectId,workflowIds??null]);
- const rows:(WorkflowStepState&Record<string,any>)[]=result.rows[0]?.items??[];
+ const result=await pool.query("SELECT COALESCE(jsonb_agg(to_jsonb(state_rows)),'[]'::jsonb) AS items FROM (SELECT w.id AS workflow_id,w.workflow_kind,w.source_workflow_id,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS library_source,s.ordinal,s.status,s.error,s.started_at,s.finished_at,CASE WHEN s.ordinal=4 THEN jsonb_build_object('content_contract',s.result->'content_contract','content_status',s.result->'content_status','task_requirements',s.result->'task_requirements') WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','aggregate',s.result->'aggregate','reasons',s.result->'reasons') WHEN s.ordinal=6 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','answer_status',m->'answer_status','score_status',m->'score_status','score_contract',m->'score_contract','score',m->'score','max_score',m->'max_score','raw_score',m->'raw_score','full_score',m->'full_score','evaluation_percent',m->'evaluation_percent','veto_triggered',m->'veto_triggered','valid',m->'valid')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx')) AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   (SELECT x.error FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_error,\n   (SELECT x.started_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_started_at,\n   (SELECT x.finished_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_finished_at,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx'))))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active,"+executionAttemptProjection('s')+" AS execution_attempts\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position) state_rows",[projectId,workflowIds??null]);
+ const rows:(WorkflowStepState&Record<string,any>)[]=(result.rows[0]?.items??[]).map((row:WorkflowStepState)=>{const {execution_attempts,...state}=row;return {...state,executions:projectStepExecutions(execution_attempts)};});
  return{...result,rows,rowCount:rows.length};
 }
 export async function validateFolder(value: unknown, label = '材料文件夹') {
@@ -231,7 +237,7 @@ export async function projectStepSummary(pool: Pool, projectId: string, material
  const totals=new Map<number,Record<string,number>>();
  for(const stage of visible)totals.set(stage.ordinal,{total:0,ready:0,queued:0,running:0,succeeded:0,failed:0,needs_repair:0,quarantined:0});
  const workflowRows=new Map<string,Map<number,WorkflowStepState>>();
- for(const row of rows.rows){if(!workflowRows.has(row.workflow_id))workflowRows.set(row.workflow_id,new Map());workflowRows.get(row.workflow_id)!.set(row.ordinal,{ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source)});}
+ for(const row of rows.rows){if(!workflowRows.has(row.workflow_id))workflowRows.set(row.workflow_id,new Map());workflowRows.get(row.workflow_id)!.set(row.ordinal,{ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),executions:row.executions,has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source)});}
  for(const [,steps] of workflowRows){
   for(const stage of visible){
    const row=steps.get(stage.ordinal);if(!row||row.workflow_kind==='material_package'&&![1,9].includes(stage.ordinal)||row.source_workflow_id&&[1,9].includes(stage.ordinal)||row.library_source&&[1,2,9].includes(stage.ordinal))continue;
@@ -241,8 +247,11 @@ export async function projectStepSummary(pool: Pool, projectId: string, material
     if(row.result?.decision==='repair')values.needs_repair++;
     else if(row.result?.decision==='quarantine')values.quarantined++;
     else if(row.result?.decision==='accepted')values.succeeded++;
-   }else if(status&&status in values)values[status]++;
-   if(row.active&&status==='waiting')values.queued++;
+   }else if(status&&status!=='running'&&status in values)values[status]++;
+   if(row.executions){
+    if(row.executions.some(task=>task.scope==='local'&&task.state==='running'&&task.active))values.running++;
+    if(row.executions.some(task=>task.scope==='local'&&task.state==='queued'&&task.active))values.queued++;
+   }else{if(status==='running')values.running++;if(row.active&&status==='waiting')values.queued++;}
    if(isWorkflowStepReady(stage.ordinal,steps))values.ready++;
   }
  }

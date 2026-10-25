@@ -1,8 +1,8 @@
-/** 职责：提供AI脱敏后的固定垃圾正则清理，以及结构化精确删除范围；供Agent计划编译、字段映射及预览共用，不修改冻结原文。 */
+/** 职责：提供提取入库前与脱敏后的保守扫描清理及格式还原，输出精确编辑；不改原件，不按普通数字或业务关键词泛删。 */
 import {documentBlocksToText,type DocumentBlock} from './document-structure';
 import {documentFieldRanges} from './prepared-structure';
 export interface ScanNoisePage {file_id:string;page:number;blocks:DocumentBlock[]}
-export interface ScanNoiseEdit {file_id:string;page:number;start:number;end:number;source_text:string;replacement_text:''}
+export interface ScanNoiseEdit {file_id:string;page:number;start:number;end:number;source_text:string;replacement_text:string}
 const placeholder=/\\?\[[ \t]*(?:NO[ _-]+TEXT(?:[ _-]+(?:DETECTED|FOUND)(?:[ _-]+IN[ _-]+IMAGE\.?)?)?|QR[ _-]*CODE|IMAGE|BAR[ _-]*CODE|UNREADABLE|无法识别|无文字)[ \t]*\\?\]/giu;
 const date='(?:19|20)\\d{2}(?:[-/.]\\d{1,2}[-/.]\\d{1,2}|年\\d{1,2}月\\d{1,2}日)';
 const time='(?:[01]?\\d|2[0-3])[:：][0-5]\\d(?:[:：][0-5]\\d)?(?:\\.\\d{1,3})?';
@@ -16,6 +16,8 @@ function noiseRanges(text:string,removeStandaloneNumbers:boolean):NoiseRange[]{
  let previous='';
  for(const line of text.matchAll(/[^\r\n]+/g)){
   const visible=line[0].replace(placeholder,'').replace(watermark,'').trim();
+  // 编号和条码标记独占同一字段行，才将二者认定为同一个扫描对象。
+  if(/^\s*\d+[ \t]+\\?\[[ \t]*BAR[ _-]*CODE[ \t]*\\?\]\s*$/iu.test(line[0]))ranges.push({start:line.index,end:line.index+line[0].length,kind:'fixed'});
   if(visible==='无法识别'||removeStandaloneNumbers&&numberLine.test(visible)&&!valueLabel.test(previous))ranges.push({start:line.index,end:line.index+line[0].length,kind:visible==='无法识别'?'fixed':'number_line'});
   if(visible)previous=visible;
  }
@@ -57,13 +59,13 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  const addProjection=(entry:typeof entries[number],a:number,b:number)=>{if(b>a&&!edits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start===entry.start+a&&edit.end===entry.start+b))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+a,end:entry.start+b,source_text:entry.projection.slice(a,b),replacement_text:''});};
  // AI返回后仅清理固定占位符与时间戳；普通数字保留，页角数字由下方跨页证据判断。
  for(const entry of entries){
-  // 普通独立数字没有足够证据证明是页码；仅在下方跨页/签名规则中删除。
-  const removeNumbers=false;
-  for(const range of noiseRanges(entry.projection,removeNumbers)){
-   if(range.kind==='number_line'&&sensitiveEdits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start<entry.start+range.end&&edit.end>entry.start+range.start))continue;
-   addProjection(entry,range.start,range.end);
+  // 固定噪声只在单个结构字段内匹配，不能拼接相邻单元格/列表项的业务值。
+  for(const field of documentFieldRanges([entry.block])){
+   const text=entry.projection.slice(field.start,field.end);
+   for(const range of noiseRanges(text,false))addProjection(entry,field.start+range.start,field.start+range.end);
+   for(const match of text.matchAll(/\$([+-]?\d+(?:\.\d+)?)\\%\$/g))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+field.start+match.index!,end:entry.start+field.start+match.index!+match[0].length,source_text:match[0],replacement_text:match[1]+'%'});
+   for(const match of text.matchAll(/\\_/g))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+field.start+match.index!,end:entry.start+field.start+match.index!+match[0].length,source_text:match[0],replacement_text:'_'});
   }
-  for(const range of documentFieldRanges([entry.block]))if(entry.projection.slice(range.start,range.end).trim()==='无法识别')addProjection(entry,range.start,range.end);
  }
  for(const {entry,match} of stamps)add(entry,match.index!,match.index!+match[0].length);
  const numeric=(text:string)=>/^\d{1,3}[!Il]?$/.test(text.trim())?Number(text.trim().replace(/[!Il]$/,'1')):null;
@@ -76,6 +78,8 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  const sequences=new Map<string,Set<number>>();
  for(const entry of margins){const value=numeric(entry.text);if(value===null||Math.abs(value-entry.page)>5)continue;const key=`${entry.file_id}:${value-entry.page}`,set=sequences.get(key)??new Set<number>();set.add(entry.page);sequences.set(key,set);}
  for(const entry of margins){const value=numeric(entry.text);if(scannerIds.get(entry.file_id)?.has(entry.text.trim())||value!==null&&(sequences.get(`${entry.file_id}:${value-entry.page}`)?.size??0)>=3)add(entry);}
+ // C类角码仅在页边界且已有同文件重复扫描签名证据时清理，正文/表格里的同形业务值保留。
+ for(const entry of entries)if(scannerIds.has(entry.file_id)&&(entry.index===0||entry.index===entry.blocks.length-1)&&/^(?:C{1,2}[. ]?\d+|\[[ \t]*C[ \t]*\]\d+)$/i.test(entry.text.trim()))add(entry);
  // 已确认扫描签名之后的短页角串，例如“00! / 1”；业务段落或表格会中断该尾部簇。
  for(const page of pages){const local=entries.filter(entry=>entry.file_id===page.file_id&&entry.page===page.page);let suffix=false;
   for(const entry of local){const isStamp=stamps.some(stamp=>stamp.entry===entry);if(isStamp){suffix=true;continue;}
@@ -87,8 +91,11 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  const merged:ScanNoiseEdit[]=[];
  for(const edit of edits.sort((a,b)=>a.file_id.localeCompare(b.file_id)||a.page-b.page||a.start-b.start||b.end-a.end)){
   const prior=merged.at(-1);
-  if(prior&&prior.file_id===edit.file_id&&prior.page===edit.page&&edit.start<=prior.end){
+  if(prior&&prior.file_id===edit.file_id&&prior.page===edit.page&&edit.start<=prior.end&&prior.replacement_text===''&&edit.replacement_text===''){
    prior.end=Math.max(prior.end,edit.end);const page=pages.find(page=>page.file_id===edit.file_id&&page.page===edit.page)!;prior.source_text=documentBlocksToText(page.blocks).slice(prior.start,prior.end);
+  }else if(prior&&prior.file_id===edit.file_id&&prior.page===edit.page&&edit.start<prior.end){
+   // 已覆盖的格式片段无需重复编辑；其他冲突不扩大既有范围，忽略后项。
+   continue;
   }else merged.push({...edit});
  }
  return merged;
@@ -106,7 +113,7 @@ export function cleanScanNoisePages(pages:ScanNoisePage[]){
    for(let fieldIndex=0;fieldIndex<fields.length;fieldIndex++){
     const range=ranges.find(item=>item.block_id===block.id&&item.field_index===fieldIndex);if(!range)continue;
     let text=fields[fieldIndex]!.text;
-    for(const edit of edits.filter(item=>item.file_id===page.file_id&&item.page===page.page&&item.start>=range.start&&item.end<=range.end).sort((a,b)=>b.start-a.start))text=text.slice(0,edit.start-range.start)+text.slice(edit.end-range.start);
+    for(const edit of edits.filter(item=>item.file_id===page.file_id&&item.page===page.page&&item.start>=range.start&&item.end<=range.end).sort((a,b)=>b.start-a.start))text=text.slice(0,edit.start-range.start)+edit.replacement_text+text.slice(edit.end-range.start);
     fields[fieldIndex]!.set(text);
    }
   }

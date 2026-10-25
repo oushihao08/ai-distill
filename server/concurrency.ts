@@ -4,7 +4,7 @@
  * SQLite 只保存本机并发配置及临时进程／槽位元数据，不涉及业务数据库迁移。
  */
 import {Database} from 'bun:sqlite';
-import {chmodSync,mkdirSync} from 'node:fs';
+import {chmodSync,mkdirSync,existsSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 
@@ -60,6 +60,20 @@ function configuredLimit(value:string|undefined,name:string,fallback:number):num
  const parsed=Number(normalized);
  if(!Number.isSafeInteger(parsed)||parsed<1||parsed>MAX_CONCURRENCY)throw new RangeError(`${name} 必须是 1 到 ${MAX_CONCURRENCY} 之间的整数`);
  return parsed;
+}
+
+/** 只读生效中的跨进程槽位上限；保存设置尚未重启时，待领取容量沿用实际消费者上限。 */
+export function readActiveConcurrencyLimit(root:string):number|undefined{
+ const path=join(resolve(root),'.concurrency','agent-slots.sqlite3');if(!existsSync(path))return;
+ const db=new Database(path,{readonly:true});try{
+  // 与槽位写连接一致地等待短事务；默认零等待会在容量查询中直接抛SQLITE_BUSY。
+  db.exec('PRAGMA busy_timeout = 5000');
+  if(!db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_concurrency_owners'").get())return;
+  const owners=db.query('SELECT pid,concurrency_limit FROM agent_concurrency_owners').all() as {pid:number;concurrency_limit:number}[];
+  const limits=[...new Set(owners.filter(owner=>processIsAlive(owner.pid)).map(owner=>owner.concurrency_limit))];
+  if(limits.length>1)throw new AgentConcurrencyConfigurationError('本机生效并发配置不一致，请核实worker');
+  return limits[0];
+ }finally{db.close();}
 }
 
 export function readConcurrencySettings(env:NodeJS.ProcessEnv=process.env,storageRoot?:string){

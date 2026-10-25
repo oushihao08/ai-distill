@@ -30,7 +30,7 @@ worker-monitor.ts 在 worker 生命周期采样并写共享存储快照；resour
 - macOS系统内存继续使用`memory_pressure -Q`，进程RSS使用`ps`。Windows系统可用物理内存使用`node:os`的`totalmem()`／`freemem()`，进程工作集使用系统自带Windows PowerShell的`Get-Process -Id`批量读取；禁用profile和交互、隐藏窗口、3秒超时。两平台均将可用比例向下取整为整数百分比，再据该百分比估算字节数；采样方法分别为`macos_memory_pressure_percentage`和`windows_available_physical_memory`，API同时接受两种快照。
 - 进程采样只包含当前worker和登记Agent PID，不扫描所有系统进程或读取进程参数/环境；已退出、无权限或重复返回的PID保持unknown，不影响其他PID及系统内存。Windows失败时不调用Unix命令兜底；其他系统的系统内存仍为unknown。
 - 共享`.worker-monitor.json`是同存储位置最后写入的worker快照，不是多worker合并清单。30秒以上旧心跳（或未来偏移超过5秒）投影为stale；stale不能证明供应商任务已经结束，也不能据此自动重派。
-- `readActiveWorkflowTasks()`最多返回500条运行尝试；当前channel的SQL按ordinal固定把5标api、4/6标agent，只有9读取provider。因此Codex作答和API评分的channel可能误标，不能拿该字段计算真实Agent/API占用；需核对attempt冻结config与worker队列。
+- `readActiveWorkflowTasks()`最多返回500条运行尝试；channel按冻结provider区分Codex作答与API评分，未知provider保持unknown；明细不替代本机队列容量。
 - 全局库计数是任务历史状态数，非去重材料包数；活动明细最多100条，计数可能大于明细长度。安全progress只含白名单计数，是本地执行器阶段信息，不是供应商token/页生成进度。
 - 项目任务统计查询不含library_jobs，后者通过独立队列摘要展示。快照中的auth/quota通常为unknown，不进行实时登录/额度探针。
 
@@ -39,3 +39,13 @@ worker-monitor.ts 在 worker 生命周期采样并写共享存储快照；resour
 本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。
 
 更改资源采样与快照校验后，API与worker都需要加载新代码；只重启worker而API仍运行旧校验器，会拒绝Windows已知内存快照。按根规则取得运行授权，并在现有任务安全收尾后通过原启动入口重启；不以改写运行中快照代替代码生效。源码支持及本机只读采样不等于现有服务已重启验收。
+
+local模式的任务计数直接读取所属SQLite queued/running，不再周期性向PG发BEGIN/SET/SELECT/COMMIT获取全局占用；启动先读取本机任务再发布首帧。legacy仍使用原有有界PG读取。步骤活动明细的channel已按冻结provider区分Codex作答/API评分，不能只按ordinal猜通道。worker监控文件仍是最后写入快照，不能代替实体多机资源验收。
+
+长期运行边界：周期采样只读SQLite活动任务；HTTP监控额外列出待登记/同步/核实记录，终态明细不随每次刷新返回。材料库终态数量仍由本机SQLite按状态聚合，不改为活动行计数。显式队列管理接口保留历史。具体分页和索引见[本机队列说明](../execution-queue/README.md#长期运行的周期读取)。
+
+### HTTP监控读取的负载与截止
+
+`readActiveWorkflowTasks()`与`readMaterialLibraryQueue()`只合并同一连接池、同一ID范围的在途读取，完成或失败即移除，不缓存上次成功/错误，也不合并不同本机范围。本机没有对应活动ID时直接返回空的本机投影，不查询PG；此时`known`仅表示本机集合为空，不表示PG健康，数据库连通性仍看health。
+
+本机材料库明细与count均限定传入的任务ID，HTTP返回的历史数量仍来自SQLite聚合；legacy未传ID范围时保持全局读取。监控每条SQL取得连接后的驱动读取时限为5秒，当前createPool获取连接仍限15秒；这不是整个HTTP请求5秒截止。查询失败由pg-pool释放并销毁连接，API保留unavailable，不把失败伪装成零任务。独立步骤与材料摘要仍并行读取，不更改业务连接池大小、心跳或取消检查间隔。

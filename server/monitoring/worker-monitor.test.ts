@@ -1,7 +1,7 @@
 /** 验证 worker 资源采样合并、低内存派发暂停、状态净化及停止落盘。
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
-import {test,expect} from 'bun:test';
+import {test,expect,beforeAll,afterAll} from 'bun:test';
 import type {Pool} from 'pg';
 import {mkdtemp,readFile,writeFile,rm,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -9,15 +9,34 @@ import {join} from 'node:path';
 import {createWorkerMonitor,readMaterialLibraryQueue,readWorkerMonitor} from './worker-monitor';
 import {sampleResources,type MonitorInput} from './resources';
 import{configureLogger}from'../logging';
+import {localQueue} from '../execution-queue/runtime';
+import {randomUUID} from 'node:crypto';
+let queueMode:string|undefined;
+beforeAll(()=>{queueMode=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='legacy';});
+afterAll(()=>{if(queueMode===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=queueMode;});
 const db=(rows:any[]=[])=>{
  const query=async(sql:string)=>{if(sql.startsWith('SELECT')){expect(sql).toContain("a.status IN ('waiting','running')");expect(sql).toContain('w.deleted_at IS NULL');expect(sql).not.toContain('a.error');}return{rows};};
  return{query,connect:async()=>({query:(input:string|{text:string})=>query(typeof input==='string'?input:input.text),release(){}})} as unknown as Pool;
 };
 const sampler=(percent:number|null)=>async(input:MonitorInput)=>sampleResources(input,{platform:'darwin',read:async(file,args)=>file.endsWith('memory_pressure')?percent===null?'':`The system has 1000000 (100 pages).\nSystem-wide memory free percentage: ${percent}%\n`:`${args[1]} 100`});
 async function directory(run:(root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'distill-monitor-'));try{await run(root);}finally{await rm(root,{recursive:true,force:true});}}
+test('local task snapshot comes from the local queue without a global PG status read',async()=>directory(async root=>{
+ const before=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='local';const q=localQueue(root);
+ const running=randomUUID(),queued=randomUUID(),unknown=randomUUID();
+ for(const id of [running,queued,unknown]){q.intent(id,'step','agent','authoring');q.confirm(id);}
+ q.claim('agent',[running]);q.claim('agent',[unknown]);q.resolve(unknown,'needs_review');
+ let reads=0;const pool={connect:async()=>{reads++;throw new Error('global status must not be read');}} as unknown as Pool;
+ q.list=()=>{throw new Error('monitor must not read terminal history');};
+ const monitor=createWorkerMonitor(pool,root,{min_available_percent:10,sample:sampler(30)});
+ try{
+  await monitor.start();await monitor.stop();const record=await readWorkerMonitor(root);
+  expect(reads).toBe(0);expect(record.snapshot?.tasks.status).toBe('known');
+  if(record.snapshot?.tasks.status==='known')expect(record.snapshot.tasks.value).toMatchObject({running:1,states:{running:1,waiting:1}});
+ }finally{await monitor.stop();q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;}
+}));
 test('projects material library queue counts and safe active job fields',async()=>{
  const queries:string[]=[];
- const pool={query:async(sql:string)=>{
+ const pool={query:async(input:string|{text:string})=>{const sql=typeof input==='string'?input:input.text;
   queries.push(sql);
   if(sql.includes('to_regclass'))return{rows:[{available:true}]};
   if(sql.includes('count(*) FILTER'))return{rows:[{queued:'2',running:'1',succeeded:'4',failed:'1',cancelled:'0',items:[{id:'job-1',package_id:'package-1',revision_id:'revision-1',package_name:'测试材料',kind:'extract',status:'running',executor_kind:'api',execution_target:'server',progress:{phase:'extract',completed_files:1,total_files:3,secret:'must drop'},error_code:null,created_at:new Date('2026-10-17T00:00:00Z'),started_at:new Date('2026-10-17T00:01:00Z')}] }]};
@@ -135,15 +154,46 @@ test('corrupt monitor snapshots log one failure and a recovery event',async()=>d
 
 test('active workflow monitor includes publication tasks so idle checks cannot miss delivery',async()=>{
  const {readActiveWorkflowTasks}=await import('./worker-monitor');let sql='';
- const pool={query:async(text:string)=>{sql=text;return{rows:[{attempt_id:'publication',project_id:'p',workflow_id:'w',project_name:'项目',question_title:'题目',step_name:'归档',state:'running',channel:'unknown',started_at:null}]};}} as unknown as Pool;
+ const pool={query:async(text:string|{text:string})=>{sql=typeof text==='string'?text:text.text;return{rows:[{attempt_id:'publication',project_id:'p',workflow_id:'w',project_name:'项目',question_title:'题目',step_name:'归档',state:'running',channel:'unknown',started_at:null}]};}} as unknown as Pool;
  expect((await readActiveWorkflowTasks(pool))[0]?.attempt_id).toBe('publication');expect(sql).toContain('a.ordinal IN (4,5,6,8,9)');
 });
 
 test('active task query filters local ownership before LIMIT and classifies frozen providers',async()=>{
  const {readActiveWorkflowTasks}=await import('./worker-monitor');let sql='',values:unknown;
- const pool={query:async(text:string,params:unknown)=>{sql=text;values=params;return{rows:[]};}} as unknown as Pool;
+ const pool={query:async(text:string|{text:string},params:unknown)=>{sql=typeof text==='string'?text:text.text;values=params;return{rows:[]};}} as unknown as Pool;
  const id='11111111-1111-4111-8111-111111111111';
  await readActiveWorkflowTasks(pool,[id]);expect(values).toEqual([[id]]);expect(sql.indexOf('a.id=ANY')).toBeLessThan(sql.indexOf('LIMIT 500'));
  expect(sql).toContain("a.ordinal=5 AND a.config->>'provider'='codex' THEN 'agent'");expect(sql).toContain("a.ordinal=6 AND a.config->>'provider'='api' THEN 'api'");
- await readActiveWorkflowTasks(pool,[]);expect(values).toEqual([[]]);await readActiveWorkflowTasks(pool);expect(values).toEqual([null]);
+ values='not queried';await readActiveWorkflowTasks(pool,[]);expect(values).toBe('not queried');await readActiveWorkflowTasks(pool);expect(values).toEqual([null]);
+});
+
+test('idle local monitoring performs no PG query and scoped library reads bind IDs in totals and items',async()=>{
+ const {readActiveWorkflowTasks,MONITOR_QUERY_TIMEOUT_MS}=await import('./worker-monitor');
+ const calls:{text:string;query_timeout:number;values:unknown}[]=[];
+ const pool={query:async(input:{text:string;query_timeout:number},values:unknown)=>{calls.push({...input,values});return input.text.includes('to_regclass')?{rows:[{available:true}]}:{rows:[{queued:0,running:0,succeeded:0,failed:0,cancelled:0,items:[]}]};}} as unknown as Pool;
+ expect(await readActiveWorkflowTasks(pool,[])).toEqual([]);expect((await readMaterialLibraryQueue(pool,[])).status).toBe('known');expect(calls).toHaveLength(0);
+ await readMaterialLibraryQueue(pool,['11111111-1111-4111-8111-111111111111']);
+ expect(calls).toHaveLength(2);expect(calls.every(call=>call.query_timeout===MONITOR_QUERY_TIMEOUT_MS)).toBe(true);
+ expect(calls[1]!.values).toEqual([['11111111-1111-4111-8111-111111111111']]);expect(calls[1]!.text).toContain('OR id=ANY($1::uuid[])');expect(calls[1]!.text).toContain('OR j.id=ANY($1::uuid[])');
+});
+
+test('identical in-flight monitoring reads share queries, isolate scope and clear both success and failure',async()=>{
+ const {readActiveWorkflowTasks}=await import('./worker-monitor');let reads=0,fail=false,release!:()=>void;
+ let gate=new Promise<void>(resolve=>{release=resolve;});
+ const pool={query:async()=>{reads++;await gate;if(fail)throw new Error('synthetic timeout');return{rows:[]};}} as unknown as Pool;
+ const one=()=>readActiveWorkflowTasks(pool,['a','b']);
+ const pending=Array.from({length:20},(_,i)=>i%2?readActiveWorkflowTasks(pool,['b','a','a']):one());
+ await Bun.sleep(1);expect(reads).toBe(1);release();await Promise.all(pending);
+ await one();expect(reads).toBe(2);
+ await readActiveWorkflowTasks(pool,['different']);expect(reads).toBe(3);
+ fail=true;gate=new Promise<void>(resolve=>{release=resolve;});const failed=Array.from({length:20},one);const settled=Promise.allSettled(failed);
+ await Bun.sleep(1);expect(reads).toBe(4);release();expect((await settled).every(result=>result.status==='rejected')).toBe(true);
+ fail=false;await one();expect(reads).toBe(5);
+});
+
+test('concurrent library monitors share schema and data reads and do not cache unavailable',async()=>{
+ let reads=0,fail=true,release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const pool={query:async(input:{text:string})=>{reads++;await gate;if(fail)throw new Error('synthetic DB failure');return input.text.includes('to_regclass')?{rows:[{available:true}]}:{rows:[{queued:0,running:0,succeeded:0,failed:0,cancelled:0,items:[]}]};}} as unknown as Pool;
+ const pending=Array.from({length:20},()=>readMaterialLibraryQueue(pool));await Bun.sleep(1);expect(reads).toBe(1);release();expect((await Promise.all(pending)).every(result=>result.status==='unavailable')).toBe(true);
+ fail=false;expect((await readMaterialLibraryQueue(pool)).status).toBe('known');expect(reads).toBe(3);
 });

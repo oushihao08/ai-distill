@@ -4,7 +4,8 @@
 -->
 
 <script setup lang="ts">
-import { statusLabels, type Step } from '../types/api';
+import {workflowStepDisplay} from '../utils/workflow-status';
+import type { Step } from '../types/api';
 import { dateLabel } from '../utils/format';
 const props = defineProps<{ steps: Step[] }>();
 defineSlots<{
@@ -12,18 +13,10 @@ defineSlots<{
  artifacts(props: { step: Step }): any;
 }>();
 const completed = computed(() => props.steps.filter(step => step.status === 'succeeded').length);
-function decisionLabel(step:Step){
- const decision=String(step.result?.decision??'');
- return ({accepted:'达标',repair:'未达标',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[decision];
-}
-function statusLabel(step:Step){return step.ordinal===7&&decisionLabel(step)?decisionLabel(step):statusLabels[step.status];}
-function statusColor(step:Step){
- if(step.ordinal===7&&step.result?.decision==='accepted')return 'success';
- if(step.ordinal===7&&step.result?.decision==='repair')return 'warning';
- if(step.ordinal===7&&step.result?.decision==='quarantine')return 'error';
- return step.status==='succeeded'?'success':step.status==='failed'?'error':'secondary';
-}
+function statusLabel(step:Step){return workflowStepDisplay({steps:props.steps},step.ordinal).label;}
+function statusColor(step:Step){return workflowStepDisplay({steps:props.steps},step.ordinal).color;}
 function stepMessage(step: Step) {
+ if(step.executions&&(step.executions.length||step.status==='running'))return workflowStepDisplay({steps:props.steps},step.ordinal).reason;
  if(step.ordinal===7&&step.result?.decision==='accepted')return '全部所选模型均低于各自分数上限，题目达标';
  if(step.ordinal===7&&step.result?.decision==='repair')return '并非所有所选模型都低于分数上限，题目未达标';
  if(step.ordinal===7&&step.result?.decision==='waiting')return '尚有模型未完成作答或有效评分；查看右侧模型状态';

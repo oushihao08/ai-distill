@@ -10,6 +10,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | --- | --- |
 | [material-library/](material-library/README.md) | 全局材料包、版本、处理任务、期次加载、永久使用记录及题目来源快照 |
 | [materials/](materials/README.md) | 旧工作流提取/脱敏及新材料库复用的解析、映射、结构与 DOCX 工具 |
+| [revision-advice/](revision-advice/README.md) | 手动返修建议、来源绑定、独立本机队列及出题读取 |
 | [authoring/](authoring/README.md) | 出题队列、作者执行、内容契约及结果校验 |
 | [answer-models/](answer-models/README.md) | 模型目录/项目集合、作答输入隔离、逐模型队列和结果 |
 | [scoring/](scoring/README.md) | 同版匿名评分输入、Codex/API执行、报告解析及版本校验 |
@@ -50,7 +51,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `rule-loading.ts` | 停用的编号规则绑定兼容入口；明确410，不创建新规则版本或隐藏步骤 |
 | `step-dispatch.ts` | `dispatchWorkflowStep()`：稳定ordinal映射到现有业务入口，本身不做队列或达标判断 |
 | `workflow-execution-routes.ts` | `registerWorkflowExecutionRoutes()`：单题/批量派发、有限等待、attempt视图；逐题返回资格和失败原因 |
-| `attempts.ts` | `waitForAttempt()` / `waitDuration()`：状态或完整结果的有限HTTP等待，中断不取消后台任务 |
+| `attempts.ts` | `waitForAttempt()` / `waitDuration()`：只读有限等待；`cancelWaitingScore()` 取消未领取评分；`cancelStoppedExecutorAttempt()` 在用户确认原机停止后显式终止未知旧尝试，不自动重跑 |
 | `workflow-view.ts` | 轻量列表、按需详情及安全尝试摘要投影；当前模型结果按attempt引用，不按历史时间猜测 |
 | `generated-data.ts` | `clearGeneratedData()`：无活动任务时重置旧工作流生成数据和管理文件；先隔离文件，数据库失败恢复，不修改用户来源目录 |
 | `workflow-hooks.ts` | 冻结可信项目脚本和声明依赖，在私有临时目录运行或请求受控API复核，只收集附加结果 |
@@ -121,7 +122,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 
 首屏列表/状态使用服务端白名单和批量快照；正文、历史及材料版本按需读取。`GET /api/attempts/:id?view=status`不读取结果正文，CLI等待默认使用该视图；完整内容由show/full显式读取。普通文件下载不证明内容质量或平台成功。
 
-共用安全日志入口为 `logging.ts`，默认位于 `<STORAGE_DIR>/logs/<UTC日期>/`。请求通过 `X-Request-ID`、attempt/job/call ID关联。普通JSONL落盘错误、指定数据库慢查询/连接等待告警，以及精确白名单中的停止生命周期、材料取消和恢复降级事件；其他成功/进度日志仍不落盘；不记录材料、题面、提示词、答案、SQL参数或凭证。Codex私有事件和业务报告不是普通日志。命令和限制见 [诊断脚本](../scripts/diagnostics/README.md)；健康和`/api/monitor`状态不能证明供应商仍在生成。
+共用安全日志入口为 `logging.ts`，默认位于 `<STORAGE_DIR>/logs/<UTC日期>/`。请求通过 `X-Request-ID`、attempt/job/call ID关联。普通JSONL落盘错误、指定数据库慢查询/连接等待告警，以及精确白名单中的停止生命周期、材料取消和恢复降级事件；下述有限执行里程碑也持久化，其他成功/逐token等进度日志不落盘；不记录材料、题面、提示词、答案、SQL参数或凭证。Codex私有事件和业务报告不是普通日志。命令和限制见 [诊断脚本](../scripts/diagnostics/README.md)；健康和`/api/monitor`状态不能证明供应商仍在生成。
 
 修改公共契约同时核对前端、CLI、路由、任务输入快照及历史兼容。文档中的配置/迁移/启动命令是参考，授权边界见 [AGENTS.md](../AGENTS.md)。本文件不声明某次数据库、真实模型或外部平台验收已完成；历史证据按其时间和范围单独阅读。
 
@@ -138,3 +139,41 @@ worker 对同类队列的并发可用性查询共用一个进行中的探测；�
 `project-creation-recovery.ts`提供只读创建回执恢复；网页与CLI调用`POST /api/projects/creation-receipt`，使用与创建相同的目录规范化，并核对主项目/期号、关键字段及显式出题默认值。此接口只SELECT，不重新创建或删除。项目详情的`skill_exists`按实际生效的本期覆盖/共享路径判断，路径读取失败作为局部提示，不整体阻断详情。
 
 达标判断“就绪”需要已有可比较最终评分；只有评分执行成功、但未返回最终总分的记录不显示可判断，而提示重新评分。此资格检查不复算条目或增加AI复审。
+
+作答模型集合切换支持显式 `future_only:true`：后续派发用新集合，已有结果和在途任务按冻结集合继续，由 [作答模块](answer-models/README.md#仅后续作答切换模型) 统一说明。启用前须加载所有相关API/worker代码；不能向旧进程发送该标记并假定其会保留结果。
+
+## 本机容量、手动建议与有界观测
+
+[手动返修建议](revision-advice/README.md)为独立的用户派发功能；050仅新增任务结构和归属约束，不恢复自动返修链。批量出题/作答/评分遇到当前accepted题目返回already_accepted，不创建尝试或清除结果；单题显式重出仍沿用原行为。
+
+普通结构化日志除错误、服务生命周期和数据库慢/等待告警外，还持久化有限执行里程碑：attempt入队/复用/领取/输入校验/完成、外部调用开始/完成、心跳失败及恢复、连接恢复。MinerU另记录上传/轮询/下载阶段、供应商状态变化、提取完成和CLI回退，不逐次记录相同轮询状态；私有批次定位见[PDF提取模块](materials/pdf-extraction/README.md)。工具/token/页进度仍不持久化。连接诊断增加获取前后池总数/空闲数/等待数及新连接标记；流错误仅保留事件数/字节数/DONE与finish状态等安全标量，不保留正文或原始响应。没有结束事件不证明上游仍在生成。
+
+手动建议050与钩子033属于按功能启用的可选结构，缺少它们不使既有流程健康检查失败；建议GET的available与派发校验单独判断该功能是否可用。
+
+长期运行的本机队列监控按状态读取，登记/取消/结果对账按稳定键每类每轮最多20条；不会为每轮监控加载全部终态历史。HTTP监控保留材料库历史数量聚合，显式队列管理仍可查看历史。详情见[周期读取](execution-queue/README.md#长期运行的周期读取)。取消状态读取按pool合并且单飞，模型心跳保持原间隔；性能改动不代替真实网络与供应商故障定位。
+
+HTTP监控读取另有同pool/同范围在途合并和每条SQL取得连接后5秒的驱动读取截止；本机空活动集合不查PG，本机库明细带任务ID范围。没有缓存历史状态，不把空本机集合解释为PG健康；获取连接仍遵守原15秒上限。失败连接销毁及接口降级见[监控说明](monitoring/README.md#http监控读取的负载与截止)。
+
+`GET /api/attempts/:id?view=status`包含`heartbeat_at`（数据库最后一次任务心跳），轻量读取不包含结果正文。陈旧心跳只作为诊断证据，不在读取时修改状态、接管其他执行器或重放未知调用；心跳新鲜同样不能证明供应商仍在生成。
+
+## 未领取评分的显式取消
+
+`POST /api/attempts/:id/cancel-waiting-score` 接收且仅接收 `{workflow_id,executor_id}`，两者及路径ID均为UUID。用于原执行端不能消费的未开始评分；不认领或迁移旧任务，不自动创建替代任务。要求当前最新ordinal6尝试仍为waiting、heartbeat_at及result均为NULL，归属匹配、当前评分步骤waiting且题目未达标。
+
+事务先锁workflow再锁attempt，与评分worker领取使用相同行锁；若worker已领取，取消拒绝。锁等待2秒、语句10秒截止。只将指定attempt记skipped并保留原result/输入/归属及答案，步骤保持waiting，下一次评分仍需普通显式派发。原机旧队列不能再将skipped尝试从waiting领取，不据此修改其SQLite。running、历史有心跳、已有结果和最新身份变化均拒绝。请求回执未知时先GET原attempt，不盲目重发。
+
+单元/HTTP替身验证输入、事务和拒绝分支；真实锁竞争和实体双机验证分别记录，不将替身通过称为跨机验收。
+
+### 用户确认原执行端停止后的显式终止
+
+`POST /api/attempts/:id/cancel-stopped-executor` 只接收 `{workflow_id,executor_id,expected_heartbeat_at,executor_stopped:true,acknowledge_unknown_result:true}`。调用者必须先取得用户对原机停止的确认，并告知原调用结果仍未知；不能由后台心跳超时自动调用。只适用于当前最新作答或评分（ordinal5/6），无结果、无已登记产物、无其他活动尝试，且心跳/开始时间至少陈旧5分钟。该时间沿用旧消费者失租观察窗口，本身不证明机器停止，必须同时有用户确认。
+
+HTTP心跳精度为毫秒；在workflow/attempt行锁内核对预期心跳、归属、当前步骤及未达标状态。仅将旧尝试标skipped，保留其输入、result、归属和历史；当前步骤改waiting但不清除已有result，防止下游使用未完成结果。返回prior_outcome=unknown，不伪造供应商失败、撤销计费或读取原机私有检查点。替代尝试须随后经普通派发接口明确创建，新结果仍受当前版本绑定。若心跳已更新、旧尝试已有产物/结果，必须先核实，不继续终止。
+
+### 容量读取的短锁等待
+
+readActiveConcurrencyLimit的只读SQLite连接沿用槽位写连接的5秒busy_timeout，避免短写事务期间默认零等待直接抛SQLITE_BUSY。隔离跨进程150ms独占锁用例验证释放后返回原上限，不改变并发设置或槽位占用。安全日志将SQLite忙锁和worker上限不一致记录为固定reason_code，不输出原始错误。此修复不证明所有历史HTTP500或远端数据库延迟同源。
+
+飞书交付的配置/建表/单题同步HTTP请求在`index.ts`逐请求设置180秒空闲时限，其他接口沿用60秒；CLI对应请求最长等待180秒，远端HTTP仍有90秒总截止。此设置不创建后台重试，也不扩大批次或跨项目同步范围。
+
+`workflow-archive-guard.ts` 在派发事务中锁定工作流并检查当前归档状态：已归档题目拒绝再次出题、作答、评分、达标判定和归档（HTTP 409），不创建新尝试或清空结果。批量入口返回 `already_archived` 并继续其他题目；显式撤回归档后可返修，下载和辅助导出不受影响。

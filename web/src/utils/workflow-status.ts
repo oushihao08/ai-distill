@@ -11,6 +11,15 @@ export function workflowStepDisplay(view:WorkflowStatusView|undefined,ordinal:nu
  if(!view)return{label:'读取中',color:'secondary',reason:'正在读取步骤状态',finishedAt:null};
  const step=view.steps.find(item=>item.ordinal===ordinal);
  if(!step)return{label:'未进入',color:'secondary',reason:'本工作流没有此步骤',finishedAt:null};
+ const executions=step.executions;
+ if(executions&&executions.length===0&&step.status==='running')return{label:'共享状态待核实',color:'warning',reason:'没有对应的活动尝试；本机不按共享running记录宣称正在执行',finishedAt:step.finished_at};
+ if(executions?.length){
+  const local=executions.filter(task=>task.scope==='local');
+  const running=local.filter(task=>task.state==='running'&&task.active).length,queued=local.filter(task=>task.state==='queued'&&task.active).length;
+  const other=executions.filter(task=>task.scope==='other_executor').length;
+  const label=running||queued?[running?`本机执行中 ${running}`:'',queued?`排队 ${queued}`:'',other?`其他执行端 ${other}`:''].filter(Boolean).join(' · '):executions.map(task=>task.label).filter((label,index,all)=>all.indexOf(label)===index).join('；');
+  return{label,color:running?'primary':queued||other?'secondary':'warning',reason:executions.map(task=>task.label).join('；'),finishedAt:step.finished_at};
+ }
  const attempts=view.attempts?.filter(item=>item.ordinal===ordinal||(ordinal===1&&item.ordinal===2))??[];
  const active=attempts.find(item=>item.status==='running')??attempts.find(item=>item.status==='waiting');
  if(active?.status==='running'||step.status==='running')return{label:'执行中',color:'primary',reason:'任务正在执行',finishedAt:step.finished_at};

@@ -49,3 +49,5 @@ test('项目状态可复用项目详情已经读取的状态行与出题尝试�
  expect(result[workflowId]?.attempt_summary).toEqual({has_authored:true});
  expect(result[workflowId]?.steps.map(step=>step.ordinal)).toEqual([4,5]);
 });
+
+test('归档投影保留安全飞书核对回执，不暴露整个归档私有结果',()=>{const sql=stepResultProjection('s',true);expect(sql).toContain("ordinal=8");expect(sql).toContain("{feishu_sync,verification}");expect(sql).not.toContain("THEN s.result");});

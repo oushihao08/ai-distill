@@ -57,3 +57,35 @@ test('preserves unlabelled split business amounts, terms and identifiers in both
  const source=[page(1,texts)],before=JSON.stringify(source),out=cleanScanNoisePages(source);
  expect(out.edits).toHaveLength(0);expect(documentBlocksToText(out.pages[0]!.blocks)).toBe(input);expect(JSON.stringify(source)).toBe(before);
 });
+
+test('fixed cleanup never spans neighboring table or list fields',()=>{
+ const pages:ScanNoisePage[]=[{file_id:'f',page:1,blocks:[{id:'table',kind:'table',rows:[{cells:[{text:'706'},{text:'2020.8.21 15:07'},{text:'[NO TEXT]'},{text:'4751_2025-04-25 15:24:08'}]}]},{id:'list',kind:'list',items:['[NO','TEXT]','[QR Code]']}]}];
+ const out=cleanScanNoisePages(pages);
+ expect(documentBlocksToText(out.pages[0]!.blocks)).toBe('706\t2020.8.21 15:07\t\t\n[NO\nTEXT]\n');
+ expect(out.edits.every(edit=>!edit.source_text.includes('\t'))).toBe(true);
+ expect(cleanScanNoisePages(out.pages).edits).toHaveLength(0);
+});
+
+test('only removes a barcode number when the entire line identifies a scanner barcode object',()=>{
+ const source=[page(1,['57660 [Barcode]','合同编号57660 [Barcode]，保留编号','金额57660元','开庭2025-03-26 15:20:36','[证据1]','**'])];
+ const out=cleanScanNoisePages(source),text=documentBlocksToText(out.pages[0]!.blocks);
+ expect(text).toBe('\n合同编号57660 ，保留编号\n金额57660元\n开庭2025-03-26 15:20:36\n[证据1]\n**');
+ expect(cleanScanNoisePages(out.pages).edits).toHaveLength(0);
+});
+
+test('restores only known formatting residues inside individual fields and preserves table values',()=>{
+ const pages:ScanNoisePage[]=[{file_id:'f',page:1,blocks:[{id:'p',kind:'paragraph',text:'比例$50\\%$，标记a\\_b；金额50元。'},{id:'t',kind:'table',rows:[{cells:[{text:'$5.5\\%$'},{text:'10000'},{text:'[证据1]'}]}]}]}];
+ const before=JSON.stringify(pages),out=cleanScanNoisePages(pages);
+ expect(documentBlocksToText(out.pages[0]!.blocks)).toBe('比例50%，标记a_b；金额50元。\n5.5%\t10000\t[证据1]');
+ expect(JSON.stringify(pages)).toBe(before);expect(cleanScanNoisePages(out.pages).edits).toHaveLength(0);
+ for(const edit of out.edits)expect(documentBlocksToText(pages[0]!.blocks).slice(edit.start,edit.end)).toBe(edit.source_text);
+});
+
+test('C-style codes need page-edge and repeated scanner evidence; ordinary codes and ambiguous symbols survive',()=>{
+ const pages=[page(1,['正文C89是产品型号','8836_2025-03-26 15:27:50','C89']),page(2,['正文','8836_2025-03-26 15:27:51','[ C ]60'])];
+ const out=cleanScanNoisePages(pages);
+ expect(documentBlocksToText(out.pages[0]!.blocks)).toBe('正文C89是产品型号\n\n');
+ expect(documentBlocksToText(out.pages[1]!.blocks)).toBe('正文\n\n');
+ const ordinary=[page(1,['C89','004','**','B712 210×285mm','图2.10','123456','2025-03-26 15:27:50'])];
+ expect(cleanScanNoisePages(ordinary).edits).toHaveLength(0);
+});

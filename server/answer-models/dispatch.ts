@@ -1,9 +1,9 @@
 /**
  * 职责：把已隔离的作答输入转换为独立 llm-api 请求，按冻结供应商配置调用API或隔离Codex并返回答案。
- * 关键入口：resolveAnswerConfig() 保留历史 Qwen 默认配置；createAnswerClient() 供作答队列使用。
+ * 关键入口：resolveAnswerConfig() 使用系统API默认并保留显式历史Qwen配置；createAnswerClient() 供作答队列使用。
  * 仅发送隔离后的作答指令、题面、白名单附件及允许的成果呈现清单；不透传 rubric、标答、目标分数或历史作答数据。
  */
-import {createModelApiClient,resolveModelApiConfig,resolveQwenConfig,ModelApiError,type ModelApiConfig} from '../llm-api';
+import {createModelApiClient,readModelApiDefaults,resolveModelApiConfig,resolveQwenConfig,ModelApiError,type ModelApiConfig} from '../llm-api';
 import type {AnswerClient,AnswerRequest} from './provider';
 import {SYSTEM_STEP_PROMPTS} from '../../shared/step-prompts';
 import {runAgent} from '../agent/runner';
@@ -14,6 +14,7 @@ import type {CodexAnswerConfig,AnswerExecutionConfig} from './provider';
 export type ResolvedAnswerConfig=AnswerExecutionConfig;
 export const ANSWER_SYSTEM_PROMPT=SYSTEM_STEP_PROMPTS[5];
 export function resolveAnswerConfig(raw:unknown,env:NodeJS.ProcessEnv=process.env):ResolvedAnswerConfig{
+ if(raw===undefined||raw===null||typeof raw==='object'&&!Array.isArray(raw)&&Object.keys(raw).length===0)return readModelApiDefaults(env);
  const provider=raw&&typeof raw==='object'&&!Array.isArray(raw)?(raw as Record<string,unknown>).provider:undefined;
  if(provider==='codex'){
   const value=raw as Record<string,unknown>;

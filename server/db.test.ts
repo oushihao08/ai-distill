@@ -1,4 +1,5 @@
 /** 验证连接/TLS配置、日志脱敏和后台状态事务超时；使用SQL替身及随机端口PG协议夹具，不连接业务数据库。 */
+import {readActiveWorkflowTasks} from './monitoring/worker-monitor';
 import{test,expect}from'bun:test';
 import{mkdtemp,readFile,readdir,rm}from'node:fs/promises';
 import{tmpdir}from'node:os';
@@ -36,7 +37,7 @@ test('status reads preserve rows, bound every transaction message and discard fa
 
 test('status reads stop real pg protocol stalls and evict the connection at each transaction phase',async()=>{
  const frame=(type:string,body:Buffer)=>{const length=Buffer.alloc(4);length.writeInt32BE(body.length+4);return Buffer.concat([Buffer.from(type),length,body]);};
- for(const phase of ['BEGIN','SET','SELECT','COMMIT']){
+ for(const phase of ['BEGIN','SET','SELECT','COMMIT','MONITOR']){
   const sockets=new Set<Socket>();let stalled=false,stallEnabled=true;
   const server=createServer(socket=>{
    sockets.add(socket);socket.on('close',()=>sockets.delete(socket));socket.on('error',()=>{/* The fixture expects the timed-out client to destroy its socket. */});
@@ -47,9 +48,19 @@ test('status reads stop real pg protocol stalls and evict the connection at each
      const length=pending.readInt32BE(startup?0:1),total=length+(startup?0:1);if(pending.length<total)return;
      const packet=pending.subarray(0,total);pending=pending.subarray(total);
      if(startup){startup=false;socket.write(Buffer.concat([frame('R',Buffer.alloc(4)),frame('Z',Buffer.from('I'))]));continue;}
+     if(phase==='MONITOR'&&packet[0]!==81){
+      if(stallEnabled){stalled=true;continue;}
+      const type=String.fromCharCode(packet[0]!);
+      if(type==='P')socket.write(frame('1',Buffer.alloc(0)));
+      else if(type==='B')socket.write(frame('2',Buffer.alloc(0)));
+      else if(type==='D')socket.write(frame('n',Buffer.alloc(0)));
+      else if(type==='E')socket.write(frame('C',Buffer.from('SELECT 0\0')));
+      else if(type==='S')socket.write(frame('Z',Buffer.from('I')));
+      continue;
+     }
      if(packet[0]!==81)continue;
      const sql=packet.subarray(5,-1).toString();
-     if(stallEnabled&&sql.startsWith(phase)){stalled=true;continue;}
+     if(stallEnabled&&sql.startsWith(phase==='MONITOR'?'SELECT':phase)){stalled=true;continue;}
      const command=sql.startsWith('SELECT')?'SELECT 0':sql.split(' ')[0]!;
      socket.write(Buffer.concat([frame('C',Buffer.from(command+'\0')),frame('Z',Buffer.from(command==='COMMIT'?'I':'T'))]));
     }
@@ -60,15 +71,15 @@ test('status reads stop real pg protocol stalls and evict the connection at each
   const pool=new Pool({host:'127.0.0.1',port:address.port,user:'fixture',database:'fixture',ssl:false,max:1,connectionTimeoutMillis:1000});
   const started=performance.now();
   try{
-   await expect(readStatusRows(pool,'SELECT id,status FROM example')).rejects.toThrow('Query read timeout');
-   expect(stalled).toBe(true);expect(performance.now()-started).toBeLessThan(4500);
+   await expect(phase==='MONITOR'?readActiveWorkflowTasks(pool):readStatusRows(pool,'SELECT id,status FROM example')).rejects.toThrow('Query read timeout');
+   expect(stalled).toBe(true);expect(performance.now()-started).toBeLessThan(phase==='MONITOR'?6500:4500);
    expect(pool.totalCount).toBe(0);expect(pool.waitingCount).toBe(0);
    stallEnabled=false;
-   expect(await readStatusRows(pool,'SELECT id,status FROM example')).toEqual([]);
+   expect(await (phase==='MONITOR'?readActiveWorkflowTasks(pool):readStatusRows(pool,'SELECT id,status FROM example'))).toEqual([]);
    expect(pool.totalCount).toBe(1);
   }finally{await pool.end();for(const socket of sockets)socket.destroy();await new Promise<void>(resolve=>server.close(()=>resolve()));}
  }
-},20000);
+},30000);
 test('database query and transaction logs keep SQL values and raw errors private',async()=>{
  const root=await mkdtemp(join(tmpdir(),'db-logs-')),logger=configureLogger({root,service:'api'});
  let failCommit=false;
@@ -93,7 +104,7 @@ test('database query and transaction logs keep SQL values and raw errors private
   expect(records).toContainEqual(expect.objectContaining({event:'db.query.failed',query_name:'select:ai_distill.private_rows',error_code:'23505',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.query.slow',level:'warn',query_name:'select:ai_distill.slow_probe',duration_ms:expect.any(Number),workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.pool.error',error_code:'08006'}));
-  expect(records).not.toContainEqual(expect.objectContaining({event:'db.connection.recovered'}));
+  expect(records).toContainEqual(expect.objectContaining({event:'db.connection.recovered',pool_total:expect.any(Number),pool_idle:expect.any(Number),pool_waiting:expect.any(Number),new_connection:false}));
   expect(records.filter(record=>record.level==='warn').every(record=>record.event==='db.query.slow')).toBe(true);expect(JSON.stringify(records)).not.toContain('private database message');expect(JSON.stringify(records)).not.toContain('private commit result uncertain');expect(JSON.stringify(records)).not.toContain('private sql value');expect(records.find(record=>record.event==='db.query.slow')).not.toHaveProperty('sql');expect(records.find(record=>record.event==='db.query.slow')).not.toHaveProperty('values');
  }finally{await logger.close();await pool.end();await rm(root,{recursive:true,force:true});}
 });

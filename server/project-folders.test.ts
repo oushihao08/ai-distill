@@ -237,3 +237,14 @@ test('步骤状态聚合传输后还原原rows结构并保留筛选参数',async
  const empty=await readProjectWorkflowStepRows({query:async()=>({rows:[{items:[]}],rowCount:1})} as unknown as Pool,'empty');
  expect(empty.rows).toEqual([]);expect(empty.rowCount).toBe(0);
 });
+
+
+test('无可比较分数的成功评分可显式重评，但有效评分、活动任务和已达标成果仍受保护',()=>{
+ const row=(ordinal:number,status:string,result?:any)=>({ordinal,status,result,enabled:true,active:false,library_source:true});
+ const steps=new Map([row(4,'succeeded'),row(5,'succeeded'),row(6,'succeeded',{models:[{answer_status:'succeeded',score_status:'succeeded',score:null,max_score:20,valid:false}]}),row(7,'waiting',{decision:'waiting'})].map(step=>[step.ordinal,step]));
+ expect(isWorkflowStepReady(6,steps)).toBe(true);expect(isWorkflowStepReady(7,steps)).toBe(false);
+ steps.get(6)!.active=true;expect(isWorkflowStepReady(6,steps)).toBe(false);steps.get(6)!.active=false;
+ steps.get(6)!.result.models[0].score=10;expect(isWorkflowStepReady(6,steps)).toBe(false);expect(isWorkflowStepReady(7,steps)).toBe(true);
+ steps.get(6)!.result.models[0]={answer_status:'succeeded',score_contract:'model_report_v1',evaluation_percent:null};expect(isWorkflowStepReady(6,steps)).toBe(true);
+ steps.set(7,row(7,'succeeded',{decision:'accepted'}));expect(isWorkflowStepReady(6,steps)).toBe(false);
+});

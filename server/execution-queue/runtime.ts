@@ -2,8 +2,10 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
 import type {Pool,PoolClient,QueryConfig} from 'pg';
 import {logEvent,classifyLogError} from '../logging';
+import {join} from 'node:path';
 import {storageDirectory} from '../paths';
-import {LocalQueue,InvalidLocalCheckpoint,assertJobId,type JobKind,type Lane,type QueueJob} from './store';
+import {readConcurrencySettings,readActiveConcurrencyLimit} from '../concurrency';
+import {LocalQueue,InvalidLocalCheckpoint,assertJobId,type JobKind,type Lane,type QueueJob,type QueueIntent} from './store';
 export function localQueueEnabled(){const mode=process.env.EXECUTION_QUEUE_MODE;if(mode===undefined||mode==='legacy')return false;if(mode==='local')return true;throw new Error('EXECUTION_QUEUE_MODE只支持local或legacy');}
 const queues=new Map<string,LocalQueue>();
 export function localQueue(root=storageDirectory()){let q=queues.get(root);if(!q){q=new LocalQueue(root);queues.set(root,q);}return q;}
@@ -11,30 +13,54 @@ interface Execution {queue:LocalQueue;job:QueueJob}
 const current=new AsyncLocalStorage<Execution>();
 const registrationRoot=new AsyncLocalStorage<string>();
 export function withLocalQueueRoot<T>(root:string,run:()=>T){return registrationRoot.run(root,run);}
+export function localExecutionQueue(){return current.getStore()?.queue??localQueue(registrationRoot.getStore());}
 export function withLocalExecution<T>(queue:LocalQueue,job:QueueJob,execute:()=>Promise<T>){return current.run({queue,job},execute);}
 /** 仅用于领取/失租清理的SQL；UUID经过校验，alias仅允许代码内标识。 */
 export function localClaimSql(alias:string,stale=false){if(!localQueueEnabled())return '';if(!/^[a-z_]+$/.test(alias))throw new Error('执行表别名无效');const c=current.getStore();if(stale||!c)return ' AND FALSE ';assertJobId(c.job.id);return ` AND ${alias}.id='${c.job.id}'::uuid `;}
 export function localWaitingSql(alias:string){return localQueueEnabled()&&current.getStore()?`${alias}.status IN ('waiting','running')`:`${alias}.status='waiting'`;}
 export async function registerLocalJob(db:Pick<PoolClient,'query'>,id:string,kind:JobKind,lane:Lane,route:string){
- if(!localQueueEnabled())return;const q=current.getStore()?.queue??localQueue(registrationRoot.getStore());q.intent(id,kind,lane,route);
- const row=(await db.query(`INSERT INTO ai_distill.execution_dispatches(job_id,job_kind,executor_id,lane,route) VALUES($1,$2,$3,$4,$5)
- ON CONFLICT(job_id) DO UPDATE SET job_id=excluded.job_id RETURNING executor_id`,[id,kind,q.executorId,lane,route])).rows[0];
- if(row.executor_id!==q.executorId){const local=q.get(id);if(local?.state==='pending_registration'){q.cancel(id);q.confirmCancellation(id);}}
+ return registerLocalJobs(db,[{id,kind,lane,route}]);
 }
-const cursors=new WeakMap<LocalQueue,Map<string,number>>();
-function reconciliationBatch(q:LocalQueue,key:string,items:QueueJob[]){
- const state=cursors.get(q)??new Map<string,number>();cursors.set(q,state);
- const start=(state.get(key)??0)%Math.max(1,items.length),batch=[...items.slice(start),...items.slice(0,start)].slice(0,20);
- state.set(key,start+batch.length);return batch;
+export function localQueueLimits(q:LocalQueue){const limits=readConcurrencySettings(process.env,q.root);return{agent:readActiveConcurrencyLimit(q.root)??limits.agent,api:readActiveConcurrencyLimit(join(q.root,'.execution-api-slots'))??limits.llmApi,internal:readActiveConcurrencyLimit(join(q.root,'.execution-internal-slots'))??limits.llmApi,hook:1,remote:1};}
+/** 同一业务事务的新任务先整组原子预留，再登记PG归属；调用方失败时仍按原事务回滚，不拆出部分模型。 */
+const registrations=new WeakMap<object,{queue:LocalQueue;ids:Set<string>}>();
+/** 仅在同一连接ROLLBACK已确认后调用：再次读取归属，释放确定未提交的容量，不删除意图或重放未知请求。 */
+export function forgetLocalRegistrations(db:object){registrations.delete(db);}
+export async function releaseRolledBackRegistrations(db:Pick<PoolClient,'query'>){
+ const registered=registrations.get(db);if(!registered)return;
+ try{
+  const rows=(await db.query('SELECT job_id FROM ai_distill.execution_dispatches WHERE job_id=ANY($1::uuid[])',[[...registered.ids]])).rows;
+  const committed=new Set(rows.map(row=>row.job_id));
+  for(const id of registered.ids)if(!committed.has(id))registered.queue.releaseAdmission(id);
+  registrations.delete(db);
+ }catch(error){logEvent('queue.admission_rollback_unknown',{level:'error',component:'local_execution_queue',...classifyLogError(error)});}
+}
+export async function registerLocalJobs(db:Pick<PoolClient,'query'>,entries:QueueIntent[]){
+ if(!localQueueEnabled()||!entries.length)return;
+ const q=current.getStore()?.queue??localQueue(registrationRoot.getStore());q.reserveIntents(entries,localQueueLimits(q));
+ const registered=registrations.get(db)??{queue:q,ids:new Set<string>()};for(const entry of entries)registered.ids.add(entry.id);registrations.set(db,registered);
+ for(const {id,kind,lane,route} of entries){
+  const row=(await db.query(`INSERT INTO ai_distill.execution_dispatches(job_id,job_kind,executor_id,lane,route) VALUES($1,$2,$3,$4,$5)
+  ON CONFLICT(job_id) DO UPDATE SET job_id=excluded.job_id RETURNING executor_id`,[id,kind,q.executorId,lane,route])).rows[0];
+  if(row.executor_id!==q.executorId){const local=q.get(id);if(local?.state==='pending_registration'){q.cancel(id);q.confirmCancellation(id);}}
+ }
+}
+const cursors=new WeakMap<LocalQueue,Map<string,Pick<QueueJob,'created_at'|'id'>>>();
+function reconciliationBatch(q:LocalQueue,key:'registration'|'cancel'|'finished'){
+ const state=cursors.get(q)??new Map<string,Pick<QueueJob,'created_at'|'id'>>();cursors.set(q,state);
+ const batch=q.reconciliationPage(key,state.get(key)),last=batch.at(-1);
+ if(last)state.set(key,{created_at:last.created_at,id:last.id});else state.delete(key);
+ return batch;
 }
 export async function reconcileRegistrations(pool:Pool,q:LocalQueue){
- const pending=reconciliationBatch(q,'registration',q.list().filter(j=>j.state==='pending_registration'));if(!pending.length)return;
+ const pending=reconciliationBatch(q,'registration');if(!pending.length)return;
  const rows=(await pool.query(boundedQuery('SELECT job_id,executor_id,generation FROM ai_distill.execution_dispatches WHERE job_id=ANY($1::uuid[])'),[pending.map(j=>j.id)])).rows;
- for(const row of rows)if(row.executor_id===q.executorId){if((row.generation??0)===q.get(row.job_id)?.generation)q.confirm(row.job_id);}else{q.cancel(row.job_id);q.confirmCancellation(row.job_id);}
+ const limits=localQueueLimits(q);
+ for(const row of rows)if(row.executor_id===q.executorId){const job=q.get(row.job_id);if((row.generation??0)===job?.generation)q.confirm(row.job_id,limits[job!.lane]);}else{q.cancel(row.job_id);q.confirmCancellation(row.job_id);}
 }
 // 当前pg实现支持逐查询read timeout；类型包未声明该可选属性。Pool.query错误路径会释放失败连接。
 function boundedQuery(text:string):QueryConfig&{query_timeout:number}{return{text,query_timeout:15000};}
-const tables:Record<JobKind,string>={step:'step_attempts',skill:'project_skill_attempts',library:'library_jobs',hook:'hook_runs',remote:'remote_material_operations'};
+const tables:Record<JobKind,string>={step:'step_attempts',skill:'project_skill_attempts',library:'library_jobs',hook:'hook_runs',remote:'remote_material_operations',advice:'revision_advice_attempts'};
 export async function cloudJobState(pool:Pool,q:LocalQueue,job:QueueJob){
  const row=(await pool.query(boundedQuery(`SELECT j.status FROM ai_distill.${tables[job.kind]} j JOIN ai_distill.execution_dispatches d ON d.job_id=j.id WHERE j.id=$1 AND d.executor_id=$2 AND d.generation=$3`),[job.id,q.executorId,job.generation])).rows[0];return row?.status as string|undefined;
 }
@@ -88,13 +114,14 @@ export async function synchronizeCancellation(pool:Pool,q:LocalQueue,id:string){
    else if(job.kind==='step'){
     const cancelled=(await query("UPDATE ai_distill.step_attempts SET status='skipped',error='用户取消本机任务',finished_at=now() WHERE id=$1 AND status IN ('waiting','running') RETURNING workflow_id,ordinal",[id])).rows[0];
     if(cancelled)await query("UPDATE ai_distill.steps s SET status='failed',error='本机任务已取消',finished_at=now() WHERE workflow_id=$1 AND ordinal=$2 AND status IN ('waiting','running') AND NOT EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=s.workflow_id AND a.ordinal=s.ordinal AND a.status IN ('waiting','running'))",[cancelled.workflow_id,cancelled.ordinal]);
-   }else{const table=job.kind==='skill'?'project_skill_attempts':job.kind==='hook'?'hook_runs':'remote_material_operations';await query(`UPDATE ai_distill.${table} SET status='failed' WHERE id=$1 AND status IN ('waiting','running')`,[id]);}
+   }else if(job.kind==='advice'){await query("UPDATE ai_distill.revision_advice_attempts SET status='skipped',error='用户取消返修建议',finished_at=now() WHERE id=$1 AND status IN ('waiting','running')",[id]);
+   }else{const table=tables[job.kind];await query(`UPDATE ai_distill.${table} SET status='failed' WHERE id=$1 AND status IN ('waiting','running')`,[id]);}
    await query('COMMIT');q.confirmCancellation(id);
   }catch(error){discard=error instanceof Error?error:new Error('取消同步失败');try{await query('ROLLBACK');}catch(rollbackError){logEvent('queue.rollback_failed',{level:'error',component:'local_execution_queue',...classifyLogError(rollbackError)});}throw error;}finally{db.release(discard);}
 }
 
 export async function synchronizeLocalCancellations(pool:Pool,q:LocalQueue){
- const pending=reconciliationBatch(q,'cancel',q.list().filter(j=>j.cancel_requested&&!j.cancel_synced));if(!pending.length)return;
+ const pending=reconciliationBatch(q,'cancel');if(!pending.length)return;
  // 尚未提交/已回滚的登记不逐项开启空事务；保留取消意图，后续轮次再探测。
  const owners=(await pool.query(boundedQuery('SELECT job_id FROM ai_distill.execution_dispatches WHERE job_id=ANY($1::uuid[])'),[pending.map(job=>job.id)])).rows;
  const registered=new Set(owners.map(row=>row.job_id));
@@ -108,10 +135,10 @@ export async function rearmLocalJob(db:Pick<PoolClient,'query'>,id:string){
  if(!localQueueEnabled())return;const q=current.getStore()?.queue??localQueue(registrationRoot.getStore());
  const row=(await db.query('UPDATE ai_distill.execution_dispatches SET generation=generation+1 WHERE job_id=$1 AND executor_id=$2 RETURNING generation',[id,q.executorId])).rows[0];
  if(!row)throw new Error('原尝试属于其他电脑或旧队列，不能在本机续跑');
- if(!q.get(id))throw new Error('原任务本机记录缺失，不能猜测恢复');q.rearm(id,row.generation);
+ const job=q.get(id);if(!job)throw new Error('原任务本机记录缺失，不能猜测恢复');q.rearm(id,row.generation,localQueueLimits(q)[job.lane]);
 }
 
 /** 对已结束但本地未确认的任务只读对账；不重放未知调用。 */
 export async function reconcileFinishedJobs(pool:Pool,q:LocalQueue){
- for(const job of reconciliationBatch(q,'finished',q.list().filter(j=>['needs_review','result_pending_commit'].includes(j.state)))){try{const status=await cloudJobState(pool,q,job);if(status==='succeeded')q.settle(job.id,'committed');else if(status==='failed')q.settle(job.id,'failed');else if(status==='skipped'||status==='cancelled')q.settle(job.id,job.cancel_requested?'cancelled':'stale');}catch(error){logEvent('queue.result_sync_failed',{level:'error',component:'local_execution_queue',...classifyLogError(error)});}}
+ for(const job of reconciliationBatch(q,'finished')){try{const status=await cloudJobState(pool,q,job);if(status==='succeeded')q.settle(job.id,'committed');else if(status==='failed')q.settle(job.id,'failed');else if(status==='skipped'||status==='cancelled')q.settle(job.id,job.cancel_requested?'cancelled':'stale');}catch(error){logEvent('queue.result_sync_failed',{level:'error',component:'local_execution_queue',...classifyLogError(error)});}}
 }

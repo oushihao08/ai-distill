@@ -3,7 +3,7 @@
  * 关键方法与用途：`enqueueExtraction()` 冻结解析设置并排队；`runNextExtraction()` 领取当前版本任务、复用缓存并发布页级文本。
  * 使用场景：`app.ts` 与目录入库队列派发，`worker.ts` 消费。
  */
-import {registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
+import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {runExternalCall} from '../external-call';
 import {ProjectDocumentExtractor,DocumentProviderError,type DocumentExtractor} from './document';
 import {invalidateMaterialResults} from './state';
@@ -32,7 +32,7 @@ export async function enqueueExtraction(pool: Pool, id: string, executionTarget:
   if (!steps.rowCount) throw new HTTPException(404,{message:'工作流不存在'});
   const materialCheck=await client.query("SELECT count(*)::int AS total,count(*) FILTER (WHERE lower(original_name) LIKE '%.pdf')::int AS pdfs,count(*) FILTER (WHERE lower(original_name) LIKE '%.docx')::int AS docxs FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL",[id]);
   if(!materialCheck.rows[0]?.total) throw new HTTPException(409,{message:'材料尚未入库'});
-  if(!materialCheck.rows[0]?.pdfs&&!materialCheck.rows[0]?.docxs){await client.query("UPDATE ai_distill.steps SET status='skipped',enabled=false,result=$2::jsonb,finished_at=now() WHERE workflow_id=$1 AND ordinal=2",[id,JSON.stringify({reason:'没有PDF/DOCX，无需单独提取'})]);await client.query("UPDATE ai_distill.steps SET status='succeeded',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[id]);await client.query('COMMIT');return{id:'',reused:true,completed:true,status:'skipped'};}
+  if(!materialCheck.rows[0]?.pdfs&&!materialCheck.rows[0]?.docxs){await client.query("UPDATE ai_distill.steps SET status='skipped',enabled=false,result=$2::jsonb,finished_at=now() WHERE workflow_id=$1 AND ordinal=2",[id,JSON.stringify({reason:'没有PDF/DOCX，无需单独提取'})]);await client.query("UPDATE ai_distill.steps SET status='succeeded',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[id]);await client.query('COMMIT');forgetLocalRegistrations(client);return{id:'',reused:true,completed:true,status:'skipped'};}
   if(!['succeeded','waiting','running','failed'].includes(steps.rows[0].status)) throw new HTTPException(409,{message:'材料入库尚未完成'});
   const materials=(await client.query("SELECT id,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND (lower(original_name) LIKE '%.pdf' OR lower(original_name) LIKE '%.docx') ORDER BY id",[id])).rows;
   const pdfProvider=resolvePdfProvider();
@@ -42,21 +42,21 @@ export async function enqueueExtraction(pool: Pool, id: string, executionTarget:
   if(active&&active.execution_target!==executionTarget)throw new HTTPException(409,{message:'当前 PDF 提取任务由另一执行位置处理'});
   // Keep active work unique; only successful work with the same frozen configuration is reusable.
   const previous=await client.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=2 AND execution_target=$4 AND input->'materials'=$2::jsonb AND (status IN ('waiting','running') OR (status='succeeded' AND config=$3::jsonb)) ORDER BY attempt DESC LIMIT 1",[id,JSON.stringify(materials),JSON.stringify(config),executionTarget]);
-  if(previous.rowCount){await client.query('COMMIT');return{id:previous.rows[0].id,reused:true};}
+  if(previous.rowCount){await client.query('COMMIT');forgetLocalRegistrations(client);return{id:previous.rows[0].id,reused:true};}
   await invalidateMaterialResults(client,id);
   const attempt = crypto.randomUUID();
   await client.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config,execution_target) SELECT $2,$1::uuid,2,COALESCE(max(attempt),0)+1,'waiting',jsonb_build_object('workflow_id',$1::text,'materials',$4::jsonb),$3,$5 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=2",[id,attempt,JSON.stringify(config),JSON.stringify(materials),executionTarget]);
   await client.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',error=NULL,result=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=2",[id]);
   await registerLocalJob(client,attempt,'step','api','extract');
-  await client.query('COMMIT'); return {id:attempt,reused:false};
- }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+  await client.query('COMMIT');forgetLocalRegistrations(client); return {id:attempt,reused:false};
+ }catch(error){await client.query('ROLLBACK');await releaseRolledBackRegistrations(client);throw error;}finally{client.release();}
 }
 export async function runNextExtraction(pool: Pool, root: string, processor = processMaterials, workflowId?: string, signal?:AbortSignal, executionTarget:'local'|'server'='local') {
  if(signal?.aborted)return false;
  const client=await pool.connect();let job;
  try{
   await client.query('BEGIN');await client.query("SELECT pg_advisory_xact_lock_shared(hashtext('ai_distill-dispatch'))");
-  if(signal?.aborted){await client.query('ROLLBACK');return false;}
+  if(signal?.aborted){await client.query('ROLLBACK');await releaseRolledBackRegistrations(client);return false;}
   // Recover interrupted attempts without claiming that partial work succeeded.
   const stale=await client.query(`SELECT a.id,a.workflow_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE a.ordinal=2 AND a.execution_target=$1 AND a.status='running' AND COALESCE(a.heartbeat_at,a.started_at)<now()-interval '5 minutes' ${localClaimSql('a',true)}  ORDER BY w.id,a.id FOR UPDATE OF w,a SKIP LOCKED`,[executionTarget]);
   for(const attempt of stale.rows){
@@ -64,11 +64,11 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
    {await client.query("UPDATE ai_distill.steps SET status='failed',error='执行进程中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=2 AND status='running'",[attempt.workflow_id]);await client.query("UPDATE ai_distill.steps SET status='failed',error='PDF文本提取中断，可重试',finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[attempt.workflow_id]);}
   }
   const selected=await client.query(`SELECT a.*,w.project_id FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=w.project_id AND p.deleted_at IS NULL) AND a.ordinal=2 AND a.execution_target=$2 AND ${localWaitingSql('a')} AND ($1::uuid IS NULL OR a.workflow_id=$1::uuid) ${localClaimSql('a')} ORDER BY a.started_at,a.id FOR UPDATE OF w,a SKIP LOCKED LIMIT 1`,[workflowId??null,executionTarget]);
-  job=selected.rows[0];if(!job){await client.query('COMMIT');return false;}
+  job=selected.rows[0];if(!job){await client.query('COMMIT');forgetLocalRegistrations(client);return false;}
   await client.query("UPDATE ai_distill.step_attempts SET status='running',started_at=now(),heartbeat_at=now() WHERE id=$1",[job.id]);
   await client.query("UPDATE ai_distill.steps SET status='running',started_at=now() WHERE workflow_id=$1 AND ordinal=2",[job.workflow_id]);
-  await client.query('COMMIT');
- }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+  await client.query('COMMIT');forgetLocalRegistrations(client);
+ }catch(error){await client.query('ROLLBACK');await releaseRolledBackRegistrations(client);throw error;}finally{client.release();}
  const taskContext={component:'extraction',project_id:job.project_id,workflow_id:job.workflow_id,ordinal:2,attempt_id:job.id,operation:'extraction',provider:job.config.pdf_provider,model:job.config.model};
  const restoreLogContext=enterLogContext(taskContext);
  logEvent('attempt.claimed',{level:'info',state:'running'});
@@ -110,9 +110,9 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
    await db.query('UPDATE ai_distill.steps SET status=$2,result=$3,error=$4,finished_at=now() WHERE workflow_id=$1 AND ordinal=2',[job.workflow_id,status,JSON.stringify(publication.result),error]);
    await db.query('UPDATE ai_distill.steps SET status=$2,result=$3,error=$4,finished_at=now() WHERE workflow_id=$1 AND ordinal=1',[job.workflow_id,status,JSON.stringify(publication.result),error]);
    for(const m of publication.result.materials)await db.query('UPDATE ai_distill.materials SET content_type=$2,processing_status=$3 WHERE id=$1',[m.material_id,m.content_type,status==='succeeded'?'text_extracted':'received']);
-   await db.query('COMMIT');
+   await db.query('COMMIT');forgetLocalRegistrations(db);
    logEvent('attempt.completed',{level:publication.blocked?'error':'info',state:status});
-  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
  }catch(error){
   deferLocalPublication(error);
   if(signal?.aborted){await requeueExtraction(pool,job);return true;}
@@ -125,7 +125,7 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
    } catch { console.error('无法确认产物是否已发布，保留文件等待核对。'); }
   }
   const message=error instanceof Error&&/^(PDF|MinerU|GLM-OCR|加密|未配置|识别|脱敏|原件|任务)/.test(error.message)?error.message:'材料处理失败，请检查运行依赖和识别配置';
-  const db=await pool.connect();try{await db.query('BEGIN');const current=await db.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=project_id AND p.deleted_at IS NULL) FOR UPDATE",[job.workflow_id]);const failed=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error=$2,result=$3,finished_at=now() WHERE id=$1 AND status='running'",[job.id,message,error instanceof DocumentProviderError?JSON.stringify({error:{kind:error.kind,retryable:error.retryable,http_status:error.http_status}}):null]);if(failed.rowCount){await db.query("UPDATE ai_distill.steps SET status='failed',error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=2 AND status='running'",[job.workflow_id,message]);await db.query("UPDATE ai_distill.steps SET status='failed',error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[job.workflow_id,message]);}await db.query('COMMIT');}catch(failure){await db.query('ROLLBACK');throw failure;}finally{db.release();}
+  const db=await pool.connect();try{await db.query('BEGIN');const current=await db.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=project_id AND p.deleted_at IS NULL) FOR UPDATE",[job.workflow_id]);const failed=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error=$2,result=$3,finished_at=now() WHERE id=$1 AND status='running'",[job.id,message,error instanceof DocumentProviderError?JSON.stringify({error:{kind:error.kind,retryable:error.retryable,http_status:error.http_status}}):null]);if(failed.rowCount){await db.query("UPDATE ai_distill.steps SET status='failed',error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=2 AND status='running'",[job.workflow_id,message]);await db.query("UPDATE ai_distill.steps SET status='failed',error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[job.workflow_id,message]);}await db.query('COMMIT');forgetLocalRegistrations(db);}catch(failure){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw failure;}finally{db.release();}
  }finally{cancellation.dispose();clearInterval(heartbeat);restoreLogContext();}
  return true;
 }
@@ -139,7 +139,7 @@ async function requeueExtraction(pool:Pool,job:any){
    await db.query("UPDATE ai_distill.steps SET status='waiting',started_at=NULL,error=NULL WHERE workflow_id=$1 AND ordinal IN (1,2) AND status='running'",[job.workflow_id]);
    await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[job.workflow_id]);
   }
-  await db.query('COMMIT');
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
  logEvent('attempt.requeued_for_shutdown',{level:'info',state:'waiting',reason_code:'worker_stopping'});
 }

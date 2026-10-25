@@ -24,7 +24,7 @@ export async function prepareAgentRedactionArtifacts(options:{directory:string;f
   const prior=JSON.parse(await readFile(join(options.previous_directory,'checkpoint-identity.json'),'utf8'));
   if(prior.fingerprint!==options.fingerprint)return;
   await mkdir(join(options.directory,'resume'),{mode:0o700,recursive:true});
-  for(const name of ['subject-map.json','document-plan.json','edits.json','unresolved.json','material-plan.json','progress.json']){
+  for(const name of ['subject-map.json','document-plan.json','edits.json','unresolved.json','material-plan.json','progress.json','validation-feedback.json']){
    const source=join(options.previous_directory,'output',name);
    try{
     const file=await lstat(source);

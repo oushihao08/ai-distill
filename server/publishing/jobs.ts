@@ -3,6 +3,7 @@
  * 关键方法与用途：`publishWorkflow()` 分段事务复核当前版本并执行项目交付；`readSiriserArchive()` 校验并下载五件套，`withdrawPublication()` 保留事件并撤回当前归档。
  * 使用场景：由 HTTP 工作流入口调用；同摘要重用归档记录，但仍执行项目交付脚本。
  */
+import {readWorkflowModelSet} from '../answer-models/workflow-models';
 import type {Pool} from 'pg';
 import {cachedExternalCall} from '../execution-queue/runtime';
 import {canonicalJson} from '../../shared/workflow-config';
@@ -14,7 +15,7 @@ import {fileURLToPath} from 'node:url';
 import {questionResultDirectory} from '../materials/redacted-docx-export';
 import {acceptanceSourceDigest,readAcceptanceSnapshot,buildAcceptanceInput,buildConfiguredAcceptanceConfig} from '../decisions/jobs';
 import {decideAcceptance} from '../decisions/acceptance';
-import {answerModelSetDigest,readProjectModelSet} from '../answer-models/model-set';
+import {answerModelSetDigest} from '../answer-models/model-set';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {resolveProjectDelivery,runProjectDelivery,type DeliveryInput,loadProjectArchive,type ProjectArchiveModule} from './project-delivery';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -46,7 +47,7 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=8 AND s.status='succeeded'
  WHERE w.id=$1 AND w.deleted_at IS NULL`,[workflowId])).rows[0];
  if(!row||row.parent_name!=='Work法律全场景')throw new HTTPException(404,{message:'该题尚无Work五件套归档'});
- const models=await readProjectModelSet(db,row.project_id);
+ const models=await readWorkflowModelSet(db,row.project_id,workflowId);
  const policy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[row.project_id])).rows[0]?.config;
  const snapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(models,policy),answerModelSetDigest(models));
  const digest=acceptanceSourceDigest(snapshot);
@@ -102,7 +103,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   logEvent('publication.started',{level:'info'});
   const steps=await db.query('SELECT ordinal,status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 7',[workflowId]);
   if(steps.rows.length!==4||steps.rows.some(row=>row.status!=='succeeded'))throw publicationConflict('publication_steps_incomplete','当前出题、作答、评分及达标尚未全部成功');
-  const modelSet=await readProjectModelSet(db,workflow.project_id);
+  const modelSet=await readWorkflowModelSet(db,workflow.project_id,workflowId);
   if(!modelSet.length)throw publicationConflict('publication_model_set_missing','项目尚未配置作答模型');
   const acceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
   const config=buildConfiguredAcceptanceConfig(modelSet,acceptancePolicy);
@@ -148,7 +149,7 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    db=await pool.connect();connectionHeld=true;
    await db.query('BEGIN');inTransaction=true;
    const currentWorkflow=(await db.query("SELECT w.project_id,w.title,w.source_key,p.name AS project_name,p.parent_name,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w",[workflowId])).rows[0];
-   const currentModelSet=await readProjectModelSet(db,workflow.project_id);
+   const currentModelSet=await readWorkflowModelSet(db,workflow.project_id,workflowId);
    const currentAcceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
    const currentAccepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
    const currentSnapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(currentModelSet,currentAcceptancePolicy),answerModelSetDigest(currentModelSet));

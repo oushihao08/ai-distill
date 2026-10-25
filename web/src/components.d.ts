@@ -44,6 +44,7 @@ declare module 'vue' {
     ProjectQuestionRecords: typeof import('./components/ProjectQuestionRecords.vue')['default']
     ProjectRules: typeof import('./components/rules/ProjectRules.vue')['default']
     ProjectStepRecords: typeof import('./components/ProjectStepRecords.vue')['default']
+    RevisionAdvice: typeof import('./components/RevisionAdvice.vue')['default']
     RevisionHistory: typeof import('./components/RevisionHistory.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

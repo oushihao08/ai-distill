@@ -54,7 +54,7 @@ async function loadPdfPreview() {
  pdfPreviewBusy.value = true;
  pdfPreviewError.value = '';
  try {
-  const response = await fetch(`/api/materials/${material.id}/download`, { signal: controller.signal });
+  const response = await fetch(`/api/materials/${material.id}/download`, { signal: AbortSignal.any([controller.signal,AbortSignal.timeout(35000)]) });
   if (!response.ok) {
    let message = `PDF 加载失败（HTTP ${response.status}）`;
    try {

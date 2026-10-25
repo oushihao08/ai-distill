@@ -4,10 +4,11 @@
 -->
 
 <script setup lang="ts">
-import { api } from '../api/client';
+import { api,ApiRequestError } from '../api/client';
 import { dateLabel } from '../utils/format';
 import { readAcceptanceResult, readAnswerStepResult, readScoreStepResult, statusLabels, type Attempt, type ProjectWorkflowStatus, type ScoreStepModelSummary, type Workflow, type WorkflowDetail } from '../types/api';
 import {workflowStepDisplay,type WorkflowStatusView} from '../utils/workflow-status';
+import RevisionAdvice from './RevisionAdvice.vue';
 import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
 import ModelEvaluationSummary from './ModelEvaluationSummary.vue';
 
@@ -28,6 +29,7 @@ const details=shallowRef<Record<string,ProjectQuestionStatus>>({});
 const detailErrors=shallowRef<Record<string,string>>({});
 const detailLoadingByWorkflow=shallowRef<Record<string,boolean>>({});
 const runningAction=shallowRef<string|null>(null);
+const adviceBatch=shallowRef(false);
 const batchOrdinal=shallowRef<number|null>(null),batchMessage=shallowRef(''),batchIssues=shallowRef<{id:string;title:string;reason:string}[]>([]);
 const actionMessages=shallowRef<Record<string,string>>({});
 const decisionDetailOpen=shallowRef(false);
@@ -116,7 +118,7 @@ function syncDetailsFromProject(){
 interface RowAction {ordinal:number;path:string;label:string;disabled:boolean}
 function actionsFor(flow:Workflow):RowAction[]{
  const detail=details.value[flow.id];
- if(!detail)return [];
+ if(!detail||detail.steps.some(step=>step.ordinal===8&&step.status==='succeeded'))return [];
  const status=(ordinal:number)=>detail.steps.find(step=>step.ordinal===ordinal)?.status;
  const ready=(ordinal:number)=>detail.steps.find(step=>step.ordinal===ordinal)?.ready===true;
  const active=(ordinals:number[])=>ordinals.some(ordinal=>detail.steps.find(step=>step.ordinal===ordinal)?.active===true);
@@ -194,8 +196,8 @@ async function runBatch(ordinal:number){
   batchOrdinal.value=ordinal;batchMessage.value='';batchIssues.value=[];
   const result=await api<{results:{workflow_id:string;status:string;reason?:string}[]}>(`/projects/${props.projectId}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:selected.map(flow=>flow.id)})});
   const counts:Record<string,number>={};for(const item of result.results)counts[item.status]=(counts[item.status]??0)+1;
-  batchIssues.value=result.results.filter(item=>['failed','not_found','not_ready'].includes(item.status)).map(item=>({id:item.workflow_id,title:selected.find(flow=>flow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看任务记录'}));
-  batchMessage.value=`${name}：匹配 ${selected.length} 道，排队 ${counts.queued??0}，已完成 ${counts.succeeded??0}，未就绪 ${counts.not_ready??0}，失败 ${(counts.failed??0)+(counts.not_found??0)}。`;
+  batchIssues.value=result.results.filter(item=>['failed','not_found','not_ready','capacity_exceeded'].includes(item.status)).map(item=>({id:item.workflow_id,title:selected.find(flow=>flow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看任务记录'}));
+  batchMessage.value=`${name}：匹配 ${selected.length} 道，排队 ${counts.queued??0}，已完成 ${counts.succeeded??0}，已归档跳过 ${counts.already_archived??0}，已达标跳过 ${counts.already_accepted??0}，未就绪 ${counts.not_ready??0}，容量不足未派发 ${counts.capacity_exceeded??0}，失败 ${(counts.failed??0)+(counts.not_found??0)}。`;
   emit('refresh');
  }catch(cause){batchMessage.value=cause instanceof Error?cause.message:`批量${name}失败`;await refreshDetails();}
  finally{batchOrdinal.value=null;}
@@ -204,6 +206,21 @@ onMounted(syncDetailsFromProject);
 watch([()=>props.workflows,()=>props.workflowStatus,()=>props.projectId],syncDetailsFromProject);
 watch([search,selectedTag,authorStatus,answerStatus,scoreStatus,acceptanceStatus],()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
+async function generateBatchAdvice(){
+ if(adviceBatch.value||batchOrdinal.value!==null)return;
+ adviceBatch.value=true;batchMessage.value='';batchIssues.value=[];
+ let queued=0,skipped=0,failed=0,capacity=false,unknown=false;
+ try{
+  for(const [index,flow] of filteredWorkflows.value.entries()){
+   if(details.value[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision==='accepted'){skipped++;continue;}
+   if(capacity||unknown){batchIssues.value.push({id:flow.id,title:flow.title,reason:capacity?'本机待领取容量已满，未派发':'上一请求回执未知，停止继续派发，请刷新确认'});continue;}
+   batchMessage.value=`派发返修建议 ${index+1}/${filteredWorkflows.value.length}`;
+   try{await api(`/workflows/${flow.id}/revision-advice`,{method:'POST'});queued++;}
+   catch(cause){const reason=cause instanceof Error?cause.message:'派发失败';capacity=cause instanceof ApiRequestError&&cause.code==='local_queue_full';unknown=cause instanceof ApiRequestError&&cause.outcome_unknown;if(!capacity)failed++;batchIssues.value.push({id:flow.id,title:flow.title,reason});}
+  }
+  batchMessage.value=`返修建议：已排队/复用 ${queued}，已达标跳过 ${skipped}，失败/不符合条件 ${failed}，容量不足未派发 ${batchIssues.value.filter(item=>item.reason.includes('容量')).length}`;
+ }finally{adviceBatch.value=false;}
+}
 </script>
 
 <template>
@@ -221,19 +238,19 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
   </Row>
   <p v-if="statusLoading" class="text-xs text-muted" role="status">正在读取全部题目状态及评分…</p>
   <v-alert v-if="Object.keys(detailErrors).length" type="error" density="compact">部分题目状态或评分读取失败，请刷新后重试。</v-alert>
-  <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">筛选结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部筛选结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn></Row>
+  <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">筛选结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部筛选结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null||adviceBatch" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn><v-btn size="small" variant="outlined" :loading="adviceBatch" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null||adviceBatch" @click="generateBatchAdvice">批量返修建议</v-btn></Row>
   <v-alert v-if="batchMessage" type="info" density="compact" role="status"><Column :gap="4"><span>{{ batchMessage }}</span><details v-if="batchIssues.length"><summary class="cursor-pointer">查看未执行题目</summary><ul class="my-0 pl-20"><li v-for="item in batchIssues" :key="item.id">{{ item.title }}：{{ item.reason }}</li></ul></details></Column></v-alert>
   <p v-if="!visibleWorkflows.length&&!statusLoading" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。请在“本期材料”中选择材料包并设置题目名称、场景、角色、等级、方向和标签。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-1080px">
-    <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
+    <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">返修建议</th><th scope="col">步骤操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visibleWorkflows" :key="flow.id">
       <td class="max-w-260px"><Row :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Row></td>
       <td class="max-w-220px"><RouterLink v-if="flow.library_package_id" :to="`/materials/${flow.library_package_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><RouterLink v-else-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap">{{ flow.material_count??0 }} 份</td>
       <td v-for="stage in stageColumns" :key="stage.ordinal" :class="stage.ordinal===6?'min-w-180px':'whitespace-nowrap'"><Column :gap="2"><Row wrap y="center" :gap="2"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><v-btn v-if="stage.ordinal===6&&scoreModels(flow).length" size="small" variant="text" color="primary" @click="showScoreDetail(flow)">查看评分</v-btn><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">详情</v-btn></Row><template v-if="stage.ordinal===6&&scoreModels(flow).length"><span v-for="(model,index) in scoreModels(flow)" :key="model.model_id??index" class="text-xs text-muted whitespace-nowrap">{{ modelScoreText(model) }}</span></template></Column></td>
-      <td class="whitespace-nowrap"><Row :gap="4"><v-menu><template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" size="small" variant="text" color="primary" :disabled="!actionsFor(flow).length||detailLoadingByWorkflow[flow.id]">步骤操作</v-btn></template><v-list density="compact"><v-list-item v-for="action in actionsFor(flow)" :key="action.ordinal" :title="action.label" :disabled="action.disabled||runningAction!==null" @click="runAction(flow,action)" /></v-list></v-menu><span v-if="runningAction?.startsWith(flow.id+':')" class="text-xs text-muted">提交中…</span><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-xs text-muted">读取中…</span></Row><span v-if="detailErrors[flow.id]" class="text-xs text-danger" :title="detailErrors[flow.id]">读取失败</span><span v-else-if="actionMessages[flow.id]" class="text-xs text-muted" :title="actionMessages[flow.id]">{{ actionMessages[flow.id] }}</span><span v-else-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]" class="text-xs text-muted" :title="nextAction(flow)">{{ currentState(flow) }}</span></td>
+      <td><RevisionAdvice :workflow-id="flow.id" :disabled="details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision==='accepted'||details[flow.id]?.steps.some(step=>[4,5,6].includes(step.ordinal)&&step.active)"/></td><td class="whitespace-nowrap"><Row :gap="4"><v-menu><template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" size="small" variant="text" color="primary" :disabled="!actionsFor(flow).length||detailLoadingByWorkflow[flow.id]">步骤操作</v-btn></template><v-list density="compact"><v-list-item v-for="action in actionsFor(flow)" :key="action.ordinal" :title="action.label" :disabled="action.disabled||runningAction!==null" @click="runAction(flow,action)" /></v-list></v-menu><span v-if="runningAction?.startsWith(flow.id+':')" class="text-xs text-muted">提交中…</span><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-xs text-muted">读取中…</span></Row><span v-if="detailErrors[flow.id]" class="text-xs text-danger" :title="detailErrors[flow.id]">读取失败</span><span v-else-if="actionMessages[flow.id]" class="text-xs text-muted" :title="actionMessages[flow.id]">{{ actionMessages[flow.id] }}</span><span v-else-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]" class="text-xs text-muted" :title="nextAction(flow)">{{ currentState(flow) }}</span></td>
      </tr>
     </tbody>
    </v-table>

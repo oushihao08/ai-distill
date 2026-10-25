@@ -3,7 +3,7 @@
  * 关键方法与用途：`createWorkerMonitor()` 管理启停、心跳和资源采样；`readWorkerMonitor()` 读取净化后的快照；`readActiveWorkflowTasks()` 查询运行中的 API／Agent 项目、题目与步骤。
  * 使用场景：`worker.ts` 控制任务领取，`app.ts` 提供本地资源状态与步骤占用明细。
  */
-import type {Pool} from 'pg';
+import type {Pool,QueryConfig} from 'pg';
 import {mkdir,readFile,writeFile,rename,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -11,6 +11,7 @@ import {sampleResources,adviseDispatch,type ResourceSnapshot,type ExecutorStatus
 import {listAgentProcessIds} from '../agent/processes';
 import {classifyLogError,logEvent} from '../logging';
 import {readStatusRows} from '../db';
+import {localQueueEnabled,localQueue} from '../execution-queue/runtime';
 export interface WorkerMonitorStatus {
  status:'running'|'paused'|'stopped'|'stale'|'unavailable';
  heartbeat_at:string|null;worker_pid:number|null;
@@ -24,9 +25,23 @@ export interface ActiveWorkflowTask {
 export type MaterialLibraryQueueStatus=
  |{status:'unavailable'}
  |{status:'known';totals:{queued:number;running:number;succeeded:number;failed:number;cancelled:number};items:{job_id:string;package_id:string;revision_id:string;package_name:string;kind:'intake'|'extract'|'redact';state:'queued'|'running';executor_kind:'internal'|'api'|'agent';execution_target:'local'|'server';progress:Record<string,string|number>;error_code:string|null;created_at:string|null;started_at:string|null}[]};
+/** 监控取得连接后每条只读SQL驱动读取限5秒；pg-pool在查询失败时销毁连接，不将仍在读的连接放回池。 */
+export const MONITOR_QUERY_TIMEOUT_MS=5000;
+function monitorQuery(pool:Pool,text:string,values?:unknown[]){const query:QueryConfig&{query_timeout:number}={text,query_timeout:MONITOR_QUERY_TIMEOUT_MS};return pool.query(query,values);}
+const monitorReads=new WeakMap<Pool,Map<string,Promise<unknown>>>();
+/** 只合并同一pool、同一范围的在途读；完成或失败立即清除，不缓存旧状态。 */
+function shareMonitorRead<T>(pool:Pool,key:string,read:()=>Promise<T>):Promise<T>{
+ const reads=monitorReads.get(pool)??new Map<string,Promise<unknown>>();monitorReads.set(pool,reads);
+ const prior=reads.get(key);if(prior)return prior as Promise<T>;
+ const pending=Promise.resolve().then(read).finally(()=>{reads.delete(key);});reads.set(key,pending);return pending;
+}
 export async function readActiveWorkflowTasks(pool:Pool,attemptIds?:string[]):Promise<ActiveWorkflowTask[]>{
- const result=await pool.query("SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,s.name AS step_name,a.status AS state,a.started_at,CASE WHEN a.ordinal=5 AND a.config->>'provider'='codex' THEN 'agent' WHEN a.ordinal=5 THEN 'api' WHEN a.ordinal=6 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal IN (4,6) THEN 'agent' WHEN a.ordinal=9 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=9 AND a.config->>'provider'='codex' THEN 'agent' ELSE 'unknown' END AS channel FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=a.ordinal WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status='running' AND a.ordinal IN (4,5,6,8,9) AND ($1::uuid[] IS NULL OR a.id=ANY($1::uuid[])) ORDER BY a.started_at,a.id LIMIT 500",[attemptIds??null]);
+ if(attemptIds?.length===0)return[];
+ const ids=attemptIds?[...new Set(attemptIds)].sort():undefined;
+ return shareMonitorRead(pool,`active:${ids?.join(',')??'*'}`,async()=>{
+ const result=await monitorQuery(pool,"SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,s.name AS step_name,a.status AS state,a.started_at,CASE WHEN a.ordinal=5 AND a.config->>'provider'='codex' THEN 'agent' WHEN a.ordinal=5 THEN 'api' WHEN a.ordinal=6 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal IN (4,6) THEN 'agent' WHEN a.ordinal=9 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=9 AND a.config->>'provider'='codex' THEN 'agent' ELSE 'unknown' END AS channel FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=a.ordinal WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status='running' AND a.ordinal IN (4,5,6,8,9) AND ($1::uuid[] IS NULL OR a.id=ANY($1::uuid[])) ORDER BY a.started_at,a.id LIMIT 500",[ids??null]);
  return result.rows.map(row=>({attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:row.state,channel:row.channel,started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
+ });
 }
 function safeLibraryProgress(value:unknown):Record<string,string|number>{
  if(!value||typeof value!=='object'||Array.isArray(value))return{};
@@ -41,20 +56,23 @@ function safeTimestamp(value:unknown):string|null{
  const date=new Date(value);return Number.isFinite(date.getTime())?date.toISOString():null;
 }
 /** 读取全局库任务摘要；旧数据库没有新表时返回 unavailable，不影响旧 worker/API。 */
-export async function readMaterialLibraryQueue(pool:Pool):Promise<MaterialLibraryQueueStatus>{
+export async function readMaterialLibraryQueue(pool:Pool,jobIds?:string[]):Promise<MaterialLibraryQueueStatus>{
+ if(jobIds?.length===0)return{status:'known',totals:{queued:0,running:0,succeeded:0,failed:0,cancelled:0},items:[]};
+ const ids=jobIds?[...new Set(jobIds)].sort():undefined;
+ return shareMonitorRead<MaterialLibraryQueueStatus>(pool,`library:${ids?.join(',')??'*'}`,async()=>{
  try{
-  const schema=await pool.query("SELECT to_regclass('ai_distill.library_jobs') IS NOT NULL AS available");
+  const schema=await monitorQuery(pool,"SELECT to_regclass('ai_distill.library_jobs') IS NOT NULL AS available");
   if(schema.rows[0]?.available!==true)return{status:'unavailable'};
-  const result=await pool.query(`WITH totals AS (
+  const result=await monitorQuery(pool,`WITH totals AS (
     SELECT count(*) FILTER(WHERE status='queued')::int AS queued,count(*) FILTER(WHERE status='running')::int AS running,
      count(*) FILTER(WHERE status='succeeded')::int AS succeeded,count(*) FILTER(WHERE status='failed')::int AS failed,count(*) FILTER(WHERE status='cancelled')::int AS cancelled
-    FROM ai_distill.library_jobs
+    FROM ai_distill.library_jobs WHERE ($1::uuid[] IS NULL OR id=ANY($1::uuid[]))
    ), active_jobs AS (
     SELECT j.id,j.package_id,j.revision_id,COALESCE(p.name,'（材料包已归档）') AS package_name,j.kind,j.status,j.executor_kind,j.execution_target,j.progress,j.error_code,j.created_at,j.started_at
     FROM ai_distill.library_jobs j LEFT JOIN ai_distill.library_packages p ON p.id=j.package_id
-    WHERE j.status IN ('queued','running') ORDER BY j.created_at,j.id LIMIT 100
+    WHERE j.status IN ('queued','running') AND ($1::uuid[] IS NULL OR j.id=ANY($1::uuid[])) ORDER BY j.created_at,j.id LIMIT 100
    )
-   SELECT totals.*,COALESCE((SELECT jsonb_agg(to_jsonb(active_jobs) ORDER BY active_jobs.created_at,active_jobs.id) FROM active_jobs),'[]'::jsonb) AS items FROM totals`);
+   SELECT totals.*,COALESCE((SELECT jsonb_agg(to_jsonb(active_jobs) ORDER BY active_jobs.created_at,active_jobs.id) FROM active_jobs),'[]'::jsonb) AS items FROM totals`,[ids??null]);
   const row=result.rows[0]??{},number=(value:unknown)=>{const parsed=Number(value);if(!Number.isSafeInteger(parsed)||parsed<0)throw new Error('invalid library queue count');return parsed;};
   const totals={queued:number(row.queued),running:number(row.running),succeeded:number(row.succeeded),failed:number(row.failed),cancelled:number(row.cancelled)};
   if(!Array.isArray(row.items))throw new Error('invalid library queue items');
@@ -64,6 +82,7 @@ export async function readMaterialLibraryQueue(pool:Pool):Promise<MaterialLibrar
   });
   return{status:'known',totals,items};
  }catch(error){logEvent('monitor.library_queue_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable'};}
+ });
 }
 const unavailable=():WorkerMonitorStatus=>({status:'unavailable',heartbeat_at:null,worker_pid:null,dispatch:null,advice:null,snapshot:null});
 const integer=(value:unknown)=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0;
@@ -148,6 +167,10 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
   tasksInflight=(async()=>{
    let next:ExecutorStatus[]|undefined;
   try{
+   if(localQueueEnabled()){
+    // 本机占用由本机队列投影；其他执行器和PG遗留running不参与本机调度或资源统计。
+    next=localQueue(root).activeJobs().map(job=>({state:job.state==='running'?'running' as const:'waiting' as const,authentication:'unknown' as const,quota:'unknown' as const,error:'unknown' as const,last_event:{type:job.state==='running'?'heartbeat' as const:'started' as const,at:new Date(job.updated_at).toISOString()}}));
+   }else{
     const rows=await readStatusRows(pool,"SELECT a.status,a.started_at,a.heartbeat_at,a.result#>>'{error,kind}' AS error_kind FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status IN ('waiting','running')");
     next=rows.map(row=>{
     if(row.status!=='waiting'&&row.status!=='running')throw new Error('invalid');
@@ -155,6 +178,7 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
     const date=at instanceof Date?at:new Date(at);
     return{state:row.status,authentication:'unknown',quota:'unknown',error:row.error_kind??'unknown',...(at&&Number.isFinite(date.getTime())?{last_event:{type:row.heartbeat_at?'heartbeat' as const:'started' as const,at:date.toISOString()}}:{})};
     });
+   }
    }catch(error){next=undefined;if(!tasksReadFailed)logEvent('monitor.tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});tasksReadFailed=true;}
    if(stopped)return;
    tasks=next;
@@ -182,7 +206,7 @@ export function createWorkerMonitor(pool:Pool,root:string,options:{min_available
  };
  const schedule=()=>{if(stopped||!started)return;timer=setTimeout(()=>{void refreshTasks();void refreshMemory().catch(()=>{/* Sampling failures are contained. */});schedule();},interval);timer.unref();};
  return{
-  async start(){if(started||stopped)return;started=true;await refreshMemory();void refreshTasks();schedule();},
+  async start(){if(started||stopped)return;started=true;const local=localQueueEnabled();if(local)await refreshTasks();await refreshMemory();if(!local)void refreshTasks();schedule();},
   async beforeDispatch(){if(stopped)return false;if(memoryInflight)await memoryInflight;else if(!record||Date.now()-lastSample>=interval)await refreshMemory();return record?.dispatch?.allowed??true;},
   async stop(){stopped=true;if(timer)clearTimeout(timer);await Promise.all([memoryInflight,tasksInflight]);if(record){record={...record,status:'stopped',heartbeat_at:new Date().toISOString(),dispatch:record.dispatch?{...record.dispatch,allowed:false,reason:'stopped'}:null};logEvent('worker.dispatch.stopped',{level:'info',component:'worker_monitor',state:'stopped'});await write();}},
  };

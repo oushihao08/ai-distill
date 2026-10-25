@@ -3,6 +3,8 @@
  * 主要入口：`exportCurrentMaterialDocx()` 按冻结模式归档；`readCurrentMaterialDocx()` 校验指纹后读取；`isLibraryDocxPath()` 供下载与重置共用路径契约。
  * 使用场景：由工作流 API 调用；不派发 worker 任务或写入步骤、尝试、发布与返修状态。
  */
+import {assertAuthoringMaterialBinding,assertOriginalManifest} from '../publishing/feishu-verification';
+
 import {canonicalJson} from '../../shared/workflow-config';
 import {createHash,randomUUID} from 'node:crypto';
 import {chmod,lstat,mkdir,readFile,realpath,rename,rm,writeFile} from 'node:fs/promises';
@@ -206,11 +208,30 @@ async function contextForExport(db:Pool|PoolClient,workflowId:string):Promise<Ex
 }
 
 /** Archive one DOCX per current material using the source mode frozen on the question; never changes workflow steps. */
-export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,storageRoot:string,projectExportsRoot:string,expectedMode?:'redacted'|'original',options:{allowPublicationInProgress?:boolean}={}){
+export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,storageRoot:string,projectExportsRoot:string,expectedMode?:'redacted'|'original',options:{allowPublicationInProgress?:boolean;expectedAuthoringInput?:unknown}={}){
  const db=await pool.connect();let tx=false;const changes:FileChange[]=[];
  try{
   await db.query('BEGIN');tx=true;
   const context=await contextForExport(db,workflowId);
+  // 飞书交付必须与有效出题尝试使用同一来源；普通材料导出仍可在出题前使用。
+  if(options.expectedAuthoringInput){
+   const source=await readQuestionMaterials(db,workflowId);
+   assertAuthoringMaterialBinding(options.expectedAuthoringInput,source);
+   let expected:{id:string;sha256:string;size_bytes?:number}[];
+   if(source.origin.kind==='library_v1'){
+    const rows=(await db.query(`SELECT f->>'material_id' AS id,f->>'source_sha256' AS sha256,a.size_bytes
+     FROM ai_distill.question_library_sources s CROSS JOIN LATERAL jsonb_array_elements(s.snapshot_manifest->'files') f
+     JOIN ai_distill.artifacts a ON a.id=(f->>'source_artifact_id')::uuid AND a.workflow_id=s.workflow_id AND a.sha256=f->>'source_sha256'
+     WHERE s.workflow_id=$1`,[workflowId])).rows;
+    expected=rows.map(row=>({id:row.id,sha256:row.sha256,size_bytes:Number(row.size_bytes)}));
+   }else{
+    const frozen=(await db.query('SELECT input FROM ai_distill.step_attempts WHERE id=$1 AND workflow_id=$2 AND ordinal=9 AND status=\'succeeded\'',[source.origin.redaction_attempt_id,workflowId])).rows[0]?.input;
+    expected=(frozen?.materials??[]).map((file:any)=>({id:file.material_id,sha256:file.source_sha256}));
+   }
+   assertOriginalManifest(expected,context.originals);
+   // 原件集合按冻结源artifact元数据核对；DOCX实际使用的脱敏正文已由来源读取器校验。
+   // 下方原件备份路径继续校验存在文件的实际字节/SHA，保留脱敏跨机器导出的缺件兼容。
+  }
   const materialMode=context.material_mode??'redacted',artifactKind=materialMode==='original'?'original_docx':'redacted_docx';
   if(expectedMode&&materialMode!==expectedMode)throw new HTTPException(409,{message:expectedMode==='redacted'?'当前题目冻结为未脱敏材料，请使用材料 DOCX 导出入口':'当前题目冻结为脱敏材料，不能按原文 DOCX 导出'});
   const location=await archiveLocation(projectExportsRoot,context.parent_name||context.project_name,context.phase_name??'',context.phase_name?(context.source_key||context.title):context.title,materialMode);

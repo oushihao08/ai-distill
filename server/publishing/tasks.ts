@@ -3,14 +3,16 @@
  * 入口：enqueuePublication()供HTTP；runNextPublication()供local/legacy worker。
  * 边界：冻结达标/项目/脚本身份，复用同输入活动任务；未知调用不重放，不自动派发其他步骤。
  */
+import {assertWorkflowNotArchived} from '../workflow-archive-guard';
+import {releaseRolledBackRegistrations,forgetLocalRegistrations,localClaimSql,localWaitingSql,registerLocalJob,withLocalQueueRoot,deferLocalPublication,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {fileURLToPath} from 'node:url';
 import {canonicalJson} from '../../shared/workflow-config';
-import {localClaimSql,localWaitingSql,registerLocalJob,withLocalQueueRoot,deferLocalPublication,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {exportCurrentMaterialDocx} from '../materials/redacted-docx-export';
 import {writeArchivedWorkflowWorkbook} from '../reporting/archive-workbook';
 import {publishWorkflow,type PublicationBinding} from './jobs';
+import {syncArchivedWorkflowToFeishu} from './feishu';
 import {resolveProjectDelivery,loadProjectArchive} from './project-delivery';
 import {watchTaskCancellation} from '../task-signal';
 import {logEvent,classifyLogError,withLogContext} from '../logging';
@@ -32,7 +34,7 @@ async function publicationBinding(db:Pick<Pool,'query'>,workflowId:string):Promi
 export async function enqueuePublication(pool:Pool,workflowId:string,root:string,identity?:Identity,exportsRoot=assetRoot){
  const db=await pool.connect();
  try{
-  await db.query('BEGIN');
+  await db.query('BEGIN');await assertWorkflowNotArchived(db,workflowId);
   const binding=await publicationBinding(db,workflowId);
   const projectArchive=await loadProjectArchive(await resolveProjectDelivery(binding.parent_name));
   const legacyAgentConfig=await projectArchive?.readConfig?.(db,binding.project_id,workflowId)??null;
@@ -40,14 +42,14 @@ export async function enqueuePublication(pool:Pool,workflowId:string,root:string
   const previous=(await db.query("SELECT id,input FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
   if(previous){
    if(canonicalJson(previous.input)!==canonicalJson(input))throw new HTTPException(409,{message:'此题已有其他输入的交付任务，请先核对原任务'});
-   await db.query('COMMIT');return{id:String(previous.id),reused:true};
+   await db.query('COMMIT');forgetLocalRegistrations(db);return{id:String(previous.id),reused:true};
   }
   const id=crypto.randomUUID();
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,8,COALESCE(max(attempt),0)+1,'waiting',$3,'{}'::jsonb FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=8",[workflowId,id,JSON.stringify(input)]);
   await withLocalQueueRoot(root,()=>registerLocalJob(db,id,'step','internal','publish'));
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=8",[workflowId]);
-  await db.query('COMMIT');return{id,reused:false};
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);return{id,reused:false};
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
 }
 
 interface Dependencies {publish?:typeof publishWorkflow;docx?:typeof exportCurrentMaterialDocx;workbook?:typeof writeArchivedWorkflowWorkbook}
@@ -66,13 +68,13 @@ export async function runNextPublication(pool:Pool,root:string,signal:AbortSigna
    JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL
    WHERE a.ordinal=8 AND ${localWaitingSql('a')} ${localClaimSql('a')} AND ($1::uuid[] IS NULL OR a.workflow_id=ANY($1))
    ORDER BY a.started_at,a.id FOR UPDATE OF a SKIP LOCKED LIMIT 1`,[workflowIds??null])).rows[0];
-  if(!job){await db.query('COMMIT');return false;}
+  if(!job){await db.query('COMMIT');forgetLocalRegistrations(db);return false;}
   if(!failure){
    await db.query("UPDATE ai_distill.step_attempts SET status='running',started_at=COALESCE(started_at,now()),heartbeat_at=now() WHERE id=$1",[job.id]);
    await db.query("UPDATE ai_distill.steps SET status='running',started_at=COALESCE(started_at,now()),error=NULL WHERE workflow_id=$1 AND ordinal=8",[job.workflow_id]);
   }
-  await db.query('COMMIT');
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  await db.query('COMMIT');forgetLocalRegistrations(db);
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
  const cancellation=watchTaskCancellation(pool,job.id,signal);
  const taskSignal=cancellation.signal;
  return withLogContext({component:'publishing',workflow_id:job.workflow_id,attempt_id:job.id,ordinal:8},async()=>{
@@ -96,6 +98,11 @@ export async function runNextPublication(pool:Pool,root:string,signal:AbortSigna
      return{material_docx:{archive_path:docx.archive_path,artifact_count:docx.artifacts.length},archive_workbook:{archive_path:workbook.archive_path,sha256:workbook.sha256,filename:workbook.filename}};
     },
    });
+   // 外部提交发生在本地归档提交之后；失败独立记账，不能把已完成归档改为失败。
+   if(!dependencies.publish){
+    try{await syncArchivedWorkflowToFeishu(pool,job.workflow_id,root,job.input.exports_root??assetRoot);}
+    catch(error){logEvent('publication.feishu_receipt_failed',{level:'warn',...classifyLogError(error)});}
+   }
   }catch(error){
    deferLocalPublication(error);
    const diagnosticId=(error as {diagnostic_id?:unknown})?.diagnostic_id;
