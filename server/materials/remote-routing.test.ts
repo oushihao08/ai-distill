@@ -25,7 +25,7 @@ test('本机材料 worker 仅查询 local 任务',async()=>{
 test('服务器材料 worker 仅查询 server 任务',async()=>{
  const intake=emptyQueue();expect(await runNextIntake(intake.pool,'/unused',undefined,undefined,'server')).toBe(false);
  const extraction=emptyQueue();expect(await runNextExtraction(extraction.pool,'/unused',undefined,undefined,undefined,'server')).toBe(false);
- const redaction=emptyQueue();expect(await runNextRedaction(redaction.pool,'/unused',undefined,undefined,'api','server')).toBe(false);
+ const redaction=emptyQueue();expect(await runNextRedaction(redaction.pool,'/unused',undefined,'api','server')).toBe(false);
  for(const queue of [intake,extraction,redaction]){
   const claims=queue.calls.filter(call=>call.sql.includes('FOR UPDATE OF w,a SKIP LOCKED'));
   expect(claims.every(call=>call.sql.includes('a.execution_target=')&&call.values.includes('server'))).toBe(true);

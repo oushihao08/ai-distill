@@ -15,7 +15,14 @@ export function ensurePages(pages:Page[],sourceSha:string){
  return{version:1,source_sha256:sourceSha,pages};
 }
 
-/** 提取发布前复用脱敏后的保守清理；有改动才保存原始OCR对象与逐项原文编辑，原件摘要及页/表结构不变。 */
+/**
+ * 新材料库的提取发布入口：普通runner与MinerU桌面导入共用，发生在Agent脱敏之前。
+ * cleanScanNoisePages内部调用findScanNoiseEdits，与Agent完成后计划编译使用同一规则，外层发布流程不同。
+ * 这里只做确定扫描垃圾/格式清理和结构投影校验，不运行Agent、不化名、不证明OCR或业务内容逐字准确。
+ * 有编辑时另存原始OCR文本对象，正文对象的cleanup记录原始对象ID/摘要和原页精确编辑；无编辑不额外存副本。
+ * 上传原件及其摘要不变；调用方在原事务中发布清理正文和匹配的text_sha256，不回写历史文档或题目快照。
+ * 原始OCR与审计用于追溯，不会自动阻止误删；scan-noise.ts所述页尾业务数字保护遗漏也影响本入口。
+ */
 export async function storeExtractedDocument(db:Pick<PoolClient,'query'>,input:ReturnType<typeof ensurePages>){
  const original=ensurePages(input.pages,input.source_sha256);
  const cleaned=cleanScanNoisePages(original.pages.map(p=>({file_id:input.source_sha256,page:p.page,blocks:p.structure!})));

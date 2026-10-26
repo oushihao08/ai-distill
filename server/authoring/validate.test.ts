@@ -1,44 +1,26 @@
-/** 验证题目草稿、附件、rubric 与标答隐私的结构约束。
- * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
- */
+/** 验证出题直接接收、原字段保留和兼容派生；不调用数据库或模型，不评价题目专业质量。 */
 import {test,expect} from 'bun:test';
-import {validateDraft,type Draft} from './validate';
+import {validateDraft,type Draft} from './receive';
 const materials=[{id:'attachment-1',text:'合同金额100元'}];
-const draft:Draft={task_name:'金额核算',task_type:'合同计算',header:{industry_l1:'待确认',industry_l2:'待确认',task_form:'single_round',occupation_l1:'待确认',occupation_l2:'待确认'},question:'合同金额多少？',attachment_ids:['attachment-1'],rubric:[{id:'amount',criterion:'准确写明100元；金额错误得零分',max_score:1}],answer_approach:'核对金额条款',reference_answer:'100元',answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}};
-test('新出题契约保留完整扣分否决规则和业务元数据',()=>{
- const rubric=[{id:'deduct',criterion:'金额错误',rule:'出现错误扣7分',metadata:{dimension:'专业质量',score:-7}},{id:'veto',criterion:'不可用',rule:'单独否决，不计入分数',metadata:{score:null}}];
- expect(validateDraft({...draft,rubric},materials,'model_report_v1').rubric).toEqual(rubric);
- expect(()=>validateDraft({...draft,rubric},materials)).toThrow();
+const draft:Draft={task_name:'金额核算',task_type:'合同计算',header:{industry_l1:'行业',industry_l2:'细分',task_form:'single_round',occupation_l1:'法律',occupation_l2:'律师'},question:'合同金额多少？',attachment_ids:['attachment-1'],rubric:[{id:'amount',criterion:'金额准确',max_score:1}],answer_approach:'核对金额条款',reference_answer:'100元',answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}};
+test('通用和model_report题包完整保留模型内容，不再设置内容准入',()=>{
+ const raw={...draft,extra_field:{source:'作者说明'},rubric:[{id:'x',criterion:'业务判据',rule:'错误扣7分',metadata:{score:-7}},{id:'x',criterion:'另一个判据',rule:''}]};
+ for(const contract of ['legacy','model_report_v1'] as const)expect(validateDraft(raw,materials,contract)).toEqual(raw);
 });
-test('Work 出题保留专业映射且外部登记身份可缺省',()=>{
- expect(()=>validateDraft({...draft,rubric:[{id:'amount',criterion:'完整判据',rule:'准确核算',metadata:{score:7}}]},materials,'model_report_v1',{requireHarborMetadata:true})).toThrow('project_context.harbor');
- const harborMetadata={domain_l2:'合同审查',capabilities:'合同风险识别',vl_dependency:'否',source_note:'本题脱敏卷宗',tools:'Word',task_complexity:'L2',tool_set:[],skill_set:[],expected_tool_dependencies:[],expected_skill_dependencies:[],deliverables:[{path:'成果.docx',description:'法律审查意见'}]};
- const rubric=[{id:'amount',criterion:'完整判据',rule:'准确核算',metadata:{score:7,project_context:{harbor:{task_id:'LAW-001',org:'work',metadata:harborMetadata,input_files:[{path:'材料-001.md',description:'脱敏卷宗正文'}]}}}}];
- expect(validateDraft({...draft,rubric},materials,'model_report_v1',{requireHarborMetadata:true}).rubric).toEqual(rubric);
- for(const identity of [{task_id:null,org:null},{}]){
-  const pending=structuredClone(rubric);const mapping=pending[0].metadata.project_context.harbor as Record<string,unknown>;delete mapping.task_id;delete mapping.org;Object.assign(mapping,identity);
-  expect(validateDraft({...draft,rubric:pending},materials,'model_report_v1',{requireHarborMetadata:true}).rubric).toEqual(pending);
- }
- for(const mutate of [(h:any)=>{h.metadata=null;},(h:any)=>{delete h.metadata.capabilities;},(h:any)=>{h.input_files=[];}]){
-  const invalid=structuredClone(rubric);mutate(invalid[0].metadata.project_context.harbor);
-  expect(()=>validateDraft({...draft,rubric:invalid},materials,'model_report_v1',{requireHarborMetadata:true})).toThrow();
- }
- expect(()=>validateDraft({...draft,rubric},materials,'legacy',{requireHarborMetadata:true} as any)).toThrow('model_report_v1');
+test.each([{ids:[]},{ids:['foreign']},{ids:['attachment-1','attachment-1']}])('直接保存原附件引用 $ids，转换器不改写它',({ids})=>{
+ const raw={...draft,attachment_ids:ids};expect(validateDraft(raw,materials).attachment_ids).toEqual([...ids]);
 });
-test('新出题契约仍拒绝缺规则、重复编号及非法业务元数据',()=>{
- for(const rubric of [[{id:'x',criterion:'判断',rule:''}],[{id:'x',criterion:'判断',rule:'按规则',metadata:{bad:Infinity}}],[{id:'x',criterion:'判断',rule:'规则'},{id:'x',criterion:'判断',rule:'规则'}]])expect(()=>validateDraft({...draft,rubric},materials,'model_report_v1')).toThrow();
+test('缺少标答、业务映射、格式和分值不阻断题包保存',()=>{
+ const raw={...draft,reference_answer:'',rubric:[{id:'x',criterion:'判断',rule:'',metadata:{score:5}}],answer_requirements:{input_mode:'image',output_mode:'file',tools:['python']}};
+ expect(validateDraft(raw,materials,'model_report_v1',{requireHarborMetadata:true})).toMatchObject(raw);
 });
-test('complete draft keeps reference private and strips model selected versions',()=>{
- const result=validateDraft({...draft,question_version:'forged',quality_check:{passed:true}},materials);
- expect(result).toEqual(draft);expect(result).not.toHaveProperty('quality_check');expect(result).not.toHaveProperty('question_version');
+test('转换不修改原对象，未知字段保留；版本最终由执行器而非模型决定',()=>{
+ const raw={...draft,question_version:'作者自填',quality_check:{passed:true}},before=structuredClone(raw);
+ const result=validateDraft(raw,materials);expect(result).toEqual(before);expect(raw).toEqual(before);expect(result).not.toBe(raw);
 });
-test('missing or foreign attachments and duplicated rubric IDs are rejected',()=>{
- for(const raw of [{...draft,attachment_ids:[]},{...draft,attachment_ids:['foreign']},{...draft,attachment_ids:['attachment-1','attachment-1']},{...draft,rubric:[draft.rubric[0],draft.rubric[0]]}])expect(()=>validateDraft(raw,materials)).toThrow();
+test('缺省字段只补下游兼容形态，不添加完成声明或专业内容',()=>{
+ const result:any=validateDraft({task_name:'待完成'},materials);expect(result.question).toBe('');expect(result.reference_answer).toBe('');expect(result.attachment_ids).toEqual(['attachment-1']);expect(result).not.toHaveProperty('content_status');
 });
-test('empty full reference and invalid score cannot become a valid draft',()=>{
- expect(()=>validateDraft({...draft,reference_answer:' '},materials)).toThrow();
- for(const max_score of [0,-1,NaN,Infinity])expect(()=>validateDraft({...draft,rubric:[{...draft.rubric[0],max_score}]},materials)).toThrow();
-});
-test('unsupported delivery requirements are rejected before publication',()=>{
- expect(()=>validateDraft({...draft,answer_requirements:{input_mode:'text',output_mode:'file',tools:['python']}},materials)).toThrow('被测作答器只接收文字');
+test('非对象JSON无法成为题包，错误明确且不冒充保存成功',()=>{
+ for(const value of [null,[],1,'文本'])expect(()=>validateDraft(value,materials)).toThrow('JSON对象');
 });

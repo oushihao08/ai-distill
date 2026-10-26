@@ -1,5 +1,6 @@
-/** 验证MinerU失败阶段、云端排队状态和私有批次定位记录；只用临时文件及HTTP替身，不访问数据库或真实供应商。 */
-import {expect,test} from 'bun:test';
+/** 验证MinerU失败阶段、私有批次记录及成功后清理失败的隔离；只用临时文件、合成ZIP和HTTP/文件操作替身，不访问数据库或真实供应商。 */
+import {expect,test,spyOn} from 'bun:test';
+import * as fs from 'node:fs/promises';
 import {mkdtemp,readFile,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -31,4 +32,31 @@ test('retains private batch identity and durable failure phase without logging u
   const content=JSON.stringify(records);
   expect(content).not.toContain('PRIVATE');expect(content).not.toContain('private-batch-id');expect(JSON.stringify(metadata)).not.toContain('PRIVATE');
  }finally{await logger.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('successful extraction survives diagnostic cleanup failure without another provider request',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'mineru-cleanup-')),path=join(root,'input.docx');
+ let cleanup:ReturnType<typeof spyOn>|undefined,calls=0;
+ try{
+  await writeFile(path,'synthetic docx');
+  const contentPath=join(root,'content_list.json'),zipPath=join(root,'result.zip');
+  await writeFile(contentPath,JSON.stringify([{type:'text',text:'合成正文'}]));
+  expect(await Bun.spawn(['zip','-qj',zipPath,contentPath],{stdout:'ignore',stderr:'ignore'}).exited).toBe(0);
+  const zip=await readFile(zipPath),originalRm=fs.rm;
+  cleanup=spyOn(fs,'rm').mockImplementation(async(path,options)=>{
+   if(String(path).includes('.mineru-diagnostics'))throw Object.assign(new Error('synthetic cleanup failure'),{code:'EACCES'});
+   return originalRm(path,options);
+  });
+  const fetcher=(async(_input:unknown,options:any)=>{
+   calls++;
+   if(options?.method==='POST')return Response.json({code:0,data:{batch_id:'synthetic',file_urls:['https://upload.example/file']}});
+   if(options?.method==='PUT')return new Response(null,{status:200});
+   if(calls===3)return Response.json({code:0,data:{extract_result:[{file_name:'input.docx',state:'done',full_zip_url:'https://download.example/result.zip'}]}});
+   return new Response(zip);
+  }) as typeof fetch;
+  const result=await new MineruApiDocxExtractor({MINERU_KEY:'synthetic',STORAGE_DIR:root},{fetcher}).extract(path);
+  expect(result.pages[0]?.text).toBe('合成正文');
+  expect(calls).toBe(4);
+  expect(await readdir(join(root,'.mineru-diagnostics'))).toHaveLength(1);
+ }finally{cleanup?.mockRestore();await rm(root,{recursive:true,force:true});}
 });

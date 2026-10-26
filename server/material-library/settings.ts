@@ -22,7 +22,11 @@ function open(root:string){
 export async function readLibraryProcessingSettings(pool:Pick<Pool,'query'>,root=storageDirectory()){
  if(existsSync(join(root,'material-library','processing-settings.sqlite3'))){
   const db=open(root);
-  try{const row=db.query('SELECT settings,version FROM processing_settings WHERE id=1').get() as {settings:string;version:number}|null;if(row)return{processing_settings:validateProcessingSettings(JSON.parse(row.settings)),lock_version:row.version};}
+  try{const row=db.query('SELECT settings,version FROM processing_settings WHERE id=1').get() as {settings:string;version:number}|null;if(row){
+   // 只读投影排除已删除的旧模板，不改写SQLite原设置或历史任务；后续显式保存仅接受当前Agent模板。
+   const raw=JSON.parse(row.settings);
+   return{processing_settings:validateProcessingSettings({...raw,redaction_templates:libraryRedactionTemplates(raw)}),lock_version:row.version};
+  }}
   finally{db.close();}
  }
  const defaults=await buildDefaultProcessingSettings(pool);
@@ -34,7 +38,7 @@ export function saveLibraryProcessingSettings(root:string,version:number,value:u
  const raw=validateProcessingSettings(value);
  const templates=raw.redaction_templates as Array<{workflow:string}>|undefined;
  if(templates?.some(template=>template.workflow!=='codex_plan'))throw new HTTPException(400,{message:'字段映射模板已退役，新设置仅支持Agent化名模板'});
- const settings=validateProcessingSettings({...raw,redaction_templates:libraryRedactionTemplates(raw).filter(t=>t.id!=='mask')}),db=open(root);let active=false;
+ const settings=validateProcessingSettings({...raw,redaction_templates:libraryRedactionTemplates(raw)}),db=open(root);let active=false;
  try{
   db.exec('BEGIN IMMEDIATE');
   active=true;

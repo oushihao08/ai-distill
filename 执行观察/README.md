@@ -4,12 +4,15 @@
 
 本目录记录仓库级多阶段任务的事实、尝试与证据，避开项目材料和 skill 输入目录。JSON 为事实源，任务内总览由 Trace 工具生成。
 
+- [材料代码质量修复](material-quality-quickfix-20261026/总览.md)：提取清理与下载边界、检查点v2、问题页子集复识别、回滚原件安全回收及遗留代码维护；保留用户确认的垃圾清理设计。隔离验证不代表真实供应商或PG并发验收。
+
 - [豆包第六期首次评分难度复判（2026-10-25）](doubao6-first-score-difficulty-20261025/报告.md)：14题历史出题、作答与评分绑定，已证实的得分结构问题及skill/期次提示词建议；未实施或重跑模型。
 
 - [运行卡顿问题清单（2026-10-23）](运行卡顿问题清单-20261023.md)：数据库等待、模型阶段耗时、评分断流、遗留状态和日志观测缺口的调查快照、证据边界及修复验收建议；不是 Trace 生成总览。
 
 | 任务目录 | 用途 |
 | --- | --- |
+| [deepseek-score-compare-20261026](deepseek-score-compare-20261026/总览.md) | 第六期10道达标题的DeepSeek API独立对照评分；原输入指纹一致，不改业务评分。 |
 | [scoring-project-standards-20261025](scoring-project-standards-20261025/总览.md) | 三个业务期次评分提示词与项目规范对齐，HTTP保存及回读；不重评历史。 |
 | [work-two-ready-20261025](work-two-ready-20261025/总览.md) | 固定Work的L2劳务合同、L3承揽合同纠纷两包，复用成功提取，修复Agent脱敏并在豆包第六期完成出题、作答和独立评分。 |
 | [doubao-phase6-library-audit-20261023](doubao-phase6-library-audit-20261023/总览.md) | 豆包第六期 questions 目录 80 个材料包的入库、提取、Agent 脱敏及加载；按目录标题匹配，不创建题目或移除无关关系。 |
@@ -30,3 +33,9 @@
 
 本次飞书一致性目标沿用已有等效记录：[task.json](../.storage/automation-runs/feishu-phase6-reconcile-20261025/task.json)，同目录保留70题补传及对账证据，不重复创建任务台账。
 | [doubao6-extract-deadline-20261025](doubao6-extract-deadline-20261025/总览.md) | 豆包第六期四包材料提取超时诊断、65分钟外部提取预算修复及安全重启待办。 |
+
+- [出题作答评分三项维护重构](author-answer-score-refactor-20261026/方案.md)：共用心跳、删除不可达评分分支及展开密集代码；隔离测试证据见同目录总览。
+
+- [Worker与数据库卡顿复核](worker-hang-inspection-20261026/最终复核.md)：六项逐条核实、长期等待日志及具体修改点；只读调查，未实施修复。
+
+- [Worker修改前后同条件对照](worker-hang-inspection-20261026/前后对照.md)：每版10轮、400题本地协议夹具，包含性能代价；不代表长期生产验收。

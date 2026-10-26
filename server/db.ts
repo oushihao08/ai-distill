@@ -6,6 +6,7 @@
 import {localQueueEnabled,localQueue} from './execution-queue/runtime';
 import {storageDirectory} from './paths';
 import { Pool,type QueryConfig } from 'pg';
+import {createHash} from 'node:crypto';
 import {classifyLogError,logEvent} from './logging';
 function queryName(value:unknown){
  const sql=typeof value==='string'?value:value&&typeof value==='object'&&'text'in value&&typeof value.text==='string'?value.text:'';
@@ -73,17 +74,19 @@ export function createPool(env = process.env) {
   const requireBinding = url.searchParams.get('channel_binding') === 'require';
   for (const key of ['sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'channel_binding']) url.searchParams.delete(key);
   const pool = new Pool({ ...(localQueueEnabled()?{application_name:`ai-distill-executor:${localQueue(storageDirectory(env)).executorId}`}:{application_name:'ai-distill-legacy'}), connectionString: url.toString(), ssl: { rejectUnauthorized: true }, enableChannelBinding: requireBinding, max: 4, idleTimeoutMillis: 10000, connectionTimeoutMillis: 15000 });
-  const clients=new WeakSet<object>(),freshClients=new WeakSet<object>();let connectionUnavailable=false;
+  const clients=new WeakSet<object>(),freshClients=new WeakSet<object>(),acquiredAt=new WeakMap<object,number>();let connectionUnavailable=false;
   pool.on('connect',(client:object)=>{freshClients.add(client);});
   const installClient=(client:any)=>{
     if(!client||typeof client!=='object'||clients.has(client))return;clients.add(client);
     const original=client.query.bind(client);
     client.query=(...args:any[])=>{
+      const sql=typeof args[0]==='string'?args[0]:args[0]?.text??'';
+      const query_id=createHash('sha256').update(sql).digest('hex').slice(0,16);
       const name=queryName(args[0]),started=performance.now(),callbackIndex=args.findIndex(arg=>typeof arg==='function');
       const finish=(error?:unknown)=>{
         const duration_ms=Math.round(performance.now()-started);
-        if(error){const code=safeDbCode(error);logEvent('db.query.failed',{level:'error',query_name:name,duration_ms,...classifyLogError(error),...(code?{error_code:code}:{})});}
-        else if(duration_ms>=1000)logEvent('db.query.slow',{level:'warn',query_name:name,duration_ms});
+        if(error){const code=safeDbCode(error);logEvent('db.query.failed',{level:'error',query_name:name,query_id,duration_ms,...classifyLogError(error),...(code?{error_code:code}:{})});}
+        else if(duration_ms>=1000)logEvent('db.query.slow',{level:'warn',query_name:name,query_id,duration_ms});
         const event=transactionEvent(name);
         if(event){const outcomeUnknown=Boolean(error&&(event==='transaction.committed'||event==='transaction.rolled_back'));logEvent(outcomeUnknown?'transaction.outcome_unknown':error?'transaction.failed':event,{level:error?'error':event==='transaction.rolled_back'?'warn':'info',transaction_name:name,duration_ms,...(outcomeUnknown?{state:'unknown'}:{}),...(error?classifyLogError(error):{})});}
       };
@@ -106,7 +109,8 @@ export function createPool(env = process.env) {
     try{return originalConnect(...args).then((client:any)=>{acquired(undefined,client);return client;},(error:unknown)=>{acquired(error);throw error;});}
     catch(error){acquired(error);throw error;}
   };
-  pool.on('acquire',(client:any)=>{installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:freshClients.has(client)});connectionUnavailable=false;}});
+  pool.on('release',(_error:unknown,client:object)=>{const started=acquiredAt.get(client);acquiredAt.delete(client);if(started!==undefined){const duration_ms=Math.round(performance.now()-started);if(duration_ms>=1000)logEvent('db.connection.held',{level:'warn',duration_ms,pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount});}});
+  pool.on('acquire',(client:any)=>{acquiredAt.set(client,performance.now());installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:freshClients.has(client)});connectionUnavailable=false;}});
   pool.on('error',(error:unknown)=>{connectionUnavailable=true;const code=safeDbCode(error);logEvent('db.pool.error',{level:'error',...classifyLogError(error),...(code?{error_code:code}:{})});console.error('数据库连接异常，请检查连接配置或网络；连接信息未输出。');});
   return pool;
 }

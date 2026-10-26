@@ -67,8 +67,8 @@ test('selects existing provider lanes from frozen files and settings',()=>{
  expect(chooseLibraryExecutor('intake',[],null)).toBe('internal');
  expect(chooseLibraryExecutor('extract',[{format:'txt'}],null)).toBe('internal');
  expect(chooseLibraryExecutor('extract',[{format:'pdf'}],null)).toBe('api');
- expect(chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'declared_redacted'}],{provider:'api'})).toBe('internal');
- expect(chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'model'}],{provider:'api'})).toBe('api');
+ expect(()=>chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'declared_redacted'}],{provider:'api'})).toThrow('已删除');
+ expect(()=>chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'model'}],{provider:'api'})).toThrow('已删除');
  expect(chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'model'}],{provider:'codex'})).toBe('agent');
  expect(()=>chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'model'}],{provider:'codex'},'server')).toThrow();
 });
@@ -122,4 +122,32 @@ test('late completion after cancel or lease loss cannot publish output',async()=
  expect(statements.find(sql=>sql.startsWith('SELECT id,revision_id'))).toContain('cancel_requested_at IS NULL');
  expect(statements.find(sql=>sql.startsWith('SELECT id,revision_id'))).toContain('lease_expires_at>now()');
  expect(statements.at(-1)).toBe('ROLLBACK');
+});
+
+test('library status read overlays local review without changing business status or retrying',async()=>{
+ const {mkdtemp,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const {localQueue,withLocalQueueRoot}=await import('../execution-queue/runtime');const {readLibraryJob}=await import('./jobs');
+ const root=await mkdtemp(join(tmpdir(),'library-status-')),previous=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='local';
+ const q=localQueue(root),id=crypto.randomUUID();q.intent(id,'library','agent','library:redact');q.confirm(id);const claimed=q.claim('agent')!;q.finish(id,claimed.lease!,'needs_review');
+ const row={id,status:'running',finished_at:null};let owner:any={job_id:id,executor_id:q.executorId,generation:0};const sqls:string[]=[];
+ const pool={query:async(sql:string)=>{sqls.push(sql);return{rows:sql.includes('execution_dispatches')?[owner]:[row]};}} as any;
+ try{
+  const read=()=>withLocalQueueRoot(root,()=>readLibraryJob(pool,id));
+  expect(await read()).toMatchObject({status:'running',finished_at:null,execution:{state:'needs_review',active:false}});
+  owner={...owner,generation:1};expect((await read()).execution.state).toBe('generation_mismatch');
+  owner={job_id:id,executor_id:crypto.randomUUID(),generation:0};expect((await read()).execution.scope).toBe('other_executor');
+  row.status='succeeded';expect(await read()).not.toHaveProperty('execution');expect(sqls.every(sql=>sql.startsWith('SELECT'))).toBe(true);expect(q.get(id)?.state).toBe('needs_review');
+ }finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;q.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('library history projects a whole active group in one SELECT and skips terminal-only groups',async()=>{
+ const {projectLibraryJobExecutions}=await import('./jobs'),previous=process.env.EXECUTION_QUEUE_MODE;
+ const {withLocalQueueRoot}=await import('../execution-queue/runtime');const {mkdtemp,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const root=await mkdtemp(join(tmpdir(),'library-history-'));let count=0;
+ const pool={query:async()=>{count++;return{rows:[]};}} as any;
+ try{process.env.EXECUTION_QUEUE_MODE='local';await withLocalQueueRoot(root,async()=>{
+  const jobs=[{id:crypto.randomUUID(),status:'running'},{id:crypto.randomUUID(),status:'queued'},{id:crypto.randomUUID(),status:'succeeded'}];
+  const rows=await projectLibraryJobExecutions(pool,jobs);expect(count).toBe(1);expect(rows.map(row=>(row as any).execution?.scope)).toEqual(['unowned','unowned',undefined]);
+  await projectLibraryJobExecutions(pool,[jobs[2]!]);expect(count).toBe(1);
+ });}finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
 });

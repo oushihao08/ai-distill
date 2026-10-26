@@ -128,3 +128,23 @@ test('revision upload repairs a stale blob path only after the exact object is i
   expect(writes.some(sql=>sql.startsWith('UPDATE ai_distill.library_blobs SET storage_path'))).toBe(true);
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+for(const outcome of ['rolled_back','committed_response_lost','rollback_unknown'] as const)test(`upload failure ${outcome} never deletes a registered or uncertain original`,async()=>{
+ const {mkdtemp,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
+ const {createLibraryRevision}=await import('./service');
+ const root=await mkdtemp(join(tmpdir(),'upload-recovery-'));let storagePath='',committed=false,commitFailed=false;
+ const db={query:async(sql:string,values:any[]=[])=>{
+  if(sql.startsWith('SELECT current_revision_id'))return{rows:[{lock_version:1}]};
+  if(sql.startsWith('INSERT INTO ai_distill.library_blobs')){storagePath=values[5];return{rows:[{id:'blob'}]};}
+  if(sql.startsWith('INSERT INTO ai_distill.library_files')&&outcome!=='committed_response_lost')throw new Error('injected upload failure');
+  if(sql.startsWith('UPDATE ai_distill.library_packages'))return{rows:[{lock_version:2}],rowCount:1};
+  if(sql==='COMMIT'&&outcome==='committed_response_lost'&&!commitFailed){committed=true;commitFailed=true;throw new Error('injected COMMIT response loss');}
+  if(sql==='ROLLBACK'&&outcome==='rollback_unknown')throw new Error('injected rollback loss');
+  if(sql.startsWith('SELECT id FROM ai_distill.library_blobs'))return{rows:committed?[{id:'committed'}]:[]};
+  return{rows:[],rowCount:0};
+ },release(){}};
+ try{
+  await expect(createLibraryRevision({connect:async()=>db} as any,root,'package',1,crypto.randomUUID(),[{original_name:'input.txt',bytes:Buffer.from('synthetic source')}])).rejects.toThrow();
+  expect(storagePath).not.toBe('');expect(await Bun.file(join(root,storagePath)).exists()).toBe(outcome!=='rolled_back');
+ }finally{await rm(root,{recursive:true,force:true});}
+});

@@ -199,3 +199,21 @@ test('飞书严格导出通过有效出题材料绑定后只生成一份DOCX',as
 test('严格导出不接受不同出题材料，且不写DOCX',async()=>{const f=await fixture();await expect(exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{expectedAuthoringInput:{...f.authoringInput,materials:[]}})).rejects.toThrow('feishu_authoring_materials_missing');expect(f.docxArtifacts).toHaveLength(0);});
 test('脱敏交付按冻结材料身份核验，原PDF副本跨机器缺失不阻断',async()=>{const f=await fixture();await rm(join(f.storageRoot,'sources','source.pdf'));const result=await exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{expectedAuthoringInput:f.authoringInput});expect(result.artifacts).toHaveLength(1);});
 test('脱敏交付仍拒绝存在但大小或SHA错误的原件副本',async()=>{const f=await fixture();await writeFile(join(f.storageRoot,'sources','source.pdf'),'wrong bytes');await expect(exportCurrentMaterialDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot,undefined,{expectedAuthoringInput:f.authoringInput})).rejects.toThrow('当前附件原件指纹校验失败');expect(f.docxArtifacts).toHaveLength(0);});
+
+test('Feishu old library manifests verify frozen IDs and real bytes without requiring new artifacts',async()=>{
+ const {verifyLibraryOriginalManifest}=await import('./redacted-docx-export');const root=await mkdtemp(join(tmpdir(),'legacy-manifest-'));
+ const bytes=Buffer.from('synthetic original'),material={id:'material-a',sha256:hash(bytes),size_bytes:bytes.length,storage_path:'source.pdf',original_name:'source.pdf'};
+ const frozen={id:material.id,sha256:material.sha256,artifact_declared:false,source_artifact_id:null,artifact_id:null,size_bytes:null};
+ let rows:any[]=[frozen];const pool={query:async()=>({rows})} as any;
+ try{
+  await writeFile(join(root,'source.pdf'),bytes);expect((await verifyLibraryOriginalManifest(pool,'workflow',[material],root)).get(material.id)).toEqual(bytes);
+  rows=[{...frozen,artifact_declared:true}];expect((await verifyLibraryOriginalManifest(pool,'workflow',[material],root)).get(material.id)).toEqual(bytes);
+  rows=[{...frozen,artifact_declared:true,source_artifact_id:'missing'}];await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow('产物关联');
+  rows=[{...frozen,artifact_declared:true,source_artifact_id:'artifact',artifact_id:'artifact',artifact_kind:'source_document',artifact_sha256:material.sha256,size_bytes:bytes.length}];expect((await verifyLibraryOriginalManifest(pool,'workflow',[material],root)).size).toBe(0);
+  rows=[{...rows[0],artifact_sha256:'wrong'}];await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow('产物关联');
+  rows=[{...frozen,sha256:hash('different')}];await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow();
+  rows=[frozen,frozen];await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow();
+  rows=[frozen];await writeFile(join(root,'source.pdf'),'tampered');await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow('指纹');
+  await rm(join(root,'source.pdf'));await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow('缺失');
+ }finally{await rm(root,{recursive:true,force:true});}
+});

@@ -4,6 +4,7 @@
  * 使用场景：出题、脱敏、skill 和评分执行器通过此客户端调用，不直接拼接子进程参数。
  */
 import {spawn} from 'node:child_process';
+import {StringDecoder} from 'node:string_decoder';
 import {existsSync,constants} from 'node:fs';
 import {appendFile} from 'node:fs/promises';
 import {cp,mkdtemp,mkdir,open,readFile,writeFile,rm,realpath} from 'node:fs/promises';
@@ -37,6 +38,7 @@ async function execute(binary:string,args:string[],options:{directory?:string;pr
   return await withLogContext({call_id,provider:'codex'},()=>new Promise<{stdout:string;stderr:string;code:number|null}>((resolveResult,reject)=>{
    const child=spawn(binary,args,{cwd:options.directory,env:environment(options.credentialsHome),detached:process.platform!=='win32',stdio:['pipe','pipe','pipe']});
    let observed=false;
+   const stdoutDecoder=new StringDecoder('utf8'),stderrDecoder=new StringDecoder('utf8');
    let stdout='',stderr='',stdoutBytes=0,stderrBytes=0,stopped:string|undefined,outputTask=Promise.resolve();
    if(typeof child.pid==='number'){try{options.onProcess?.(child.pid);observed=!!options.onProcess;}catch(error){logEvent('process.registration_failed',{level:'error',operation:'codex_cli',...classifyLogError(error)});}}
    logEvent('process.spawned',{level:'info',operation:'codex_cli',child_pid:child.pid,timeout_ms:options.timeout});
@@ -44,15 +46,15 @@ async function execute(binary:string,args:string[],options:{directory?:string;pr
    const timer=setTimeout(()=>{const fired=performance.now();logEvent('timeout.fired',{level:'error',timeout_ms:options.timeout,elapsed_ms:Math.round(fired-started),timer_lateness_ms:Math.max(0,Math.round(fired-deadline))});stop('Codex执行超时');},options.timeout);
    const cancel=()=>{if(options.signal?.reason instanceof Error&&options.signal.reason.message==='Codex执行超时'){stop('Codex执行超时');return;}logEvent('cancel.requested',{level:'warn',process_state:'cancelled',elapsed_ms:Math.round(performance.now()-started)});stop('Codex执行已取消');};options.signal?.addEventListener('abort',cancel,{once:true});
    if(options.signal?.aborted)cancel();
-   child.stdout.on('data',chunk=>{child.stdout.pause();outputTask=outputTask.then(async()=>{const size=Buffer.byteLength(chunk);if(stdoutBytes+size>64*1024*1024){stop('Codex输出超过限制');return;}stdoutBytes+=size;const value=chunk.toString();if(options.captureStdout!==false)stdout+=value;await options.onStdout?.(value);if(!stopped)child.stdout.resume();}).catch(()=>stop('Codex执行事件记录失败'));});
-   child.stderr.on('data',chunk=>{const size=Buffer.byteLength(chunk);if(stderrBytes+size>4*1024*1024){stop('Codex错误输出超过限制');return;}stderrBytes+=size;stderr+=chunk.toString();});
+   child.stdout.on('data',chunk=>{child.stdout.pause();outputTask=outputTask.then(async()=>{const size=Buffer.byteLength(chunk);if(stdoutBytes+size>64*1024*1024){stop('Codex输出超过限制');return;}stdoutBytes+=size;const value=stdoutDecoder.write(chunk);if(options.captureStdout!==false)stdout+=value;await options.onStdout?.(value);if(!stopped)child.stdout.resume();}).catch(()=>stop('Codex执行事件记录失败'));});
+   child.stderr.on('data',chunk=>{const size=Buffer.byteLength(chunk);if(stderrBytes+size>4*1024*1024){stop('Codex错误输出超过限制');return;}stderrBytes+=size;stderr+=stderrDecoder.write(chunk);});
    child.stdin.on('error',()=>stop('Codex执行输入发送失败'));
    child.stdin.end(options.prompt??'');
    let exitRecorded=false;
    const cleanup=()=>{clearTimeout(timer);options.signal?.removeEventListener('abort',cancel);if(observed){observed=false;try{options.onProcess?.(null);}catch(error){logEvent('process.registration_cleanup_failed',{level:'error',operation:'codex_cli',...classifyLogError(error)});}}};
    child.on('error',error=>{cleanup();logEvent('process.error',{level:'error',elapsed_ms:Math.round(performance.now()-started),...classifyLogError(error)});reject(new Error('Codex执行器不可用'));});
    child.on('exit',(code,signal)=>{exitRecorded=true;logEvent('process.exited',{level:code===0?'info':'warn',exit_code:code??undefined,signal:signal??undefined,elapsed_ms:Math.round(performance.now()-started),wall_elapsed_ms:Date.now()-startedAt});});
-   child.on('close',async(code,signal)=>{await outputTask;cleanup();logEvent('process.closed',{level:stopped||code!==0?'warn':'info',exit_code:code??undefined,signal:signal??undefined,process_state:exitRecorded?'exited':'unknown',elapsed_ms:Math.round(performance.now()-started),wall_elapsed_ms:Date.now()-startedAt});if(stopped)reject(new Error(stopped));else resolveResult({stdout,stderr,code});});
+   child.on('close',async(code,signal)=>{await outputTask;const tail=stdoutDecoder.end();if(options.captureStdout!==false)stdout+=tail;if(tail&&!stopped){try{await options.onStdout?.(tail);}catch{stop('Codex执行事件记录失败');}}stderr+=stderrDecoder.end();cleanup();logEvent('process.closed',{level:stopped||code!==0?'warn':'info',exit_code:code??undefined,signal:signal??undefined,process_state:exitRecorded?'exited':'unknown',elapsed_ms:Math.round(performance.now()-started),wall_elapsed_ms:Date.now()-startedAt});if(stopped)reject(new Error(stopped));else resolveResult({stdout,stderr,code});});
   }));
  }catch(error){if(error instanceof Error&&error.message.startsWith('Codex'))throw error;throw new Error('Codex执行失败');}
 }

@@ -39,6 +39,8 @@ types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtrac
 
 API下载结果后暂存`result.zip`及`response.json`；成功返回会删除本次API诊断目录，失败可保留已有文件。CLI正常返回后保存stdout/stderr/metadata并保留，启动前失败未必有完整诊断。不能声称所有成功API都保留原始响应，或将CLI诊断字段套给API。
 
+结果ZIP通过`readMineruResultZip()`边读边累计字节，最多120MiB；超限、空响应或取消不进入解压，超限及取消会停止响应流。成功提取后的诊断目录删除失败仅记录安全错误及诊断ID，保留目录，不覆盖有效提取结果，也不因此触发CLI回退。此限制约束应用读取的累计字节，不保证网络栈预读或单个响应块的分配大小。
+
 API的上传/轮询/下载由30分钟AbortSignal与轮询截止控制；`runUnzip`子进程接入API同一取消/截止信号，读取时累计检查输出上限，超限回收本次子进程；没有额外放宽时限。CLI自身及本地外层均设置30分钟；PDF预检还依赖Poppler。文档中的时限不保证所有子进程总耗时严格封顶。
 
 API在申请上传地址前建立私有诊断目录，`metadata.json`只保存来源摘要、页数、输入格式、云端batch ID、当前阶段及供应商状态，不保存令牌、上传/下载签名地址或正文；成功删除目录，失败保留以便只读查询原批次。安全日志持久化上传/轮询/下载阶段与供应商状态变化，同一排队状态不重复写日志；失败使用`reason_code`、`failure_phase`及`diagnostic_id`。`mineru-diagnostics.test.ts`用HTTP替身验证这些证据与敏感内容隔离。
@@ -48,3 +50,5 @@ API优先的回退资格按`permitsCliFallback()`分类（HTTP5xx、TypeError、
 PDF分片属于上层旧目录同步`../pdf-split.ts`，不是本模块自动给所有上传拆片。其缓存键绑定输入和限制，但已有分片复用仅检查文件列表/大小，不逐个重新计算内容摘要或页数；后续材料入库仍独立校验所选文件。
 
 `mineru-cancellation.test.ts`在临时目录用FIFO、ZIP和自有子进程验证解压取消/流式大小边界及命令上下文取消；不调用真实MinerU。
+
+该文件同时用合成响应流验证ZIP下载的大小边界、空响应、读取异常及等待期间取消；`mineru-diagnostics.test.ts`用合成ZIP、HTTP替身及文件删除故障验证提取成功不受诊断清理失败影响。均不证明真实供应商、OCR准确率或业务入库已验收。

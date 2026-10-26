@@ -9,10 +9,9 @@ import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
 import {readSystemStepPrompts} from '../system-step-prompts';
-import {loadExtractionConfig} from '../materials/config';
 import {ModelApiError,readModelApiDefaults,resolveModelApiConfig} from '../llm-api';
 import {MAX_FILE,MAX_FOLDER_BATCH,validateFile,uuid} from '../validation';
-import {installLibraryBlob,normalizeLibraryFilename} from './storage';
+import {cleanupRolledBackLibraryBlobs,installLibraryBlob,lockLibraryBlobWrites,normalizeLibraryFilename,type InstalledLibraryBlob} from './storage';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -50,7 +49,7 @@ export function validateProcessingSettings(value:unknown){
   if(!Array.isArray(settings.redaction_templates)||settings.redaction_templates.length>20)throw new HTTPException(400,{message:'脱敏模板列表无效'});
   const ids=new Set<string>(['mask']);
   for(const template of settings.redaction_templates){
-   if(!object(template)||Object.keys(template).some(k=>!['id','name','workflow','redaction'].includes(k))||typeof template.id!=='string'||! /^[a-z][a-z0-9_-]{0,47}$/.test(template.id)||ids.has(template.id)||typeof template.name!=='string'||!template.name.trim()||template.name.length>80||!['field_mapping','codex_plan'].includes(String(template.workflow)))throw new HTTPException(400,{message:'脱敏模板身份或流程无效'});
+   if(!object(template)||Object.keys(template).some(k=>!['id','name','workflow','redaction'].includes(k))||typeof template.id!=='string'||! /^[a-z][a-z0-9_-]{0,47}$/.test(template.id)||ids.has(template.id)||typeof template.name!=='string'||!template.name.trim()||template.name.length>80||template.workflow!=='codex_plan')throw new HTTPException(400,{message:'脱敏模板身份或流程无效'});
    ids.add(template.id);
    const config=template.redaction;
    if(template.workflow==='codex_plan'&&(!object(config)||Object.keys(config).some(k=>!['provider','prompt'].includes(k))||config.provider!=='codex'))throw new HTTPException(400,{message:'整包计划模板仅配置Codex提示词，模型由执行会话固定'});
@@ -67,7 +66,8 @@ export async function buildDefaultProcessingSettings(pool:Pick<Pool,'query'>){
  const prompts=await readSystemStepPrompts(pool);
  let api:ReturnType<typeof readModelApiDefaults>|null=null;
  try{api=readModelApiDefaults();}catch(error){if(!(error instanceof ModelApiError))throw error;}
- const settings={version:1,extraction:{provider_config:loadExtractionConfig(),protocol:'material-extraction-v1'},redaction:{provider:'api',api,prompt:prompts[9]},execution:{task_timeout_ms:1200000,request_timeout_ms:180000},policy:{preserve_amounts:true,preserve_dates:true}};
+ // provider_config保留旧设置的读取契约；MinerU实际供应商在任务pdf_provider冻结，不再注入未执行的Vision配置。
+ const settings={version:1,extraction:{provider_config:{},protocol:'material-extraction-v1'},redaction:{provider:'api',api,prompt:prompts[9]},execution:{task_timeout_ms:1200000,request_timeout_ms:180000},policy:{preserve_amounts:true,preserve_dates:true}};
  return validateProcessingSettings(settings);
 }
 
@@ -255,7 +255,7 @@ export async function createLibraryRevision(pool:Pool,storageRoot:string,id:stri
  if(new Set(prepared.map(file=>file.original_name)).size!==prepared.length)throw new HTTPException(400,{message:'同一材料集合中的文件名不能重复'});
  if(prepared.some(file=>file.redaction_mode==='declared_redacted'&&!file.original_name.toLowerCase().endsWith('.docx')))throw new HTTPException(400,{message:'只有DOCX支持人工已脱敏声明'});
  const {manifest,sha256:manifestSha}=buildLibraryManifest(prepared),requestDigest=hash(canonicalJson({version:1,package_id:id,manifest_sha256:manifestSha,files:prepared.map(({original_name,position,sha256,size_bytes,redaction_mode})=>({original_name,position,sha256,size_bytes,redaction_mode}))}));
- const db=await pool.connect();
+ const db=await pool.connect(),installed:InstalledLibraryBlob[]=[];
  try{
   await db.query('BEGIN');
   const pkg=(await db.query('SELECT current_revision_id,lock_version,deleted_at FROM ai_distill.library_packages WHERE id=$1 FOR UPDATE',[id])).rows[0];
@@ -266,8 +266,10 @@ export async function createLibraryRevision(pool:Pool,storageRoot:string,id:stri
   const revisionId=randomUUID(),parentRevisionId=pkg.current_revision_id??null;
   await db.query(`INSERT INTO ai_distill.library_revisions(id,package_id,parent_revision_id,state,manifest_sha256,file_count,source_info,request_key,request_digest)
    VALUES($1,$2,$3,'pending',$4,$5,$6::jsonb,$7,$8)`,[revisionId,id,parentRevisionId,manifestSha,prepared.length,JSON.stringify({kind:'upload',manifest_version:1}),requestKey,requestDigest]);
+  await lockLibraryBlobWrites(db,prepared.map(file=>file.sha256));
   for(const file of prepared){
    const blob=await installLibraryBlob(storageRoot,file.bytes,file.content_type,'local');
+   installed.push(blob);
    const inserted=await db.query(`INSERT INTO ai_distill.library_blobs(id,sha256,size_bytes,content_type,storage_kind,storage_target,storage_path)
     VALUES($1,$2,$3,$4,'file',$5,$6) ON CONFLICT(sha256,storage_target) WHERE storage_kind='file' DO NOTHING RETURNING id`,[randomUUID(),blob.sha256,blob.size_bytes,blob.content_type,blob.storage_target,blob.storage_path]);
    let blobId=inserted.rows[0]?.id;
@@ -296,7 +298,12 @@ export async function createLibraryRevision(pool:Pool,storageRoot:string,id:stri
   const updated=await db.query('UPDATE ai_distill.library_packages SET current_revision_id=$2,lock_version=lock_version+1,updated_at=now() WHERE id=$1 AND lock_version=$3 AND deleted_at IS NULL RETURNING lock_version',[id,revisionId,expectedVersion]);
   if(!updated.rowCount)throw conflict('材料包已被其他操作更新，请刷新后重试');
   await db.query('COMMIT');return{id:revisionId,reused:false,lock_version:updated.rows[0].lock_version,manifest_sha256:manifestSha,manifest};
- }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料集合事务失败且回滚状态不确定');}throw error;}finally{db.release();}
+ }catch(error){
+  try{await db.query('ROLLBACK');}
+  catch(rollbackError){throw new AggregateError([error,rollbackError],'材料集合事务失败且回滚状态不确定；保留原件等待核对');}
+  await cleanupRolledBackLibraryBlobs(db,storageRoot,installed);
+  throw error;
+ }finally{db.release();}
 }
 
 export type LibraryDbClient=PoolClient;

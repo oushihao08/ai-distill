@@ -1,6 +1,6 @@
 #!/bin/bash
 # 职责：从 macOS iTerm2 启动或复用本项目 API、worker 和前端。
-# 入口与影响：`npm run start:iterm`；仅在确认无运行任务时 TERM 重启代码过期的本项目 API/worker，前端只复用匹配进程；不安装依赖或迁移数据库。
+# 入口与影响：`npm run start:iterm`；代码过期时拒绝自动重启本项目 API/worker，前端只复用匹配进程；不安装依赖或迁移数据库。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,41 +101,13 @@ check_worker_freshness() {
   done
 }
 
-# Only restart project-owned processes, and only when the persisted monitor
-# confirms there are no running workflow or material-library jobs. Queued work
-# remains safe for the worker.
+# Never replace a live process: its environment overrides and in-flight claims
+# cannot be safely reconstructed from a monitor snapshot.
 check_service_freshness 3700 后端 'bun server/index.ts' "$ROOT_DIR"
 check_worker_freshness
 if (( ${#STALE_SERVICE_PIDS[@]} > 0 )); then
-  MONITOR_JSON="$(curl -fsS --max-time 3 http://127.0.0.1:3700/api/monitor 2>/dev/null || true)"
-  if [[ -z "$MONITOR_JSON" ]] || ! MONITOR_COUNTS="$(printf '%s' "$MONITOR_JSON" | "$BUN_BIN" -e 'const record=JSON.parse(await Bun.stdin.text());const tasks=record.snapshot?.tasks;const library=record.material_library;const heartbeat=Date.parse(record.heartbeat_at);if(!["running","paused"].includes(record.status)||!Number.isFinite(heartbeat)||Date.now()-heartbeat>30000||heartbeat-Date.now()>5000||tasks?.status!=="known"||!Number.isSafeInteger(tasks.value?.running)||tasks.value.running<0||library?.status!=="known"||!Number.isSafeInteger(library.totals?.running)||library.totals.running<0)process.exit(2);console.log(`${tasks.value.running},${library.totals.running}`)' 2>/dev/null)"; then
-    printf '检测到服务代码已更新，但无法确认是否有任务正在运行；为避免中断任务，本次未重启任何服务。请检查运行状态后再启动。\n' >&2
-    exit 1
-  fi
-  RUNNING_TASKS="${MONITOR_COUNTS%%,*}"
-  RUNNING_LIBRARY_JOBS="${MONITOR_COUNTS#*,}"
-  if (( RUNNING_TASKS > 0 )); then
-    printf '检测到服务代码已更新，当前有 %s 个运行中任务；为避免中断，本次未重启任何服务。任务结束后重新运行启动命令即可自动更新。\n' "$RUNNING_TASKS" >&2
-    exit 1
-  fi
-  if (( RUNNING_LIBRARY_JOBS > 0 )); then
-    printf '检测到服务代码已更新，当前有 %s 个运行中的材料库任务；为避免中断，本次未重启任何服务。任务结束后重新运行启动命令即可自动更新。\n' "$RUNNING_LIBRARY_JOBS" >&2
-    exit 1
-  fi
-  for pid in "${STALE_SERVICE_PIDS[@]}"; do kill -TERM "$pid"; done
-  for attempt in {1..40}; do
-    still_running=0
-    for pid in "${STALE_SERVICE_PIDS[@]}"; do
-      if kill -0 "$pid" 2>/dev/null; then still_running=1; fi
-    done
-    (( still_running == 0 )) && break
-    sleep 0.25
-  done
-  if (( still_running != 0 )); then
-    printf '旧服务未能在 10 秒内正常退出；未强制终止，请检查 PID：%s\n' "${STALE_SERVICE_PIDS[*]}" >&2
-    exit 1
-  fi
-  printf '检测到本项目服务代码有更新，已正常停止旧 API/worker，下面启动新进程。\n'
+  printf '检测到本项目服务代码已更新（PID：%s）；为保留原启动范围并避免领取竞争，本入口不自动停止或重启。请按原参数安全停止后再次启动。\n' "${STALE_SERVICE_PIDS[*]}" >&2
+  exit 1
 fi
 
 # Reuse only listeners whose working directory and command both match this project.

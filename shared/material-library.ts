@@ -81,6 +81,7 @@ export interface MaterialLibraryRevision {
 }
 
 export interface MaterialLibraryJob {
+  execution?:import('./execution-state').StepExecution;
   material_processing_mode?:MaterialProcessingMode|null;
   redaction_template_id?:string|null;
   origin?: 'execution'|'legacy_import';

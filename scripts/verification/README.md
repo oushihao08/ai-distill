@@ -15,7 +15,7 @@
 | `verify-independent-modules.ts` | 已停用：只输出退役提示并以非零状态退出，不连接数据库。原入口直接写业务schema且使用过时步骤；改用随机临时schema的`verify-project-material-usage.ts`。 |
 | `verify-independent-score.ts` | 使用合成题目和匿名答案，调用真实 Codex 独立评分；写入验证结果。 |
 | `verify-input-versions.ts` | 随机临时 schema、合成 PDF 文本与注入提取器；不调用 OCR/模型。 |
-| `verify-integration.ts` | 随机临时 schema，但默认读取 Downloads 中的真实房屋买卖 PDF，并调用配置的真实 OCR/实体检查服务；可用 `VERIFY_PDF_PATH` 指定输入，`VERIFY_FULL_PDF=1` 会处理整份文件；还会写 `.storage/.verification-ocr-cache`。 |
+| `verify-integration.ts` | 已停用：旧Vision配置快照与函数式提取器接口失效，只输出退役提示并非零退出，不读配置/材料、不连接数据库、不调用模型或写文件。MinerU适配器使用`server/materials/pdf-extraction/`定向单元测试；材料来源/使用账/交付隔离链路见`verify-project-material-usage.ts`，两者都不替代真实OCR/脱敏质量验收。 |
 | `verify-ocr-page.ts` | 读取脚本中指定的真实 PDF 页，调用配置的 OCR 和实体检查服务；`VERIFY_PAGE` 选择页码。 |
 | `verify-project-folders.ts` | 随机临时 schema 与合成目录，检查目录发现/接收/逻辑删除；不调用模型。 |
 | `verify-project-material-usage.ts` | 随机临时 schema 与合成数据，覆盖期次隔离、材料永久使用记录、导入和脱敏/原文题目全链路；作者、作答和评分执行器均注入合成结果，不调用真实模型。脚本固定legacy消费随机schema，不继承本机local队列；可设`VERIFY_EVIDENCE_DIR`保留实际DOCX/XLSX，目标目录不能已有同名文件。 |

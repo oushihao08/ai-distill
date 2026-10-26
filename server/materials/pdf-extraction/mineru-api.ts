@@ -1,6 +1,6 @@
 /**
  * 职责：直接调用 MinerU v4 上传、解析和结果轮询 API，并复用 MinerU 块结构转换器。
- * 关键入口：`MineruApiPdfExtractor.extract()` 处理 PDF；`MineruApiDocxExtractor.extract()` 处理无 PDF 页码的 DOCX。
+ * 关键入口：`MineruApiPdfExtractor.extract()` 处理 PDF；`MineruApiDocxExtractor.extract()` 处理无 PDF 页码的 DOCX；`readMineruResultZip()` 有界读取下载流。
  * 使用场景：PDF 由 API 优先适配器调用并按原策略回退 CLI；DOCX 直接复用 API 上传与轮询。
  */
 import {storageDirectory} from '../../paths';
@@ -25,6 +25,38 @@ type MineruApiOptions = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+/** 下载时累计检查ZIP字节数；取消会唤醒正在等待的流读取，不依赖响应提供Content-Length。 */
+export async function readMineruResultZip(response:Response,signal:AbortSignal,maxBytes=MAX_RESULT_ZIP_BYTES):Promise<Uint8Array>{
+ signal.throwIfAborted();
+ const reader=response.body?.getReader();
+ if(!reader)throw new Error('MinerU API结果包大小无效');
+ const cancel=async()=>{
+  try{await reader.cancel();}
+  catch{logEvent('extraction.download.cleanup_failed',{level:'error',reason_code:'stream_cleanup_failed'});}
+ };
+ const abort=()=>{void cancel();};
+ signal.addEventListener('abort',abort,{once:true});
+ const chunks:Uint8Array[]=[];let size=0;
+ try{
+  signal.throwIfAborted();
+  while(true){
+   const {done,value}=await reader.read();
+   signal.throwIfAborted();
+   if(done)break;
+   size+=value.byteLength;
+   if(size>maxBytes)throw new Error('MinerU API结果包大小无效');
+   chunks.push(value);
+  }
+  if(!size)throw new Error('MinerU API结果包大小无效');
+  const result=new Uint8Array(size);let offset=0;
+  for(const chunk of chunks){result.set(chunk,offset);offset+=chunk.byteLength;}
+  return result;
+ }finally{
+  signal.removeEventListener('abort',abort);
+  await cancel();reader.releaseLock();
+ }
 }
 
 async function defaultSleep(ms: number, signal: AbortSignal) {
@@ -189,8 +221,7 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    await recordPhase('download_result');
    const zipResponse = await this.fetcher(zipUrl, { ...fetchOptions, headers: { Accept: 'application/octet-stream' } });
    if (!zipResponse.ok) throw new Error(`MinerU API结果下载返回HTTP ${zipResponse.status}`);
-   const zipBytes = new Uint8Array(await zipResponse.arrayBuffer());
-   if (!zipBytes.length || zipBytes.byteLength > MAX_RESULT_ZIP_BYTES) throw new Error('MinerU API结果包大小无效');
+   const zipBytes = await readMineruResultZip(zipResponse,controller.signal);
    await recordPhase('read_result');
    tempZipPath = resolve(diagnosticDirectory, 'result.zip');
    await writeFile(tempZipPath, zipBytes, { mode: 0o600, flag: 'wx' });
@@ -214,7 +245,10 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
   } finally {
    clearTimeout(timer);
    signal?.removeEventListener('abort', abort);
-   if (completed) await rm(diagnosticDirectory, { recursive: true, force: true });
+   if (completed) {
+    try { await rm(diagnosticDirectory, { recursive: true, force: true }); }
+    catch { logEvent('extraction.diagnostics_cleanup_failed', { level: 'error', provider: this.id, diagnostic_id: diagnosticId, reason_code: 'diagnostics_cleanup_failed' }); }
+   }
   }
  }
 }

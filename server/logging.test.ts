@@ -255,16 +255,13 @@ test('redaction heartbeat failures and recovery include the active attempt witho
  }finally{globalThis.setInterval=originalSetInterval;globalThis.clearInterval=originalClearInterval;await logger.close();await rm(root,{recursive:true,force:true});}
 });
 
-test('redaction failure stores a safe Codex summary while keeping the user-facing error',async()=>{
- const root=await mkdtemp(join(tmpdir(),'redaction-failure-summary-')),catalogHome=join(root,'codex');await mkdir(catalogHome,{recursive:true});
- await writeFile(join(catalogHome,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'low'}]}]}));
- const priorCodexHome=process.env.CODEX_HOME;process.env.CODEX_HOME=catalogHome;
+test('removed field mapping job stores a safe rejection without invoking a model',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'redaction-failure-summary-'));
  const sourceSha='a'.repeat(64),raw=JSON.stringify({source_sha256:sourceSha,pages:[{page:1,text:'private material'}]}),artifactSha=createHash('sha256').update(raw).digest('hex');
  const item={material_id:'material-a',source_sha256:sourceSha,artifact_id:'artifact-a',artifact_sha256:artifactSha},input={materials:[item]};
  const digest=createHash('sha256').update(JSON.stringify(input)).digest('hex');
  const job={id:'attempt-a',workflow_id:'workflow-a',project_id:'project-a',input:{...input,digest},config:{provider:'codex',model:'fixture-model',reasoning_effort:'low',prompt:'redact',text_layout:REDACTION_PROTOCOL_VERSION}};
  const writes:{sql:string;values:unknown[]|undefined}[]=[];
- let executed=false;
  const client={release(){},async query(sql:string,values?:unknown[]){
   if(sql.startsWith('SELECT a.id,a.workflow_id,a.heartbeat_at,w.project_id'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT a.*'))return{rows:[job],rowCount:1};
@@ -283,17 +280,16 @@ test('redaction failure stores a safe Codex summary while keeping the user-facin
  }};
  try{
   const {runNextRedaction}=await import('./materials/redaction-jobs');
-  await runNextRedaction(pool as any,root,undefined,async task=>{executed=true;throw Object.assign(new Error('private provider response'),{kind:'network',reason_code:'codex_network',call_id:task.call_id,call_ids:[task.call_id],expected_count:12,actual_count:11,expected_page:74,material_id:'12345678-1234-1234-1234-123456789abc',usage:{input_tokens:10,output_tokens:2},duration_ms:1000,retryable:true,occurred_at:'2026-10-09T00:00:00.000Z'});});
-  expect(executed).toBe(true);
+  await runNextRedaction(pool as any,root);
   const attemptWrite=writes.find(write=>write.sql.includes('ai_distill.step_attempts'))!,stepWrite=writes.find(write=>write.sql.includes('ai_distill.steps'))!;
   expect(attemptWrite.sql).toContain("result=COALESCE(result,'{}'::jsonb)");
   const attemptSummary=JSON.parse(String(attemptWrite.values?.[2]));
-  expect(attemptSummary).toMatchObject({kind:'network',reason_code:'codex_network',call_id:expect.stringMatching(/^[0-9a-f-]{36}$/),call_ids:[expect.stringMatching(/^[0-9a-f-]{36}$/)],expected_count:12,actual_count:11,expected_page:74,material_id:'12345678-1234-1234-1234-123456789abc',usage:{input_tokens:10,output_tokens:2},duration_ms:1000,retryable:true,occurred_at:'2026-10-09T00:00:00.000Z'});
-  expect(attemptWrite.values?.[1]).toBe('脱敏执行失败或结果校验未通过，可检查配置后重试');
+  expect(attemptSummary).toMatchObject({reason_code:'field_mapping_removed',retryable:false});
+  expect(attemptWrite.values?.[1]).toContain('字段映射脱敏已删除');
   expect(stepWrite.sql).toContain("result=COALESCE(result,'{}'::jsonb)");
   expect(JSON.parse(String(stepWrite.values?.[2]))).toEqual(attemptSummary);
   expect(JSON.stringify(writes)).not.toContain('private provider response');
- }finally{if(priorCodexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=priorCodexHome;await rm(root,{recursive:true,force:true});}
+ }finally{await rm(root,{recursive:true,force:true});}
 });
 
 test('registered SiliconFlow provider survives safe logging while unknown values remain hidden',()=>{

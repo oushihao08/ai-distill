@@ -9,6 +9,7 @@ import {basename,dirname,resolve} from 'node:path';
 import {getStepDefinition, STEP_REGISTRY} from '../shared/step-registry';
 import {readAcceptanceResult} from '../shared/workflow-results';
 import {ApiClient, CliError} from './client';
+import {diagnoseQueue} from './queue-diagnostics';
 import {batchSize,batchView,createBatch,readBatch,skipBatch} from './batches';
 import {exportFailedQuestions} from './failed-export';
 import {exportPreparedMaterials} from './material-export';
@@ -42,7 +43,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   export list --project UUID
   export failed --project UUID (--ids UUID,... | --all)（固定导出到 assets/未达标题目）
   export review --project UUID --ids UUID,...（指定已评分题目，保留真实判定）
-  monitor show | step list
+  monitor show | queue diagnose | step list
   batch show --file 清单路径
 显式写入：
   batch create --project UUID (--ids UUID,... | --all) --size 数量 --to STEP_KEY --out 清单路径
@@ -174,7 +175,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'question list':['project'],'question show':['workflow'],'question delete':['project','workflow','confirm-title'],'question create':['material-package','redaction-attempt','title','scenario','role','level','direction'],'workflow status':['project','ids','all'],
       'material text':['workflow','material','redacted-only'],'rules list':['project'],'rules file':['project','path'],
       'models catalog':[],'models show':['project'],'attempt show':['attempt'],'attempt wait':['ids','timeout','full'],
-      'queue show':[],'queue cancel':['job'],'advice show':['workflow'],'advice generate':['workflow','project','ids','all'],
+      'queue show':[],'queue diagnose':[],'queue cancel':['job'],'advice show':['workflow'],'advice generate':['workflow','project','ids','all'],
       'result list':[],'result show':['workflow'],'step list':[],'step dispatch':['project','ids','all'],
       'export list':['project'],'export create':['project','batch'],'export download':['export','out'],
       'siriser download':['workflow','out'],
@@ -523,6 +524,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'attempt wait': return await waitAttempts(api,ids(),duration(flags.has('timeout')?required('timeout'):'1h'),signal,flags.has('full'));
       case 'result list': data=await get('/api/results');break;
       case 'queue show': data=await get('/api/system/execution-queue');break;
+      case 'queue diagnose': {const [queue,monitor]=await Promise.all([get('/api/system/execution-queue'),get('/api/monitor')]);data=diagnoseQueue(queue,monitor);break;}
       case 'queue cancel': data=await post(`/api/system/execution-queue/${uuid('job')}/cancel`);break;
       case 'advice show': data=await get(`/api/workflows/${uuid('workflow')}/revision-advice`);break;
       case 'advice generate': {

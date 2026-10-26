@@ -16,7 +16,7 @@
 
 附件DOCX仅渲染文书内容，不再人为插入原附件页定位或识别提示段落；原页身份与issues仍保存在结构/私有索引中。此修改只影响重新生成的成果，不自动改写已归档ZIP。
 
-新Work契约由`generateSiriserConfirmation`独立输出三JSON＋input_files＋golden_output的五件套及同名ZIP。Rubric平铺保留全部原始字段，包括Veto及累计规则；重新生成前要求完整Work题包至少30项，业务成果只接受DOCX/XLSX；复用出题模块的结构检查，核对题面必交名称、成果映射和evaluated_files。检查先于目录创建及缓存复用，失败不更新当前交付状态。历史包普通读取不重新校验。标准成果按作者声明格式生成，轨迹写`法规案例检索轨迹.xlsx`。不复制Harbor目录、不重写题面业务内容、不重新调用模型。旧`generateSiriserFivePiece`新生成同样检查数量、Office成果及评分引用；检索轨迹改为XLSX，新目录/状态后缀为office-v2，旧目录保留。它仍保留DOCX／XLSX初稿，支持直接生成成果，任务说明不混入Rubric。
+新Work契约由`generateSiriserConfirmation`独立输出三JSON＋input_files＋golden_output的五件套及同名ZIP。Rubric平铺保留全部原始字段，包括Veto及累计规则；重新生成前要求完整Work题包至少30项，业务成果只接受DOCX/XLSX；复用出题模块的结构检查，核对题面必交名称、成果映射和evaluated_files。检查先于目录创建及缓存复用，失败不更新当前交付状态。历史包普通读取不重新校验。标准成果仅按冻结`deliverables`声明的名称和格式生成；候选必交检索轨迹沿用清单中的成果，不额外追加固定名称轨迹。作者完整`research_records`保存在包外私有状态的`author_research_records`，保留原字段与核验状态，不计作候选交付物。不复制Harbor目录、不重写题面业务内容、不重新调用模型。旧`generateSiriserFivePiece`新生成同样检查数量、Office成果及评分引用；检索轨迹改为XLSX，新目录/状态后缀为office-v2，旧目录保留。它仍保留DOCX／XLSX初稿，支持直接生成成果，任务说明不混入Rubric。
 
 ZIP生成后会验证本地与中央目录文件名一致，并将UTF-8标志写入两类ZIP头，避免接收端按CP437解码中文文件名。复用已有包时先校验冻结输入、目录清单和原ZIP摘要；只有摘要完全吻合才会原子修复文件名标志并同步ZIP摘要状态。
 
@@ -34,7 +34,7 @@ ZIP生成后会验证本地与中央目录文件名一致，并将UTF-8标志写
 
 底层deliverableBytes仍能读取历史TSV等格式；本项目新交付准入不允许将这些技术格式用作业务参考成果，不影响历史文件读取或脱敏输入DOCX格式。
 
-Work业务DOCX通过现有渲染器的可选legal样式生成，正文宋体、标题黑色；附件默认样式不变。确认稿渲染身份为`siriser-confirmation-office-v8`，新目录隔离旧包，不覆盖历史ZIP。排版仍需渲染检查；Office结构校验不代替专业内容复核。
+Work业务DOCX通过现有渲染器的可选legal样式生成，正文宋体、标题黑色；附件默认样式不变。确认稿渲染身份为`siriser-confirmation-office-v9`，新目录隔离旧包，不覆盖历史ZIP。排版仍需渲染检查；Office结构校验不代替专业内容复核。
 
 新Work从`task_metadata.instruction`直接投影任务说明五要素，成果要求共用`deliverables`。旧题完整背景原样保留，只兼容提取明确标注的基准日及约束标题；无法识别时不拿其他日期猜填。生成来源说明保留在`dataSource`，`taskDesc`保留实际工作及等级依据，不因质检建议删除尚未成立的等级事实。
 

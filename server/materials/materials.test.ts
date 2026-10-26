@@ -3,7 +3,6 @@
  * HTTP、PDF 命令和提取器均由替身或临时文件提供，不访问真实识别服务/业务数据库。
  */
 import { test, expect, spyOn } from 'bun:test';
-import { redactTexts } from './redact';
 import { createVisionClient } from './vision';
 import { extractPdf, type Page } from './pdf';
 import { processMaterials } from './process';
@@ -12,7 +11,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import { loadExtractionConfig } from './config';
-import {redactExtractedMaterials} from './redaction';
+import {renderRedactedMaterials} from './redaction';
 import {sameRedactionConfig} from './redaction-config';
 const strictConfig=()=>({...loadExtractionConfig(),continueOnError:false,entityReview:true});
 const fixturePdfExtractor=(extract:(path:string)=>Promise<Page[]>)=>({extract:async(path:string)=>({format:'pdf' as const,provider:'local' as const,sha256:createHash('sha256').update(await readFile(path)).digest('hex'),pages:await extract(path)})});
@@ -21,59 +20,6 @@ test('redaction settings compare effective defaults rather than JSON key order',
  const defaults={model:'gpt-default',reasoning_effort:'medium'};
  expect(sameRedactionConfig({provider:'codex',model:'gpt-default',reasoning_effort:'medium'},{reasoning_effort:'medium',provider:'codex',model:'gpt-default'},defaults)).toBe(true);
  expect(sameRedactionConfig({provider:'codex',model:'gpt-default',reasoning_effort:'medium'},{provider:'codex',model:'gpt-default',reasoning_effort:'medium',prompt:'不同设置'},defaults)).toBe(false);
-});
-
-test.each([
- ['fields_missing',{}],
- ['target_coverage_mismatch',{fields:[]}],
-])('redaction validation rejects structural errors with a stable reason code for %s',async(reason_code:string,result:unknown)=>{
- const root=await mkdtemp(join(tmpdir(),'redaction-validation-'));
- try{
-  await expect(redactExtractedMaterials({directory:root,materials:[{material_id:'material-a',source_sha256:'sha256',pages:[{page:1,text:'private source',method:'text'}]}],config:{provider:'codex',prompt:'fixture',model:'fixture',reasoning_effort:'low'},execute:(async (options:any)=>options.validate(result)) as any})).rejects.toMatchObject({kind:'invalid_response',reason_code});
- }finally{await rm(root,{recursive:true,force:true});}
-});
-
-test('API redaction batches pages and keeps empty pages in the exact output sequence',async()=>{
- const materials=[
-  {material_id:'material-b',source_sha256:'sha-b',pages:[{page:1,text:'other attachment',method:'text' as const}]},
-  {material_id:'material-a',source_sha256:'sha-a',pages:Array.from({length:13},(_,index)=>({page:index+1,text:index===4?'':'page '+(index+1),method:'text' as const}))},
- ];
- const requests:any[]=[];
- const result=await redactExtractedMaterials({directory:'unused',materials,config:{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture-model'},prompt:'Skip pages with no readable text.'},executeApi:(async(request:any,callKey:string)=>{
-  requests.push({request,callKey});
-  const input=JSON.parse(request.messages[1].content);
-  const output={fields:input.targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))};
-  return{text:JSON.stringify(output),usage:{prompt_tokens:10,completion_tokens:2,total_tokens:12},duration_ms:3,completion_id:`completion-${requests.length}`,call_id:request.call_id};
- }) as any});
- expect(requests).toHaveLength(2);
- expect(requests.map(({request}:any)=>JSON.parse(request.messages.at(-1).content).targets.length)).toEqual([1,12]);
- expect(result.materials.map(material=>material.material_id)).toEqual(['material-b','material-a']);
- expect(result.materials[1]?.pages.map(page=>page.page)).toEqual(Array.from({length:13},(_,index)=>index+1));
- expect(result.materials[1]?.pages[4]?.text).toBe('');
- expect(result.usage).toEqual({prompt_tokens:20,completion_tokens:4,total_tokens:24});
- expect(result.duration_ms).toBe(6);
- expect(result.completion_id).toBeNull();
- expect(result.call_ids).toEqual(requests.map(({request}:any)=>request.call_id));
-});
-
-test('API redaction retries one structurally incomplete batch and accounts for both calls',async()=>{
- const materials=[{material_id:'material-a',source_sha256:'sha256',pages:Array.from({length:12},(_,index)=>({page:index+1,text:'page '+(index+1),method:'text' as const}))}];
- const requests:any[]=[];
- const result=await redactExtractedMaterials({directory:'unused',materials,config:{provider:'api',api:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture-model'},prompt:'fixture'},executeApi:(async(request:any,callKey:string)=>{
-  requests.push({request,callKey});
-  const input=JSON.parse(request.messages.at(-1).content);
-  const output={fields:requests.length===1?[]:input.targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))};
-  return{text:JSON.stringify(output),usage:{prompt_tokens:10,completion_tokens:2,total_tokens:12},duration_ms:4,completion_id:`completion-${requests.length}`,call_id:request.call_id};
- }) as any});
- expect(requests).toHaveLength(2);
- expect(requests.slice(0,2).map(({callKey}:any)=>callKey)).toEqual(['redaction-structured-1','redaction-structured-1-retry-1']);
- expect(requests[1].request.messages).toHaveLength(3);
- expect(requests[1].request.messages[1].content).toContain('上一轮校验失败');
- expect(result.materials[0]?.pages).toHaveLength(12);
- expect(result.usage).toEqual({prompt_tokens:20,completion_tokens:4,total_tokens:24});
- expect(result.duration_ms).toBe(8);
- expect(result.completion_id).toBeNull();
- expect(result.call_ids).toEqual(requests.map(({request}:any)=>request.call_id));
 });
 
 test('JSON prompt is sent verbatim and partial masks contain no subject placeholders',async()=>{
@@ -86,9 +32,6 @@ test('JSON prompt is sent verbatim and partial masks contain no subject placehol
  await client.recognize(new Uint8Array());
  expect(prompt).toBe(config.extractionPrompt);
  expect(config.includePageHeadings).toBe(false);
- const result=redactTexts(['身份证4301234567890033，张三'],['张三'],'partial');
- expect(result.texts[0]).toContain('43****33');
- expect(result.texts[0]).not.toContain('【主体');
 });
 test('recognition passes configured reasoning effort rather than provider default',async()=>{
  let body:any;
@@ -104,14 +47,6 @@ test('OCR max effort is configured independently of entity checks',async()=>{
  expect(config.ocrReasoningEffort).toBe('max');expect(config.reasoningEffort).toBe('high');expect(bodies[0].reasoning_effort).toBe('max');expect(bodies[1].reasoning_effort).toBe('high');
 });
 
-test('consistent cross-page replacement preserves dates, money and case numbers',()=>{
- const result=redactTexts(['张三向公司付款303343元，案号(2018)568，日期2018-04-19，电话13812345678','张三再次出现'],['张三']);
- expect(result.texts[0]).not.toContain('张三');expect(result.texts[1]).toContain(result.mapping.find(m=>m.original==='张三')!.replacement);
- expect(result.texts[0]).toContain('303343');expect(result.texts[0]).toContain('(2018)568');expect(result.texts[0]).toContain('2018-04-19');expect(result.texts[0]).not.toContain('13812345678');
-});
-test('replace overlapping entities without interpreting regex characters',()=>{
- const result=redactTexts(['甲公司(总部)和甲公司'],['甲公司','甲公司(总部)']);expect(result.texts[0]).toBe('【主体001】和【主体002】');
-});
 test('provider rejects truncated OCR and does not expose service error body',async()=>{
  const truncated=createVisionClient({ZHIPU_API_KEY:'secret'},async()=>Response.json({choices:[{finish_reason:'length',message:{content:'partial'}}]}),strictConfig());
  await expect(truncated.recognize(new Uint8Array())).rejects.toThrow('截断');
@@ -362,4 +297,13 @@ test('single-character entity retry explains the unsafe replacement granularity'
  expect(await client.entities('张三付款。张贴公告。')).toEqual(['张三']);
  expect(requests[1].messages.find((message:any)=>message.role==='user').content).toContain('至少两个字符');
  expect(requests[1].messages.find((message:any)=>message.role==='user').content).toContain('单字');
+});
+
+test('共用渲染器保留附件页序与结构，拒绝正文结构不一致',()=>{
+ const materials=[{material_id:'a',pages:[{page:1,text:'化名正文',structure:[{id:'p1',kind:'paragraph' as const,text:'化名正文'}]}]}];
+ const rendered=renderRedactedMaterials(materials),index=JSON.parse(rendered.index);
+ expect(index.materials[0].markdown).toBe('化名正文');
+ expect(index.materials[0].document.pages[0].blocks).toEqual(materials[0]!.pages[0]!.structure);
+ expect(index.redacted_sha256).toBe(createHash('sha256').update(rendered.markdown).digest('hex'));
+ expect(()=>renderRedactedMaterials([{material_id:'a',pages:[{...materials[0]!.pages[0]!,text:'不一致'}]}])).toThrow('结构与正文不一致');
 });

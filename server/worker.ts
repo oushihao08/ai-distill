@@ -96,7 +96,7 @@ try {
   ()=>runNextLibraryJob(pool,root,'agent','local',controller.signal),
   ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,'all','local','codex'),
   ()=>runNextProjectSkill(pool,root,undefined,controller.signal),
-  ()=>runNextRedaction(pool,root,controller.signal,undefined,'codex','local'),
+  ()=>runNextRedaction(pool,root,controller.signal,'codex','local'),
   ()=>runNextAuthoring(pool,root,undefined,controller.signal),
   ()=>runNextScore(pool,root,undefined,controller.signal),
  ],controller.signal);
@@ -114,7 +114,7 @@ try {
   ()=>runNextLibraryJob(pool,root,'internal',materialExecutionTarget as 'local'|'server',controller.signal),
  ],controller.signal);
  const dispatchServerRedactionApiQueue=createFairQueueHandler([
-  ()=>runNextRedaction(pool,root,controller.signal,undefined,'api','server'),
+  ()=>runNextRedaction(pool,root,controller.signal,'api','server'),
   ()=>runNextLibraryJob(pool,root,'api','server',controller.signal),
  ],controller.signal);
  const pools:Promise<void>[]=[];
@@ -148,7 +148,7 @@ try {
   {component:'model_api',concurrency:concurrency.llmApi,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('API 任务调度失败，稍后重试；未输出凭证或材料内容');}},
  ));
  if(!workflowIds?.length&&workerMode!=='local'&&materialExecutionTarget==='server')pools.push(runWorkerPool(
-  ()=>workerMode==='server'||workerMode==='materials'?dispatchServerRedactionApiQueue():runNextRedaction(pool,root,controller.signal,undefined,'api','server'),
+  ()=>workerMode==='server'||workerMode==='materials'?dispatchServerRedactionApiQueue():runNextRedaction(pool,root,controller.signal,'api','server'),
   {component:'redaction_api',concurrency:concurrency.llmApi,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('API 脱敏调度失败，稍后重试；未输出凭证或材料内容');}},
  ));
  if(workerMode==='server'){
@@ -165,7 +165,7 @@ try {
   ));
  }
  if(!workflowIds?.length&&workerMode!=='materials'&&workerMode!=='server'&&materialExecutionTarget==='local')pools.push(runWorkerPool(
-  async()=>await probeLocalRedactionApi()&&!controller.signal.aborted?runNextRedaction(pool,root,controller.signal,undefined,'api','local'):false,
+  async()=>await probeLocalRedactionApi()&&!controller.signal.aborted?runNextRedaction(pool,root,controller.signal,'api','local'):false,
   {component:'redaction_api',concurrency:concurrency.llmApi,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('API 脱敏调度失败，稍后重试；未输出凭证或材料内容');}},
  ));
  if(!workflowIds?.length&&materialExecutionTarget==='server'&&(workerMode==='materials'||workerMode==='api'||workerMode==='server'))pools.push(runWorkerPool(

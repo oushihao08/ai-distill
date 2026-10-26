@@ -300,3 +300,7 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 飞书批次结果中的`verified`、`verification_failed`、`verification_incomplete`分别统计程序核对通过、明确差异和未完成；具体差异见每题`receipt.verification`。旧API无verification的成功回执不算核对通过。
 
 核对失败的HTTP502会再读同题归档安全回执；只有目标表一致、核对时间不早于本次派发时才采用差异详情，旧回执不冒记本次结果。读取失败或未知外部请求保留unknown，未派发项仍为pending，不自动重发。
+
+## 排队与长等待诊断
+
+`bun cli/index.ts queue diagnose --json`并行读取现有队列与监控API，报告有排队却无运行、出题/评分入队超过15分钟及异常worker快照。`elapsed_ms`是自入队的总时长，包含排队，不是模型生成时长；running心跳不重置此计时。只输出任务ID和安全状态，不读取正文，不取消、重派或重启。单worker快照无法证明所有消费者存活，告警须结合原attempt和日志定位。实现见`queue-diagnostics.ts`；查询失败直接报错，不返回健康。

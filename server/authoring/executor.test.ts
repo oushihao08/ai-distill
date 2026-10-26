@@ -67,16 +67,16 @@ test('Work 法律全场景缺少 model_report_v1 时不启动出题模型',async
   expect(called).toBe(false);
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('Work 出题提示允许缺省登记身份但专业映射仍必填',async()=>{
+test('Work 出题保留提示说明但不因缺少Harbor映射拒收',async()=>{
  const root=await mkdtemp(join(tmpdir(),'author-work-harbor-'));let prompt='';
  const value={...draft,rubric:[{id:'amount',criterion:'准确核算',rule:'按材料核算',metadata:{score:3}}]};
  try{
   const task=options(root,async()=>{throw new Error('unexpected');});
-  await expect(runAuthoring({...task,project_name:'Work法律全场景 - 首批筹备',scoring_policy:{contract:'model_report_v1',rules_text:'保留正负分规则',reference_answer:'calibration'},execute:(async(call:any)=>{prompt=call.prompt;return{result:value,session_id:'fixture',usage:null,duration_ms:1,diagnostic_path:'private',provider:'fixture',model:'fixture'};}) as any})).rejects.toThrow('project_context.harbor');
+  await expect(runAuthoring({...task,project_name:'Work法律全场景 - 首批筹备',scoring_policy:{contract:'model_report_v1',rules_text:'保留正负分规则',reference_answer:'calibration'},execute:(async(call:any)=>{prompt=call.prompt;return{result:value,session_id:'fixture',usage:null,duration_ms:1,diagnostic_path:'private',provider:'fixture',model:'fixture'};}) as any})).resolves.toMatchObject({draft:value});
   expect(prompt).toContain('未提供可省略或为 null');
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test.each(['missing','mismatch','symlink'])('ordinary authoring rejects %s Markdown without changing the result',async(mode)=>{
+test.each(['missing','mismatch','symlink'])('ordinary authoring accepts %s Markdown without reading it',async(mode)=>{
  const root=await mkdtemp(join(tmpdir(),'author-document-'));
  try{
   const task=options(root,async()=>{throw new Error('unexpected');});
@@ -86,8 +86,8 @@ test.each(['missing','mismatch','symlink'])('ordinary authoring rejects %s Markd
    if(mode==='mismatch')await writeFile(join(call.directory,'output/题目.md'),'另一道题');
    if(mode==='symlink'){const fs=await import('node:fs/promises');await writeFile(join(root,'foreign.md'),'外部文件');await fs.symlink(join(root,'foreign.md'),join(call.directory,'output/题目.md'));}
    return{result:call.validate(draft),session_id:'fixture',usage:null,duration_ms:1,diagnostic_path:'private',provider:'fixture',model:'fixture'};
-  }})).rejects.toThrow();
-  expect(await Bun.file(join(root,'draft.json')).exists()).toBe(false);
+  }})).resolves.toMatchObject({draft});
+  expect(await Bun.file(join(root,'draft.json')).json()).toEqual(draft);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 test('ordinary authoring delivery renderer works in an actual local process',async()=>{
@@ -96,8 +96,8 @@ test('ordinary authoring delivery renderer works in an actual local process',asy
   const task=options(root,async()=>{throw new Error('unexpected');});
   const result=await runAuthoring({...task,execute:async(call:any)=>{
    const contract=await Bun.file(join(call.directory,'input/delivery.json')).json();
-   expect(contract.note).toContain('不得手工修改');expect(contract.note).toContain('原文件名');
-   expect(call.prompt).toContain('最后一次写文件操作');
+   expect(contract.note).toContain('可选阅读稿');expect(contract.note).toContain('不阻止保存');
+   expect(call.prompt).toContain('result.json即可交卷');
    await writeFile(contract.result_path,JSON.stringify(draft));
    const child=Bun.spawn(contract.render_command,{stdout:'pipe',stderr:'pipe'});
    expect(await child.exited).toBe(0);expect(await new Response(child.stderr).text()).toBe('');
@@ -139,18 +139,18 @@ test('ordinary authoring removes temporary attachment text after execution fails
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-test('invalid draft is rejected before authoring completes',async()=>{
+test('foreign attachment references are preserved for downstream handling',async()=>{
  const root=await mkdtemp(join(tmpdir(),'authoring-invalid-'));let calls=0;
  try{
-  await expect(runAuthoring(options(root,async(call:any)=>({result:call.validate({...draft,attachment_ids:['foreign']}),session_id:'author',usage:null,events_path:'private',duration_ms:1})))).rejects.toThrow('附件 ID');
+  await expect(runAuthoring(options(root,async(call:any)=>({result:call.validate({...draft,attachment_ids:['foreign']}),session_id:'author',usage:null,events_path:'private',duration_ms:1})))).resolves.toMatchObject({draft:{attachment_ids:['foreign']}});
   calls++;expect(calls).toBe(1);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-test('unsupported answer capabilities fail the authoring step',async()=>{
+test('business answer capabilities do not block saving an authored question',async()=>{
  const root=await mkdtemp(join(tmpdir(),'authoring-capability-'));
  try{
-  await expect(runAuthoring(options(root,async(call:any)=>({result:call.validate({...draft,answer_requirements:{input_mode:'text',output_mode:'file',tools:[]}}),session_id:'author',usage:null,events_path:'private',duration_ms:1})))).rejects.toThrow('作者Codex使用的工具不属于作答器能力');
+  await expect(runAuthoring(options(root,async(call:any)=>({result:call.validate({...draft,answer_requirements:{input_mode:'text',output_mode:'file',tools:[]}}),session_id:'author',usage:null,events_path:'private',duration_ms:1})))).resolves.toMatchObject({draft:{answer_requirements:{output_mode:'file'}}});
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

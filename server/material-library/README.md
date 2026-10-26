@@ -7,13 +7,13 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `storage.ts` | 原件内容寻址安装、受管路径/符号链接边界和字节摘要校验；提取、旧导入及代称计划共用`insertLibraryTextBlob()`，统一正文/MIME/UTF8字节数复用校验 |
+| `storage.ts` | 原件内容寻址安装、同摘要事务锁、确认回滚后的本次无引用文件回收及受管路径/摘要校验；文本入口共用`insertLibraryTextBlob()`核对正文/MIME/UTF8字节数 |
 | `service.ts` | 包资料、不可变文件集合、上传幂等、逻辑归档/恢复、历史与使用查询；复用原件时核验字节摘要与大小，只修复不可变文件对象的受管存储路径 |
 | `settings.ts` | 共用SQLite配置数据库；首次读取初始化并持久化默认模板，每次派发重新读取；乐观版本控制、事务保存，不保存密钥 |
 | `jobs.ts` | 入队时读取共用设置并冻结；请求重放、执行lane、租约、取消、失租和终态事务 |
 | `runner.ts` | 领取后的调度、心跳、取消与截止；入库和提取执行；`executeExtraction`/`runClaimedJob`支持隔离行为验证 |
 | `extraction-checkpoint.ts` | 私有单文件检查点读写；同版本显式重试可复用，异常降级继续，不发布或派发任务 |
-| `redaction-runner.ts` | 按已冻结方式执行遮挡/化名脱敏并事务发布，复用旧结构输出 |
+| `redaction-runner.ts` | 仅按冻结Agent模板执行整包化名并事务发布；旧字段映射快照在读取正文前拒绝 |
 | `execution-shared.ts` | 执行器共用摘要、私有目录、提取结构校验及正文发布前保守清理；有改动时同时保留原始OCR对象与精确编辑审计 |
 | `processing-policy.ts` | 从期次配置读取当前两模式及历史mask身份并约束派发模板；不调用模型 |
 | `agent-redaction.ts` | 单次限时Agent调用及最终程序编译；不入队、不自动重试 |
@@ -44,6 +44,8 @@ Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symli
 
 包名称/说明/标签与处理设置分开。历史`library_packages.processing_settings`保留兼容初始快照，不再作为新任务执行配置，也不从包详情返回；包创建/更新接口拒绝单包处理配置写入。未保存共用配置时，从数据库系统提示词与当前系统模型/提取默认组合完整配置。保存后的共用设置只影响之后派发的新任务，历史任务与题目快照不回写。
 
+新默认`extraction.provider_config`为空兼容对象；既有旧Vision配置可读，不自动删除已保存设置，但MinerU不执行这些字段。实际供应商由任务`pdf_provider`冻结，转换语义由源码版本标识约束；调整未来有效提取配置时须同时更新检查点身份，不能把“当前未使用”推广为永远可忽略。
+
 PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API的30分钟时限后还有一次最多30分钟的CLI回退及处理余量；纯文本提取和脱敏任务仍按共用设置执行，Agent整包脱敏另受10分钟上限约束。该预算是整包总时限，多文件处理仍可能因供应商慢而失败。
 
 ## 期次两种处理模式
@@ -56,7 +58,7 @@ PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API
 历史`mask`只保留读取和既有冻结来源；新保存、新任务拒绝旧遮挡，不自动解释为aliases。
 | `aliases`（默认） | 带`project_id`派发任务，程序选择整包化名模板，当前由本机Agent执行 | 仅选择化名整理结果，冻结为redacted |
 
-材料任务请求可带`project_id`：服务端从该期次配置选流程，拒绝不一致的客户端模板，原文模式不派脱敏；新任务冻结模式及处理配置，历史任务不切换。未带项目上下文的全局库操作仍可显式选择模板，供不同项目共享已处理版本。API遮挡模型未配置时报告配置缺口，不改用Codex。化名方法与执行适配器分离：当前接`runAgent`，未来API Agent后端可实现同一任务/结果接口，尚未宣称该后端已实现。
+材料任务请求可带`project_id`：服务端从该期次配置选流程，拒绝不一致的客户端模板，原文模式不派脱敏；新任务冻结模式及处理配置，历史任务不切换。未带项目上下文的全局库操作仍可显式选择模板，供不同项目共享已处理版本。旧字段映射模型配置不再用于派发或执行。化名方法与执行适配器分离：当前接`runAgent`，未来API Agent后端可实现同一任务/结果接口，尚未宣称该后端已实现。
 
 本期可先加载已提取、尚待脱敏的材料，点击“处理材料”进入带期次上下文的材料页。处理成功后选择匹配版本再建题；不恢复通用自动推进。改变本期模式只影响新题；既有题目依然按题目快照执行，禁止作答/评分临时重读当前模式并切换材料。成功消息或阶段文件不等于发布成功：以library_jobs.succeeded和library_redactions可读结果为准。
 
@@ -98,6 +100,10 @@ PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API
 
 文件系统与PostgreSQL不是同一原子事务；提交未知时保留对象并按幂等key核对，不因单请求失败清理可能已被引用的blob。旧流程保留，不迁移或清理旧业务数据。
 
+原件安装器的临时硬链接清理失败只记录安全告警，不覆盖安装异常；安装成功时仍执行正式文件路径/内容校验并返回installed_new回执，使后续回滚能够核查回收。遗留临时链接不代表原件已登记，本流程不自动扫描删除它们。
+
+普通上传和历史导入在安装前按摘要排序取得同一组事务锁，持有到登记/提交结束。仅当ROLLBACK成功后，回收器重新取得相同锁并查询是否存在任一执行目标的file blob登记；只对本次installed_new=true、查证无登记且路径/类型/摘要/大小一致的原件删除。复用文件、已有登记、回滚未知、核查失败或锁等待超限均保留；回收事务锁等待2秒、语句10秒，不自动重试，也不覆盖原上传错误。COMMIT回执丢失但实际已提交时，登记存在会保留文件。installed_new是临时安装回执，不持久化到blob身份；本轮没有目录扫描、历史回收或业务数据删除。所有共享同一存储的原件写入口须一起加载新代码；SQL替身验证不等于真实PG锁竞争或实体多进程验收。
+
 材料包列表支持 `q`、重复的 `project_id`、`redaction_state=all|ready|not_ready` 组合筛选，筛选在分页之前执行。项目多选取当前有效加载关系的并集，忽略移除关系及已删除项目；脱敏状态按是否存在成功且可用于建题的版本判断，兼容原 `ready_only` 参数。`GET /api/material-library/project-options` 提供未删除项目的轻量选项。
 
 
@@ -126,7 +132,6 @@ PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API
 | 上传文件集合 → 入库 | `createLibraryRevision()` → `intake`内部任务 | 校验原件和清单；不自动提取或脱敏 |
 | PDF/DOCX提取 | `extract`任务的API执行通道 → MinerU | 冻结提取文档；不冒记为已脱敏 |
 | TXT/MD提取 | `extract`内部任务 → 本地解析 | 同一提取文档契约，不调用OCR模型 |
-| 字段遮罩模板 | `redact`任务 → `redactExtractedMaterials()` | API/Agent按冻结配置执行；全部声明已脱敏的附件走内部校验 |
 | 整包化名模板（默认） | Agent消费池 → 语义计划编译 → 既有结果事务 | 固定虚构姓名、法院保留、精确编辑与结构分册；最多10分钟，私有进度保留 |
 | 原文建题 | 成功提取版本 → `createLibraryQuestion()` | 冻结`original`来源；可不脱敏 |
 | 脱敏建题 | 与本期处理模式一致的成功脱敏结果 → `createLibraryQuestion()` | 冻结`redacted`来源；下游不再选择模板 |
@@ -135,9 +140,9 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 旧文本计划只产出编辑后文字，由导入入口构建明确的段落结构；不沿用编辑前的表格/段落对象。整包模板计划才通过结构编辑器生成编辑后结构，避免正文与旧结构不一致，也避免把旧文本计划冒记成保留原结构。
 
-模板与材料包、项目身份分开。`GET /redaction-templates`读取模板提示词、workflow及digest；目录仅列当前Agent模板；旧mask解析只为历史兼容保留，新请求显式mask被拒绝。省略模板时使用aliases。共用设置可保存最多20项`redaction_templates`，每项id/name/prompt独立，workflow固定codex_plan；新安装或已保存空数组时提供内置Codex整包模板；不保存密钥。
+模板与材料包、项目身份分开。`GET /redaction-templates`读取模板提示词、workflow及digest；目录仅列当前Agent模板；旧mask模板解析和字段映射执行已删除，显式mask不再存在于模板目录；读取旧共用设置时只读过滤旧模板，不回写SQLite，显式保存仅接受Agent模板。省略模板时使用aliases。共用设置可保存最多20项`redaction_templates`，每项id/name/prompt独立，workflow固定codex_plan；新安装或已保存空数组时提供内置Codex整包模板；不保存密钥。
 
-- `field_mapping`：仅历史冻结任务与结果兼容，不再允许新派发或新保存模板。
+旧`mask/field_mapping`冻结任务也不再执行或复用模型结果，执行入口明确拒绝，需重新创建Agent化名任务；数据库历史结果只读展示及其原身份保留，不删除业务数据。
 - `codex_plan`：默认aliases模板，省略template_id也选择它。每次入队读取共用SQLite配置数据库中的提示词并冻结模板及系统Agent模型；既有Agent消费池整包执行，不调用字段映射API。`shared/agent-material-plan.ts`将字段片段与结构块范围编译为既有精确计划，再做无重叠/全文覆盖/结构校验。主体对应表和阶段进度保留在`jobs/<job-id>/private/`（700/600），不进入题目或交付。任务领取至发布最多10分钟，截止停止子进程并以agent_redaction_timeout终结，不自动重试。显式重试只复用同输入/模板/模型的私有进度。人工CLI精确计划导入仍须绑定template_id/template_digest，保留原幂等行为。
 
 模板计划沿原提取structure应用字段内编辑，保留行列和rowSpan/columnSpan。跨字段编辑、切断表格或列表、正文覆盖/结构投影不一致均拒绝；原始结构缺失不得静默回退。CLI原文单文件返回structure和field_ranges供定位。索引prepared_documents包含分册document，供通用材料DOCX和Work五件套共用；旧文本型分册仍走兼容渲染。结构保留不等于原始OCR结构准确，须渲染核查异常表格。
@@ -156,7 +161,7 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 Agent完整语义计划交付到固定私有文件`output/material-plan.json`（结构见任务内`plan-schema.json`），最终消息仅声明`plan_file`；执行器在Agent正常完成后读取该文件并编译发布。阶段文件或成功消息本身不等于发布完成，缺文件、空计划、源文覆盖缺失仍失败；不从聊天摘要补造正文，也不要求模型再在最终消息重复整份大JSON。
 
-私有`validate-plan.mjs`在重叠或标题残留原称时同时输出`validation_details`，包含冲突字段/文书ID、零起始计划编辑或主体/变体序号及字段内坐标，帮助Agent修正具体条目；不输出原文，不自动删除冲突编辑或放宽校验。
+私有`validate-plan.mjs`在编辑重叠时同时输出`validation_details`，包含冲突字段ID、零起始计划编辑或主体/变体序号及字段内坐标，帮助Agent修正具体条目；不输出原文，不自动删除冲突编辑或放宽校验。标题内容由Agent按本次模板生成，工具及宿主共用的编译器不检查标题是否包含主体原称或敏感号码；基础文件名格式、正文敏感残留、结构及覆盖校验保留。
 
 编译器发现原文残留的姓名、证件号、电话或地址时，会在本次私有`output/validation-feedback.json`保存类别、页码和字段ID，不保存敏感原文。显式续作仅在同输入/模板/模型指纹匹配时将它复制到`resume/`，提示Agent逐项修复；它不自动修改脱敏计划，也不改变发布门禁。
 
@@ -168,7 +173,7 @@ Agent完整语义计划交付到固定私有文件`output/material-plan.json`（
 
 身份及边界疑点必须给出本次真实字段或结构块ID，不接受all等整包概述。非阻断身份疑点必须已有对应化名或原有遮盖；无法确认身份对应不构成保留原名的理由。Agent工作区的`review-hints.json`仅是程序根据角色/标题定位的阅读导航，不能当作身份判断、边界结论或材料份数目标。
 
-Agent返回计划后，编译器调用`shared/scan-noise.ts`的统一正则规则，将固定OCR占位符、独立数字行和扫描时间戳清理合并入精确原文编辑，随后重新计算分册范围并校验完整覆盖。表格/列表值、金额/编号标签后的数值及已提交遮盖映射的编号不按数字垃圾删除；普通业务日期保留。规则与边界唯一说明见`shared/README.md`。清理可能使分册片段只剩换行，prepared-structure保留其精确覆盖，DOCX渲染跳过空段。API遮挡流程在AI映射返回后调用同一结构清理方法。既有发布结果和题目快照不追溯改写；现有材料修复须生成新版本。
+Agent返回计划后，编译器调用`shared/scan-noise.ts`的统一正则规则，将固定OCR占位符、独立数字行和扫描时间戳清理合并入精确原文编辑，随后重新计算分册范围并校验完整覆盖。表格/列表值、金额/编号标签后的数值及已提交遮盖映射的编号不按数字垃圾删除；普通业务日期保留。规则与边界唯一说明见`shared/README.md`。清理可能使分册片段只剩换行，prepared-structure保留其精确覆盖，DOCX渲染跳过空段。旧API字段映射执行已删除。既有发布结果和题目快照不追溯改写；现有材料修复须生成新版本。
 
 
 ## 停止、原因与提取续作
@@ -177,7 +182,7 @@ Agent返回计划后，编译器调用`shared/scan-noise.ts`的统一正则规�
 
 新任务停止原因写入`result_summary.execution_stop`，保留其他摘要；用户取消和worker停机仍为cancelled，超时、心跳不可用与失租按失败/提交权处理。cancelled.error_code继续为null，数据库cancel_requested_at在终态竞争时优先；历史没有该元数据时不推断取消原因。更新未命中当前租约时只报告终态未写入，不覆盖新owner，也不宣称已经改成失败。提交回执出错后若按同job确认已经succeeded，不再次补写失败。
 
-新库提取每个文件完成后在`<STORAGE_DIR>/material-library/jobs/<job UUID>/extraction/<file UUID>.json`原子保存私有检查点（目录0700/文件0600），记录来源/输入清单/版本/冻结配置/转换版本、结构、issues和实际provider。仅显式previous_job_id重试按同一身份验证后复用；request-key变化本身不影响复用。损坏、不匹配、缺失、不可读或不可写检查点都降级为正常提取/继续，不为辅助缓存阻断任务。历史无检查点正常运行，不读取旧工作流ordinal缓存。
+新库提取每个文件完成后在`<STORAGE_DIR>/material-library/jobs/<job UUID>/extraction/<file UUID>.json`原子保存私有检查点（目录0700/文件0600），记录来源/输入清单/版本、实际提取条件、结构、issues和实际provider。v2身份绑定原件、版本清单、PDF冻结供应商/DOCX固定API/文本本地解析及对应转换版本；脱敏模型/提示词/模板、旧provider_config和调度预算不参与复用身份，完整任务配置仍保留。旧无version检查点继续按整份config_digest保守核验，不从旧摘要推断新身份或改写历史。仅显式previous_job_id重试按同一身份验证后复用；request-key变化本身不影响复用。损坏、不匹配、缺失、不可读或不可写检查点都降级为正常提取/继续，不为辅助缓存阻断任务。历史无检查点正常运行，不读取旧工作流ordinal缓存。
 
 每次命中的检查点写成本job进度，仍由原事务整包发布；单个PDF尚在供应商处理中时不支持页级续算或接管远端batch。成功清理本job私有临时目录，失败检查点保留到显式续作；人工清理须先确认job无活动执行，只清理指定job目录，不删除原件或其他尝试。检查点可能含未脱敏正文，不作为公开产物和日志字段。
 
@@ -186,3 +191,5 @@ Agent返回计划后，编译器调用`shared/scan-noise.ts`的统一正则规�
 本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。
 
 材料失败结算的local恢复：处理器判明失败后先持久化安全终态与原租约，再写PG。暂时写入失败保留result_pending_commit；恢复仅调用原失败结算，不再读取原件或调用处理器。仍核对原租约及取消优先级；未知失败不按日志猜测重放，详见[执行队列](../execution-queue/README.md)。
+
+任务详情在local模式为queued/running结果附加execution投影，按PG归属及代次核对本机队列；业务status原值保留。待核实不伪造失败、不自动重试；终态不附加旧执行投影。

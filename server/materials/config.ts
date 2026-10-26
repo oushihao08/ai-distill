@@ -1,7 +1,7 @@
 /**
  * 职责：读取并校验旧 Vision/OCR 配置快照，不负责配置当前 MinerU 提取器。
- * 关键方法与用途：`loadExtractionConfig()` 从默认 JSON 或 `EXTRACTION_CONFIG_PATH` 读取完整对象；材料库仅将其作为 processing settings 快照保存。
- * 使用场景：旧 `vision.ts` 客户端和材料库默认设置构建；MinerU runner 不读取其中的 provider_config，密钥不由本文件管理。
+ * 关键入口：loadExtractionConfig从默认JSON或EXTRACTION_CONFIG_PATH读取旧Vision配置，供该客户端及其隔离验证使用。
+ * 使用场景：旧vision.ts；材料库新默认设置不再读取本文件。既有provider_config兼容保留，但MinerU不执行它，密钥不由本文件管理。
  */
 import { readFileSync } from 'node:fs';
 export interface ExtractionConfig {

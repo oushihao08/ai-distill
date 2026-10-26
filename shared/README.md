@@ -55,7 +55,7 @@ workflow-config.ts 的可选 content_contract=work_legal_v1 供出题阶段显�
 
 精确编辑重叠仍以`agent_edit_overlap`拒绝；异常的`validation_details`仅包含冲突字段ID、原计划编辑数组的零起始序号及字段内坐标，供Agent私有校验器定位修正，不包含主体原称、号码或正文，不改变发布标准。
 
-文书标题残留主体原称时，`agent_title_contains_identity`的私有定位信息包含文书ID及文书/主体/变体的零起始序号，不回显标题和原称。
+文书标题内容由Agent按本次模板生成；编译器不做标题主体原称匹配，也不增加标题号码等敏感信息检查。`material-preparation.ts`仍检查非空、100字上限及文件名非法字符，正文敏感残留、结构与覆盖校验不受影响。
 
 识别编号/电话编辑还须检查完整原字段中的金额和百分比范围；即使Agent仅提交不含单位的数字或其子串，碰到这些业务值也以`agent_business_value_edit`拒绝发布，防止“334666元”的数字部分被误当识别编号。
 
@@ -74,3 +74,7 @@ API供应商标识唯一枚举为types.ts的MODEL_API_PROVIDERS；钩子配置�
 `Attempt.heartbeat_at`为可选诊断元数据；当前attempt状态HTTP返回数据库最后心跳，旧详情/历史读取可能不提供此字段。它不改变完成/成功判据，也不授权失租重派。
 
 固定噪声匹配及Agent发布前残留复核均以单个结构字段为边界；相邻表格单元格或列表项不拼接成扫描时间戳。一个字段内明确的扫描签名仍清理，跨字段的独立编号与普通日期保留，避免生成无法应用的跨单元格编辑。
+
+MaterialLibraryJob可附加execution，复用StepExecution表达归属和本机状态；不替换业务status。
+
+`redaction-templates.ts`的可执行workflow仅有codex_plan；旧mask/field_mapping模板解析与模型执行已删除。material-library.ts保留mask字面量仅识别历史配置/快照，不能据此派发或恢复旧模型任务。

@@ -108,3 +108,16 @@ test('database query and transaction logs keep SQL values and raw errors private
   expect(records.filter(record=>record.level==='warn').every(record=>record.event==='db.query.slow')).toBe(true);expect(JSON.stringify(records)).not.toContain('private database message');expect(JSON.stringify(records)).not.toContain('private commit result uncertain');expect(JSON.stringify(records)).not.toContain('private sql value');expect(records.find(record=>record.event==='db.query.slow')).not.toHaveProperty('sql');expect(records.find(record=>record.event==='db.query.slow')).not.toHaveProperty('values');
  }finally{await logger.close();await pool.end();await rm(root,{recursive:true,force:true});}
 });
+
+test('slow diagnostics distinguish SQL shapes and connection holds without recording SQL',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'db-hold-')),logger=configureLogger({root,service:'api'});
+ const pool=createPool({DATABASE_URL:'postgresql://fixture:fixture@example.invalid/fixture'}),client={query:async(_sql:string)=>{await Bun.sleep(1050);return{rows:[]};}};
+ try{
+  await withLogContext({route:'/api/projects/:id',method:'GET'},async()=>{
+   pool.emit('acquire',client as any);await client.query('SELECT private_value FROM secret_fixture');pool.emit('release',undefined,client as any);
+  });
+  await logger.flush();const files=await readdir(join(root,'logs',new Date().toISOString().slice(0,10)));const rows=(await Promise.all(files.filter(f=>f.endsWith('.jsonl')).map(f=>readFile(join(root,'logs',new Date().toISOString().slice(0,10),f),'utf8')))).join('').trim().split('\n').map(l=>JSON.parse(l));
+  expect(rows).toContainEqual(expect.objectContaining({event:'db.connection.held',route:'/api/projects/:id',duration_ms:expect.any(Number)}));
+  const query=rows.find(r=>r.event==='db.query.slow');expect(query.query_id).toMatch(/^[a-f0-9]{16}$/);expect(query.route).toBe('/api/projects/:id');expect(JSON.stringify(rows)).not.toContain('private_value');
+ }finally{await logger.close();await pool.end();await rm(root,{recursive:true,force:true});}
+});

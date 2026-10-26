@@ -74,6 +74,29 @@ async function safeOriginalBytes(storageRootInput:string,material:Original){
  return bytes;
 }
 
+/** 飞书旧快照未登记原件artifact时，按冻结ID/SHA并实读原件验证；新快照缺关联仍拒绝。 */
+export async function verifyLibraryOriginalManifest(db:Pool|PoolClient,workflowId:string,originals:Original[],storageRoot:string){
+ const rows=(await db.query(`SELECT f->>'material_id' AS id,f->>'source_sha256' AS sha256,
+  (f ? 'source_artifact_id') AS artifact_declared,f->>'source_artifact_id' AS source_artifact_id,
+  a.id AS artifact_id,a.sha256 AS artifact_sha256,a.kind AS artifact_kind,a.size_bytes
+  FROM ai_distill.question_library_sources s CROSS JOIN LATERAL jsonb_array_elements(s.snapshot_manifest->'files') f
+  LEFT JOIN ai_distill.artifacts a ON a.id=(f->>'source_artifact_id')::uuid AND a.workflow_id=s.workflow_id
+  WHERE s.workflow_id=$1`,[workflowId])).rows;
+ // 先比较完整冻结清单，不能让JOIN丢行后把缺关联误报成附件数量变化。
+ assertOriginalManifest(rows.map(row=>({id:row.id,sha256:row.sha256})),originals);
+ const verified=new Map<string,Buffer>();
+ for(const row of rows){
+  const material=originals.find(item=>item.id===row.id)!;
+  if(row.source_artifact_id!==null&&row.source_artifact_id!==undefined){
+   if(!row.source_artifact_id||row.artifact_id!==row.source_artifact_id||row.artifact_kind!=='source_document'||row.artifact_sha256!==row.sha256||row.size_bytes===null||!Number.isSafeInteger(Number(row.size_bytes))||Number(row.size_bytes)!==Number(material.size_bytes))throw new HTTPException(409,{message:'冻结原件产物关联或大小不匹配'});
+  }else{
+   // 旧快照既可能省略字段，也可能显式存null；无产物ID时必须实读原件验证。
+   verified.set(material.id,await safeOriginalBytes(storageRoot,material));
+  }
+ }
+ return verified;
+}
+
 /** 仅供原文模式归档：按题目工作流ID读取原件，并要求与冻结来源清单逐项同序匹配。 */
 export async function readOriginalFilesForDelivery(db:Pool|PoolClient,workflowId:string,storageRoot:string,expected:{material_id:string;original_name:string;sha256:string}[]){
  if(!Array.isArray(expected)||!expected.length)throw new HTTPException(409,{message:'冻结原件清单缺失'});
@@ -213,22 +236,18 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
  try{
   await db.query('BEGIN');tx=true;
   const context=await contextForExport(db,workflowId);
+  let verifiedOriginals=new Map<string,Buffer>();
   // 飞书交付必须与有效出题尝试使用同一来源；普通材料导出仍可在出题前使用。
   if(options.expectedAuthoringInput){
    const source=await readQuestionMaterials(db,workflowId);
    assertAuthoringMaterialBinding(options.expectedAuthoringInput,source);
-   let expected:{id:string;sha256:string;size_bytes?:number}[];
    if(source.origin.kind==='library_v1'){
-    const rows=(await db.query(`SELECT f->>'material_id' AS id,f->>'source_sha256' AS sha256,a.size_bytes
-     FROM ai_distill.question_library_sources s CROSS JOIN LATERAL jsonb_array_elements(s.snapshot_manifest->'files') f
-     JOIN ai_distill.artifacts a ON a.id=(f->>'source_artifact_id')::uuid AND a.workflow_id=s.workflow_id AND a.sha256=f->>'source_sha256'
-     WHERE s.workflow_id=$1`,[workflowId])).rows;
-    expected=rows.map(row=>({id:row.id,sha256:row.sha256,size_bytes:Number(row.size_bytes)}));
+    verifiedOriginals=await verifyLibraryOriginalManifest(db,workflowId,context.originals,storageRoot);
    }else{
     const frozen=(await db.query('SELECT input FROM ai_distill.step_attempts WHERE id=$1 AND workflow_id=$2 AND ordinal=9 AND status=\'succeeded\'',[source.origin.redaction_attempt_id,workflowId])).rows[0]?.input;
-    expected=(frozen?.materials??[]).map((file:any)=>({id:file.material_id,sha256:file.source_sha256}));
+    const expected=(frozen?.materials??[]).map((file:any)=>({id:file.material_id,sha256:file.source_sha256}));
+    assertOriginalManifest(expected,context.originals);
    }
-   assertOriginalManifest(expected,context.originals);
    // 原件集合按冻结源artifact元数据核对；DOCX实际使用的脱敏正文已由来源读取器校验。
    // 下方原件备份路径继续校验存在文件的实际字节/SHA，保留脱敏跨机器导出的缺件兼容。
   }
@@ -245,7 +264,7 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
   const manifestMaterials:ManifestMaterial[]=[];
   for(const material of context.originals){
    let bytes:Buffer;
-   try{bytes=await safeOriginalBytes(storageRoot,material);}
+   try{bytes=verifiedOriginals.get(material.id)??await safeOriginalBytes(storageRoot,material);}
    catch(error){
     // 脱敏材料以已核验的冻结正文/结构为来源；缺失的可选原件备份不阻断跨机器导出。
     // 原文模式，以及存在但错配、越界或被改写的原件，仍失败关闭。

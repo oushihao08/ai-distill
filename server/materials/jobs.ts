@@ -5,7 +5,7 @@
  */
 import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {runExternalCall} from '../external-call';
-import {ProjectDocumentExtractor,DocumentProviderError,type DocumentExtractor} from './document';
+import {ProjectDocumentExtractor,type DocumentExtractor} from './document';
 import {invalidateMaterialResults} from './state';
 import {MINERU_DOCX_VERSION,MINERU_OCR_VERSION,MineruCliPdfExtractor} from './pdf-extraction/mineru-cli';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor} from './pdf-extraction/mineru-api';
@@ -93,6 +93,9 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
     const result=await original.extract(path,signal);
     return{...result,duration_ms:0};
    });
+  },extractPages:async(path,pages,signal)=>{
+   const material=inputs.find(item=>join(resolve(root),item.storage_path)===path);
+   return runExternalCall({attempt_id:job.id,operation:'material_page_recheck',...(material?{material_id:material.id}:{})},()=>original.extractPages(path,pages,signal));
   }};
   publication=await withTaskSignal(cancellation.signal,()=>processor(root,job.workflow_id,job.id,inputs,undefined,extractor));
   if(signal?.aborted){await requeueExtraction(pool,job);return true;}
@@ -125,7 +128,20 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
    } catch { console.error('无法确认产物是否已发布，保留文件等待核对。'); }
   }
   const message=error instanceof Error&&/^(PDF|MinerU|GLM-OCR|加密|未配置|识别|脱敏|原件|任务)/.test(error.message)?error.message:'材料处理失败，请检查运行依赖和识别配置';
-  const db=await pool.connect();try{await db.query('BEGIN');const current=await db.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=project_id AND p.deleted_at IS NULL) FOR UPDATE",[job.workflow_id]);const failed=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error=$2,result=$3,finished_at=now() WHERE id=$1 AND status='running'",[job.id,message,error instanceof DocumentProviderError?JSON.stringify({error:{kind:error.kind,retryable:error.retryable,http_status:error.http_status}}):null]);if(failed.rowCount){await db.query("UPDATE ai_distill.steps SET status='failed',error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=2 AND status='running'",[job.workflow_id,message]);await db.query("UPDATE ai_distill.steps SET status='failed',error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[job.workflow_id,message]);}await db.query('COMMIT');forgetLocalRegistrations(db);}catch(failure){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw failure;}finally{db.release();}
+  const db=await pool.connect();
+  try{
+   await db.query('BEGIN');
+   // 取得工作流锁后再终结仍运行的原attempt；错误分类由共用日志承担，不保留永远不会创建的旧GLM异常分支。
+   await db.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.projects p WHERE p.id=project_id AND p.deleted_at IS NULL) FOR UPDATE",[job.workflow_id]);
+   const failed=await db.query("UPDATE ai_distill.step_attempts SET status='failed',error=$2,result=NULL,finished_at=now() WHERE id=$1 AND status='running'",[job.id,message]);
+   if(failed.rowCount){
+    await db.query("UPDATE ai_distill.steps SET status='failed',error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=2 AND status='running'",[job.workflow_id,message]);
+    await db.query("UPDATE ai_distill.steps SET status='failed',error=$2,finished_at=now() WHERE workflow_id=$1 AND ordinal=1",[job.workflow_id,message]);
+   }
+   await db.query('COMMIT');forgetLocalRegistrations(db);
+  }catch(failure){
+   await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw failure;
+  }finally{db.release();}
  }finally{cancellation.dispose();clearInterval(heartbeat);restoreLogContext();}
  return true;
 }

@@ -3,6 +3,7 @@
  * 关键方法与用途：`readAnswerAttachment()` 兼容旧题数据库脱敏附件；`enqueueAnswer()` 冻结并创建尝试；`runNextAnswer()` 领取、调用供应商并保存结果。
  * 使用场景：`app.ts` 接收用户派发，`worker.ts` 持续调用消费入口。
  */
+import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
 import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {readWorkflowModelSet} from './workflow-models';
@@ -241,27 +242,11 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
     logEvent('attempt.started', { level: 'info', state: 'running', material_count: job.input.materials?.length ?? 0 });
     const cancellation = watchTaskCancellation(pool, job.id, signal, false);
     signal = cancellation.signal;
-    let heartbeatFailed = false, lastHeartbeatAt = new Date().toISOString();
-    let heartbeatInFlight = false;
-    const heartbeat = setInterval(() => { if (heartbeatInFlight)
-        return; heartbeatInFlight = true; withLogContext({ component: 'answer', project_id: job.project_id, workflow_id: job.workflow_id, ordinal: 5, attempt_id: job.id }, () => pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id", [job.id]).then(result => { if (!result.rowCount) {
-        if (!heartbeatFailed)
-            logEvent('heartbeat.write_failed', { level: 'warn', reason_code: 'attempt_not_running', last_heartbeat_at: lastHeartbeatAt });
-        heartbeatFailed = true;
-    }
-    else {
-        if (heartbeatFailed)
-            logEvent('heartbeat.write_recovered', { level: 'info', elapsed_ms: Math.max(0, Date.now() - Date.parse(lastHeartbeatAt)) });
-        heartbeatFailed = false;
-        lastHeartbeatAt = new Date().toISOString();
-    } }).catch(error => { if (!heartbeatFailed) {
-        logEvent('heartbeat.write_failed', { level: 'error', last_heartbeat_at: lastHeartbeatAt, ...classifyLogError(error) });
-        console.error('作答任务心跳写入失败');
-    } heartbeatFailed = true; }).finally(() => { heartbeatInFlight = false; })); }, 10000);
+    const stopHeartbeat = startAttemptHeartbeat(pool, { component: 'answer', project_id: job.project_id, workflow_id: job.workflow_id, ordinal: 5, attempt_id: job.id }, '作答任务心跳写入失败');
     let wrote = false;
     try {
         resumeStepFailure();
-        // Validate the stored snapshot before dispatch, then check current source again at publication.
+        // 调用前校验冻结请求；模型完成后直接保存返回结果，不再复核当前题目或模型集合。
         const packaged: AnswerPackage = { question_version: job.input.question_version, question: job.input.question, materials: job.input.materials, attachments: job.input.attachments, ...(typeof job.input.system_prompt === 'string' ? { system_prompt: job.input.system_prompt } : {}), ...(job.input.presentation ? { presentation: job.input.presentation } : {}), ...(job.input.material_origin ? { material_origin: job.input.material_origin } : {}) };
         if (!matchesInputDigest(packaged, job.input.input_digest))
             throw new AnswerInputError('作答输入指纹不一致，未发送模型请求');
@@ -300,10 +285,8 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         const tx = await pool.connect();
         try {
             await tx.query('BEGIN');
-            const w = (await tx.query(activeWorkflow, [job.workflow_id])).rows[0];
-            const active = await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE", [job.id]);
-            if (!w || !active.rowCount || !await matchesQuestion(tx, job) || !await matchesModelSet(tx, job))
-                throw new AnswerInputError('题目或项目模型配置已变化，答案未发布');
+            // 完成的答案按本次attempt原样入库；不因当前题目、附件、模型或状态变化拒收。
+            await tx.query('SELECT id FROM ai_distill.step_attempts WHERE id=$1 FOR UPDATE', [job.id]);
             await registerAsyncAfterHooks({ ...hookContext, pool: tx }, { text: result.text });
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'model_answer', relative(resolve(root), path), answer_sha256, bytes.length, executionTarget === 'server' ? result.text : null]);
             await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE id=$1", [job.id, JSON.stringify(publication)]);
@@ -369,7 +352,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
     }
     finally {
         cancellation.dispose();
-        clearInterval(heartbeat);
+        stopHeartbeat();
         restoreLogContext();
     }
     return true;

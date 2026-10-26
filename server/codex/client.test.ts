@@ -19,6 +19,8 @@ if(args[0]==='login'){if(mode==='slow_login')await new Promise(resolve=>setTimeo
 const out=args[args.indexOf('--output-last-message')+1];await Bun.write(out+'.request.json',JSON.stringify({pid:process.pid,args,prompt:await Bun.stdin.text(),secrets:['DATABASE_URL','ZHIPU_API_KEY','OPENAI_API_KEY'].filter(key=>process.env[key]),proxy:process.env.HTTPS_PROXY==='http://127.0.0.1:12345',cwd:process.cwd(),ancestorAgentFile}));
 if(mode==='large_output'){process.stdout.write('x'.repeat(65*1024*1024));await new Promise(resolve=>setTimeout(resolve,1000));process.exit(0);}
 const emit=value=>process.stdout.write(JSON.stringify(value)+'\\n');
+if(mode==='split_utf8'){const bytes=Buffer.from(JSON.stringify({type:'item.completed',item:{id:'cn',type:'agent_message',text:'中文完整'}})+'\\n');const start=bytes.indexOf(Buffer.from('中文'));for(const part of [bytes.subarray(0,start+1),bytes.subarray(start+1,start+2),bytes.subarray(start+2)]){process.stdout.write(part);await Bun.sleep(25);}}
+
 emit({type:'thread.started',thread_id:mode==='file_result'?'fixture-session-'+process.pid:'fixture-session'});emit({type:'turn.started'});if(mode==='reconnect')emit({type:'error',message:'Reconnecting... 1/5 (request timed out)'});
 if(mode==='wait'){setInterval(()=>{},1000);await new Promise(()=>{});}
 const text=mode==='malformed'?'invalid json':JSON.stringify({ok:true});
@@ -203,4 +205,8 @@ test('repeated Agent success, failure, cancellation and timeout leave no registe
   }finally{controller.abort();await rm(f.root,{recursive:true,force:true});}
  }
  for(const pid of spawned)expect(()=>process.kill(pid,0)).toThrow();
+});
+
+test('UTF8 event text stays intact across byte chunks',async()=>{
+ const f=await fixture('split_utf8');try{const result=await runCodex(f.options);const events=await readFile(result.events_path,'utf8');expect(events).toContain('中文完整');expect(events).not.toContain('�');}finally{await rm(f.root,{recursive:true,force:true});}
 });

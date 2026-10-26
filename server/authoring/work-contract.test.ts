@@ -1,6 +1,6 @@
 /** 验证 Work 内容契约的无损保存、判据计分、成果对应与研究隔离；不调用数据库或真实模型。 */
 import {test,expect} from 'bun:test';
-import {validateDraft} from './validate';
+import {validateDraft} from './receive';
 import {assertWorkSubmissionReady,renderWorkInstruction,workLevelWarnings,workQuestionSchema,WORK_DIMENSIONS} from './work-contract';
 const materials=[{id:'a',text:'脱敏材料'}];
 function canonicalDimensions(value:any){for(const item of value.rubric){const key=item.metadata.dimension.match(/^[0-7]-/)?.[0],q=item.metadata.dimension.match(/\/Q\d/)?.[0];item.metadata.dimension=WORK_DIMENSIONS.find(label=>label.startsWith(key)&&(q?label.includes(q):true));}}
@@ -14,9 +14,9 @@ test('新Work任务说明同源生成公开题面，旧题缺省仍兼容且归�
  expect(result.question).not.toContain('本项独立判断的具体标准');
  expect(validateDraft(result,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toEqual(result);
  result.question+='额外条件';expect(()=>assertWorkSubmissionReady(result)).toThrow('不一致');
- expect(()=>validateDraft(result,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('不一致');
+ expect(validateDraft(result,materials,'model_report_v1',{contentContract:'work_legal_v1'}).question).toBe(result.question);
  const legacy=workFixture();expect(validateDraft(legacy,materials,'model_report_v1',{contentContract:'work_legal_v1'}).question).toBe(legacy.question);
- raw.rubric[1].metadata.dimension='2-/Q2';expect(()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('完整维度名称');
+ raw.rubric[1].metadata.dimension='2-/Q2';expect(validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'}).rubric[1].metadata?.dimension).toBe('2-/Q2');
 });
 test('结构化时点不猜填日期，拒绝日历无效值；新schema不要求另填question',()=>{
  const instruction={background:'真实背景',requests:['审查'],baseline_date:null as string|null,hard_constraints:[]};
@@ -47,22 +47,22 @@ test('Work 独立内容完整保存，兼容文本与计分规则由同一内容
  expect(result.rubric[0].metadata).not.toHaveProperty('project_context');
  expect(validateDraft(JSON.parse(JSON.stringify(result)),materials,'model_report_v1',{contentContract:'work_legal_v1'} as any)).toEqual(result);
 });
-test('Work完整题包至少30项且使用Office成果，草稿仍保留部分结果',()=>{
+test('Work题包不同条数和草稿原样接收，保存不执行条数门槛',()=>{
  for(const count of [29,30,31]){
   const raw=workFixture();raw.rubric=raw.rubric.slice(0,count);
   raw.question=raw.question.replaceAll('意见.docx','意见.docx');raw.deliverables[0].path='意见.docx';raw.deliverables[0].format='docx';
   while(raw.rubric.length<count){const item=structuredClone(raw.rubric[1]);item.id=`R2-P${raw.rubric.length+10}`;raw.rubric.push(item);}
   raw.rubric.forEach((r:any)=>r.metadata.evaluated_files=['意见.docx']);
   const validate=()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'});
-  if(count===29)expect(validate).toThrow('至少30项');else expect(validate).not.toThrow();
+  expect(validate().rubric).toHaveLength(count);
  }
- const old=workFixture();old.rubric=old.rubric.slice(0,8);expect(()=>validateDraft(old,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow();
+ const old=workFixture();old.rubric=old.rubric.slice(0,8);expect(validateDraft(old,materials,'model_report_v1',{contentContract:'work_legal_v1'}).rubric).toHaveLength(8);
  old.content_status={status:'draft',issues:['尚未形成完整成果和独立判据']};
  expect(()=>validateDraft(old,materials,'model_report_v1',{contentContract:'work_legal_v1'})).not.toThrow();
 });
-test('Work完整业务成果拒绝MD，草稿可保留旧格式等待返修',()=>{
+test('Work原格式与草稿状态均保留，出题接收不执行Office准入',()=>{
  const raw=workFixture();raw.question=raw.question.replace('意见.docx','意见.md');raw.deliverables[0].path='意见.md';raw.deliverables[0].format='md';raw.rubric.forEach((r:any)=>r.metadata.evaluated_files=['意见.md']);
- expect(()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('DOCX/XLSX');
+ expect(validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'}).deliverables).toEqual(raw.deliverables);
  raw.content_status={status:'draft',issues:['专业成果尚待成稿']};expect(()=>validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'})).not.toThrow();
 });
 test('Work新交付复用成果映射校验，不改写历史对象或自动补项',()=>{
@@ -80,16 +80,16 @@ test('Work新交付复用成果映射校验，不改写历史对象或自动补�
   (v:any)=>{v.deliverables[0].path='核算.xlsx';v.deliverables[0].format='xlsx';v.question='交付核算.xlsx';v.rubric.forEach((r:any)=>r.metadata.evaluated_files=['核算.xlsx']);},
  ]){const value=structuredClone(good);change(value);expect(()=>assertWorkSubmissionReady(value)).toThrow();}
 });
-test('未提供正式二级分类时保留null，不强迫作者编造分类；知识点不接受格式占位',()=>{
+test('二级分类null及作者知识点原样接收，不编造或审核内容',()=>{
  const raw=workFixture();raw.task_metadata.domain_l2=null;
  const result:any=validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'});
  expect(result.task_metadata.domain_l2).toBeNull();
  const placeholder=workFixture();placeholder.rubric[1].metadata.knowledge_points=['法律域::具体知识点'];
- expect(()=>validateDraft(placeholder,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('实际法律领域');
+ expect(validateDraft(placeholder,materials,'model_report_v1',{contentContract:'work_legal_v1'}).rubric[1].metadata?.knowledge_points).toEqual(['法律域::具体知识点']);
 });
-test('Work 拒绝丢失成果、越界引用、重复内容源和非法分值',()=>{
+test('Work保留缺项、原引用和原分值，出题接收不改写业务内容',()=>{
  for(const change of [(v:any)=>v.reference_outputs.pop(),(v:any)=>v.rubric[1].metadata.score=5,(v:any)=>v.rubric[1].metadata.evaluated_files=['不存在.md'],(v:any)=>v.rubric[1].metadata.project_context={secret:'作者研究'},(v:any)=>v.extra_field='不能静默丢弃']){
-  const value=workFixture();change(value);expect(()=>validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'} as any)).toThrow();
+  const value=workFixture();change(value);expect(validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'} as any)).toMatchObject(value);
  }
 });
 
@@ -123,7 +123,7 @@ test('实际渲染脚本与新Work schema一致，私有研究不进入公开题
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-test('作者渲染命令先复用正式校验器，维度错误可在同一会话修正后再保存',async()=>{
+test('可选作者渲染命令不因维度错配阻断文件生成',async()=>{
  const {runAuthoring}=await import('./executor');const {mkdtemp,rm,writeFile}=await import('node:fs/promises');const {join}=await import('node:path');const {tmpdir}=await import('node:os');
  const root=await mkdtemp(join(tmpdir(),'work-render-validation-'));
  try{
@@ -132,7 +132,7 @@ test('作者渲染命令先复用正式校验器，维度错误可在同一会�
    const invalid=structuredClone(raw);invalid.rubric[1].id='R3-P09';
    await writeFile(delivery.result_path,JSON.stringify(invalid));
    const rejected=Bun.spawn(delivery.render_command,{stdout:'pipe',stderr:'pipe'});
-   const stderr=await new Response(rejected.stderr).text();expect(await rejected.exited).not.toBe(0);expect(stderr).toContain('Rubric ID与维度不一致');
+   const stderr=await new Response(rejected.stderr).text();expect(await rejected.exited).toBe(0);expect(stderr).toBe('');
    await writeFile(delivery.result_path,JSON.stringify(raw));
    const accepted=Bun.spawn(delivery.render_command,{stdout:'pipe',stderr:'pipe'});
    expect(await new Response(accepted.stderr).text()).toBe('');expect(await accepted.exited).toBe(0);
@@ -141,13 +141,10 @@ test('作者渲染命令先复用正式校验器，维度错误可在同一会�
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-test('Work一次返回全部ID维度错配的位置，不泄露判据正文或自动改写ID',()=>{
+test('Work接收不自动修正作者ID维度，也不因错配拒收',()=>{
  const raw=workFixture();raw.rubric[1].id='R3-P09';raw.rubric[2].id='R4-P02';
- let message='';try{validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'});}catch(error){message=(error as Error).message;}
- expect(message).toContain('Rubric ID与维度不一致');
- expect(message).toContain('第2项');expect(message).toContain('R3-P09');
- expect(message).toContain('第3项');expect(message).toContain('R4-P02');
- expect(message).toContain('dimension一级=2');expect(message).not.toContain(raw.rubric[1].metadata.statement);
+ const result=validateDraft(raw,materials,'model_report_v1',{contentContract:'work_legal_v1'});
+ expect(result.rubric[1].id).toBe('R3-P09');expect(result.rubric[2].id).toBe('R4-P02');
  expect(raw.rubric[1].id).toBe('R3-P09');expect(raw.rubric[2].id).toBe('R4-P02');
 });
 
@@ -185,22 +182,22 @@ test('内容契约配置能往返并拒绝未知值，旧配置形状不变',asy
  expect(()=>validateWorkflowConfig({content_contract:'unknown'})).toThrow();
 });
 
-test('结构化工作表保留数字与布尔，并拒绝缺工作表或错列',()=>{
+test('结构化工作表原样保留数字布尔和不完整行列',()=>{
  const value=workFixture();value.question=value.question.replace('意见.docx','台账.xlsx');value.deliverables[0].path='台账.xlsx';value.deliverables[0].format='xlsx';value.rubric.forEach((r:any)=>r.metadata.evaluated_files=['台账.xlsx']);value.reference_outputs[0].sheets=[{name:'明细',columns:['金额','已核对'],rows:[[100,true]]}];
  const result:any=validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'});expect(result.reference_outputs[0].sheets[0].rows).toEqual([[100,true]]);
- for(const change of [(v:any)=>v.reference_outputs[0].sheets=[],(v:any)=>v.reference_outputs[0].sheets[0].rows=[[100]]]){const bad=structuredClone(value);change(bad);expect(()=>validateDraft(bad,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow();}
+ for(const change of [(v:any)=>v.reference_outputs[0].sheets=[],(v:any)=>v.reference_outputs[0].sheets[0].rows=[[100]]]){const bad=structuredClone(value);change(bad);expect(validateDraft(bad,materials,'model_report_v1',{contentContract:'work_legal_v1'}).reference_outputs).toEqual(bad.reference_outputs);}
 });
 
-test('Work结构门槛分别校验，非法原子能力与缺检索不能被保存为内容完成',()=>{
+test('Work保留作者声明及业务内容，不在出题接收时评判完成度',()=>{
  for(const change of [(v:any)=>v.rubric[1].id='R2-N01',(v:any)=>v.rubric[1].metadata.atomic_capabilities=['伪造能力名'],(v:any)=>v.research_records=[],(v:any)=>v.rubric[2].metadata.dimension='2-交付物内容质量/Q1事实证据',(v:any)=>v.rubric[1].metadata.priority='Important']){
-  const value=workFixture();change(value);expect(()=>validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow();
+  const value=workFixture();change(value);expect(validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toMatchObject(value);
  }
 });
 
-test('必交成果必须在题面列出精确文件名，不能隐藏新增必交文件',()=>{
+test('题面和成果清单不一致仍原样保存，不自动补写委托',()=>{
  const value=workFixture();value.deliverables.push({id:'research',path:'检索记录.docx',format:'docx',description:'研究轨迹',required:true});
  value.reference_outputs.push({deliverable_id:'research',content:'真实研究记录',sheets:[]});
- expect(()=>validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'})).toThrow('必交成果未在题面列明');
+ expect(validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'}).question).toBe(value.question);
  value.question+='同时交付检索记录.docx。';
  expect(()=>validateDraft(value,materials,'model_report_v1',{contentContract:'work_legal_v1'})).not.toThrow();
  value.question=value.question.replace('同时交付检索记录.docx。','');value.deliverables[1].required=false;

@@ -67,6 +67,16 @@ test('API评分的领取与恢复同时排除本地脚本任务',async()=>{
  for(const call of f.calls.filter(c=>c.sql.startsWith('SELECT a.*')||c.sql.startsWith('SELECT a.id,a.workflow_id'))){expect(call.sql).toContain("NOT (a.input->'hooks'");expect(call.values[0]).toBe('api');}
 });
 test('enqueue pins persisted context and rejects a duplicate active score task',async()=>{const a=fake();await enqueueScore(a.pool,'workflow');expect(a.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))?.values.join(' ')).toContain('answer_sha256');const b=fake({reuse:true});await expect(enqueueScore(b.pool,'workflow')).rejects.toThrow('此答案已有评分任务');expect(b.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);});
+test('显式重新评分创建不同ID并保持外部reused=false和下游失效',async()=>{
+ const a=fake();const first=await enqueueScore(a.pool,'workflow'),second=await enqueueScore(a.pool,'workflow');
+ expect(first.reused).toBe(false);expect(second.reused).toBe(false);expect(second.id).not.toBe(first.id);
+ expect(first).toEqual({id:expect.any(String),reused:false});
+ const inserts=a.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.step_attempts'));
+ expect(inserts.map(call=>call.values[1])).toEqual([first.id,second.id]);
+ expect(a.calls.filter(call=>call.sql.includes('ordinal>6 AND ordinal<=8'))).toHaveLength(4);
+ const activeQueries=a.calls.filter(call=>call.sql.startsWith('SELECT id FROM ai_distill.step_attempts'));
+ expect(activeQueries).toHaveLength(2);for(const call of activeQueries)expect(call.sql).toContain("status IN ('waiting','running')");
+});
 test('scoring digest binds the authoring approach and reference answer',()=>{
  expect(scoreContextDigest({...context,answer_approach:'另一作答思路'})).not.toBe(scoreContextDigest(context));
  expect(scoreContextDigest({...context,reference_answer:'另一标准答案'})).not.toBe(scoreContextDigest(context));
@@ -78,7 +88,25 @@ test('enqueue scores every succeeded answer in the current model bundle',async()
  const result=await enqueueScore(a.pool,'workflow');
  const inserts=a.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.step_attempts'));
  expect((result as any).ids).toHaveLength(2);expect(inserts).toHaveLength(2);
+ expect(result).toEqual({id:inserts[0]!.values[1],ids:inserts.map(call=>call.values[1]),reused:false});
  expect(inserts.map(call=>JSON.parse(call.values[2]).context.binding.answer_attempt_id)).toEqual(answers.map(answer=>answer.id));
+});
+test('多模型后一个答案有活动评分时整组回滚，不提交前一个新评分或下游失效',async()=>{
+ const answers=[{id:'answer-first',text:'100元'},{id:'answer-second',text:'90元'}];
+ const bundle=answers.map(answer=>({model_id:answer.id,status:'succeeded',attempt_id:answer.id,answer_sha256:hash(answer.text)}));
+ const a=fake({answers,bundle}),connect=a.pool.connect.bind(a.pool);
+ (a.pool as any).connect=async()=>{
+  const db=await connect();const query=db.query.bind(db);
+  db.query=(async(sql:string,values:any[]=[])=>{
+   const result=await query(sql,values);
+   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&values[1]==='answer-second')return{rowCount:1,rows:[{id:'active-second'}]};
+   return result;
+  }) as any;return db;
+ };
+ await expect(enqueueScore(a.pool,'workflow')).rejects.toThrow('此答案已有评分任务');
+ expect(a.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toHaveLength(1);
+ expect(a.calls.at(-1)?.sql).toBe('ROLLBACK');expect(a.calls.some(call=>call.sql==='COMMIT')).toBe(false);
+ expect(a.calls.some(call=>call.sql.includes('ordinal>6 AND ordinal<=8'))).toBe(false);
 });
 test('enqueue allows a succeeded answer after another model fails',async()=>{
  const answer={id:'answer-qwen',text:'100元'};

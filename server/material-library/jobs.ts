@@ -4,6 +4,7 @@
  * 使用场景：材料库 routes 与现有 worker API/Agent/材料消费池；本模块不创建项目步骤或 step_attempt。
  */
 import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localQueueEnabled,localCancellationRequested} from '../execution-queue/runtime';
+import {projectStepExecution} from '../execution-queue/status';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {currentTaskSignal} from '../task-signal';
@@ -63,13 +64,11 @@ export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest
 export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:string;redaction_mode?:'model'|'declared_redacted'}>,settings:{provider?:string}|null,target:LibraryExecutionTarget='local'):LibraryExecutorKind{
  if(kind==='intake')return'internal';
  if(kind==='extract')return files.some(file=>file.format==='pdf'||file.format==='docx')?'api':'internal';
- if(files.length>0&&files.every(file=>file.redaction_mode==='declared_redacted'))return'internal';
  if(settings?.provider==='codex'){
   if(target==='server')throw new HTTPException(409,{message:'Agent 脱敏只能在本机执行'});
   return'agent';
  }
- if(settings?.provider==='api')return'api';
- throw new HTTPException(409,{message:'材料库脱敏模型尚未配置'});
+ throw new HTTPException(409,{message:'材料库脱敏仅支持Agent化名，旧字段映射执行已删除'});
 }
 
 type LibraryFileRow={id:string;blob_id:string;original_name:string;position:number;redaction_mode:'model'|'declared_redacted';sha256:string;size_bytes:string|number;content_type:string;storage_target:'local'|'server';storage_path:string};
@@ -107,8 +106,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    settings.redaction={...template.redaction,...(request.agent_settings??await readAgentDefaults(db))};
    settings.execution.task_timeout_ms=Math.min(settings.execution.task_timeout_ms,AGENT_REDACTION_MAX_MS);
   }
-  const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:template?.workflow==='codex_plan'?'model':file.redaction_mode})),settings.redaction,request.execution_target);
-  if(request.kind==='redact'&&executor==='api'&&!settings.redaction?.api)throw conflict('材料库 API 模型尚未配置');
+  const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:file.redaction_mode})),settings.redaction,request.execution_target);
   if(request.kind==='extract'&&executor==='api'&&!process.env.MINERU_KEY?.trim())throw conflict('文本提取服务尚未配置');
   if(request.previous_job_id){
    const retry=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE id=$1 AND package_id=$2 AND revision_id=$3 AND kind=$4 AND (status IN ('failed','cancelled') OR (kind='redact' AND status='succeeded')) FOR UPDATE",[request.previous_job_id,packageId,revisionId,request.kind])).rows[0];
@@ -143,12 +141,25 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
  }catch(error){try{await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务入队失败且回滚状态不确定');}throw error;}finally{db.release();}
 }
 
+/** 详情与历史列表共用只读执行投影；整组一次读取归属，不逐条增加SQL。 */
+export async function projectLibraryJobExecutions<T extends {id:string;status:string}>(pool:Pool,jobs:T[]){
+ const ids=jobs.filter(job=>['queued','running'].includes(job.status)).map(job=>job.id);
+ if(!localQueueEnabled()||!ids.length)return jobs;
+ const owners=(await pool.query('SELECT job_id,executor_id,generation FROM ai_distill.execution_dispatches WHERE job_id=ANY($1::uuid[])',[ids])).rows;
+ const byId=new Map(owners.map(owner=>[owner.job_id,owner]));
+ return jobs.map(job=>{
+  if(!['queued','running'].includes(job.status))return job;
+  const owner=byId.get(job.id),execution=projectStepExecution({id:job.id,status:job.status,executor_id:owner?.executor_id??null,generation:owner?.generation??null});
+  return{...job,...(execution?{execution}:{})};
+ });
+}
+
 export async function readLibraryJob(pool:Pool,id:string){
  const row=(await pool.query(`SELECT id,package_id,revision_id,kind,status,origin,executor_kind,execution_target,progress,result_summary,error_code,error_message,previous_job_id,cancel_requested_at,
   input_snapshot->>'extraction_job_id' AS extraction_job_id,input_snapshot->>'material_processing_mode' AS material_processing_mode,config_snapshot->'redaction_template'->>'id' AS redaction_template_id,created_at,started_at,finished_at
   FROM ai_distill.library_jobs WHERE id=$1`,[id])).rows[0];
  if(!row)throw new HTTPException(404,{message:'材料处理任务不存在'});
- return row;
+ return(await projectLibraryJobExecutions(pool,[row]))[0];
 }
 
 export async function cancelLibraryJob(pool:Pool,id:string){

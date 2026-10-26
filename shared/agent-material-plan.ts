@@ -1,4 +1,9 @@
-/** 职责：将Agent的主体表、字段语义编辑和结构块分册编译为既有精确计划。供材料库Agent执行器调用；不运行模型、不访问存储。 */
+/**
+ * 职责：将Agent的主体表、字段语义编辑和结构块分册编译为精确计划，并合并确定性扫描清理。
+ * 入口：compileAgentMaterialPlan同时供Agent本地validate-plan.mjs与Agent完成后的宿主发布前校验调用。
+ * 边界：Agent负责结合上下文的语义判断，本模块负责精确执行与机械校验；不运行模型、不访问存储。
+ * 垃圾编辑是有意支持的能力，其职责与审查依据见AgentMaterialPlan.edits及编译分支；共用清理规则见scan-noise.ts。
+ */
 import {cleanRedactionText,findScanNoiseEdits} from './scan-noise';
 import {documentBlocksToText,type DocumentBlock} from './document-structure';
 import {documentFieldRanges,prepareStructuredMaterialData} from './prepared-structure';
@@ -6,6 +11,14 @@ import {documentFieldRanges,prepareStructuredMaterialData} from './prepared-stru
 export type PreparationFile={file_id:string;text_sha256:string;pages:{page:number;text:string;structure:DocumentBlock[];issues?:string[]}[]};
 export interface AgentMaterialPlan {
  entities:{id:string;kind:'person'|'organization';alias:string;variants:{text:string;targets:string[]}[]}[];
+ /**
+  * Agent已结合上下文确认的字段内编辑：target_id定位结构字段，source_text须匹配连续原文；
+  * occurrence=0处理该字段内全部同文片段，正整数只处理第n次，不是跨整包的全局关键词删除。
+  * scan_watermark=扫描附加水印/时间戳；corner_stamp=无语义页角码/扫描戳，不等同于业务印章；
+  * ocr_placeholder=识别工具占位标记（如[Image]/[QR Code]/独立“无法识别”），不等同于正常业务表述。
+  * 三类都以删除执行；分类/保留条件由本次冻结模板指导Agent判断，不能仅凭字符形状判定垃圾。
+  * 默认规则保留真实业务日期、金额、条款、证据页码和已有脱敏值；不确定噪声保留并可写unresolved。
+  */
  edits:{target_id:string;source_text:string;occurrence:number;kind:'identifier'|'phone'|'credential'|'address'|'scan_watermark'|'corner_stamp'|'ocr_placeholder';keep_prefix:string}[];
  documents:{id:string;title:string;ranges:{first_block_id:string;last_block_id:string}[];duplicate_of:string|null}[];
  unresolved:{target_id:string;kind:'identity'|'boundary'|'extraction'|'noise';blocking:boolean;reason:string}[];
@@ -151,6 +164,12 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
    const values=[...f.text.matchAll(/\d[\d,，. \t]*(?:万|亿)?[ \t]*[元圆%％]/g)];
    if((starts as number[]).some(at=>values.some(value=>at<value.index+value[0].length&&at+edit.source_text.length>value.index)))fail('agent_business_value_edit');
   }
+  // 垃圾分支的设计约定：执行Agent按本次模板确认的删除，而非由程序再做一次全面语义识别。
+  // 扫描水印可合法包含数字/日期；不能机械套用编号遮盖的金额/日期禁改条件，否则会阻断正常清理。
+  // 审查时不能仅因三个垃圾kind会删除原文，就认定“Agent可以借清理垃圾删除业务正文”为P1缺陷：
+  // 人为构造违反模板的错误语义计划，只能证明接口接受该决定，不能证明当前设计或实际任务发生误删。
+  // 这不是安全豁免：仍需检查具体规则是否扩大范围、违反明确保留条件，或有可核实的实际误删证据。
+  // 下方合并的程序加固也不负责恢复Agent删掉的内容；机械覆盖通过不能冒充业务语义正确。
   let replacement:string;
   if(edit.kind==='identifier'||edit.kind==='credential'){
    if(/^\d{4}[年./-]\d{1,2}(?:[月./-]\d{1,2})?日?$/.test(edit.source_text)||/[元圆%％]|人民币/.test(edit.source_text))fail('agent_business_value_edit');
@@ -163,7 +182,9 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
   else fail('agent_edit_kind_invalid');
   if(replacement!==edit.source_text)for(const at of starts as number[])edits.push({file_id:f.file_id,page:f.page,start:f.start+at,end:f.start+at+edit.source_text.length,source_text:edit.source_text,replacement_text:replacement});
  }
- // 补充明确扫描垃圾与格式编辑；不覆盖跨出该范围的既有敏感编辑。
+ // Agent完成后的确定性加固：与提取后的cleanScanNoisePages复用findScanNoiseEdits，不新增一套识别规则或模型调用。
+ // 重叠编辑完全落在本次清理范围内时由清理替代；跨出范围的既有编辑保留，不能为合并而扩大删除范围。
+ // 随后统一检查重叠并重算分册坐标，最后做结构/覆盖与残留校验；各项检查均不是全文语义复审。
  for(const noise of findScanNoiseEdits(files.flatMap(file=>file.pages.map(page=>({file_id:file.file_id,page:page.page,blocks:page.structure}))),edits)){
   const overlapping=edits.filter(edit=>edit.file_id===noise.file_id&&edit.page===noise.page&&edit.start<noise.end&&edit.end>noise.start);
   if(overlapping.some(edit=>edit.start<noise.start||edit.end>noise.end))continue;
@@ -186,10 +207,9 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
  const shift=(file:string,page:number,pos:number)=>pos+exact.filter(e=>e.file_id===file&&e.page===page&&e.end<=pos).reduce((n,e)=>n+e.replacement_text.length-(e.end-e.start),0);
  const used=new Set<string>();
  const documentIds=new Set(value.documents.map(document=>document.id));
- const documents=value.documents.map((doc,document_index)=>{
+ const documents=value.documents.map(doc=>{
   if(doc.duplicate_of!==null&&(!documentIds.has(doc.duplicate_of)||doc.duplicate_of===doc.id))fail('agent_duplicate_reference_invalid');
-  const entity_index=value.entities.findIndex(e=>e.variants.some(v=>doc.title?.includes(v.text)));
-  if(entity_index>=0)fail('agent_title_contains_identity',{document_index,document_id:doc.id,entity_index,variant_index:value.entities[entity_index]!.variants.findIndex(v=>doc.title?.includes(v.text))});
+  // 标题内容由Agent按本次模板生成，不在编译器中做主体原称匹配；基础文件名格式仍由prepareMaterialData校验。
   const segments:{file_id:string;page:number;start:number;end:number}[]=[];
   for(const range of doc.ranges){
    const a=blocks.findIndex(b=>b.id===range.first_block_id),b=blocks.findIndex(b=>b.id===range.last_block_id);

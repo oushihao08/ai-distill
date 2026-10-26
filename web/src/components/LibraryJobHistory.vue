@@ -5,7 +5,7 @@ props：revisionId和jobs为不可变文件集合的历史摘要，disabled限�
 import {api} from '../api/client';
 import {dateLabel} from '../utils/format';
 import type {MaterialLibraryJob,LibraryJobKind} from '@shared/material-library';
-const props=defineProps<{revisionId:string;jobs:{id:string;kind:LibraryJobKind;status:string;created_at:string;origin?:'execution'|'legacy_import'}[];disabled?:boolean}>();
+const props=defineProps<{revisionId:string;jobs:{id:string;kind:LibraryJobKind;status:string;execution?:MaterialLibraryJob['execution'];created_at:string;origin?:'execution'|'legacy_import'}[];disabled?:boolean}>();
 const emit=defineEmits<{refresh:[]}>();
 const visible=shallowRef(false),busy=shallowRef(false),error=shallowRef('');
 const job=shallowRef<MaterialLibraryJob>();
@@ -42,11 +42,11 @@ async function retry(){
 }
 </script>
 <template>
- <Column :gap="6"><Row v-for="entry in jobs" :key="entry.id" x="between" wrap y="center" :gap="8"><span class="text-xs text-muted">{{ names[entry.kind] }} · {{ entry.origin==='legacy_import'?'历史结果导入 · ':'' }}{{ statuses[entry.status]??entry.status }} · {{ dateLabel(entry.created_at) }}</span><v-btn size="small" variant="text" :disabled="busy" @click="openJob(entry.id)">查看任务</v-btn></Row></Column>
+ <Column :gap="6"><Row v-for="entry in jobs" :key="entry.id" x="between" wrap y="center" :gap="8"><span class="text-xs text-muted">{{ names[entry.kind] }} · {{ entry.origin==='legacy_import'?'历史结果导入 · ':'' }}{{ entry.execution?.label??statuses[entry.status]??entry.status }} · {{ dateLabel(entry.created_at) }}</span><v-btn size="small" variant="text" :disabled="busy" @click="openJob(entry.id)">查看任务</v-btn></Row></Column>
  <v-dialog :model-value="visible" :persistent="busy" max-width="680" @update:model-value="value=>{if(!busy)visible=value}"><Column class="surface-card p-20" :gap="12">
   <h2 class="section-title">材料处理任务</h2>
   <p v-if="busy&&!job" class="text-sm text-muted">正在读取任务…</p>
-  <template v-if="job"><strong>{{ names[job.kind] }} · {{ job.cancel_requested_at&&job.status==='running'?'正在取消':statuses[job.status]??job.status }}</strong><p class="text-xs text-muted break-all">任务 {{ job.id }}<template v-if="job.previous_job_id"> · 重试来源 {{ job.previous_job_id }}</template></p><p class="text-xs text-muted">创建 {{ dateLabel(job.created_at) }} · 开始 {{ job.started_at?dateLabel(job.started_at):'尚未开始' }} · 结束 {{ job.finished_at?dateLabel(job.finished_at):'尚未结束' }}</p>
+  <template v-if="job"><strong>{{ names[job.kind] }} · {{ job.execution?.label??(job.cancel_requested_at&&job.status==='running'?'正在取消':statuses[job.status]??job.status) }}</strong><p class="text-xs text-muted break-all">任务 {{ job.id }}<template v-if="job.previous_job_id"> · 重试来源 {{ job.previous_job_id }}</template></p><p class="text-xs text-muted">创建 {{ dateLabel(job.created_at) }} · 开始 {{ job.started_at?dateLabel(job.started_at):'尚未开始' }} · 结束 {{ job.finished_at?dateLabel(job.finished_at):'尚未结束' }}</p>
    <p v-if="job.origin==='legacy_import'" class="text-sm text-muted">来源为旧流程已完成结果的导入；此时间为导入时间，不代表本次重新执行了识别或模型。</p>
    <p v-if="job.progress.completed_files!==undefined" class="text-sm">已处理 {{ job.progress.completed_files }} / {{ job.progress.total_files }} 份材料</p>
    <v-alert v-if="job.error_message||job.error_code" type="error" density="compact">{{ job.error_message }}<p v-if="job.error_code" class="text-xs">原因码：{{ job.error_code }}</p></v-alert>

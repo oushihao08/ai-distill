@@ -6,24 +6,22 @@
 
 | 文件 | 职责和边界 |
 | --- | --- |
-| `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；PDF必须注入provider，DOCX有provider走它，否则保留本地OOXML兼容解析；TXT/MD本地UTF8。当前队列为PDF/DOCX注入MinerU。 |
+| `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；`extractPages()`以Poppler生成问题页PDF子集后调用同一provider并映回原页码。PDF必须注入provider，DOCX有provider走它，否则保留本地OOXML兼容解析；TXT/MD本地UTF8。当前队列为PDF/DOCX注入MinerU。 |
 | `jobs.ts` | 旧步骤2入队、冻结MinerU配置/转换版本、按执行端领取/缓存/发布；更新步骤1处理状态，非全局库队列。 |
-| `process.ts` | `processMaterials()`核对原件/缓存，生成逐材料私有页结构；问题OCR页重新提取一次，仅替换问题页，保留issues。`clearExtractionCheckpoints()`是旧Vision检查点兼容。 |
+| `process.ts` | `processMaterials()`核对原件/缓存，生成私有页结构；只对可重试问题页做一次子集复识别并保留issues，无页级能力则标记不可复查，不整份重传。旧无调用的检查点清理入口已移除，不删除历史缓存。 |
 | `pdf.ts` | 当前共享Page/DocumentBlock和确定性`documentBlocksToText()`；`command()`封装Poppler；`extractPdf()`是旧Vision页级路径，非当前MinerU主入口。 |
 | `pdf-split.ts` | `splitLargePdf()`供旧目录同步，按页/大小拆至受管缓存，不修改来源；不是所有全局库上传的自动拆片器；有qpdf时按范围导出并清除未引用资源，避免共享资源被逐页重复携带，无qpdf仍用Poppler兼容路径。 |
 | `pdf-extraction/` | MinerU API/CLI与结构转换，详见本目录README。 |
 | `config.ts` | `loadExtractionConfig()`读JSON兼容识别配置，仅用EXTRACTION_CONFIG_PATH选文件；不是当前MinerU逐字段环境配置合并器。 |
 | `vision.ts` | 旧智谱OCR/实体客户端，保留调查与测试路径；当前MinerU队列不调用。 |
-| `redact.ts` | 旧实体/规则替换辅助，历史字段映射流程不由它定义。 |
 | `state.ts` | 旧附件/脱敏设置变更的事务失效；保留历史，取消活动尝试，使依赖当前结果失效。共享库题目来源保持独立冻结。 |
 | `redaction-config.ts` | 合并API/Codex默认和校验；`sameRedactionConfig()`比较有效配置，忽略键序和等价默认。 |
-| `redaction-execution.ts` | 有界批次、时限和token估算；缺省不等于每个调用方的冻结值。 |
-| `redaction-jobs.ts` | 旧步骤9冻结原文/配置/协议/预算，执行后重验来源与配置，保存完整脱敏正文/结构；全局库使用独立runner。 |
-| `redaction.ts` | `redactExtractedMaterials()`逐字段映射，`applyStructuredRedactions()`定位/清理/遮罩，`renderRedactedMaterials()`同源正文和索引，`filterRedactionFormatting()`固定格式清理。 |
+| `redaction-jobs.ts` | 旧步骤9只处理人工已脱敏声明，重验来源并原子发布；旧字段映射冻结任务明确失败，不再复用或调用模型。 |
+| `redaction.ts` | 仅保留`renderRedactedMaterials()`渲染同源正文/结构索引及历史协议标识，不包含模型执行。 |
 | `redacted-docx.ts` | 兼容导出公共`document-generation/docx.ts`的`buildDocx()`纯文字/结构渲染；默认连续排版并跳过纯空段/空页，只有显式pagination=source才保留扫描页硬分页，表格单元格采用紧凑段距；名称兼容，可接受已核验脱敏或明确冻结原文，不读取原件、数据库或图片。可选 `style: legal` 只供 Work 业务成稿使用宋体正文、黑色标题及行距，并保留逐行文书字段，独立首段使用标题样式；默认附件渲染不变。 |
 | `redacted-docx-export.ts` | `readCurrentRedactionForDocx()`核验所选模式结构，`exportCurrentMaterialDocx()`逐附件生成/复用，`readCurrentMaterialDocx()`安全下载；`readOriginalFilesForDelivery()`仅在归档原文模式按冻结清单和SHA读取原件；`questionResultDirectory()`和`isLibraryDocxPath()`共用目录契约。 |
 
-`*.test.ts`验证范围分别看文件头与用例，未运行不能说通过。材料/缓存/续接测试覆盖旧解析；redaction结构/性能/执行测试覆盖字段与预算；DOCX测试覆盖结构字节与来源绑定。测试、真实供应商、GUI视觉和完整业务分别报告。
+`*.test.ts`验证范围分别看文件头与用例，未运行不能说通过。材料/缓存/续接测试覆盖旧解析；redaction队列测试覆盖旧任务拒绝及人工声明发布；DOCX测试覆盖结构字节与来源绑定。测试、真实供应商、GUI视觉和完整业务分别报告。
 
 ### 测试文件映射
 
@@ -32,17 +30,14 @@
 | 文件 | 核对边界 |
 | --- | --- |
 | `continuation.test.ts` | OCR响应不完整、单页失败后的后续页处理，以及无实体调用的结构化保存 |
-| `document.test.ts` | PDF必须显式提供解析器；TXT/MD结构投影保留原始空白 |
+| `document.test.ts` | PDF必须显式提供解析器；TXT/MD结构投影保留原始空白；本地Poppler子集只向假provider提交指定页，验证页序、原件不变、临时清理与取消 |
 | `jobs.test.ts` | 提取队列的MinerU配置冻结、有限回退、尝试去重和来源绑定 |
 | `materials-cache.test.ts` | 缓存来源与摘要验证、OCR问题复查、脱敏指纹兼容及DOCX结构提取 |
 | `materials.test.ts` | 旧页级OCR/实体脱敏路径的页序、跨页替换和结果生成 |
 | `pdf-extraction/mineru-structure.test.ts` | MinerU PDF/DOCX不同结构版本的顺序、表格、图像文字和问题标记 |
 | `redacted-docx.test.ts` | 由传入正文/结构生成DOCX、保留附件分页与表格，并拒绝空来源 |
 | `redacted-docx-export.test.ts` | DOCX导出的步骤资格、来源/摘要、路径隔离、回滚和产物索引绑定 |
-| `redaction-execution.test.ts` | 脱敏默认与显式模型设置、思考开关和预算边界 |
 | `redaction-jobs.test.ts` | 旧脱敏队列锁、声明已脱敏附件、冻结输入、取消及原子发布 |
-| `redaction-performance.test.ts` | API批次预算/并发/超时/补做/断点恢复及晚到结果处理 |
-| `redaction-structure.test.ts` | 映射定位、确定性遮罩、结构还原、缺失字段和断点校验 |
 | `remote-routing.test.ts` | 本机与服务器材料worker按execution_target隔离领取 |
 | `speed-quality.test.ts` | 旧PDF OCR并发上限、页序和有限重试后续页继续 |
 
@@ -52,37 +47,23 @@
 
 旧提取入队冻结PDF provider及转换版本，API默认优先，符合特定网络/服务/超时错误时才回退一次CLI；DOCX直接MinerU API，忽略图片、按原文序映射为单逻辑页。TXT/MD本地解析。两种MinerU方式需MINERU_KEY，当前队列不回退智谱。健康与问题提示保留，不能将issues直接等同于脱敏遗漏。
 
-提取入队可复用同来源/配置的成功尝试，活动去重；执行时另选同来源/供应商配置的历史PDF产物，校验文件、SHA、结构文字投影，不等于只读取成功尝试缓存。损坏缓存可重新提取。OCR问题页会调用provider再提一次，仍留问题不阻断旧入库；全局库有自己的可用性判断，不套用旧队列状态。
+提取入队可复用同来源/配置的成功尝试，活动去重；执行时另选同来源/供应商配置的历史PDF产物，校验文件、SHA、结构文字投影，不等于只读取成功尝试缓存。损坏缓存可重新提取。只对OCR空白页或empty_page/truncated_response/ocr_page_error/unreadable问题做一次复查；image_without_text、未知块/表格结构提示不触发再次收费。复查通过pdfseparate/pdfunite在私有临时目录构造问题页子集，交给原provider，验证子集摘要、原件绑定及返回页数/页序后只替换指定页，正常缓存页保留复用及usage身份。缺少extractPages能力的注入提取器保留原文并添加ocr_recheck_unavailable，不降级为整份重传；结果仍有问题时保留issues，不阻断旧入库。全局库有自己的可用性判断，不套用旧队列状态。
+
+无业务调用的redact.ts及其专用旧规则断言已移除，字段映射模型引擎及专用批次/预算工具已删除，redaction.ts仅保留共用渲染；从未创建的DocumentProviderError及其instanceof分支也已移除，失败分类继续使用共用安全日志。processMaterials保留旧调用签名占位参数以兼容现有工具，但不执行Vision实体识别或旧配置，不把这些参数当作新的控制开关。
 
 旧任务按execution_target领取，入库派生提取继承目标；管理文件在执行机.storage，远程旧材料同步通过HTTP清单/摘要，不负责全局库blob搬运。worker主动停止可退回旧提取等待，五分钟失联记失败；全局库租约过期则失败，不能用同一恢复描述。
 
 旧目录PDF超过200页或MAX_FILE时可拆片，先按页再按大小细分，最多100片，单页仍超限失败；源目录不改，不压缩图片。缓存键绑定源字节/名称/限制，已有片复用只检查列表/大小，不重新逐片算SHA/页数。下游仍校验实际入库文件。大小上限由validation和具体上传路径决定，不拿目录拆片上限套所有接口。
 
-## 当前字段脱敏协议
+## Agent化名与旧结果边界
 
-以下为历史字段映射执行/结果兼容，新任务不再派发此协议。权威常量为`attachment-field-redaction-v32`。程序恢复附件、页序和结构；模型仅返回字段映射。API用严格schema字典`fields:{f1:[{source_text,kind,mask_text}],...}`，本批编号全为必填；Agent用target_id数组。兼容数组/单字段修复不允许把缺失当空数组，完整覆盖与源定位仍检查。
+新材料库仅执行`aliases/codex_plan`整包化名，入口与加固规则见[材料库说明](../material-library/README.md)。旧`mask/field_mapping`模型引擎、API批池、字段重试及检查点执行已经删除；旧队列不能新派或重放旧模型任务，已冻结待执行任务以`field_mapping_removed`失败，不读取正文或调用模型。
 
-固定清理先还原Markdown标点转义，删除明确OCR占位标记及特定数字前缀扫描水印，还原百分号包装；证据引用等其他方括号正文和普通正文日期保留。AI返回字段映射后，再调用共享`cleanScanNoisePages()`清理独立数字行、固定标记和扫描水印，同步重建页结构与正文后生成索引；数字行保留表格/列表值和明确金额/编号标签后的数值。规则唯一实现见`shared/scan-noise.ts`和`shared/README.md`。按项目提示词检测金额/日期保留政策。模型cleanup只能定位实际垃圾，不重写正文；含真实日期的长段清理拒绝，不能确认且触及保护金额/日期时保留。format映射忽略，格式处理由程序完成。
-
-定位先精确匹配，再容忍空白/Unicode兼容形式、中文分隔符及汉字间OCR符号、星号转义；数字横线/小数点仍区分。真实敏感片段找不到则失败。重复及重叠遮罩合并，姓名/电话/编号/案号由确定性规则处理；其他类别可按合法子串遮罩，不能用模型任意mask覆盖政策。组织保留明确后缀，仅对本题已识别的商户/负责人做有限归一，不跨题共享主体。
-
-全部字段通过才发布同源Markdown和redacted-index-v2：内部附件/页标记由程序添加，结构投影/摘要留存，原文issues不丢。成功状态不证明模型没有漏识别敏感信息或误判垃圾；人工声明不等于零敏感验证。
-
-## API与Agent预算、断点
-
-缺省为256字段/10000字符/12000估算输入token/32768输出token，批并发8、排队45秒/请求60秒/整题20分钟/停滞6分钟。允许合法覆盖，旧步骤9的新SiliconFlow任务冻结批并发1；全局库runner使用自己的冻结设置，不能假定也自动采用该覆盖。单并发大任务在旧队列按字段量可扩大整题预算，最多缺省20分钟的三倍。原文加载和保存也计入旧队列整题预算；墙钟/单调时钟共同防止休眠后接收过期结果。
-
-API按同附件跨页字段打包，行上下文和schema计入输入估算；不截断完整字段。输出估算不要求模型重复全文。单字段输入超预算明确失败。请求SiliconFlow时关闭思考；所有默认HTTP调用仍受llm-api本机共享槽位，不等于供应商配额保障。
-
-每批初次+一次修复，仅补失败字段；截断/部分超时可有界拆批，共享原批六次与整题预算，默认整题次数为批数*2+4。少量定位错误有有限隔离机会，剩余失败不发布。局部预算失败继续其他批次并保存有效字段；认证/额度/配置/限流/供应商级错误、全局预算/取消等停止全池。具体分类以代码为准，不将retryable元数据当自动无限重试。
-
-API断点绑定材料、结构字段、模型/提示词及协议，不绑定调度预算；权限受限、单写链和SQLite租约独占。重派同输入只读有效字段，坏断点明确失败，不填空。成功发布后旧队列删除断点正文文件；失败保留已验证字段及私有定位诊断。Agent是一次结构化调用，没有API同样的批池/断点补做路径。不能把所有脱敏方式统一描述为可字段续跑。
-
-进度的completed_fields是已校验保存字段，activity用于停滞边界；heartbeat或call.started不证明供应商仍生成。普通日志只存安全标识、计数、原因，私有诊断可能含未脱敏文本，不公开。新协议不自动重派/重写历史结果。
+历史协议字符串、输入摘要、结果正文与结构仍用于只读展示、DOCX导出和来源冻结校验；不删除业务记录、产物或历史检查点，不将旧结果改标为化名。旧人工声明流程独立保留，不代表程序已验证零敏感信息。
 
 ## DOCX与人工脱敏声明
 
-DOCX可声明declared_redacted，仍完整提取，声明内容原样进入正文/结构，混合包仅未声明部分调用模型；全声明走内部处理。声明需绑定当前附件身份，变更影响旧流程当前下游，替换附件恢复默认；全局库声明随不可变文件集合冻结。
+DOCX可声明declared_redacted，仍完整提取，声明内容原样进入正文/结构，旧流程仅全声明附件可直通，含未声明附件拒绝并提示使用共享库；共享库Agent化名仍审阅整包。声明需绑定当前附件身份，变更影响旧流程当前下游，替换附件恢复默认；全局库声明随不可变文件集合冻结。
 
 材料DOCX接口不注册新步骤或attempt。普通导出要求适用流程完成、步骤8归档且无活动任务；共享库题仅检查4—8，旧题按注册表适用步骤。归档队列内部生成随归档交付的DOCX时，可显式允许本次正在运行的步骤8，但仍要求其他适用步骤完成，且不能有其他活动任务；该选项不用于普通导出。`readCurrentRedactionForDocx()`供归档预先取结构，不要求先完成8，不是绕过导出资格。
 
@@ -111,3 +92,5 @@ DOCX渲染版本为redacted-structure-docx-v3，版本参与缓存索引；连�
 材料导出按一题一份生成“脱敏材料.docx”或“原文材料.docx”：按已验证分册/原件顺序组合结构和表格，冻结来源不改写；重新生成后只保留一个当前 DOCX 产物索引，历史文件不作为当前下载入口。
 
 飞书交付调用材料导出时提供`expectedAuthoringInput`，生成前校验有效出题的来源绑定、原件集合的大小和SHA（共享题按冻结源artifact元数据比较）；普通DOCX导出仍独立于题目是否出题。核对回执与失败展示见[飞书交付](../publishing/README.md#飞书交付一致性核对)。
+
+飞书交付的原件核对先读取完整冻结清单；新快照检查source_document产物ID、摘要及大小。字段不存在或为null的旧快照按冻结material ID/SHA核对并强制实读原件大小/摘要，不修改历史快照；存在非空产物ID但关联丢失或损坏不走兼容路径。

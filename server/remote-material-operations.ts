@@ -1,5 +1,5 @@
 /**
- * 职责：按旧材料workflow_id持久编排服务器入库、PDF/DOCX提取和API脱敏；不是全局library_jobs，材料worker逐次推进。
+ * 职责：按旧材料workflow_id持久编排服务器入库、PDF/DOCX提取和人工声明直通；不是全局library_jobs，材料worker逐次推进。
  * 关键入口：createRemoteMaterialOperation、readRemoteMaterialOperation、runNextRemoteMaterialOperation。
  * 使用场景：本机 CLI 经受限 API 发起一次组合操作，即使客户端断线仍由服务器继续处理。
  */
@@ -8,7 +8,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {HTTPException} from 'hono/http-exception';
 import type {Pool} from 'pg';
 import {enqueueIngestion} from './intake-jobs';
-import {currentRedactionExecutionConfig,enqueueRedaction} from './materials/redaction-jobs';
+import {enqueueRedaction} from './materials/redaction-jobs';
 import {REDACTION_PROTOCOL_VERSION} from './materials/redaction';
 import {scanQuestionFolder,validateFolder} from './project-folders';
 
@@ -24,8 +24,7 @@ async function currentRedactionConfig(pool:Pool,workflowId:string){
  if(!projectId)throw new HTTPException(404,{message:'题目不存在'});
  const modes=(await pool.query("SELECT count(*)::int AS total,count(*) FILTER (WHERE redaction_mode='declared_redacted')::int AS declared FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL",[workflowId])).rows[0];
  if(modes?.total>0&&modes.total===modes.declared)return{provider:'manual',digest:digest({provider:'manual',text_layout:REDACTION_PROTOCOL_VERSION})};
- const config=await currentRedactionExecutionConfig(pool,projectId);
- return{provider:config.provider,digest:digest(config)};
+ throw new HTTPException(409,{message:'字段映射脱敏已删除，远程旧流程仅支持人工已脱敏声明；其他材料请使用共享材料库'});
 }
 
 export async function createRemoteMaterialOperation(pool:Pool,workflowId:string,mode:RemoteMaterialMode,requestKey:string){
@@ -44,7 +43,7 @@ export async function createRemoteMaterialOperation(pool:Pool,workflowId:string,
   if(JSON.stringify(manifest(actual.files))!==JSON.stringify(manifest(listed)))throw new HTTPException(409,{message:'服务器来源附件与数据库清单不一致，请先同步正确版本'});
  }
  const redactionConfig=mode==='intake'?null:await currentRedactionConfig(pool,workflowId);
- if(redactionConfig&&!['api','manual'].includes(redactionConfig.provider))throw new HTTPException(409,{message:'服务器只支持 API 脱敏或人工已脱敏材料归档'});
+ if(redactionConfig&&redactionConfig.provider!=='manual')throw new HTTPException(409,{message:'服务器旧流程仅支持人工已脱敏材料归档'});
  if(mode==='redact'){
   const ready=(await pool.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=1',[workflowId])).rows[0]?.status;
   if(ready!=='succeeded')throw new HTTPException(409,{message:'材料尚未完成入库，不能单独脱敏'});
@@ -103,7 +102,7 @@ export async function runNextRemoteMaterialOperation(pool:Pool){
     }
     const nextIsRedact=op.mode!=='intake';
     const redactionConfig=nextIsRedact?await currentRedactionConfig(pool,op.workflow_id):null;
-    if(redactionConfig&&(!['api','manual'].includes(redactionConfig.provider)||redactionConfig.digest!==op.redaction_config_digest)){await advance({status:'failed',error_code:'redaction_config_changed'});return true;}
+    if(redactionConfig&&(redactionConfig.provider!=='manual'||redactionConfig.digest!==op.redaction_config_digest)){await advance({status:'failed',error_code:'redaction_config_changed'});return true;}
     await advance({stage:nextIsRedact?'redact':'complete',status:nextIsRedact?'running':'succeeded',extraction_attempt_id:byOrdinal(2)?.id,material_digest:await currentMaterialDigest(pool,op.workflow_id)});return true;
    }
    const intake=attempts.find((attempt:any)=>attempt.id===op.intake_attempt_id);
@@ -126,7 +125,7 @@ export async function runNextRemoteMaterialOperation(pool:Pool){
   }
   if(op.stage==='redact'){
    const redactionConfig=await currentRedactionConfig(pool,op.workflow_id);
-   if(!['api','manual'].includes(redactionConfig.provider)||redactionConfig.digest!==op.redaction_config_digest){await advance({status:'failed',error_code:'redaction_config_changed'});return true;}
+   if(redactionConfig.provider!=='manual'||redactionConfig.digest!==op.redaction_config_digest){await advance({status:'failed',error_code:'redaction_config_changed'});return true;}
    if(await currentMaterialDigest(pool,op.workflow_id)!==op.material_digest){await advance({status:'failed',error_code:'materials_changed'});return true;}
    if(byStep.get(1)?.status!=='succeeded'){await advance({status:'failed',error_code:'intake_not_ready'});return true;}
    if(byStep.get(9)?.status==='succeeded'&&latest(9)?.execution_target==='server'&&latest(9)?.status==='succeeded'){await advance({status:'succeeded',stage:'complete',redaction_attempt_id:latest(9).id,material_digest:await currentMaterialDigest(pool,op.workflow_id)});return true;}

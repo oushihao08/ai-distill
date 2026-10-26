@@ -7,11 +7,12 @@ import {libraryRedactionTemplates} from '../../shared/redaction-templates';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
 import {withLocalQueueRoot} from '../execution-queue/runtime';
 const settings=()=>({version:1,extraction:{protocol:'v1',provider_config:{}},redaction:{provider:'codex',model:'existing',reasoning_effort:'medium',prompt:'原有提示词'},execution:{task_timeout_ms:1000,request_timeout_ms:1000},policy:{preserve_dates:true,preserve_amounts:true}});
-test('默认Agent化名模板；显式mask保留原有协议及独立提示词',()=>{
- const s=settings(),before=JSON.stringify(s),mask=resolveLibraryTemplate(s,'mask'),alias=resolveLibraryTemplate(s);
- expect(libraryRedactionTemplates({...s,redaction_templates:[]}).map(t=>t.id)).toEqual(['aliases']);
- expect(mask.workflow).toBe('field_mapping');expect(mask.redaction).toEqual(s.redaction);expect(alias.workflow).toBe('codex_plan');expect(alias.redaction.prompt).not.toBe(mask.redaction.prompt);
- const frozen=JSON.parse(JSON.stringify(alias));s.redaction.prompt='更新';expect(resolveLibraryTemplate(s,'mask').digest).not.toBe(mask.digest);expect(resolveLibraryTemplate(s).digest).toBe(frozen.digest);expect(before).not.toBe(JSON.stringify(s));
+test('模板仅提供Agent化名，旧mask不存在且不回退',()=>{
+ const s=settings(),alias=resolveLibraryTemplate(s);
+ expect(libraryRedactionTemplates(s).map(t=>t.id)).toEqual(['aliases']);
+ expect(alias.workflow).toBe('codex_plan');
+ expect(()=>resolveLibraryTemplate(s,'mask')).toThrow('不存在');
+ s.redaction.prompt='旧配置变更';expect(resolveLibraryTemplate(s).digest).toBe(alias.digest);
 });
 test('允许多个独立模板，拒绝未知/重复身份和错误执行流程',()=>{
  const s={...settings(),redaction_templates:[resolveLibraryTemplate(settings(),'aliases')]};
@@ -45,15 +46,15 @@ test('拒绝新字段映射任务；Agent模板自动入队并冻结数据库提
  const enqueue=(body:unknown)=>withLocalQueueRoot(root,()=>enqueueLibraryJob(pool,'package','revision',body,root));
  const body={kind:'redact',execution_target:'local',request_key:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',extraction_job_id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',template_id:'strict'};
  try{
-  await expect(enqueue({...body,template_id:'mask'})).rejects.toThrow('已退役');
+  await expect(enqueue({...body,template_id:'mask'})).rejects.toThrow('不存在');
   expect(frozen).toBeUndefined();
   await enqueue(body);
   expect(frozen.settings.redaction.prompt).toBe('独立规则');
-  expect(()=>saveLibraryProcessingSettings(root,1,{...s,redaction_templates:[{id:'old',name:'旧流程',workflow:'field_mapping',redaction:settings().redaction}]})).toThrow('已退役');
+  expect(()=>saveLibraryProcessingSettings(root,1,{...s,redaction_templates:[{id:'old',name:'旧流程',workflow:'field_mapping',redaction:settings().redaction}]})).toThrow('流程无效');
   await expect(enqueue({...body,template_id:'aliases'})).resolves.toMatchObject({id:'queued'});
   expect(frozen.redaction_template.workflow).toBe('codex_plan');expect(frozen.settings.redaction.provider).toBe('codex');expect(frozen.settings.redaction.model).toBeTruthy();
   expect(frozen.settings.redaction.prompt).toBe(alias.redaction.prompt);
-  await expect(enqueue({...body,template_id:'mask'})).rejects.toThrow('已退役');
+  await expect(enqueue({...body,template_id:'mask'})).rejects.toThrow('不存在');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 import {resolveMaterialProcessingMode,materialProcessingSourceMode,redactionProcessingMode} from '../../shared/material-library';
@@ -99,5 +100,34 @@ test('project mode freezes real queue lane: API mask, Agent aliases, and no orig
   await expect(enqueue(body)).rejects.toThrow('已退役');expect(written).toBeUndefined();
   mode='aliases';await enqueue(body);expect(written).toMatchObject({lane:'agent',input:{material_processing_mode:'aliases'},config:{redaction_template:{id:'aliases'}}});
   mode='original';written=undefined;await expect(enqueue(body)).rejects.toThrow('无需派发脱敏');expect(written).toBeUndefined();
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('旧材料库冻结任务在读取正文前拒绝执行，不回退到字段映射',async()=>{
+ const {executeRedaction}=await import('./redaction-runner');
+ let reads=0;
+ const pool={query:async()=>{reads++;throw new Error('不应读取正文');}} as any;
+ for(const template of [undefined,{workflow:'field_mapping'}]){
+  await expect(executeRedaction(pool,'unused',{config_snapshot:{redaction_template:template}} as any,new AbortController().signal)).rejects.toThrow('已删除');
+ }
+ expect(reads).toBe(0);
+});
+
+test('读取历史共用设置排除已删除模板，但不回写旧配置',async()=>{
+ const {mkdtemp,mkdir,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
+ const {Database}=await import('bun:sqlite'),{readLibraryProcessingSettings}=await import('./settings');
+ const root=await mkdtemp(join(tmpdir(),'retired-template-settings-'));
+ try{
+  await mkdir(join(root,'material-library'));
+  const db=new Database(join(root,'material-library','processing-settings.sqlite3'));
+  try{
+   db.exec('CREATE TABLE processing_settings(id INTEGER PRIMARY KEY,settings TEXT,version INTEGER,updated_at TEXT)');
+   const historical={...settings(),redaction_templates:[{id:'aliases',name:'旧映射',workflow:'field_mapping',redaction:settings().redaction}]};
+   db.query('INSERT INTO processing_settings VALUES(1,?,3,?)').run(JSON.stringify(historical),'fixture');
+   const read=await readLibraryProcessingSettings({query:async()=>{throw new Error('不读取业务库');}} as any,root);
+   expect((read.processing_settings.redaction_templates as any[]).map(t=>t.workflow)).toEqual(['codex_plan']);
+   expect(read.lock_version).toBe(3);
+   expect((db.query('SELECT settings FROM processing_settings').get() as {settings:string}).settings).toBe(JSON.stringify(historical));
+  }finally{db.close();}
  }finally{await rm(root,{recursive:true,force:true});}
 });

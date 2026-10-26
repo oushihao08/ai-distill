@@ -118,7 +118,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  const requestErrorStatus=(error:unknown)=>error instanceof HTTPException?error.status:error&&typeof error==='object'&&'code'in error&&error.code==='23505'&&'constraint'in error&&['projects_local_skill_path','system_answer_models_provider_base_url_model_key'].includes(String(error.constraint))?409:500;
  app.use('*',async(c,next)=>{
   const request_id=randomUUID(),started=performance.now();
-  return withLogContext({request_id,operation_id:randomUUID()},async()=>{
+  return withLogContext({request_id,operation_id:randomUUID(),method:c.req.method,route:c.req.matchedRoutes.at(-1)?.path},async()=>{
    let failedStatus:number|undefined;
    c.header('X-Request-ID',request_id);
    const healthRequest=c.req.method==='GET'&&(c.req.path==='/api/health'||c.req.path==='/api/monitor');
@@ -986,6 +986,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  registerFeishuTargetRoutes(app,pool);
  registerWorkflowHookRoutes(app,pool);
  registerWorkflowExecutionRoutes(app,{
+  storageRoot,
   pool,
   dispatch:async(workflowId,ordinal,context)=>{
    const identity=(await pool.query("SELECT workflow_kind,source_workflow_id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL",[workflowId])).rows[0];

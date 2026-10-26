@@ -8,7 +8,7 @@ import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
 import {documentBlocksToText} from '../materials/pdf';
-import {readLibraryBlob,installLibraryBlob,normalizeLibraryFilename,insertLibraryTextBlob} from './storage';
+import {cleanupRolledBackLibraryBlobs,lockLibraryBlobWrites,type InstalledLibraryBlob,readLibraryBlob,installLibraryBlob,normalizeLibraryFilename,insertLibraryTextBlob} from './storage';
 import {buildDefaultProcessingSettings,buildLibraryManifest} from './service';
 import {claimMaterialUse,materialSetSignature} from './uses';
 import {uuid,validateFile} from '../validation';
@@ -86,7 +86,7 @@ export async function importLegacyMaterial(pool:Pool,root:string,phaseId:string,
  const preview={source_workflow_id:workflowId,source_digest:source.source_digest,material_signature:source.signature,file_count:prepared.length,extracted_file_count:prepared.filter(f=>f.document).length,redaction_imported:false};
  if(input.dry_run!==false)return{...preview,dry_run:true};
  if(input.expected_source_digest!==source.source_digest)throw conflict('旧材料在预览后已变化，请重新dry-run');
- const settings=await buildDefaultProcessingSettings(pool),db=await pool.connect();
+ const settings=await buildDefaultProcessingSettings(pool),db=await pool.connect(),installed:InstalledLibraryBlob[]=[];
  try{
   await db.query('BEGIN');
   await db.query("SELECT pg_advisory_xact_lock(hashtext('legacy-material-import'),hashtext($1))",[source.signature]);
@@ -123,9 +123,11 @@ export async function importLegacyMaterial(pool:Pool,root:string,phaseId:string,
   const manifest=buildLibraryManifest(entries);
   await db.query(`INSERT INTO ai_distill.library_revisions(id,package_id,parent_revision_id,state,manifest_sha256,file_count,source_info,request_key,request_digest)
    VALUES($1,$2,$3,'pending',$4,$5,$6::jsonb,$7,$8)`,[revisionId,packageId,pkg.current_revision_id,manifest.sha256,prepared.length,JSON.stringify({kind:'legacy_import',source_phase_id:phaseId,source_workflow_id:workflowId,source_digest:source.source_digest}),requestKey,source.source_digest]);
+  await lockLibraryBlobWrites(db,prepared.map(item=>item.file.sha256));
   const mappings=[];
   for(const [index,item] of prepared.entries()){
    const blob=await installLibraryBlob(root,item.bytes,item.file.content_type,'local');
+   installed.push(blob);
    const inserted=(await db.query(`INSERT INTO ai_distill.library_blobs(id,sha256,size_bytes,content_type,storage_kind,storage_target,storage_path)
     VALUES($1,$2,$3,$4,'file','local',$5) ON CONFLICT(sha256,storage_target) WHERE storage_kind='file' DO NOTHING RETURNING id`,[randomUUID(),blob.sha256,blob.size_bytes,blob.content_type,blob.storage_path])).rows[0];
    const blobId=inserted?.id??(await db.query("SELECT id FROM ai_distill.library_blobs WHERE sha256=$1 AND storage_target='local' AND storage_kind='file'",[blob.sha256])).rows[0]?.id;
@@ -150,7 +152,12 @@ export async function importLegacyMaterial(pool:Pool,root:string,phaseId:string,
   const id=randomUUID(),origin={...snapshot,material_signature:source.signature};
   await db.query('INSERT INTO ai_distill.legacy_material_imports(id,source_phase_id,source_workflow_id,source_digest,package_id,revision_id,manifest) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)',[id,phaseId,workflowId,source.source_digest,packageId,revisionId,JSON.stringify(origin)]);
   await db.query('COMMIT');return{...preview,id,package_id:packageId,revision_id:revisionId,reused:false};
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+ }catch(error){
+  try{await db.query('ROLLBACK');}
+  catch(rollbackError){throw new AggregateError([error,rollbackError],'历史材料导入回滚状态不确定；保留原件等待核对');}
+  await cleanupRolledBackLibraryBlobs(db,root,installed);
+  throw error;
+ }finally{db.release();}
 }
 
 /** 每包原子激活历史引用；不要求新脱敏已完成，也不向旧题插入新库执行快照。 */

@@ -34,7 +34,7 @@ async function dispatch(pool:Pool,root:string,job:QueueJob,signal:AbortSignal,me
   case 'skill':return runNextProjectSkill(pool,root,undefined,signal);
   case 'intake':return runNextIntake(pool,root,undefined,signal,target);
   case 'extract':return runNextExtraction(pool,root,undefined,undefined,signal,target);
-  case 'redact':return runNextRedaction(pool,root,signal,undefined,raw.config?.provider==='codex'?'codex':'api',target);
+  case 'redact':return runNextRedaction(pool,root,signal,raw.config?.provider==='codex'?'codex':'api',target);
   case 'hook':return runNextHook(pool,signal,'all');
   case 'remote':return runNextRemoteMaterialOperation(pool);
   default:throw new Error('本机任务执行路由无效');

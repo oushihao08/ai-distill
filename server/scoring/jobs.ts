@@ -3,6 +3,7 @@
  * 关键方法与用途：`enqueueScore()` 按答案冻结上下文；`runNextScore()` 执行单个模型评分并聚合当前集合；摘要函数去重输入。
  * 使用场景：`app.ts` 派发，`worker.ts` 消费持久化评分队列。
  */
+import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
 import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {watchTaskCancellation} from '../task-signal';
@@ -32,7 +33,7 @@ export function scoreContextDigest(context:ScoreContext){
 const workflowSql="SELECT w.project_id,p.local_skill_path,p.workspace_path,p.parent_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
 /**
  * 从当前作答结果中选取成功答案，为每份答案读取并冻结匿名评分上下文后分别入队。
- * 上下文摘要与配置用于去重和防止跨题面、rubric、附件、答案或评分提示词混用评分结果。
+ * 上下文摘要防止跨题面、rubric、附件、答案或评分提示词混用；活动评分拒绝重复，已完成评分不复用。
  */
 export async function enqueueScore(pool:Pool,id:string){
  const db=await pool.connect();
@@ -56,7 +57,7 @@ export async function enqueueScore(pool:Pool,id:string){
   if(!answerIds.length)throw new HTTPException(409,{message:'当前模型集合没有成功答案可评分'});
   const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[w.project_id])).rows[0]?.config;
   const mergedConfig=raw?.provider==='api'?raw:mergeCodexDefaults(raw,await readProjectAgentDefaults(db,w.project_id));
-  const config=validateStepConfigForExecution(6,mergedConfig),loggingConfig=config.provider==='api'?{model:config.api.model,provider:'api'}:{model:config.model,reasoning_effort:config.reasoning_effort,provider:'codex'},queued:{id:string;reused:boolean;answer_attempt_id:string}[]=[];
+  const config=validateStepConfigForExecution(6,mergedConfig),loggingConfig=config.provider==='api'?{model:config.api.model,provider:'api'}:{model:config.model,reasoning_effort:config.reasoning_effort,provider:'codex'},queued:string[]=[];
   config.prompt=resolveScoreStepPrompt(config.prompt);
   const needsHooks=!!(config.workflow?.hooks.before.length||config.workflow?.hooks.after.length);
   const skill=needsHooks?await resolveEffectiveProjectSkill(w):undefined;
@@ -67,15 +68,14 @@ export async function enqueueScore(pool:Pool,id:string){
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
-   queued.push({id:attempt,reused:false,answer_attempt_id:answerId});
+   queued.push(attempt);
   }
-  await registerLocalJobs(db,queued.filter(item=>!item.reused).map(item=>({id:item.id,kind:'step' as const,lane:config.provider==='api'?'api' as const:'agent' as const,route:'score'})));
-  if(queued.every(item=>item.reused)){await db.query('COMMIT');forgetLocalRegistrations(db);for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
+  await registerLocalJobs(db,queued.map(id=>({id,kind:'step' as const,lane:config.provider==='api'?'api' as const:'agent' as const,route:'score'})));
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=6",[id]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal>6 AND ordinal<=8",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='评分更新，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal>6 AND ordinal<=8 AND status IN ('waiting','running')",[id]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[id]);
-  await db.query('COMMIT');forgetLocalRegistrations(db);for(const item of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:item.id,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent(item.reused?'attempt.reused':'attempt.enqueued',{level:'info',state:item.reused?'reused':'waiting'}));return bundle?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:false}:{id:queued[0]!.id,reused:false};
+  await db.query('COMMIT');forgetLocalRegistrations(db);for(const attemptId of queued)withLogContext({component:'scoring',workflow_id:id,project_id:w.project_id,ordinal:6,attempt_id:attemptId,operation:'score_enqueue',provider:loggingConfig.provider,model:loggingConfig.model,...('reasoning_effort'in loggingConfig?{reasoning_effort:loggingConfig.reasoning_effort}:{})},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting'}));return bundle?{id:queued[0]!,ids:queued,reused:false}:{id:queued[0]!,reused:false};
  }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
 }
 interface ScoreRun {report:unknown;session_id:string;usage:unknown;duration_ms:number;execution_request?:unknown;raw_text?:string}
@@ -107,7 +107,21 @@ async function refreshScoreStep(db: PoolClient, job: any) {
         const score = latest.get(answer.attempt_id);
         const report = score?.result?.report;
         const validation = score?.result?.validation;
-        return { model_id: answer.model_id, name: answer.name, answer_attempt_id: answer.attempt_id, answer_status: answer.status, score_attempt_id: score?.id ?? null, score_status: score?.status ?? 'waiting', ...(report?.contract === 'model_report_v1' ? { score_contract: 'model_report_v1' as const, raw_score: report.summary?.raw_score ?? null, full_score: report.summary?.full_score ?? null, evaluation_percent: report.summary?.evaluation_percent ?? null, veto_triggered: report.summary?.veto_triggered ?? null } : {}), score: typeof report?.total === 'number' ? report.total : null, max_score: typeof report?.max_score === 'number' ? report.max_score : null, extraction_status: score?.result?.score_extraction ? (validation?.valid ? 'parsed' : 'unparsed') : undefined, valid: typeof validation?.valid === 'boolean' ? validation.valid : null, binding: score?.result?.binding ?? null, disputes: Array.isArray(report?.disputes) ? report.disputes : [] };
+        return {
+            model_id: answer.model_id,
+            name: answer.name,
+            answer_attempt_id: answer.attempt_id,
+            answer_status: answer.status,
+            score_attempt_id: score?.id ?? null,
+            score_status: score?.status ?? 'waiting',
+            ...(report?.contract === 'model_report_v1' ? { score_contract: 'model_report_v1' as const, raw_score: report.summary?.raw_score ?? null, full_score: report.summary?.full_score ?? null, evaluation_percent: report.summary?.evaluation_percent ?? null, veto_triggered: report.summary?.veto_triggered ?? null } : {}),
+            score: typeof report?.total === 'number' ? report.total : null,
+            max_score: typeof report?.max_score === 'number' ? report.max_score : null,
+            extraction_status: score?.result?.score_extraction ? (validation?.valid ? 'parsed' : 'unparsed') : undefined,
+            valid: typeof validation?.valid === 'boolean' ? validation.valid : null,
+            binding: score?.result?.binding ?? null,
+            disputes: Array.isArray(report?.disputes) ? report.disputes : []
+        };
     });
     const expected = models.filter((model: any) => model.answer_status === 'succeeded');
     const settled = expected.length > 0 && expected.every((model: any) => ['succeeded', 'failed', 'skipped'].includes(model.score_status));
@@ -177,23 +191,7 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
     logEvent('attempt.started', { level: 'info', state: 'running' });
     const cancellation = watchTaskCancellation(pool, job.id, signal, false);
     signal = cancellation.signal;
-    let heartbeatFailed = false, lastHeartbeatAt = new Date().toISOString();
-    let heartbeatInFlight = false;
-    const heartbeat = setInterval(() => { if (heartbeatInFlight)
-        return; heartbeatInFlight = true; withLogContext({ component: 'scoring', project_id: job.project_id, workflow_id: job.workflow_id, ordinal: 6, attempt_id: job.id }, () => pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id", [job.id]).then(result => { if (!result.rowCount) {
-        if (!heartbeatFailed)
-            logEvent('heartbeat.write_failed', { level: 'warn', reason_code: 'attempt_not_running', last_heartbeat_at: lastHeartbeatAt });
-        heartbeatFailed = true;
-    }
-    else {
-        if (heartbeatFailed)
-            logEvent('heartbeat.write_recovered', { level: 'info', elapsed_ms: Math.max(0, Date.now() - Date.parse(lastHeartbeatAt)) });
-        heartbeatFailed = false;
-        lastHeartbeatAt = new Date().toISOString();
-    } }).catch(error => { if (!heartbeatFailed) {
-        logEvent('heartbeat.write_failed', { level: 'error', last_heartbeat_at: lastHeartbeatAt, ...classifyLogError(error) });
-        console.error('评分心跳写入失败');
-    } heartbeatFailed = true; }).finally(() => { heartbeatInFlight = false; })); }, 10000);
+    const stopHeartbeat = startAttemptHeartbeat(pool, { component: 'scoring', project_id: job.project_id, workflow_id: job.workflow_id, ordinal: 6, attempt_id: job.id }, '评分心跳写入失败');
     let wrote = false, failurePhase = 'input_validation';
     const directory = join(resolve(root), job.workflow_id, job.id);
     try {
@@ -231,7 +229,37 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
             throw new Error('invalid frozen config');
         failurePhase = 'agent_execution';
         const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'scoring' as const, binding_digest: createHash('sha256').update(canonicalJson({ input: job.input.digest, config: job.config })).digest('hex'), input: { files: buildScoreFiles(buildAnonymousInput({ ...job.input.context, project_name: undefined, question_id: undefined, project_prompt: undefined, project_rules: undefined }), false) }, hooks: job.input.hooks, signal };
-        const invocation = await executeWithStageHooks({ ...hookContext, runMain: additions => runExternalCall({ attempt_id: job.id, operation: 'score' }, call_id => grade(job.input.context, executionProvider === 'api' ? { hook_additions: additions, config: config.api, step_prompt: job.input.context.step_prompt ?? config.prompt ?? DEFAULT_STEP_PROMPTS[6], model_report_reading_instructions: frozenReading ?? '', signal, call_id, timeout_ms: 1800000 } : { hook_additions: additions, legacy_text_preflight: false, root: join(directory, 'private'), model: config.model, reasoning_effort: config.reasoning_effort, step_prompt: job.input.context.step_prompt ?? config.prompt ?? DEFAULT_STEP_PROMPTS[6], model_report_reading_instructions: frozenReading ?? '', signal, call_id, timeout_ms: 1800000 })), outputForHooks: value => ({ raw_text: value.raw_text ?? '', report: value.report }) });
+        const invocation = await executeWithStageHooks({
+            ...hookContext,
+            runMain: additions => runExternalCall({
+                attempt_id: job.id, operation: 'score'
+            }, call_id => {
+                const scoreOptions = executionProvider === 'api' ? {
+                    hook_additions: additions,
+                    config: config.api,
+                    step_prompt: job.input.context.step_prompt ?? config.prompt ?? DEFAULT_STEP_PROMPTS[6],
+                    model_report_reading_instructions: frozenReading ?? '',
+                    signal,
+                    call_id,
+                    timeout_ms: 1800000
+                } : {
+                    hook_additions: additions,
+                    legacy_text_preflight: false,
+                    root: join(directory, 'private'),
+                    model: config.model,
+                    reasoning_effort: config.reasoning_effort,
+                    step_prompt: job.input.context.step_prompt ?? config.prompt ?? DEFAULT_STEP_PROMPTS[6],
+                    model_report_reading_instructions: frozenReading ?? '',
+                    signal,
+                    call_id,
+                    timeout_ms: 1800000
+                };
+                return grade(job.input.context, scoreOptions);
+            }),
+            outputForHooks: value => ({
+                raw_text: value.raw_text ?? '', report: value.report
+            })
+        });
         if (signal?.aborted)
             throw new Error('cancelled');
         failurePhase = 'result_validation';
@@ -322,7 +350,7 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
     }
     finally {
         cancellation.dispose();
-        clearInterval(heartbeat);
+        stopHeartbeat();
         restoreLogContext();
     }
     return true;

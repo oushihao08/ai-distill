@@ -117,7 +117,8 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    const answer=snapshot.answers.find(item=>item.model===model)!;
    const score=snapshot.scores.find(item=>item.answer_attempt_id===answer.id)!;
    const binding=score.result?.binding;
-   if(typeof answer.result?.text!=='string'||hash(answer.result.text)!==answer.result.answer_sha256||binding?.answer_sha256!==answer.result.answer_sha256||binding?.answer_attempt_id!==answer.id||binding?.question_version!==q.question_version||binding?.rubric_version!==q.rubric_version||binding?.input_digest!==answer.result.input_digest||score.status!=='succeeded'||score.result?.validation?.valid!==true||!score.id)throw publicationConflict('publication_answer_score_binding_mismatch','答案或评分版本指纹不一致');
+   const modelReport=q.scoring_policy?.contract==='model_report_v1';
+   if(typeof answer.result?.text!=='string'||hash(answer.result.text)!==answer.result.answer_sha256||binding?.answer_sha256!==answer.result.answer_sha256||binding?.answer_attempt_id!==answer.id||binding?.question_version!==q.question_version||binding?.rubric_version!==q.rubric_version||binding?.input_digest!==answer.result.input_digest||score.status!=='succeeded'||(!modelReport&&score.result?.validation?.valid!==true)||!score.id)throw publicationConflict('publication_answer_score_binding_mismatch','答案或评分版本指纹不一致');
   }
   const frozen=snapshot.question!.input;
   const delivery=await resolveDelivery(workflow.parent_name);

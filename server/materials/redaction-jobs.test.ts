@@ -1,5 +1,5 @@
 /** 验证脱敏队列保存执行进度和失败原因，及附件变更后的晚到结果不发布；使用内存 SQL 替身和合成原文，不连接业务数据库或调用真实 API。 */
-import {expect,test,spyOn} from 'bun:test';
+import {expect,test} from 'bun:test';
 import {mkdtemp,rm,mkdir,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -48,101 +48,35 @@ test('declared DOCX publishes full index without model or agent call',async()=>{
  (f.job.input.materials[0] as any).redaction_mode='declared_redacted';
  f.job.input.digest=redactionInputDigest(f.job.input.materials);
  f.job.config={provider:'manual',text_layout:REDACTION_PROTOCOL_VERSION} as any;
- let calls=0;
  try{
-  await runNextRedaction(f.pool,root,undefined,async()=>{calls++;throw new Error('agent called');},'api','local',async()=>{calls++;throw new Error('api called');});
-  expect(calls).toBe(0);
+  await runNextRedaction(f.pool,root,undefined,'api','local');
   expect(f.saved[0]).toMatchObject({status:'succeeded',result:{declared_redacted_count:1,provider:'manual',material_count:1}});
   expect(f.artifacts()).toBe(2);
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('mixed package calls the model only for undeclared material and keeps both in the index',async()=>{
- const f=fixture(),manual=f.addDeclaredSource(),root=await mkdtemp(join(tmpdir(),'redaction-mixed-'));
- let calls=0;
+test.each(['api','codex'] as const)('已冻结的%s字段映射任务明确失败，不发布结果',async provider=>{
+ const f=fixture(),root=await mkdtemp(join(tmpdir(),'removed-mapping-'));
+ f.job.config.provider=provider;
  try{
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(request:any)=>{
-   calls++;
-   const targets=JSON.parse(request.messages.at(-1).content).targets;
-   return{text:JSON.stringify({fields:targets.map((target:any)=>({target_id:target.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any;
-  });
-  expect(calls).toBe(1);
-  expect(f.saved[0]).toMatchObject({status:'succeeded',result:{material_count:2,declared_redacted_count:1}});
-  const index=JSON.parse(await Bun.file(join(root,f.job.workflow_id,f.job.id,'pages.json')).text());
-  expect(index.materials.map((item:any)=>item.material_id)).toEqual(f.job.input.materials.map(item=>item.material_id));
-  expect(index.materials.find((item:any)=>item.material_id===manual.material_id).markdown).toBe('已核准正文');
+  await runNextRedaction(f.pool,root,undefined,provider,'local');
+  expect(f.saved[0]).toMatchObject({status:'failed',error:{reason_code:'field_mapping_removed',retryable:false}});
+  expect(f.artifacts()).toBe(0);
+  expect(f.queries.some(sql=>sql.startsWith('SELECT ar.content'))).toBe(false);
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('整题时限计入原文加载，预算耗尽后不再开始收费请求',async()=>{
- let now=Date.now();const clock=spyOn(Date,'now').mockImplementation(()=>now);
- const f=fixture(()=>{now+=2000;}),root=await mkdtemp(join(tmpdir(),'redaction-input-deadline-'));f.job.input.execution={...f.job.input.execution,task_timeout_ms:1000} as any;let calls=0;
+test('人工声明文件发布失败时清理未发布的正文',async()=>{
+ const f=fixture(),root=await mkdtemp(join(tmpdir(),'manual-publish-'));
+ (f.job.input.materials[0] as any).redaction_mode='declared_redacted';f.job.input.digest=redactionInputDigest(f.job.input.materials);
+ f.job.config={provider:'manual',text_layout:REDACTION_PROTOCOL_VERSION} as any;
  try{
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(r:any)=>{calls++;return{text:JSON.stringify({fields:JSON.parse(r.messages.at(-1).content).targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any;});
-  expect(f.saved[0]).toMatchObject({status:'failed',error:{reason_code:'redaction_task_timeout'}});expect(calls).toBe(0);
- }finally{clock.mockRestore();await rm(root,{recursive:true,force:true});}
-});
-test('心跳查询有独立时限并在收尾前结束',async()=>{
- const f=fixture(),root=await mkdtemp(join(tmpdir(),'redaction-heartbeat-'));
- const original=setInterval;let heartbeat:()=>void=()=>{};
- const timer=spyOn(globalThis,'setInterval').mockImplementation(((fn:any,ms:number,...args:any[])=>{if(ms===5000)heartbeat=fn;return original(fn,ms,...args);}) as any);
- try{
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(r:any)=>{heartbeat();await Bun.sleep(1);return{text:JSON.stringify({fields:JSON.parse(r.messages.at(-1).content).targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any;});
-  expect(f.queryTimeouts).toContain(5000);expect(f.queryTimeouts.every(n=>n>0&&n<=180000)).toBe(true);expect(f.saved[0].status).toBe('succeeded');
- }finally{timer.mockRestore();await rm(root,{recursive:true,force:true});}
-});
-test('执行期间规则改变，附件未变也拒绝发布旧配置结果',async()=>{
- const f=fixture(),root=await mkdtemp(join(tmpdir(),'redaction-job-config-stale-'));
- try{
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(r:any)=>{f.setConfigChanged();return{text:JSON.stringify({fields:JSON.parse(r.messages.at(-1).content).targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any;});
+  await mkdir(join(root,f.job.workflow_id,f.job.id,'pages.json'),{recursive:true});
+  await runNextRedaction(f.pool,root,undefined,'api','local');
   expect(f.saved[0].status).toBe('failed');expect(f.artifacts()).toBe(0);
- }finally{await rm(root,{recursive:true,force:true});}
-});
-test('API队列保存完整进度和真实模型配置',async()=>{
- const f=fixture(),root=await mkdtemp(join(tmpdir(),'redaction-job-'));
- try{
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(r:any)=>({text:JSON.stringify({fields:JSON.parse(r.messages.at(-1).content).targets.map((t:any)=>({target_id:t.target_id,redactions:[{source_text:'张三',kind:'name'}]}))}),duration_ms:2,usage:null,completion_id:null,call_id:r.call_id} as any));
-  expect(f.saved[0].status,JSON.stringify(f.queries)).toBe('succeeded');expect(f.saved[0].result.progress).toMatchObject({phase:'completed',completed_fields:1,total_fields:1,request_count:1});expect(f.saved[0].result.model).toBe('deepseek/deepseek-v4.1-flash');expect(f.artifacts()).toBe(2);
- }finally{await rm(root,{recursive:true,force:true});}
-});
-test('低并发大包按结构化字段总量扩展任务预算',async()=>{
- const blocks=Array.from({length:1_501},(_,index)=>({id:`b${index}`,kind:'paragraph',text:`正文字段${index}`}));
- const f=fixture(()=>{},blocks),root=await mkdtemp(join(tmpdir(),'redaction-job-large-budget-'));
- Object.assign(f.job.input.execution,{max_fields:256,concurrency:1});
- try{
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(request:any)=>({text:JSON.stringify({fields:JSON.parse(request.messages.at(-1).content).targets.map((target:any)=>({target_id:target.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any));
-  expect(f.saved[0].status).toBe('succeeded');
-  const progress=f.saved[0].result.progress;
-  const budget=Date.parse(progress.deadline_at)-Date.parse(progress.started_at);
-  expect(budget).toBeGreaterThanOrEqual(2_390_000);expect(budget).toBeLessThanOrEqual(2_400_000);
-  expect(progress).toMatchObject({completed_fields:1_501,total_fields:1_501});
- }finally{await rm(root,{recursive:true,force:true});}
-});
-test('API超时失败保存原因和已完成进度，不发布附件',async()=>{
- const f=fixture(),root=await mkdtemp(join(tmpdir(),'redaction-job-timeout-'));Object.assign(f.job.input.execution,{request_timeout_ms:10,task_timeout_ms:200,stall_timeout_ms:100});
- try{
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async()=>await new Promise<any>(()=>{}));
-  expect(f.saved[0]).toMatchObject({status:'failed',error:{reason_code:'redaction_request_timeout'},progress:{phase:'failed',completed_fields:0}});expect(f.artifacts()).toBe(0);
- }finally{await rm(root,{recursive:true,force:true});}
-},500);
-test('索引写入失败时清理已写正文，不留下貌似完成的文件',async()=>{
- const f=fixture(),root=await mkdtemp(join(tmpdir(),'redaction-job-partial-write-'));
- const directory=join(root,f.job.workflow_id,f.job.id);
- try{
-  await mkdir(join(directory,'pages.json'),{recursive:true});
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(r:any)=>({text:JSON.stringify({fields:JSON.parse(r.messages.at(-1).content).targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any));
-  expect(f.saved[0].status).toBe('failed');expect(f.artifacts()).toBe(0);
-  expect(await stat(join(directory,'materials.md')).then(()=>true,()=>false)).toBe(false);
- }finally{await rm(root,{recursive:true,force:true});}
-});
-test('执行期间附件变更，晚到结果不提交成功',async()=>{
- const f=fixture(),root=await mkdtemp(join(tmpdir(),'redaction-job-stale-'));
- try{
-  await runNextRedaction(f.pool,root,undefined,undefined,'api','local',async(r:any)=>{f.setChanged();return{text:JSON.stringify({fields:JSON.parse(r.messages.at(-1).content).targets.map((t:any)=>({target_id:t.target_id,redactions:[]}))}),duration_ms:1,usage:null,completion_id:null} as any;});
-  expect(f.saved.some(s=>s.status==='succeeded')).toBe(false);expect(f.artifacts()).toBe(0);
+  expect(await stat(join(root,f.job.workflow_id,f.job.id,'materials.md')).then(()=>true,()=>false)).toBe(false);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-
-test('旧目录不能新派字段映射任务，既有冻结尝试仍可恢复回执',async()=>{
+test('旧字段映射任务不能新派或重放旧请求',async()=>{
  let previous=false,writes=0;
  const query=async(sql:string)=>{
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:'fixture',codex_reasoning_effort:'low'}]};
@@ -156,6 +90,16 @@ test('旧目录不能新派字段映射任务，既有冻结尝试仍可恢复�
   return{rows:[]};
  };
  const pool={query,connect:async()=>({query,release(){}})} as any;
- await expect(enqueueRedaction(pool,'workflow')).rejects.toThrow('已退役');expect(writes).toBe(0);
- previous=true;expect(await enqueueRedaction(pool,'workflow')).toMatchObject({id:'old-attempt',reused:true});expect(writes).toBe(0);
+ await expect(enqueueRedaction(pool,'workflow')).rejects.toThrow('已删除');expect(writes).toBe(0);
+ previous=true;await expect(enqueueRedaction(pool,'workflow')).rejects.toThrow('已删除');expect(writes).toBe(0);
+});
+
+test('人工声明的附件变化时晚到结果不发布',async()=>{
+ const f=fixture(()=>f.setChanged()),root=await mkdtemp(join(tmpdir(),'manual-stale-'));
+ (f.job.input.materials[0] as any).redaction_mode='declared_redacted';f.job.input.digest=redactionInputDigest(f.job.input.materials);
+ f.job.config={provider:'manual',text_layout:REDACTION_PROTOCOL_VERSION} as any;
+ try{
+  await runNextRedaction(f.pool,root);
+  expect(f.saved[0].status).toBe('failed');expect(f.artifacts()).toBe(0);
+ }finally{await rm(root,{recursive:true,force:true});}
 });

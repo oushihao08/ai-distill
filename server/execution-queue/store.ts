@@ -109,6 +109,13 @@ export class LocalQueue {
    catch{this.finish(row.id,row.lease!,'needs_review','本地检查点损坏，需人工核实');}
   }
  }
+ /** 只读已完成调用，用于显式恢复结果；缺失/未知检查点不触发执行或创建新调用。 */
+ completedCall<T>(jobId:string,key:string):T|null{
+  const row=this.db.query("SELECT result,sha256 FROM calls WHERE job_id=? AND call_key=? AND state='completed'").get(jobId,key) as {result:Uint8Array;sha256:string}|null;
+  if(!row)return null;
+  const bytes=Buffer.from(row.result);if(createHash('sha256').update(bytes).digest('hex')!==row.sha256)throw new InvalidLocalCheckpoint('本地结果摘要不一致');
+  return deserialize(bytes) as T;
+ }
  async call<T>(jobId:string,key:string,execute:()=>Promise<T>):Promise<T>{
   const prior=this.db.query('SELECT * FROM calls WHERE job_id=? AND call_key=?').get(jobId,key) as {state:string;result:Uint8Array;sha256:string}|null;
   if(prior){if(prior.state!=='completed')throw new Error('调用结果未知，需核实后再执行');const bytes=Buffer.from(prior.result);if(createHash('sha256').update(bytes).digest('hex')!==prior.sha256)throw new Error('本地结果摘要不一致');return deserialize(bytes) as T;}

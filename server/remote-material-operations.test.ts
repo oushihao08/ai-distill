@@ -1,3 +1,4 @@
+import {REDACTION_PROTOCOL_VERSION} from './materials/redaction';
 /** 验证远程材料接口鉴权、操作幂等/阶段推进、来源失效与下载校验；使用 Hono 内存请求、Pool 替身和临时文件，不访问真实数据库或模型服务。 */
 import {expect,test} from 'bun:test';
 import {Hono} from 'hono';
@@ -8,7 +9,6 @@ import {tmpdir} from 'node:os';
 import type {Pool} from 'pg';
 import {createRemoteMaterialOperation,runNextRemoteMaterialOperation} from './remote-material-operations';
 import {registerRemoteMaterialRoutes} from './remote-material-routes';
-import {currentRedactionExecutionConfig} from './materials/redaction-jobs';
 
 const id='12345678-1234-4234-8234-123456789abc';
 
@@ -42,7 +42,7 @@ test('重复请求标识复用已存在操作，不再派发新任务',async()=>
 });
 
 test('入库完成后组合操作转入脱敏，未直接标为成功',async()=>{
- const config=await currentRedactionExecutionConfig({query:async()=>({rows:[{config:{provider:'api'}}]})} as unknown as Pool,id);
+ const config={provider:'manual',text_layout:REDACTION_PROTOCOL_VERSION};
  const op={id,workflow_id:id,mode:'intake-redact',stage:'intake',source_digest:'digest',redaction_config_digest:createHash('sha256').update(JSON.stringify(config)).digest('hex')};
  const calls:{sql:string;values:unknown[]}[]=[];
  const pool={query:async(sql:string,values:unknown[]=[])=>{
@@ -52,7 +52,7 @@ test('入库完成后组合操作转入脱敏，未直接标为成功',async()=>
   if(sql.startsWith('SELECT ordinal,status,error FROM ai_distill.steps'))return{rows:[{ordinal:1,status:'succeeded'},{ordinal:2,status:'succeeded'},{ordinal:9,status:'waiting'}]};
   if(sql.startsWith('SELECT id,ordinal,status,error,execution_target'))return{rows:[{id,ordinal:1,status:'succeeded',execution_target:'server'}]};
   if(sql.startsWith('SELECT project_id FROM ai_distill.workflows'))return{rows:[{project_id:id}]};
-  if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{provider:'api'}}]};
+  if(sql.startsWith("SELECT count(*)::int AS total,count(*) FILTER"))return{rows:[{total:1,declared:1}]};
   return{rows:[]};
  }} as unknown as Pool;
  // The stored digest must match the frozen empty source manifest.
@@ -94,7 +94,7 @@ test('脱敏步骤失效后旧操作不能提供文件清单',async()=>{
 
 test('远程脱敏不能把本机完成的脱敏标为自己的结果',async()=>{
  const emptyDigest=await Bun.CryptoHasher.hash('sha256','[]','hex');
- const config=await currentRedactionExecutionConfig({query:async()=>({rows:[{config:{provider:'api'}}]})} as unknown as Pool,id);
+ const config={provider:'manual',text_layout:REDACTION_PROTOCOL_VERSION};
  const op={id,workflow_id:id,mode:'redact',stage:'redact',source_digest:emptyDigest,material_digest:emptyDigest,redaction_config_digest:createHash('sha256').update(JSON.stringify(config)).digest('hex')};
  const calls:{sql:string;values:unknown[]}[]=[];
  const pool={query:async(sql:string,values:unknown[]=[])=>{
@@ -104,7 +104,7 @@ test('远程脱敏不能把本机完成的脱敏标为自己的结果',async()=>
   if(sql.startsWith('SELECT ordinal,status,error FROM ai_distill.steps'))return{rows:[{ordinal:1,status:'succeeded'},{ordinal:9,status:'succeeded'}]};
   if(sql.startsWith('SELECT id,ordinal,status,error,execution_target'))return{rows:[{id,ordinal:9,status:'succeeded',execution_target:'local'}]};
   if(sql.startsWith('SELECT project_id FROM ai_distill.workflows'))return{rows:[{project_id:id}]};
-  if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{provider:'api'}}]};
+  if(sql.startsWith("SELECT count(*)::int AS total,count(*) FILTER"))return{rows:[{total:1,declared:1}]};
   return{rows:[]};
  }} as unknown as Pool;
  expect(await runNextRemoteMaterialOperation(pool)).toBe(true);

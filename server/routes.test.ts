@@ -525,3 +525,22 @@ test('local monitor excludes terminal history from items but preserves library r
   expect(body.material_library.totals).toMatchObject({succeeded:10000,queued:1,running:0});
  }finally{q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;}
 });
+
+test('batch admission stays at two and preserves ordered results after a failure',async()=>{
+ const ids=Array.from({length:9},()=>crypto.randomUUID());let active=0,peak=0;const seen:string[]=[];
+ const app=setupExecutionRoutes({projectExists:async()=>true,selectWorkflows:async()=>ids.map(workflowId=>({id:workflowId,project_id:id})),readStepStates:async()=>ids.flatMap(workflow_id=>[{workflow_id,ordinal:1,status:'succeeded',enabled:true,active:false},{workflow_id,ordinal:9,status:'waiting',enabled:true,active:false}])},async workflowId=>{
+  active++;peak=Math.max(peak,active);seen.push(workflowId);
+  try{await Bun.sleep(5);if(workflowId===ids[2])throw new Error('fixture');return{id:crypto.randomUUID()};}finally{active--;}
+ });
+ const response=await app.request(`/api/projects/${id}/steps/9/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+ const body=await response.json() as any;expect(peak).toBe(2);expect(active).toBe(0);expect(seen).toEqual(ids);expect(body.results.map((r:any)=>r.workflow_id)).toEqual(ids);expect(body.results.filter((r:any)=>r.status==='queued')).toHaveLength(8);expect(body.results[2].status).toBe('failed');
+});
+
+test('database diagnostics inherit the registered route without exposing path values',async()=>{
+ const {configureLogger,logEvent}=await import('./logging');const root=dirs.at(-1)!;const logger=configureLogger({root,service:'api'});
+ try{
+  const app=setup(()=>empty);app.get('/api/diagnostic-fixture/:id',c=>{logEvent('db.query.slow',{level:'warn',query_name:'select:fixture',duration_ms:1001});return c.json({ok:true});});
+  await app.request('/api/diagnostic-fixture/private-value');await logger.flush();const directory=join(root,'logs',new Date().toISOString().slice(0,10));const files=await readdir(directory);const text=(await Promise.all(files.filter(f=>f.endsWith('.jsonl')).map(f=>readFile(join(directory,f),'utf8')))).join('');
+  const row=text.trim().split('\n').map(line=>JSON.parse(line)).find(r=>r.event==='db.query.slow');expect(row.route).toBe('/api/diagnostic-fixture/:id');expect(text).not.toContain('private-value');
+ }finally{await logger.close();}
+});

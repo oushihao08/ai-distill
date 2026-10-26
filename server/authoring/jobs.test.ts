@@ -68,7 +68,8 @@ async function projectFixture(){
   if(sql.startsWith('SELECT credential_home,model'))return{rows:[{credential_home:root,model:'system-model',reasoning_effort:'medium'}]};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("status IN ('waiting','running')"))return{rows:state.reuse?[{id:state.reuse}]:state.active?[{id:'active'}]:[],rowCount:state.reuse||state.active?1:0};
   if(sql.startsWith('INSERT INTO ai_distill.step_attempts'))saved={id:values[1],workflow_id:'workflow',input:JSON.parse(values[2]),config:JSON.parse(values[3])};
-  if(sql.startsWith('SELECT id FROM ai_distill.step_attempts WHERE id=$1'))return{rows:[{id:state.job?.id}],rowCount:1};
+  if(sql.startsWith('SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC'))return{rows:[{id:state.latestId??state.job?.id}],rowCount:1};
+  if(sql.startsWith('SELECT id FROM ai_distill.step_attempts WHERE id=$1')){const active=!state.cancelled&&(!state.latestId||state.latestId===state.job?.id);return{rows:active?[{id:state.job?.id}]:[],rowCount:active?1:0};}
   if(sql.startsWith('SELECT status FROM ai_distill.step_attempts'))return{rows:[{status:'running'}],rowCount:1};
   return{rows:[],rowCount:sql.startsWith('SELECT')?0:1};
  };
@@ -132,7 +133,7 @@ test('出题任务冻结项目级超时并传入作者执行器',async()=>{
   await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{expect(options.timeout_ms).toBe(3600000);return authored;});
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
-test.each(['none','attachments','title','skill'])('fresh author worker preserves current bindings and rejects late %s changes',async(change)=>{
+test.each(['none','attachments','title','skill'])('fresh author worker saves returned content despite late %s changes',async(change)=>{
  const f=await projectFixture();let received:any;try{
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
   await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{received=options;if(change==='attachments')f.state.text='changed';if(change==='title')f.state.title='新题';if(change==='skill')await writeFile(join(f.skill,'SKILL.md'),'changed');return authored;});
@@ -142,7 +143,7 @@ test.each(['none','attachments','title','skill'])('fresh author worker preserves
   if(change==='none'){
    expect(completed).toBeDefined();const stored=JSON.parse(completed!.values[1]);expect(stored.reference_answer).toBe('100元');
    const artifact=f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'));expect(artifact?.values[3]).toBe('authored_question');expect(String(artifact?.values[7])).not.toContain('标准答案-文本');
-  }else{expect(completed).toBeUndefined();expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(true);}
+  }else{expect(completed).toBeDefined();expect(JSON.parse(completed!.values[1]).question).toBe(authored.draft.question);expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(false);}
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 test.each([false,true])('old ordinary queued inputs never dispatch even with feedback=%s',async(feedback)=>{
@@ -289,7 +290,7 @@ test('出题指纹绑定三模式字段且兼容旧来源',()=>{
 });
 
 
-test.each(['redacted','original'])('library %s loads once at startup and rechecks before publishing',async(mode)=>{
+test.each(['redacted','original'])('library %s loads once at startup and saves without a second source read',async(mode)=>{
  const f=await projectFixture();try{
   f.state.library=mode;await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;f.calls.length=0;
   await runNextAuthoring(f.pool,f.root,async options=>{
@@ -297,16 +298,16 @@ test.each(['redacted','original'])('library %s loads once at startup and recheck
    expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))).toHaveLength(1);
    return authored;
   });
-  expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))).toHaveLength(3);
+  expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))).toHaveLength(1);
   expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
-test('reusing validated library input still rejects material changes made during authoring',async()=>{
+test('returned content saves against its frozen input without rereading later library changes',async()=>{
  const f=await projectFixture();try{
   f.state.library='redacted';await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;f.calls.length=0;
   await runNextAuthoring(f.pool,f.root,async()=>{f.state.text='changed source';return authored;});
-  expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
-  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(true);
+  expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(true);
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(false);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
@@ -354,4 +355,22 @@ test('manual advice digest survives JSONB key ordering without changing legacy d
  const reordered={...base,revision_advice:Object.fromEntries(Object.entries(base.revision_advice).reverse())};
  expect(inputDigest(base as any)).toBe(inputDigest(reordered as any));
  expect(inputDigest({title:'合成题',materials:[]})).not.toBe(inputDigest(base as any));
+});
+
+// 取消/新任务身份保护与已移除的内容指纹检查分开，不能把旧attempt写入新题。
+test.each(['cancelled','superseded'])('直接接收仍不发布%s任务的迟到结果',async(reason)=>{
+ const f=await projectFixture();try{
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  await runNextAuthoring(f.pool,f.root,async()=>{if(reason==='cancelled')f.state.cancelled=true;else f.state.latestId='new-attempt';return authored;});
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(false);
+  expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('返回后业务写入失败且当前材料已变化，当前步骤仍结算失败而非永远running',async()=>{
+ const f=await projectFixture();try{
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  const pool={...f.pool,connect:async()=>{const db=await f.pool.connect();return{release:()=>db.release(),query:async(sql:string,values:any[])=>{if(sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))throw new Error('synthetic storage failure');return db.query(sql,values);}};}} as unknown as Pool;
+  await runNextAuthoring(pool,f.root,async()=>{f.state.text='changed during execution';return authored;});
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.steps SET status='failed'"))).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
 });

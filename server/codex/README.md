@@ -48,3 +48,5 @@ cwd 与 `directory/output` 分离，清理只处理本次临时资源，不删�
 系统、项目、步骤和 skill 生成配置均保留数据库模型与推理强度，不按本机缓存修正或拒绝；界面允许输入缓存之外的值。缓存只提供建议，实际支持范围由 CLI 执行反馈。步骤覆盖项目默认，项目覆盖系统默认，已入队任务继续使用冻结配置。不改变登录凭证、工具配置、权限或隔离。
 
 `client.test.ts`与`system-config.test.ts`是本目录现存的两份测试；模型缓存读取和字段校验也由`system-config.test.ts`核对。它们不证明当前真实Codex二进制支持所有隔离参数。`model_answer`与`independent_scoring`共享`isolate_context`；普通受限任务按客户端参数禁用网络并限制目录权限；`project_delivery`额外启用`live`网页搜索，不等于任意网络或宿主工具开放。
+
+stdout/stderr使用连续UTF8解码，跨Buffer字符保持完整；stdout事件仍按原背压串行写入，字节上限不变。

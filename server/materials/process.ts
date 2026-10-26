@@ -1,32 +1,22 @@
 /**
  * 职责：PDF/DOCX 材料处理与产物落盘：校验来源和缓存指纹，生成私有逐页文本并保留识别问题。
- * 关键方法与用途：`processMaterials()` 校验原件与缓存后生成私有逐页文本和 issues；`clearExtractionCheckpoints()` 清除指定检查点。
- * 使用场景：旧步骤2提取worker调用；clearExtractionCheckpoints保留旧Vision检查点兼容，不是全局材料库任务入口。
+ * 关键入口：processMaterials校验原件与缓存，生成私有结构与issues；只对可重试的问题页做一次子集复识别。
+ * 使用场景：旧步骤2提取worker调用；不是全局材料库任务入口，不清理历史Vision检查点。
  */
 import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { currentTaskSignal } from '../task-signal';
 import { DOCUMENT_STRUCTURE_VERSION, documentBlocksToText, type Page } from './pdf';
-import type { VisionClient } from './vision';
-import type { ExtractionConfig } from './config';
 import { ProjectDocumentExtractor,type DocumentExtractor } from './document';
+import type {VisionClient} from './vision';
 
 export interface ExtractionCache { storage_path: string; sha256: string; attempt_id: string; material_id: string; }
 export interface InputMaterial { id: string; storage_path: string; sha256: string; extraction_cache?: ExtractionCache; }
 interface Artifact { kind: string; storage_path: string; sha256: string; size_bytes: number; material_id?: string; content?:string }
 
-function extractionIdentity(config?:ExtractionConfig){return JSON.stringify({extractor:'glm-ocr-layout-v1',prompt:config?.extractionPrompt??''});}
-function checkpointDirectory(root:string,workflow:string,material:Pick<InputMaterial,'sha256'>,fingerprint:string){
- return join(resolve(root),'.extraction-checkpoints',workflow,material.sha256,fingerprint);
-}
-export async function clearExtractionCheckpoints(root:string,workflow:string,materials:Pick<InputMaterial,'sha256'>[],_vision:VisionClient,config?:ExtractionConfig){
- const fingerprint=createHash('sha256').update(extractionIdentity(config)).digest('hex');
- await Promise.all(materials.map(material=>rm(checkpointDirectory(root,workflow,material,fingerprint),{recursive:true,force:true})));
-}
-
 /** Step 1 stores extracted PDF/DOCX text. Redaction is a separate, project-configured step. */
-export async function processMaterials(root:string,workflow:string,attempt:string,materials:InputMaterial[],_vision?:VisionClient,_extract?:unknown,config?:ExtractionConfig){
+export async function processMaterials(root:string,workflow:string,attempt:string,materials:InputMaterial[],_legacyVision?:VisionClient,_extract?:unknown,_legacyConfig?:unknown){
  const directory=join(resolve(root),workflow,attempt);
  await mkdir(directory,{recursive:true,mode:0o700});
  if(!materials.length)throw new Error('原件材料为空');
@@ -61,23 +51,30 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
      return{...page,structure:structured};
     });provider=result.provider;
    }
-   const ocrPagesToRecheck=pages.filter(page=>page.method==='ocr'&&(!page.text.trim()||page.issues?.length));
-   if(format==='pdf'&&ocrPagesToRecheck.length){
-    // Empty or flagged OCR output may be incomplete. Re-run the configured provider once and replace only flagged pages.
-    const recheck=await extractor.extract(sourcePath,currentTaskSignal());
-    if(recheck.sha256!==material.sha256||recheck.format!==format||recheck.pages.length!==pages.length)throw new Error('OCR 复识别结果与原件页序不一致');
-    const recheckedByPage=new Map(recheck.pages.map(page=>[page.page,page]));
+   // 图片无文字、表格结构不支持等不一定可由再次OCR修复，保留issues，不据此重传整份PDF。
+   const retryableIssues=new Set(['empty_page','truncated_response','ocr_page_error','unreadable']);
+   const ocrPagesToRecheck=pages.filter(page=>page.method==='ocr'&&(!page.text.trim()||page.issues?.some(issue=>retryableIssues.has(issue))));
+   if(format==='pdf'&&ocrPagesToRecheck.length&&extractor.extractPages){
+    const numbers=ocrPagesToRecheck.map(page=>page.page);
+    const recheck=await extractor.extractPages(sourcePath,numbers,currentTaskSignal());
+    if(recheck.sha256!==material.sha256||recheck.format!==format||recheck.pages.length!==numbers.length||recheck.pages.some((page,index)=>page.page!==numbers[index]))throw new Error('OCR 复识别结果与原件页序不一致');
+    const recheckedByPage=new Map(recheck.pages.map(page=>[page.page,page])),wasCached=mode==='cached';
     const pageNumbersToRecheck=new Set(ocrPagesToRecheck.map(page=>page.page));
     pages=pages.map(page=>{
-     if(!pageNumbersToRecheck.has(page.page))return page;
+     if(!pageNumbersToRecheck.has(page.page))return wasCached?{...page,reused:true}:page;
      const replacement=recheckedByPage.get(page.page);
      if(!replacement)throw new Error('OCR 复识别缺少对应原页');
      if(replacement.structure?.length&&documentBlocksToText(replacement.structure)!==replacement.text)throw new Error('OCR 复识别正文与结构不一致');
      const unresolvedIssues=replacement.issues?.filter(issue=>issue!=='empty_page')??[];
-     if(replacement.text.trim())return{...replacement,structure:replacement.structure?.length?replacement.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:replacement.text}],...(unresolvedIssues.length?{issues:[...new Set(unresolvedIssues.concat('ocr_recheck_unresolved'))]}:{})};
-     return{...replacement,structure:[],issues:[...new Set([...(page.issues??[]),...(replacement.issues??[]),'empty_after_recheck'])]};
+     if(replacement.text.trim()){const {issues:_,...body}=replacement;return{...body,structure:replacement.structure?.length?replacement.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:replacement.text}],...(unresolvedIssues.length?{issues:[...new Set(unresolvedIssues.concat('ocr_recheck_unresolved'))]}:{})};}
+     // 复查空结果不能抹去第一次已识别的事实；两次均空时仍保留原空白/结构和诊断，不补造正文。
+     return{...page,issues:[...new Set([...(page.issues??[]),...(replacement.issues??[]),'empty_after_recheck'])]};
     });
     provider=recheck.provider;mode='fresh';from_attempt_id=null;from_material_id=null;
+   }else if(format==='pdf'&&ocrPagesToRecheck.length){
+    // 兼容注入/历史提取器：缺页级能力时保留结果和诊断，不能偷偷退回整份复识别。
+    const pending=new Set(ocrPagesToRecheck.map(page=>page.page));
+    pages=pages.map(page=>pending.has(page.page)?{...page,issues:[...new Set([...(page.issues??[]),'ocr_recheck_unavailable'])]}:page);
    }
    extracted.push({material_id:material.id,sha256:material.sha256,format,pages,provider,mode,from_attempt_id,from_material_id,...(cache_error?{cache_error}:{})});
   }

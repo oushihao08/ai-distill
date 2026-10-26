@@ -1,22 +1,26 @@
 /**
  * 职责：统一文档提取：TXT/MD本地解析；PDF须注入provider，DOCX有注入provider时使用它，否则保留本地OOXML兼容解析。
- * 关键方法与用途：`extractLocalDocument()`提供本地兼容解析；`ProjectDocumentExtractor.extract()`按格式分流并核对供应商原件SHA。
- * 使用场景：`intake.ts` 和提取队列调用；PDF 文本、页码与识别问题统一返回。
+ * 关键入口：extractLocalDocument提供本地兼容解析；ProjectDocumentExtractor.extract按格式分流，extractPages构造PDF子集复识别并恢复原页码。
+ * 使用场景：intake及提取队列；页级复识别依赖既有Poppler的pdfseparate/pdfunite，只处理私有临时副本，文本、页码与issues统一返回。
  */
-import { readFile } from 'node:fs/promises';
+import { mkdtemp,readFile,rm } from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import { inflateRawSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { HTTPException } from 'hono/http-exception';
 import type { Page } from './pdf';
 import type { PdfExtractionProvider } from './pdf-extraction/types';
-
-export class DocumentProviderError extends Error {
- readonly kind:string;readonly retryable:boolean;
- constructor(readonly http_status:number){super(`GLM-OCR返回HTTP ${http_status}`);this.kind=http_status===401||http_status===403?'authentication':[402,429].includes(http_status)?'quota':'service';this.retryable=[408,500,502,503,504].includes(http_status);}
-}
+import {command} from './pdf';
+import {currentTaskSignal,withTaskSignal} from '../task-signal';
+import {logEvent} from '../logging';
 
 export interface DocumentExtraction { format: 'pdf' | 'docx' | 'txt' | 'md'; pages: Page[]; provider: 'glm-ocr' | 'mineru-api' | 'mineru-cli' | 'local'; sha256: string }
-export interface DocumentExtractor { extract(path: string, signal?: AbortSignal): Promise<DocumentExtraction> }
+export interface DocumentExtractor {
+ extract(path: string, signal?: AbortSignal): Promise<DocumentExtraction>;
+ /** 只提交指定PDF页；结果绑定原件SHA，返回原页码，禁止以整份重传冒充页级复识别。 */
+ extractPages?(path:string,pages:number[],signal?:AbortSignal):Promise<DocumentExtraction>;
+}
 
 function decodeXml(value: string) {
  return value.replace(/&#x([\da-f]+);/gi,(_,hex:string)=>String.fromCodePoint(Number.parseInt(hex,16))).replace(/&#(\d+);/g,(_,decimal:string)=>String.fromCodePoint(Number(decimal))).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&');
@@ -45,6 +49,37 @@ function extractDocxXml(xml: string) {
 }
 export class ProjectDocumentExtractor implements DocumentExtractor {
  constructor(private readonly pdfProvider?:PdfExtractionProvider,private readonly docxProvider?:PdfExtractionProvider){}
+ /** 本地生成问题页子集后仍调用原provider；不扩充云API参数、不修改原件，正常页不再次上传。 */
+ async extractPages(path:string,pages:number[],signal?:AbortSignal):Promise<DocumentExtraction>{
+  if(!this.pdfProvider||!path.toLowerCase().endsWith('.pdf'))throw new Error('PDF页级提取器未配置');
+  if(!pages.length||pages.some(n=>!Number.isSafeInteger(n)||n<1)||new Set(pages).size!==pages.length)throw new Error('PDF复识别页码无效');
+  const activeSignal=signal??currentTaskSignal()??new AbortController().signal;
+  return withTaskSignal(activeSignal,async()=>{
+   activeSignal.throwIfAborted();
+   const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex');
+   const directory=await mkdtemp(join(tmpdir(),'distill-recheck-'));
+   try{
+    const parts:string[]=[];
+    for(const page of pages){
+     activeSignal.throwIfAborted();
+     const pattern=join(directory,`source-${page}-%d.pdf`);
+     await command(['pdfseparate','-f',String(page),'-l',String(page),path,pattern]);
+     parts.push(join(directory,`source-${page}-${page}.pdf`));
+    }
+    const subset=parts.length===1?parts[0]!:join(directory,'subset.pdf');
+    if(parts.length>1)await command(['pdfunite',...parts,subset]);
+    activeSignal.throwIfAborted();
+    const subsetSha=createHash('sha256').update(await readFile(subset)).digest('hex');
+    const result=await this.pdfProvider!.extract(subset,activeSignal);
+    if(result.sha256!==subsetSha||result.pages.length!==pages.length||result.pages.some((p,i)=>p.page!==i+1))throw new Error('PDF复识别子集页序或摘要不一致');
+    activeSignal.throwIfAborted();
+    return{format:'pdf',provider:result.provider,sha256,pages:result.pages.map((page,index)=>({...page,page:pages[index]!}))};
+   }finally{
+    try{await rm(directory,{recursive:true,force:true});}
+    catch{logEvent('extraction.recheck.cleanup_failed',{level:'error',reason_code:'recheck_cleanup_failed'});}
+   }
+  });
+ }
  async extract(path:string,signal?:AbortSignal):Promise<DocumentExtraction>{
   const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex'),extension=path.split('.').at(-1)?.toLowerCase();
   if(extension==='pdf'){

@@ -13,10 +13,13 @@ import {cancelStoppedExecutorAttempt,cancelWaitingScore,waitDuration,waitForAtte
 import {uuid} from './validation';
 import type {StepDispatchTask,WorkflowStepOrdinal} from './step-dispatch';
 import {validateAnswerScore} from './scoring/context';
+import {restoreAuthoringResult} from './authoring/restore';
+import {storageDirectory} from './paths';
 import {QueueCapacityError} from './execution-queue/store';
 
 interface RouteDependencies {
  pool:Pool;
+ storageRoot?:string;
  dispatch:(workflowId:string,ordinal:WorkflowStepOrdinal,context?:{delivery_identity:{task_id:string;org:string}})=>Promise<StepDispatchTask>;
  batchChunkSize?:number;
  repository?:WorkflowExecutionRepository;
@@ -30,7 +33,7 @@ interface WorkflowExecutionRepository {
  readStepStates:(projectId:string,workflowIds:string[])=>Promise<WorkflowExecutionStepRow[]>;
 }
 
-export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChunkSize=readBatchChunkSize(),repository,waitForAttempt:wait=waitForAttempt}:RouteDependencies){
+export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageRoot=storageDirectory(),batchChunkSize=readBatchChunkSize(),repository,waitForAttempt:wait=waitForAttempt}:RouteDependencies){
  const data=repository??{
   projectExists:async(projectId:string)=>Boolean((await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[projectId])).rowCount),
   selectWorkflows:async(projectId:string,workflowIds?:string[])=>{
@@ -98,6 +101,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChu
   if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==5||typeof body.workflow_id!=='string'||typeof body.executor_id!=='string'||body.executor_stopped!==true||body.acknowledge_unknown_result!==true||body.expected_heartbeat_at!==null&&(typeof body.expected_heartbeat_at!=='string'||!Number.isFinite(Date.parse(body.expected_heartbeat_at))))throw new HTTPException(400,{message:'须明确workflow_id/executor_id/expected_heartbeat_at，并确认executor_stopped与acknowledge_unknown_result'});
   return c.json(await cancelStoppedExecutorAttempt(pool,uuid(c.req.param('id')),uuid(body.workflow_id),uuid(body.executor_id),body.expected_heartbeat_at));
  });
+ app.post('/api/workflows/:id/authoring-results/:attemptId/restore',async c=>c.json(await restoreAuthoringResult(pool,storageRoot,uuid(c.req.param('id')),uuid(c.req.param('attemptId')))));
  app.post('/api/projects/:id/steps/:ordinal/run-batch',async c=>{
   const projectId=uuid(c.req.param('id'));
   const ordinal=Number(c.req.param('ordinal'));
@@ -120,7 +124,10 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChu
     if(!statesByWorkflow.has(row.workflow_id))statesByWorkflow.set(row.workflow_id,new Map());
     statesByWorkflow.get(row.workflow_id)!.set(row.ordinal,{ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source)});
    }
-   const batchResults=await Promise.all(workflowBatch.map(async workflowId=>{
+   // 入队事务限制并行，避免整批请求占满连接池；不改变worker执行并发。
+   const batchResults=[];
+   for(const admissionBatch of splitIntoBatches(workflowBatch,2)){
+   batchResults.push(...await Promise.all(admissionBatch.map(async workflowId=>{
     const row=byId.get(workflowId);
     if(!row||row.project_id!==projectId)return{workflow_id:workflowId,status:'not_found' as const};
     const states=statesByWorkflow.get(workflowId)??new Map<number,WorkflowStepState>(),acceptance=states.get(7);
@@ -137,7 +144,8 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,batchChu
      if(error instanceof HTTPException&&error.status===404)return{workflow_id:workflowId,status:'not_found' as const};
      return{workflow_id:workflowId,status:'failed' as const,reason:'派发失败，请检查任务记录和服务端日志'};
     }
-   }));
+   })));
+   }
    results.push(...batchResults);
   }
   for(const state of ['queued','succeeded','not_ready','failed','not_found','capacity_exceeded','already_accepted','already_archived'] as const){

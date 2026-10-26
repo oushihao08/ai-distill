@@ -39,7 +39,7 @@ export function createAnswerClient(env:NodeJS.ProcessEnv=process.env,request:(in
    if(typeof input.directory!=='string'||!input.directory.trim())throw new ModelApiError('configuration');
    const messages=answerMessages(input);await mkdir(resolve(input.directory),{recursive:true,mode:0o700});
    const started=Date.now();
-   const agent=await runAgent<string>({task_type:'model_answer',directory:input.directory,prompt:JSON.stringify({messages}),model:config.model,reasoning_effort:config.reasoning_effort,output_format:'text',timeout_ms:input.timeout_ms,signal:input.signal,call_id:input.call_id,validate(value){if(typeof value!=='string'||!value.trim())throw new Error('答案为空');return value.trim();}});
+   const agent=await runAgent<string>({task_type:'model_answer',directory:input.directory,prompt:JSON.stringify({messages}),model:config.model,reasoning_effort:config.reasoning_effort,output_format:'text',timeout_ms:input.timeout_ms,signal:input.signal,call_id:input.call_id,validate(value){return typeof value==='string'?value:String(value??'');}});
    const finished=Date.now();
    return{text:agent.result,requested_model:config.model,model:agent.model,request_id:null,completion_id:agent.session_id,usage:agent.usage&&typeof agent.usage==='object'?agent.usage as Record<string,unknown>:null,started_at:new Date(started).toISOString(),finished_at:new Date(finished).toISOString(),duration_ms:agent.duration_ms,execution_mode:'agent',reasoning_effort:config.reasoning_effort,agent_session_id:agent.session_id};
   }

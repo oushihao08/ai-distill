@@ -3,6 +3,7 @@
  * 关键方法与用途：`enqueueAuthoring()` 创建冻结输入任务；`runNextAuthoring()` 消费任务并提交当前版本结果。
  * 使用场景：`app.ts` 负责用户派发，`worker.ts` 负责后台消费和结果提交；新输入不向 Codex 暴露原始附件路径。
  */
+import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
 import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {frozenRevisionAdvice,validFrozenAdvice,type FrozenAdvice} from '../revision-advice/jobs';
@@ -289,23 +290,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
     logEvent('attempt.started', { level: 'info', state: 'running', material_count: job.input?.materials?.length ?? 0 });
     const cancellation = watchTaskCancellation(pool, job.id, signal, false);
     signal = cancellation.signal;
-    let heartbeatFailed = false, lastHeartbeatAt = new Date().toISOString();
-    let heartbeatInFlight = false;
-    const heartbeat = setInterval(() => { if (heartbeatInFlight)
-        return; heartbeatInFlight = true; withLogContext({ component: 'authoring', project_id: job.project_id, workflow_id: job.workflow_id, ordinal: 4, attempt_id: job.id }, () => pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running' RETURNING id", [job.id]).then(result => { if (!result.rowCount) {
-        if (!heartbeatFailed)
-            logEvent('heartbeat.write_failed', { level: 'warn', reason_code: 'attempt_not_running', last_heartbeat_at: lastHeartbeatAt });
-        heartbeatFailed = true;
-    }
-    else {
-        if (heartbeatFailed)
-            logEvent('heartbeat.write_recovered', { level: 'info', elapsed_ms: Math.max(0, Date.now() - Date.parse(lastHeartbeatAt)) });
-        heartbeatFailed = false;
-        lastHeartbeatAt = new Date().toISOString();
-    } }).catch(error => { if (!heartbeatFailed) {
-        logEvent('heartbeat.write_failed', { level: 'error', last_heartbeat_at: lastHeartbeatAt, ...classifyLogError(error) });
-        console.error('第四步任务心跳写入失败');
-    } heartbeatFailed = true; }).finally(() => { heartbeatInFlight = false; })); }, 10000);
+    const stopHeartbeat = startAttemptHeartbeat(pool, { component: 'authoring', project_id: job.project_id, workflow_id: job.workflow_id, ordinal: 4, attempt_id: job.id }, '第四步任务心跳写入失败');
     const directory = join(resolve(root), job.workflow_id, job.id);
     let output: string | undefined, packageBytes: Buffer | undefined, failurePhase = 'input_validation';
     try {
@@ -325,19 +310,65 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         const legacyRulesInput = job.input.rule_version_id ? { version_id: job.input.rule_version_id, source_digest: job.input.rule_source_digest, files: projectContextFiles } : undefined;
         failurePhase = 'agent_execution';
         const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'authoring' as const, binding_digest: hash(canonicalJson({ input: job.input.digest, config: job.config })), input: { title: job.input.title, materials: materials.map((m, i) => ({ name: `附件${i + 1}`, text: m.text })), ...(job.input.scoring_policy ? { scoring_policy: job.input.scoring_policy } : {}) }, hooks: job.input.hooks, signal };
-        const result = await executeWithStageHooks({ ...hookContext, runMain: additions => cachedExternalCall('authoring_complete', () => author({ ...(job.input.content_contract ? { content_contract: job.input.content_contract } : {}), ...(job.input.scoring_policy ? { scoring_policy: job.input.scoring_policy } : {}), workspace_path: job.input.project_prompt.workspace_path, root: join(directory, 'private'), project_name: job.input.project_name, question: job.input.title, authoring_direction: [job.input.design_context?.scenario ? `任务场景：${job.input.design_context.scenario}` : null, job.input.design_context?.role_perspective ? `角色视角：${job.input.design_context.role_perspective}` : null, job.input.design_context?.target_level ? `目标等级：${job.input.design_context.target_level}（设计目标，不代表项目方认证）` : null, job.input.design_context?.question_tags?.length ? `设计标签：${job.input.design_context.question_tags.join('、')}` : null, job.input.authoring_direction].filter(Boolean).join('\n') || undefined, question_id: job.input.question_id ?? job.input.title, source_files: job.input.source_files ?? [], materials, ...(legacyRulesInput ? { rules: legacyRulesInput } : { project_context: { source_digest: job.input.project_prompt.source_digest, files: projectContextFiles } }), system_authoring_prompt: job.input.system_authoring_prompt ?? '', step_prompt: (job.config.prompt ?? DEFAULT_STEP_PROMPTS[4]) + (job.input.revision_advice?`\n\n<本次手动返修建议>\n${job.input.revision_advice.text}\n以上建议仅供修正设计；案件事实以本次附件为准，不得以降低评分要求制造达标。\n</本次手动返修建议>`:'') + hookAdditionText(additions), model: job.config.model, reasoning_effort: job.config.reasoning_effort, ...(job.config.timeout_ms ? { timeout_ms: job.config.timeout_ms } : {}), signal, execute: options => runExternalCall({ attempt_id: job.id, operation: 'author' }, call_id => runAgent({ ...options, call_id, task_type: 'question_authoring' })) })), outputForHooks: value => ({ draft: value.draft }) });
-        failurePhase = 'result_validation';
+        const result = await executeWithStageHooks({
+            ...hookContext,
+            runMain: additions => cachedExternalCall('authoring_complete', () => {
+                const authoringDirection = [
+                    job.input.design_context?.scenario ? `任务场景：${job.input.design_context.scenario}` : null,
+                    job.input.design_context?.role_perspective ? `角色视角：${job.input.design_context.role_perspective}` : null,
+                    job.input.design_context?.target_level ? `目标等级：${job.input.design_context.target_level}（设计目标，不代表项目方认证）` : null,
+                    job.input.design_context?.question_tags?.length ? `设计标签：${job.input.design_context.question_tags.join('、')}` : null,
+                    job.input.authoring_direction
+                ].filter(Boolean).join('\n') || undefined;
+                const authorOptions: Parameters<Authorer>[0] = {
+                    ...(job.input.content_contract ? {
+                        content_contract: job.input.content_contract
+                    } : {}),
+                    ...(job.input.scoring_policy ? {
+                        scoring_policy: job.input.scoring_policy
+                    } : {}),
+                    workspace_path: job.input.project_prompt.workspace_path,
+                    root: join(directory, 'private'),
+                    project_name: job.input.project_name,
+                    question: job.input.title,
+                    authoring_direction: authoringDirection,
+                    question_id: job.input.question_id ?? job.input.title,
+                    source_files: job.input.source_files ?? [],
+                    materials,
+                    ...(legacyRulesInput ? {
+                        rules: legacyRulesInput
+                    } : {
+                        project_context: {
+                            source_digest: job.input.project_prompt.source_digest, files: projectContextFiles
+                        }
+                    }),
+                    system_authoring_prompt: job.input.system_authoring_prompt ?? '',
+                    step_prompt: (job.config.prompt ?? DEFAULT_STEP_PROMPTS[4])
+                        + (job.input.revision_advice ? `\n\n<本次手动返修建议>\n${job.input.revision_advice.text}\n以上建议仅供修正设计；案件事实以本次附件为准，不得以降低评分要求制造达标。\n</本次手动返修建议>` : '')
+                        + hookAdditionText(additions),
+                    model: job.config.model,
+                    reasoning_effort: job.config.reasoning_effort,
+                    ...(job.config.timeout_ms ? {
+                        timeout_ms: job.config.timeout_ms
+                    } : {}),
+                    signal,
+                    execute: options => runExternalCall({
+                        attempt_id: job.id, operation: 'author'
+                    }, call_id => runAgent({
+                        ...options, call_id, task_type: 'question_authoring'
+                    }))
+                };
+                return author(authorOptions);
+            }),
+            outputForHooks: value => ({
+                draft: value.draft
+            })
+        });
         const draft = result.draft;
-        if (!result.codex.session_id)
-            throw new Error('invalid authoring binding');
         const storedResult = { ...draft, ...(job.input.scoring_policy ? { scoring_policy: job.input.scoring_policy } : {}), question_id: result.question_id, question_version: result.question_version, rubric_version: result.rubric_version, codex: { author: result.codex } };
         failurePhase = 'result_persistence';
         if (signal?.aborted)
             throw new Error('cancelled');
-        const resultBinding = await stillCurrent(pool, job);
-        if (!resultBinding)
-            throw new Error('stale result');
-        await readMaterials(pool, root, job, resultBinding.loaded_materials);
         const publicPackage = Buffer.from(renderPublicQuestionPackage({ question: job.input.title, question_id: job.input.question_id, source_files: job.input.source_files ?? [], materials }, draft));
         const packagePath = join(directory, 'authored_question.md');
         packageBytes = publicPackage;
@@ -347,7 +378,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         const tx = await pool.connect();
         try {
             await tx.query('BEGIN');
-            if (signal?.aborted || !await currentBindings(tx, job) || !(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE", [job.id])).rowCount)
+            if (signal?.aborted || !(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' AND id=(SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$2 AND ordinal=4 ORDER BY attempt DESC LIMIT 1) FOR UPDATE", [job.id, job.workflow_id])).rowCount)
                 throw new Error('inactive');
             await registerAsyncAfterHooks({ ...hookContext, pool: tx }, { draft: result.draft });
             await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1", [job.id, JSON.stringify(storedResult), result.codex.session_id]);
@@ -382,7 +413,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         const tx = await pool.connect();
         try {
             await tx.query('BEGIN');
-            const current = await currentBindings(tx, job);
+            const current = (await tx.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1", [job.workflow_id])).rows[0]?.id === job.id;
             const failed = await tx.query("UPDATE ai_distill.step_attempts SET status='failed',result=$2,error=$3,finished_at=now() WHERE id=$1 AND status='running'", [job.id, JSON.stringify(failureResult), failureMessage]);
             if (current && failed.rowCount)
                 await tx.query("UPDATE ai_distill.steps SET status='failed',result=$2,error=$3,finished_at=now() WHERE workflow_id=$1 AND ordinal=4 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL) AND (SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1)=$4", [job.workflow_id, JSON.stringify(failureResult), failureMessage, job.id]);
@@ -398,7 +429,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
     }
     finally {
         cancellation.dispose();
-        clearInterval(heartbeat);
+        stopHeartbeat();
         restoreLogContext();
     }
     return true;

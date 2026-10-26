@@ -20,14 +20,55 @@ test('material processing reuses verified healthy extraction and extracts a miss
   expect(await Bun.file(join(root,'healthy.pdf')).text()).toBe('healthy source');expect(await Bun.file(join(root,'old','healthy.json')).text()).toBe(content);
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('flagged OCR cache is rechecked once without altering the source or historical cache',async()=>{
+test('structural OCR warnings preserve cache without repeating the whole PDF',async()=>{
  const root=await mkdtemp(join(tmpdir(),'flagged-materials-'));let calls=0;
  try{
   const source='original source';await mkdir(join(root,'old'));await writeFile(join(root,'source.pdf'),source);
   const content=JSON.stringify({source_sha256:hash(source),structure_version:'document-structure-v1',pages:[{page:1,text:'部分原文',method:'ocr',issues:['image_without_text'],structure:[{id:'b1',kind:'paragraph',text:'部分原文'}]}]});await writeFile(join(root,'old','source.json'),content);
   const result=await processMaterials(root,'workflow','attempt',[{id:'source',storage_path:'source.pdf',sha256:hash(source),extraction_cache:{storage_path:'old/source.json',sha256:hash(content),attempt_id:'old',material_id:'source'}}],undefined,{extract:async()=>{calls++;return{format:'pdf',provider:'mineru-api',sha256:hash(source),pages:[{page:1,text:'复识别完整原文',method:'ocr'}]};}});
-  expect(calls).toBe(1);expect(result.result.materials[0]?.extraction.mode).toBe('fresh');expect(result.result.issues).toEqual([]);
+  expect(calls).toBe(0);expect(result.result.materials[0]?.extraction.mode).toBe('cached');expect(result.result.issues.map(issue=>issue.kind)).toEqual(['image_without_text']);
   expect(await Bun.file(join(root,'source.pdf')).text()).toBe(source);expect(await Bun.file(join(root,'old','source.json')).text()).toBe(content);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('only retryable pages are rechecked once and healthy cached pages keep their source and usage identity',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'subset-recheck-')),source='source',sha=hash(source);let calls=0,selected:number[]=[];
+ try{
+  await mkdir(join(root,'old'));await writeFile(join(root,'source.pdf'),source);
+  const pages=[{page:1,text:'正常页',method:'ocr',structure:[{id:'a',kind:'paragraph',text:'正常页'}],usage:{tokens:100}},{page:2,text:'部分原文',method:'ocr',issues:['truncated_response'],structure:[{id:'b',kind:'paragraph',text:'部分原文'}]}];
+  const content=JSON.stringify({source_sha256:sha,structure_version:'document-structure-v1',pages});await writeFile(join(root,'old/cache.json'),content);
+  const result=await processMaterials(root,'w','a',[{id:'m',storage_path:'source.pdf',sha256:sha,extraction_cache:{storage_path:'old/cache.json',sha256:hash(content),attempt_id:'old',material_id:'m'}}],undefined,{
+   async extract(){throw new Error('must not re-extract whole PDF');},
+   async extractPages(_path:string,numbers:number[]){calls++;selected=numbers;return{format:'pdf',provider:'mineru-api',sha256:sha,pages:[{page:2,text:'恢复原文',method:'ocr',issues:['empty_page']}]};},
+  });
+  expect(calls).toBe(1);expect(selected).toEqual([2]);expect(result.result.issues).toEqual([]);
+  expect(result.result.pages[0]).toMatchObject({page:1,extraction_reused:true,usage:null});
+  const output=JSON.parse(result.artifacts[0]!.content!);expect(output.pages.map((p:any)=>p.text)).toEqual(['正常页','恢复原文']);
+  expect(await Bun.file(join(root,'old/cache.json')).text()).toBe(content);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('wrong original-page mapping fails instead of publishing a mixed OCR result',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'bad-recheck-')),sha=hash('source');
+ try{
+  await writeFile(join(root,'source.pdf'),'source');
+  await expect(processMaterials(root,'w','a',[{id:'m',storage_path:'source.pdf',sha256:sha}],undefined,{
+   async extract(){return{format:'pdf',provider:'mineru-api',sha256:sha,pages:[{page:1,text:'',method:'ocr'},{page:2,text:'正常',method:'ocr'}]};},
+   async extractPages(){return{format:'pdf',provider:'mineru-api',sha256:sha,pages:[{page:2,text:'错误映射',method:'ocr'}]};},
+  })).rejects.toThrow('页序不一致');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('an empty recheck cannot erase already extracted source facts',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'empty-recheck-')),sha=hash('source');
+ try{
+  await writeFile(join(root,'source.pdf'),'source');
+  const result=await processMaterials(root,'w','a',[{id:'m',storage_path:'source.pdf',sha256:sha}],undefined,{
+   async extract(){return{format:'pdf',provider:'mineru-api',sha256:sha,pages:[{page:1,text:'已识别的事实',method:'ocr',issues:['truncated_response']}]};},
+   async extractPages(){return{format:'pdf',provider:'mineru-api',sha256:sha,pages:[{page:1,text:'',method:'ocr',issues:['empty_page']}]};},
+  });
+  expect(JSON.parse(result.artifacts[0]!.content!).pages[0].text).toBe('已识别的事实');
+  expect(result.result.issues.map(issue=>issue.kind)).toContain('empty_after_recheck');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 test('redaction input digest survives JSONB field ordering and still binds exact source artifacts',()=>{

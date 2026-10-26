@@ -36,6 +36,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `worker.ts` | 进程入口：按模式、执行端和任务provider注册材料/API/Agent及钩子消费者，传播停止信号 |
 | `worker-pool.ts` | `runWorkerPool()` 控制循环并发、空闲/失败退避；`createFairQueueHandler()` 公平轮转业务队列并在轮转间检查停止；`createWorkerShutdown()` 一次性广播停止、记录请求及10秒未完成诊断，不强杀进程 |
 | `task-signal.ts` | `watchTaskCancellation()` 合并查询持久任务状态并取消失效执行；状态SQL服务端限时2秒，BEGIN/SET/SELECT/COMMIT及回滚逐次驱动限时3秒，读取失败不误取消模型；`withTaskSignal()` 传递调用链信号 |
+| `attempt-heartbeat.ts` | 出题/作答/评分共用10秒心跳；防止重叠写入，去重失败并记录恢复；调用方在finally停止，不改变任务状态或重试模型 |
 | `external-call.ts` | `runExternalCall()` 将一次调用关联到attempt或library_job及call_id，传递安全日志；不重试收费请求 |
 | `logging.ts` | `createStructuredLogger()`、`logEvent()` 与上下文入口：安全字段投影、JSONL轮转保留、健康及致命错误记录 |
 | `validation.ts` | HTTP请求预算（普通101MiB、库级版本上传201MiB含1MiB封装余量；业务文件仍限100/200MiB）、UUID/文字/标签/source key及PDF/DOCX/TXT/MD类型和大小边界；不代替内容解析 |
@@ -59,7 +60,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `workflow-hook-worker.ts` | local/all异步附加任务消费；不改主阶段成绩，未知非幂等副作用转待核 |
 | `workflow-hook-routes.ts` | 受限钩子记录读取、原尝试续跑与异步重试；未知主调用不自动重新执行 |
 | `remote-material-routes.ts` | 显式server执行端和token保护的旧材料组合操作/远程作答/文件取回入口 |
-| `remote-material-operations.ts` | 持久编排旧工作流入库/提取/API脱敏，固定request key恢复；不同于library_jobs |
+| `remote-material-operations.ts` | 持久编排旧工作流入库/提取/人工已脱敏声明，固定request key恢复；不同于library_jobs |
 
 ## 根层测试文件
 
@@ -84,6 +85,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `logging.test.ts` | 安全字段投影、异步上下文、轮转保留及多进程写入隔离 |
 | `step-dispatch.test.ts` | 稳定ordinal到业务处理器的映射及不支持步骤拒绝 |
 | `task-signal.test.ts` | 持久任务取消到AbortSignal的传递和轮询故障隔离 |
+| `attempt-heartbeat.test.ts` | 以定时器、数据库及日志替身核对间隔、无重叠、失败/恢复和停止，不连接真实数据库 |
 | `rule-loading.test.ts` | 旧编号规则入口明确停用，不重建历史步骤 |
 | `workflow-hook-jobs.test.ts` | 同步/异步钩子检查点、恢复和主结果不重复执行 |
 | `workflow-hook-routes.test.ts` | 钩子续跑与异步重试路由的输入、状态及副作用边界 |
@@ -108,8 +110,8 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 - `all` 是未设置时的本机兼容模式，注册本机材料、API、Agent及钩子队列。
 - `local` 注册本机材料、Agent和钩子，也注册受本地钩子归属条件筛选的API队列；不能仅凭模式名称认定所有API任务都可领取。
 - `api` 不运行Agent或本地脚本；按执行端处理可领取的API任务，server目标还可处理服务器材料/组合操作。
-- `materials` 必须是server目标，处理服务器材料、API脱敏及旧组合操作；不作答或评分。
-- `server` 必须是server目标，处理服务器材料/API脱敏和无本地钩子的API作答，不运行Agent和评分。
+- `materials` 必须是server目标，处理服务器材料、人工声明及旧组合操作；不作答或评分。
+- `server` 必须是server目标，处理服务器材料/人工声明和无本地钩子的API作答，不运行Agent和评分。
 - 可选 `WORKER_WORKFLOW_IDS` 接收逗号分隔的工作流 UUID；设置后，worker 只领取这些工作流的出题、作答和评分任务，并跳过材料、脱敏、项目 Skill 与异步钩子队列。未设置时保持上述默认行为。该范围只限制领取和中断恢复，不改变已冻结任务输入。
 
 新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发逐项优先读取 `.env`／进程环境中的 `AGENT_CONCURRENCY`、`LLM_API_CONCURRENCY`（1–32），未设置或空白才读取 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，均缺失时默认Agent2/API8；非法环境值直接报错，两项均配置时不读取持久设置。修改环境变量后须重启API和worker；页面保存的是回退设置，被环境变量覆盖的项不因保存而改变生效值；页面可设置Agent 1–6、API 1–8；范围以 `concurrency.ts` 的常量为准，环境兼容范围另见该文件，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
@@ -177,3 +179,5 @@ readActiveConcurrencyLimit的只读SQLite连接沿用槽位写连接的5秒busy_
 飞书交付的配置/建表/单题同步HTTP请求在`index.ts`逐请求设置180秒空闲时限，其他接口沿用60秒；CLI对应请求最长等待180秒，远端HTTP仍有90秒总截止。此设置不创建后台重试，也不扩大批次或跨项目同步范围。
 
 `workflow-archive-guard.ts` 在派发事务中锁定工作流并检查当前归档状态：已归档题目拒绝再次出题、作答、评分、达标判定和归档（HTTP 409），不创建新尝试或清空结果。批量入口返回 `already_archived` 并继续其他题目；显式撤回归档后可返修，下载和辅助导出不受影响。
+
+批量run-batch保留原批次读取及逐题结果顺序，入队同时最多处理2题，避免单个批量请求一次争抢全部连接；不改变worker模型执行并发。数据库慢/失败日志附加SQL内容的不可逆query_id摘要；连接占用超过1秒释放时记录db.connection.held，耗时含本地准备和SQL等待，不能直接等同慢SQL。

@@ -9,7 +9,7 @@ import {HTTPException} from 'hono/http-exception';
 import {uuid} from '../validation';
 import {archiveLibraryPackage,buildDefaultProcessingSettings,createLibraryPackage,createLibraryRevision,readLibraryPackage,readLibraryPackageUsage,readLibraryPackages,readLibraryRevisions,restoreLibraryPackage,updateLibraryPackage} from './service';
 import type {LibraryFileInput} from './service';
-import {cancelLibraryJob,enqueueLibraryJob,readLibraryJob} from './jobs';
+import {cancelLibraryJob,enqueueLibraryJob,readLibraryJob,projectLibraryJobExecutions} from './jobs';
 import {readLibraryDocuments,readLibraryOriginal,readLibraryRedactionPreview} from './preview';
 import {readLibraryProcessingSettings,saveLibraryProcessingSettings} from './settings';
 import {readLibraryOriginalPreview} from './original-preview';
@@ -64,7 +64,11 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
  app.patch(`${prefix}/packages/:id`,async c=>c.json(await updateLibraryPackage(pool,uuid(c.req.param('id')),versionHeader(c.req.header('If-Match')),await jsonBody(c))));
  app.delete(`${prefix}/packages/:id`,async c=>c.json(await archiveLibraryPackage(pool,uuid(c.req.param('id')),versionHeader(c.req.header('If-Match')))));
  app.post(`${prefix}/packages/:id/restore`,async c=>c.json(await restoreLibraryPackage(pool,uuid(c.req.param('id')),versionHeader(c.req.header('If-Match')))));
- app.get(`${prefix}/packages/:id/revisions`,async c=>c.json({items:await readLibraryRevisions(pool,uuid(c.req.param('id')))}));
+ app.get(`${prefix}/packages/:id/revisions`,async c=>{
+  const items=await readLibraryRevisions(pool,uuid(c.req.param('id'))),jobs=items.flatMap(item=>item.jobs??[]);
+  const projected=await projectLibraryJobExecutions(pool,jobs),byId=new Map(projected.map(job=>[job.id,job]));
+  return c.json({items:items.map(item=>({...item,jobs:(item.jobs??[]).map((job:any)=>byId.get(job.id)??job)}))});
+ });
  app.post(`${prefix}/revisions/:id/jobs`,async c=>{
   const revisionId=uuid(c.req.param('id')),body=await jsonBody(c);
   const packageId=(await pool.query('SELECT package_id FROM ai_distill.library_revisions WHERE id=$1',[revisionId])).rows[0]?.package_id;

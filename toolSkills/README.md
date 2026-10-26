@@ -4,6 +4,6 @@
 
 | 目录 | 用途 |
 | --- | --- |
-| [ai-distill-capacity-runner](ai-distill-capacity-runner/SKILL.md) | 按用户指定项目、期次建立5分钟调度，优先补满本机Agent容量，推进材料前置、出题、作答和评分 |
+| [ai-distill-scheduled-runner](ai-distill-scheduled-runner/SKILL.md) | 按用户指定间隔逐题对账、主动补位，推进材料、出题、作答、评分与有限返修 |
 
 现有工作流契约见 [skill/](../skill/README.md)，CLI参数见 [cli/](../cli/README.md)。本目录不实现第二套业务队列、模型执行器或并发配置；运行时记录写入 `.storage/automation-runs/`。Skill文件存在不代表定时任务已启动，执行需要明确目标和范围。

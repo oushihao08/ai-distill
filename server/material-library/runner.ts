@@ -72,7 +72,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
     if(extractorOverride){const directory=join(jobDirectory(root,job.id),'source');await mkdir(directory,{recursive:true,mode:0o700});extraction={directory,extractor:extractorOverride};}
     else extraction=await documentExtractor(root,job.id,job.config_snapshot.pdf_provider);
    }
-   const path=join(extraction.directory,`${item.file_id}.${item.format}`),fileBuffer=new ArrayBuffer(bytes.byteLength);new Uint8Array(fileBuffer).set(bytes);
+   const path=join(extraction.directory,`${item.file_id}.${item.format}`);
    try{await writeFile(path,Buffer.from(bytes),{mode:0o600,flag:'wx'});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST'||hash(await readFile(path))!==item.source_sha256)throw error;}
    const extractor=extraction.extractor;
    const extracted=await runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,library_file_id:item.file_id,operation:'library_document_extract'},async()=>extractor.extract(path,signal));

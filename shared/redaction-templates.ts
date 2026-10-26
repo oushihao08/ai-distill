@@ -1,5 +1,5 @@
 /** 职责：材料脱敏模板的共享身份与默认代称提示词；执行和存储由材料库负责，不改变下游题目契约。 */
-export type RedactionWorkflow = 'field_mapping'|'codex_plan';
+export type RedactionWorkflow = 'codex_plan';
 export interface LibraryRedactionTemplate {id:string;name:string;workflow:RedactionWorkflow;redaction:Record<string,any>}
 /** 新打开的材料处理入口优先选择Agent整包模板；未配置时留空，避免静默改走字段映射。 */
 export function defaultLibraryRedactionTemplateId(templates:ReadonlyArray<{id:string;workflow:string}>):string{
@@ -37,9 +37,9 @@ export const ALIAS_REDACTION_PROMPT = `处理整个材料包，完成垃圾清�
 按程序给定格式保存主体对应、敏感片段和文书划分计划，由程序完成替换和结构输出，不改写全文。
 按真实完整文书划分，跨页同一文书合并，同页多份分别识别，表格和列表不拆散；全部正文均有归属。重复扫描保留并关联，局部边界不清可保留为组合文书，不按页、目标份数或整卷一概分册。
 只对未安全处理的敏感片段或缺失正文标记阻断；已安全处理的身份归并或局部分界疑点可说明后保留。完成后运行指定校验，修正实际错误，不逐页另开模型或增加审查轮次。`;
-/** 当前模板只提供Agent化名；历史解析显式传includeLegacy，不回写配置或结果。 */
-export function libraryRedactionTemplates(settings:Record<string,any>,includeLegacy=false):LibraryRedactionTemplate[]{
+/** 当前模板仅提供Agent化名；旧字段映射模板不再解析为可执行配置。 */
+export function libraryRedactionTemplates(settings:Record<string,any>):LibraryRedactionTemplate[]{
  const configured=[...(settings.redaction_templates??[])];
- if(!configured.some((t:LibraryRedactionTemplate)=>t.id==='aliases'))configured.push({id:'aliases',name:'Agent整包化名脱敏与分册',workflow:'codex_plan',redaction:{provider:'codex',prompt:ALIAS_REDACTION_PROMPT}});
- return includeLegacy?[{id:'mask',name:'原有字段映射脱敏',workflow:'field_mapping',redaction:settings.redaction},...configured]:configured.filter((t:LibraryRedactionTemplate)=>t.workflow==='codex_plan'&&t.id!=='mask');
+ if(!configured.some((t:LibraryRedactionTemplate)=>t.id==='aliases'&&t.workflow==='codex_plan'))configured.push({id:'aliases',name:'Agent整包化名脱敏与分册',workflow:'codex_plan',redaction:{provider:'codex',prompt:ALIAS_REDACTION_PROMPT}});
+ return configured.filter((t:LibraryRedactionTemplate)=>t.workflow==='codex_plan'&&t.id!=='mask');
 }
