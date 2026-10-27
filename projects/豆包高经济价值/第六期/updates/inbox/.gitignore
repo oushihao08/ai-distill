@@ -1,5 +1,0 @@
-# 群聊原文可能含个人信息、案件信息或内部讨论，不提交到 Git。
-*
-!.gitignore
-!README.md
-!.gitkeep

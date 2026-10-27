@@ -17,7 +17,9 @@ import {acceptanceSourceDigest,readAcceptanceSnapshot,buildAcceptanceInput,build
 import {decideAcceptance} from '../decisions/acceptance';
 import {answerModelSetDigest} from '../answer-models/model-set';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
-import {resolveProjectDelivery,runProjectDelivery,type DeliveryInput,loadProjectArchive,type ProjectArchiveModule} from './project-delivery';
+import {projectStepPolicies,resolveStepProjectKey} from '../lifecycle/steps';
+import {executeProjectDelivery} from '../lifecycle/project-delivery';
+import {resolveProjectDelivery,runProjectDelivery,type DeliveryInput,type ProjectArchiveModule} from './project-delivery';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const publicationConflict=(reason_code:string,message:string)=>Object.assign(new HTTPException(409,{message}),{reason_code});
 function archiveProvenance(projectId:string,workflowId:string,frozen:any,projectName?:string,workflowTitle?:string){
@@ -46,7 +48,7 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL
  JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=8 AND s.status='succeeded'
  WHERE w.id=$1 AND w.deleted_at IS NULL`,[workflowId])).rows[0];
- if(!row||row.parent_name!=='Work法律全场景')throw new HTTPException(404,{message:'该题尚无Work五件套归档'});
+ if(!row||!projectStepPolicies.archiveDownload.execute(resolveStepProjectKey({parent_name:row.parent_name}),{parent_name:row.parent_name}))throw new HTTPException(404,{message:'该题尚无Work五件套归档'});
  const models=await readWorkflowModelSet(db,row.project_id,workflowId);
  const policy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[row.project_id])).rows[0]?.config;
  const snapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(models,policy),answerModelSetDigest(models));
@@ -126,14 +128,16 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   const binding:PublicationBinding={project_id:workflow.project_id,title:workflow.title,parent_name:workflow.parent_name??null,phase_name:workflow.phase_name??null,source_key:workflow.source_key??null,acceptance_attempt_id:accepted.id,source_digest:digest,delivery_digest:delivery.digest};
   if(dependencies.expected&&canonicalJson(binding)!==canonicalJson(dependencies.expected))throw new HTTPException(409,{message:'交付排队后来源、项目身份或脚本已变化，请核对后重新派发'});
   const deliveryIdentityDigest=hash(JSON.stringify(deliveryIdentity??null));
-  const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...(q.content_contract?{content_contract:q.content_contract,task_metadata:q.task_metadata,input_files:q.input_files,deliverables:q.deliverables,reference_outputs:q.reference_outputs,research_records:q.research_records,task_requirements:q.task_requirements,content_status:q.content_status}:{}),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:[]};
+  const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...projectStepPolicies.publicationFields.execute(resolveStepProjectKey({content_contract:q.content_contract}),q),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:[]};
   await db.query('COMMIT');inTransaction=false;
   db.release();connectionHeld=false;
   failurePhase='delivery';
-  const prepare=dependencies.prepare??(await loadProjectArchive(delivery))?.prepare;
-  if(prepare)await prepare(deliveryInput,{pool,workflowId,storageRoot:root,frozen,expectedLegacyAgentConfig:dependencies.expectedLegacyAgentConfig,signal:dependencies.signal});
-  dependencies.signal?.throwIfAborted();
-  await cachedExternalCall(`publication_delivery:${digest}:${delivery.digest}:${deliveryIdentityDigest}`,()=> (dependencies.deliver??runProjectDelivery)(delivery,deliveryInput,deliveryDir));
+  await executeProjectDelivery(workflow.parent_name, {
+   delivery, input:deliveryInput, outputDir:deliveryDir,
+   archive:{pool,workflowId,storageRoot:root,frozen,expectedLegacyAgentConfig:dependencies.expectedLegacyAgentConfig,signal:dependencies.signal},
+   prepare:dependencies.prepare, deliver:dependencies.deliver,
+   checkpoint:run=>cachedExternalCall(`publication_delivery:${digest}:${delivery.digest}:${deliveryIdentityDigest}`,run),
+  });
   let supplemental:Record<string,unknown>={};
   // Office成果是公共能力，不以项目是否配置专用交付脚本为条件。
   if(dependencies.prepareArtifacts){

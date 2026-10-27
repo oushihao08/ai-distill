@@ -16,11 +16,11 @@
 
 ## 状态与数据流
 
-API先在`<STORAGE_DIR>/runtime/queue.sqlite3`持久化pending_registration意图，再在原业务事务中写`execution_dispatches`归属；确认相同owner及generation已提交后转queued。云端steps/attempts继续作为业务状态与结果历史，不能据其waiting重建全库本地队列。派发复用原输入快照和业务防重锁。
+API先在`<STORAGE_DIR>/runtime/queue.sqlite3`持久化pending_registration意图，再在原业务事务中写`execution_dispatches`归属；确认相同owner及generation已提交后转queued。本机SQLite是排队与容量的权威；云端steps/attempts继续作为业务状态与结果历史，不能据其waiting重建全库本地队列。派发复用原输入快照和业务防重锁。
 
-worker仅原子领取本机queued或可恢复的result_pending_commit，原runNext的SQL限制为明确ID；旧的全库失租恢复在local模式关闭。Agent/API/internal/钩子/远程编排使用独立lane与同机进程槽位，Agent/API上限读取现有配置。服务器/api模式只消费API/internal/远程任务，不启用Agent及本地脚本钩子。执行事务结束后才调用模型，不长时间持有SQLite写锁。
+worker仅原子领取本机queued或可恢复的result_pending_commit，原runNext的SQL限制为明确ID；旧的全库失租恢复在local模式关闭。Agent/API/internal/历史钩子/远程编排使用独立lane与同机进程槽位，Agent/API上限读取现有配置。服务器/api模式只消费API/internal/远程任务，不启用Agent及本地脚本钩子。执行事务结束后才调用模型，不长时间持有SQLite写锁。
 
-外部调用由`runExternalCall`将返回值序列化到私有SQLite检查点并校验摘要。提交网络错误且返回值完整时保留result_pending_commit，重放原业务校验与发布路径时复用返回值；同ID同代同调用键不重复收费调用。结果未知则needs_review，不自动重放。收到云端成功但本机确认丢失时，只对账补记committed。已超过原材料预算或输入失效仍按原校验拒绝，不能借恢复延长模型预算。显式钩子重试由原入口校验副作用/检查点，再递增generation；回滚的代次不激活。
+外部调用由`runExternalCall`将返回值序列化到私有SQLite检查点并校验摘要。提交网络错误且返回值完整时保留result_pending_commit，重放原业务校验与发布路径时复用返回值；同ID同代同调用键不重复收费调用。结果未知则needs_review，不自动重放。收到云端成功但本机确认丢失时，只对账补记committed。已超过原材料预算或输入失效仍按原校验拒绝，不能借恢复延长模型预算。新生命周期脚本在主调用内顺序等待，失败后的单增强补执行由HTTP同步返回，不登记本机hook任务。旧主尝试resume入口仍校验副作用/检查点并恢复原任务代次；回滚的代次不激活。
 
 本机取消先持久化并传播信号，随后同步云端。断网保留cancel_synced=0，恢复后只补交取消；取消请求不等于远端调用已停止。另一台电脑不能领取或回收本机任务。共享业务冲突及同一供应商账号限额仍可能跨机影响，队列独立不承诺业务库或上游服务完全离线。
 
@@ -59,7 +59,9 @@ worker.test.ts使用临时SQLite、SQL替身和随机端口本机HTTP服务验�
 
 ## 领取范围与材料失败
 
-`WORKER_WORKFLOW_IDS`传入local消费器，在SQLite原子领取前通过业务元数据过滤；仅领取所列工作流的出题、作答、评分和交付，不触碰其余已排队记录或库级任务。mode、execution_target与API任务的本地脚本亲和性同时核对，不能把启动提示当作范围已生效。
+限定临时批次可用 `WORKER_BATCH_STDIN=1`，且必须是local队列并显式设置 `WORKER_WORKFLOW_IDS`。由 `scripts/runtime/run-scoped-batch.ts` 持有本次子进程的私有stdin；批次终态或执行器异常后关闭管道。EOF仅中止领取循环与槽位等待，领取前异步查询返回后仍复查排空信号；在途模型、心跳和结算使用原取消信号，完成后进程自然退出。不会扫描PID发送TERM。收尾通知之后新入队的任务仍留队，不取消、不重派；普通worker及原SIGTERM取消行为不变。此机制不代替批次脚本核对当前API状态，不能仅凭旧失败记录忽略人工新尝试。
+
+`WORKER_WORKFLOW_IDS`传入local消费器，在SQLite原子领取前通过业务元数据过滤；仅领取所列工作流的出题、作答、评分和交付，不领取其余有效待办或库级任务；共享业务已终态的本机旧队列项仍可对账释放容量。mode、execution_target与API任务的本地脚本亲和性同时核对，不能把启动提示当作范围已生效。
 
 材料库已知失败也在当前本机代次保存安全终态（failed/cancelled、原因、原租约），数据库恢复后只按原任务/租约补结算，不重新领取、不重新读取原件、不重跑提取/脱敏、不延长预算。未命中原租约时不覆盖新的执行者；损坏或无法确认的记录继续待核实。检查点保留在私有SQLite，不通过监控API返回。
 
@@ -88,3 +90,17 @@ worker监控和`/api/monitor`只投影活动、待登记、待同步及待核实
 未开始的评分如需取消后重新显式派发，使用服务端[未领取评分取消契约](../README.md#未领取评分的显式取消)。此入口不迁移归属、不处理running或未知调用；取消本机SQLite仍用原queue取消接口。
 
 旧步骤9只保留人工已脱敏声明发布。历史字段映射意图即使仍归属本机，也由原执行器以field_mapping_removed终结，不调用API或Agent；材料库Agent化名任务不受此删除影响。
+
+## 他机未开始待办与本机明确派发
+
+适用于local模式的入库/提取、人工声明脱敏、出题、作答、评分、归档、材料库处理、Skill生成和手动返修建议。共享库保留`waiting`及材料库`queued`作为旧协议的未执行意图/历史字段；本次未改表枚举或迁移历史，不能把这些字段当作他机实时队列、运行容量或永久业务锁。
+
+`runtime.foreignUnstartedSql()`是读写共用的可替代条件。只有已登记另一执行器、初代generation=0、业务仍未开始、无结果/心跳/会话及已完成时间的意图可替代；步骤另查无产物，材料库另查无started_at、租约、进度及结果。没有归属、已运行、结果未知、续作代次及server目标不自动处理。
+
+用户在本机明确重新派发时，`supersedeForeignPending()`在原派发事务中将同工作流同一步（材料库为同revision同kind、Skill为同期、建议为同题）的上述旧意图记为skipped/cancelled，并登记本机新冻结任务。保留原ID、归属和历史，不移动原任务；新派发校验、容量或数据库失败会连同旧意图变更一起回滚。材料库相同request_key仍返回原请求，不借重放制造新任务。worker内部接续不触发此替代。
+
+业务UPDATE条件和领取条件竞争同一任务行：已领取成为running后不再满足替代条件；先失效的旧任务不再满足原worker领取条件。旧worker在原有批量元信息读取中处理共享终态，在亲和性过滤前释放本机旧queued容量，不进入模型执行；SQLite结算检查本机generation且不覆盖running。未升级worker仍通过原ID的业务终态检查跳过旧任务，但缺少领取前清理能力。
+
+页面与批量的active判断排除符合上述条件的他机待办，仍保留实际运行/未知及前置结果保护。共享step残留running不能仅因本机无进程就自动置为成功、失败或允许重复调用。此变更不会自动清理已有needs_review，也不以超时推断外部调用已结束。
+
+`runtime.test.ts`使用临时SQLite执行经PG类型/时间语法适配的筛选与更新，覆盖结果/心跳/产物/续作/归属保护、事务回滚以及材料库派发容量失败；`worker.test.ts`验证被替代队列项在模式/范围过滤前结算。它们不证明PostgreSQL行锁竞争、真实双机或部署验收。

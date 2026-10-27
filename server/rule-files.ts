@@ -8,6 +8,7 @@ import {join,dirname,resolve,posix,isAbsolute,relative,sep} from 'node:path';
 import {createHash} from 'node:crypto';
 import {HTTPException} from 'hono/http-exception';
 import {classifyLogError,logEvent} from './logging';
+import {resolveProjectPath} from './paths';
 import {validateFolder} from './project-folders';
 export interface RuleFile {path:string;sha256:string;size_bytes:number}
 export interface RuleWorkspace {workspace_path:string;materials_path:string;skill_path:string;files:RuleFile[];source_digest:string;assessment:Record<string,unknown>;unresolved:{id:string;detail?:string}[];issues:string[]}
@@ -35,15 +36,15 @@ async function inventory(root:string,prefix='',ignoreHidden=true):Promise<RuleFi
 }
 function sourcePath(view:RuleWorkspace,path:string){return path.startsWith('skill/')?join(view.skill_path,path.slice(6)):path.startsWith('materials/')?join(view.materials_path,path.slice(10)):join(view.workspace_path,path);}
 export async function resolveRuleWorkspacePaths(project:{material_root?:string|null;workspace_path?:string|null;local_skill_path?:string|null}){
- const workspace=project.workspace_path?resolve(project.workspace_path):dirname(project.material_root??project.local_skill_path??'');
- const shared=project.local_skill_path?dirname(project.local_skill_path):workspace;
+ const workspace=project.workspace_path?resolveProjectPath(project.workspace_path):dirname(resolveProjectPath(project.material_root??project.local_skill_path??''));
+ const shared=project.local_skill_path?dirname(resolveProjectPath(project.local_skill_path)):workspace;
  const relativeWorkspace=relative(shared,workspace),sharedIsAncestor=relativeWorkspace===''||(!isAbsolute(relativeWorkspace)&&relativeWorkspace!=='..'&&!relativeWorkspace.startsWith(`..${sep}`));
  return{workspace_path:workspace,materials_path:join(sharedIsAncestor?shared:workspace,'materials')};
 }
 /** 本期 skill 优先；分期未建立本期 skill 时回退到主项目配置路径。 */
 export async function resolveEffectiveProjectSkill(project:{workspace_path?:string|null;material_root?:string|null;local_skill_path?:string|null;parent_name?:string|null}){
  if(typeof project.local_skill_path!=='string'||!project.local_skill_path)throw new HTTPException(409,{message:'请先设置主项目 skill 目录'});
- const projectSkill=resolve(project.local_skill_path),workspace=project.workspace_path?resolve(project.workspace_path):dirname(project.material_root??projectSkill),phaseSkill=join(workspace,'skill');
+ const projectSkill=resolveProjectPath(project.local_skill_path),workspace=project.workspace_path?resolveProjectPath(project.workspace_path):dirname(project.material_root?resolveProjectPath(project.material_root):projectSkill),phaseSkill=join(workspace,'skill');
  if(project.parent_name&&phaseSkill!==projectSkill){
   const directory=await info(phaseSkill),entry=await info(join(phaseSkill,'SKILL.md'));
   if(directory?.isSymbolicLink()||entry?.isSymbolicLink())throw new HTTPException(409,{message:'本期 skill 不支持符号链接'});
@@ -56,7 +57,7 @@ export async function resolveEffectiveProjectSkill(project:{workspace_path?:stri
 export async function scanRuleWorkspace(root:string,skill:string,scope:'workspace'|'skill'='workspace',materialsRoot=join(root,'materials')):Promise<RuleWorkspace>{
  try{
   root=await validateFolder(root,'项目工作区');skill=await validateFolder(skill,'本地skill目录');
-  materialsRoot=resolve(materialsRoot);const materialsInfo=await info(materialsRoot);
+  materialsRoot=resolveProjectPath(materialsRoot);const materialsInfo=await info(materialsRoot);
   if(materialsInfo?.isSymbolicLink()||materialsInfo&&!materialsInfo.isDirectory())throw new HTTPException(400,{message:'规则资料目录无效'});
   if(materialsInfo)materialsRoot=await validateFolder(materialsRoot,'项目规则资料目录');
   const manifestInfo=scope==='workspace'?await info(join(root,'project.json')):undefined;
@@ -138,7 +139,7 @@ export async function freezeRuleWorkspace(view:RuleWorkspace,id:string):Promise<
 export async function readRuleFile(root:string,path:string):Promise<Uint8Array>{
  try{
   logEvent('file.read.started',{level:'info',component:'rules',file_kind:'project_rule_file'});
-  localPath(path);let current=resolve(root);
+  localPath(path);let current=resolveProjectPath(root);
   for(const part of path.split('/')){current=join(current,part);const value=await info(current);if(!value)throw new HTTPException(404,{message:'规则文件不存在'});if(value.isSymbolicLink())throw new HTTPException(400,{message:'规则目录不支持符号链接'});}
   const bytes=await readFile(current);logEvent('file.read.completed',{level:'info',component:'rules',file_kind:'project_rule_file',output_bytes:bytes.length});return bytes;
  }catch(error){logEvent('file.read.failed',{level:'error',component:'rules',file_kind:'project_rule_file',...classifyLogError(error)});throw error;}

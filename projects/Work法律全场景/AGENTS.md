@@ -6,7 +6,7 @@
 
 - 项目内容要求：当前出题与评分标准统一见 `skill/出题与评分规则.md`；本批场景分配看 `skill/首批筹备-LS场景出题规则.md`。历史 `materials/出题规范.md`、`materials/评分规范.md` 及原文转录不是当前必读入口，不因这些旧路径缺失判定当前规则缺失；当前调用另行指定原文时按指定来源核对。
 - Agent 出题方法：从 `skill/SKILL.md` 按其导航读取。Skill 负责指导内容设计，不负责扩展程序字段。
-- 字段结构：由代码内容契约定义。出题步骤配置可选择 `work_legal_v1`，数据库保存契约标识和题目 JSON 结果，不保存一份可任意编辑的 Schema。结构和校验见 `server/authoring/work-contract.ts`。
+- 字段结构：由代码内容契约定义。出题步骤配置可选择 `work_legal_v1`，数据库保存契约标识和题目 JSON 结果，不保存一份可任意编辑的 Schema。实际结构和项目交付要求见 `server/lifecycle/projects/work-contract.ts`；`server/authoring/work-contract.ts`为旧导入兼容。
 - 改其他项目字段：不能只改 Skill 或数据库标识；须实现对应代码契约，并核对生成、校验、保存、作答、评分和导出是否接通。没有对应契约时，按现有通用格式处理，不猜测项目自定义字段。
 
 ## 当前流程边界
@@ -41,3 +41,7 @@
 - 独立评分：`server/scoring/context.ts`、`server/scoring/executor.ts`；达标判定：`server/decisions/`。
 - 归档校验与执行：`server/publishing/jobs.ts`、`projects/Work法律全场景/scripts/delivery.ts`。
 - 模块细节分别见 `server/authoring/README.md`、`server/answer-models/README.md`、`server/scoring/README.md`、`server/decisions/README.md`、`server/publishing/README.md`。
+
+## 生命周期工程注册
+
+本项目的身份识别、建题、出题字段/提示投影、作答前置规则、评分协议选择及交付接入集中在`server/lifecycle/projects/work.ts`，由`server/lifecycle/steps.ts`统一装配；公共步骤不判断项目名或Work契约来选择业务分支。Work交付专业实现继续复用本项目scripts目录。纯策略同步返回，外部交付顺序await；原历史输入摘要、直接保存和交付资格语义保持。详情见`server/lifecycle/projects/README.md`。

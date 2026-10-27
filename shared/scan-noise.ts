@@ -1,6 +1,6 @@
 /**
- * 职责：材料提取发布前、Agent计划编译中及历史API脱敏后共用的确定性垃圾清理与格式还原。
- * 入口：findScanNoiseEdits生成精确编辑；cleanScanNoisePages将编辑应用到结构副本；cleanRedactionText用于纯文本清理/残留检查。
+ * 职责：材料提取发布前及Agent计划编译中共用的确定性垃圾清理与格式还原。
+ * 入口：findScanNoiseEdits生成精确编辑；cleanScanNoisePages将编辑应用到结构副本。
  * 工具边界：只使用内存中的结构、文字投影和正则，不调用Agent/OCR、网络、文件或数据库；发布和审计由调用方负责。
  * 设计边界与已知数字保护遗漏见findScanNoiseEdits注释；“保守清理”是职责目标，不代表所有语义或输入均已验证安全。
  */
@@ -13,27 +13,16 @@ const date='(?:19|20)\\d{2}(?:[-/.]\\d{1,2}[-/.]\\d{1,2}|年\\d{1,2}月\\d{1,2}�
 const time='(?:[01]?\\d|2[0-3])[:：][0-5]\\d(?:[:：][0-5]\\d)?(?:\\.\\d{1,3})?';
 const watermark=new RegExp(`(?<![\\p{L}\\p{N}])(?:\\d{3,10}(?:\\\\?[_＿]|[ \\t.])+|(?:扫描时间|扫描日期|打印时间)[ \\t]*[:：]?[ \\t]*)${date}[ Tt]+${time}(?!\\d)`,'gu');
 const numberLine=/^(?:[0-9０-９]+|[-－—][ \t]*[0-9０-９]+[ \t]*[-－—])$/u;
-const valueLabel=/(?:金额|价款|本金|利息|余额|单价|数量|数额|总额|合计|总计|编号|案号|证件号|账号|电话)[：:\s]*$/u;
-interface NoiseRange {start:number;end:number;kind:'fixed'|'number_line'}
-function noiseRanges(text:string,removeStandaloneNumbers:boolean):NoiseRange[]{
+interface NoiseRange {start:number;end:number}
+function noiseRanges(text:string):NoiseRange[]{
  const ranges:NoiseRange[]=[];
- for(const pattern of [placeholder,watermark])for(const match of text.matchAll(pattern))ranges.push({start:match.index,end:match.index+match[0].length,kind:'fixed'});
- let previous='';
+ for(const pattern of [placeholder,watermark])for(const match of text.matchAll(pattern))ranges.push({start:match.index,end:match.index+match[0].length});
  for(const line of text.matchAll(/[^\r\n]+/g)){
   const visible=line[0].replace(placeholder,'').replace(watermark,'').trim();
   // 编号和条码标记独占同一字段行，才将二者认定为同一个扫描对象。
-  if(/^\s*\d+[ \t]+\\?\[[ \t]*BAR[ _-]*CODE[ \t]*\\?\]\s*$/iu.test(line[0]))ranges.push({start:line.index,end:line.index+line[0].length,kind:'fixed'});
-  if(visible==='无法识别'||removeStandaloneNumbers&&numberLine.test(visible)&&!valueLabel.test(previous))ranges.push({start:line.index,end:line.index+line[0].length,kind:visible==='无法识别'?'fixed':'number_line'});
-  if(visible)previous=visible;
+  if(/^\s*\d+[ \t]+\\?\[[ \t]*BAR[ _-]*CODE[ \t]*\\?\]\s*$/iu.test(line[0])||visible==='无法识别')ranges.push({start:line.index,end:line.index+line[0].length});
  }
  return ranges;
-}
-/** AI返回后调用的纯文本清理：默认只删除固定噪声并保留换行/数字。removeStandaloneNumbers仅用于显式已确认数字为噪声的旧调用。 */
-export function cleanRedactionText(text:string,options:{removeStandaloneNumbers?:boolean}={}){
- const ranges=noiseRanges(text,options.removeStandaloneNumbers??false).sort((a,b)=>a.start-b.start||b.end-a.end),merged:{start:number;end:number}[]=[];
- for(const range of ranges){const prior=merged.at(-1);if(prior&&range.start<=prior.end)prior.end=Math.max(prior.end,range.end);else merged.push({...range});}
- for(const range of merged.reverse())text=text.slice(0,range.start)+text.slice(range.end);
- return text;
 }
 function blockFields(block:DocumentBlock){
  if(block.kind==='table'){
@@ -53,9 +42,8 @@ function blockFields(block:DocumentBlock){
  * - 新材料库提取/桌面结果导入：storeExtractedDocument -> cleanScanNoisePages -> 本函数。
  *   调用方发布清理后的提取正文；发生改动时另存原始OCR及cleanup编辑审计，不修改上传原件。
  * - Agent完成后：prepareAgentLibraryMaterials -> compileAgentMaterialPlan -> 本函数。
- *   编译器把这里的编辑合并进Agent计划，重算分册范围，再检查原文定位、重叠、结构、覆盖和残留，之后才允许发布。
+ *   编译器把这里的编辑合并进Agent计划，重算分册范围，再检查原文定位、重叠、结构和覆盖，之后才允许发布。
  *   Agent工作区的validate-plan.mjs也调用同一编译器；本地工具通过不替代宿主在Agent返回后的再次校验。
- * - 历史API字段映射：redaction.ts -> cleanScanNoisePages -> 本函数；不维护另一套扫描垃圾规则。
  *
  * 与Agent语义清理的分工：
  * - Agent根据正文/位置判断scan_watermark、corner_stamp、ocr_placeholder等片段；不确定的噪声应保留。
@@ -91,7 +79,7 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
   // 固定噪声只在单个结构字段内匹配，不能拼接相邻单元格/列表项的业务值。
   for(const field of documentFieldRanges([entry.block])){
    const text=entry.projection.slice(field.start,field.end);
-   for(const range of noiseRanges(text,false))addProjection(entry,field.start+range.start,field.start+range.end);
+   for(const range of noiseRanges(text))addProjection(entry,field.start+range.start,field.start+range.end);
    for(const match of text.matchAll(/\$([+-]?\d+(?:\.\d+)?)\\%\$/g))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+field.start+match.index!,end:entry.start+field.start+match.index!+match[0].length,source_text:match[0],replacement_text:match[1]+'%'});
    for(const match of text.matchAll(/\\_/g))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+field.start+match.index!,end:entry.start+field.start+match.index!+match[0].length,source_text:match[0],replacement_text:'_'});
   }
@@ -106,7 +94,7 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  });
  const sequences=new Map<string,Set<number>>();
  for(const entry of margins){const value=numeric(entry.text);if(value===null||Math.abs(value-entry.page)>5)continue;const key=`${entry.file_id}:${value-entry.page}`,set=sequences.get(key)??new Set<number>();set.add(entry.page);sequences.set(key,set);}
- // 已知待核修复点：此分支未检查前一结构块的业务标签，noiseRanges里的valueLabel保护不会自动作用到这里。
+ // 已知待核修复点：此分支未检查前一结构块的业务标签。
  // 静态触发场景：同文件两页有8836_日期时间扫描签名，某页最后两块为“付款金额”“8836”；
  // 最后一块既是业务金额，又等于scannerIds，仍会进入add删除。示例号码可替换，不是固定黑名单。
  // 这是确定规则的上下文保护遗漏，与允许Agent语义判断垃圾是两件事；目前未以运行回归或真实误删记录确认。
@@ -136,7 +124,7 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
 }
 /**
  * 将共用规则应用到结构副本，返回{edits,pages}；保留页/块和表格形状，不写入原件或发布结果。
- * 提取发布前及历史API脱敏后使用本适配器；Agent编译器直接取findScanNoiseEdits的编辑合并计划，避免另改正文导致坐标失配。
+ * 提取发布前使用本适配器；Agent编译器直接取findScanNoiseEdits的编辑合并计划，避免另改正文导致坐标失配。
  * 本函数不调用Agent，也不做敏感信息或业务语义验收；提取原始OCR/编辑审计由storeExtractedDocument保存。
  */
 export function cleanScanNoisePages(pages:ScanNoisePage[]){

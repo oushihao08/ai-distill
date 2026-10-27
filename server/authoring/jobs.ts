@@ -3,9 +3,11 @@
  * 关键方法与用途：`enqueueAuthoring()` 创建冻结输入任务；`runNextAuthoring()` 消费任务并提交当前版本结果。
  * 使用场景：`app.ts` 负责用户派发，`worker.ts` 负责后台消费和结果提交；新输入不向 Codex 暴露原始附件路径。
  */
+import {resolveProjectPath} from '../paths';
+import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {frozenRevisionAdvice,validFrozenAdvice,type FrozenAdvice} from '../revision-advice/jobs';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
@@ -19,13 +21,13 @@ import {mkdir,realpath,rm,writeFile} from 'node:fs/promises';
 import {dirname,join,relative,resolve} from 'node:path';
 import {validateStepConfigForExecution} from '../project-folders';
 import {readRuleFile,readProjectPrompt,resolveEffectiveProjectSkill,scanProjectPrompt,verifyRuleSnapshot,type ProjectPromptSnapshot} from '../rule-files';
-import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,registerAsyncAfterHooks,StageHookError,type FrozenStageHooks} from '../workflow-hook-jobs';
+import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,prepareCommittedStageHooks,runCommittedStageHooks,StageHookError,type FrozenStageHooks} from '../lifecycle/scripts';
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
 import {hookAdditionText} from '../workflow-hooks';
 import {AUTHORING_FIXED_PROMPT,DEFAULT_STEP_PROMPTS} from '../../shared/step-prompts';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 import {readQuestionMaterials} from '../question-materials';
-import {renderPublicQuestionPackage,runAuthoring,UnsupportedAnswerRequirementsError,FRESH_AUTHORING_CONTRACT,type AuthoringResult,type AuthoringRule} from './executor';
+import {renderPublicQuestionPackage,runAuthoring,FRESH_AUTHORING_CONTRACT,type AuthoringResult,type AuthoringRule} from './executor';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 const stableDesignContext=(context:NonNullable<FrozenInput['design_context']>)=>({...('scenario'in context?{scenario:context.scenario}:{}),...('role_perspective'in context?{role_perspective:context.role_perspective}:{}),...('target_level'in context?{target_level:context.target_level}:{}),...('question_tags'in context?{question_tags:context.question_tags}:{})});
@@ -120,6 +122,7 @@ export async function enqueueAuthoring(pool:Pool,id:string){
   const advice=await frozenRevisionAdvice(db,id);
   const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),question_id:questionId(source.workflow),source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials};
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};
+  await supersedeForeignPending(db,{kind:'step',id,ordinal:4});
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND input->>'digest'=$2 AND config=$3::jsonb AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id,input.digest,JSON.stringify(config)])).rows[0];
   if(previous){await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'authoring',workflow_id:id,project_id:source.workflow.project_id,ordinal:4,attempt_id:previous.id,operation:'authoring_enqueue',provider:'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return{id:previous.id,reused:true};}
   if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND status IN ('waiting','running') LIMIT 1",[id])).rowCount)throw new HTTPException(409,{message:'此题目已有出题任务'});
@@ -202,16 +205,15 @@ async function readProjectContext(job:any):Promise<AuthoringRule[]>{
 function buildAuthoringFailure(error: unknown, failurePhase: string): import('../execution-queue/store').StepFailure {
     if (error instanceof RecordedStepFailure)
         return { status: 'failed', message: error.failure.message, result: error.failure.result };
-    const unsupported = error instanceof UnsupportedAnswerRequirementsError ? error.requirements : null;
     const reasonCode = error && typeof error === 'object' && 'reason_code' in error ? error.reason_code : undefined;
     const safeCode = typeof reasonCode === 'string' && /^[a-z][a-z0-9_]{0,79}$/.test(reasonCode) ? reasonCode : null;
     let message: string;
-    // 优先级与历史错误协议一致：钩子、契约、作答能力，其后才是具体执行错误。
+    // 保留历史reason_code的安全消息映射；当前接收不再按作答能力拒收题包。
     if (error instanceof StageHookError)
         message = '项目钩子执行失败，可查看钩子记录后续跑';
     else if (reasonCode === 'authoring_contract_changed')
         message = '普通出题任务契约已更新，请重新派发';
-    else if (unsupported || reasonCode === 'unsupported_answer_requirements')
+    else if (reasonCode === 'unsupported_answer_requirements')
         message = '被测作答器仅支持文字输入和文字答案，且不调用工具；作者Codex的工具能力不受此限制';
     else
         switch (reasonCode) {
@@ -222,21 +224,20 @@ function buildAuthoringFailure(error: unknown, failurePhase: string): import('..
                 message = '出题会话已结束，但未生成 result.json；请检查本次附件路径和私有执行记录';
                 break;
             case 'result_validation_failed':
-                message = '出题结果未通过程序校验，请检查本次题包结构和评分条目';
+                message = '出题结果无法转换为可保存的JSON题包，请检查本次私有执行记录';
                 break;
             case 'codex_timeout':
-                message = '出题执行超过本次时限，未取得通过校验的完整题目';
+                message = '出题执行超过本次时限，未取得可接收的完整结果';
                 break;
             case 'incomplete_turn':
                 message = '出题会话未完整结束，结果未被接收';
                 break;
             default: message = '出题执行失败、取消或输入已变化，可检查后重试';
         }
-    const errorCode = error instanceof StageHookError ? 'project_hook_failed' : unsupported ? 'unsupported_answer_requirements' : safeCode;
+    const errorCode = error instanceof StageHookError ? 'project_hook_failed' : safeCode;
     return { status: 'failed', message, result: {
             ...(errorCode ? { error_code: errorCode } : {}),
             failure_phase: failurePhase,
-            ...(unsupported ? { answer_requirements: unsupported } : {}),
         } };
 }
 
@@ -246,7 +247,7 @@ async function stillCurrent(pool:Pool,job:any){
 }
 /**
  * 领取当前版本出题尝试，在项目工作目录执行并将完整草稿存入数据库；作答输入单独筛选题面与附件。
- * 提交前再次核对任务输入、项目文件和材料绑定，只有仍匹配的结果才能更新 ordinal 4 状态。
+ * 调用前核对冻结输入；返回后直接保存，仅按最新未取消任务身份写回，不复核材料/Skill指纹。
  */
 export async function runNextAuthoring(pool: Pool, root: string, author: Authorer = runAuthoring, signal?: AbortSignal, workflowIds?: string[]) {
     if (signal?.aborted)
@@ -309,6 +310,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         logEvent('attempt.input_validated', { level: 'info', material_count: materials.length });
         const legacyRulesInput = job.input.rule_version_id ? { version_id: job.input.rule_version_id, source_digest: job.input.rule_source_digest, files: projectContextFiles } : undefined;
         failurePhase = 'agent_execution';
+        await emitLifecycle(pool,'before', {stage:'authoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'authoring' as const, binding_digest: hash(canonicalJson({ input: job.input.digest, config: job.config })), input: { title: job.input.title, materials: materials.map((m, i) => ({ name: `附件${i + 1}`, text: m.text })), ...(job.input.scoring_policy ? { scoring_policy: job.input.scoring_policy } : {}) }, hooks: job.input.hooks, signal };
         const result = await executeWithStageHooks({
             ...hookContext,
@@ -327,7 +329,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     ...(job.input.scoring_policy ? {
                         scoring_policy: job.input.scoring_policy
                     } : {}),
-                    workspace_path: job.input.project_prompt.workspace_path,
+                    workspace_path: resolveProjectPath(job.input.project_prompt.workspace_path),
                     root: join(directory, 'private'),
                     project_name: job.input.project_name,
                     question: job.input.title,
@@ -369,7 +371,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         failurePhase = 'result_persistence';
         if (signal?.aborted)
             throw new Error('cancelled');
-        const publicPackage = Buffer.from(renderPublicQuestionPackage({ question: job.input.title, question_id: job.input.question_id, source_files: job.input.source_files ?? [], materials }, draft));
+        const publicPackage = Buffer.from(renderPublicQuestionPackage({ project_name:job.input.project_name, question: job.input.title, question_id: job.input.question_id, source_files: job.input.source_files ?? [], materials }, draft));
         const packagePath = join(directory, 'authored_question.md');
         packageBytes = publicPackage;
         output = packagePath;
@@ -380,10 +382,10 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
             await tx.query('BEGIN');
             if (signal?.aborted || !(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' AND id=(SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$2 AND ordinal=4 ORDER BY attempt DESC LIMIT 1) FOR UPDATE", [job.id, job.workflow_id])).rowCount)
                 throw new Error('inactive');
-            await registerAsyncAfterHooks({ ...hookContext, pool: tx }, { draft: result.draft });
             await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1", [job.id, JSON.stringify(storedResult), result.codex.session_id]);
             await tx.query("UPDATE ai_distill.steps SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=4", [job.workflow_id, JSON.stringify(storedResult)]);
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'authored_question', relative(resolve(root), packagePath), hash(publicPackage), publicPackage.length, publicPackage.toString('utf8')]);
+            await prepareCommittedStageHooks({...hookContext,pool:tx}, { draft: result.draft });
             await tx.query('COMMIT');forgetLocalRegistrations(tx);
             logEvent('attempt.completed', { level: 'info', state: 'succeeded' });
         }
@@ -394,9 +396,12 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         finally {
             tx.release();
         }
+        await runCommittedStageHooks(hookContext, { draft: result.draft });
+        await emitLifecycle(pool,'committed', {stage:'authoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal,data:{result:storedResult}});
     }
     catch (error) {
         deferLocalPublication(error);
+        await emitLifecycle(pool,signal?.aborted?'cancelled':'failed', {stage:'authoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         logEvent('attempt.failed', { level: 'error', state: 'failed', ...classifyLogError(error), failure_phase: failurePhase });
         // 先保存终态，再清理产物/结算PG；断网后只补交同一次失败，不重跑作者。
         const failure = saveStepFailure(buildAuthoringFailure(error, failurePhase));

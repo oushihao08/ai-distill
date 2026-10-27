@@ -9,11 +9,41 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {buildAnonymousInput,buildScoreFiles,buildScoreMessage,runIndependentApiScore,runIndependentScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '@shared/step-prompts';
-import type {ScoreContext} from './validate';
+import {scoreRubricBindingText,type ScoreContext} from './validate';
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
 const rubric=[{id:'amount',criterion:'准确指出金额',max_score:1}];
 const baseProjectRules={version_id:'rules-v1',source_digest:hash('rules'),snapshot_path:'/unreadable-project-snapshot',files:[{path:'skill/SKILL.md',sha256:hash('规则正文'),size_bytes:12}]};
 const context:ScoreContext={binding:{question_version:'v1',input_digest:'a'.repeat(64),rubric_version:'r1',rubric_digest:hash(JSON.stringify(rubric)),answer_attempt_id:'private-id',answer_sha256:hash('100元')},question:'金额多少',materials:[{name:'原模型名称',text:'金额100元'}],answer:'100元',rubric,answer_approach:'私有作答思路',reference_answer:'私有标准答案',project_rules:baseProjectRules};
+
+test('普通执行输入允许缺少思路与标答，校准模式仍拒绝缺少标答',()=>{
+ expect(buildAnonymousInput({...context,answer_approach:undefined,reference_answer:undefined} as any).answer).toBe(context.answer);
+ const policy={contract:'model_report_v1' as const,rules_text:'按规则评分',reference_answer:'calibration' as const};
+ const rubric=[{id:'x',criterion:'判断',rule:'按规则评分'}];
+ const task={...context,rubric,scoring_policy:policy,binding:{...context.binding,rubric_digest:hash(scoreRubricBindingText(rubric,policy))}};
+ expect(()=>buildAnonymousInput({...task,reference_answer:''})).toThrow();
+ expect(buildAnonymousInput({...task,answer_approach:undefined} as any).reference_answer).toBe(context.reference_answer);
+});
+
+test('API请求去掉工具源码和执行命令，完整保留材料、权重、校准及候选引文协议',async()=>{
+ const policy={contract:'model_report_v1' as const,rules_text:'净分除以正项满分',reference_answer:'calibration' as const};
+ const rubric=[{id:'x',criterion:'判断金额',rule:'命中加10分',metadata:{score:10,priority:'高'}}];
+ const task={...context,rubric,scoring_policy:policy,candidate_quote_check:'literal_v1' as const,binding:{...context.binding,rubric_digest:hash(scoreRubricBindingText(rubric,policy))}};
+ const input=buildAnonymousInput(task),agentFiles=buildScoreFiles(input),apiFiles=buildScoreFiles(input,false,'api');
+ expect(agentFiles.filter(file=>file.name.endsWith('.py'))).toHaveLength(2);
+ expect(apiFiles).toEqual(agentFiles.filter(file=>!file.name.endsWith('.py')));
+ const raw='<model_report>'+JSON.stringify({contract:'model_report_v1',items:[{id:'x',judgment:'满足',score_delta:10,reason:'答案为100元',answer_quotes:['100元']}],summary:{raw_score:10,full_score:10,evaluation_percent:100,veto_triggered:false}})+'</model_report>';
+ const result=await runIndependentApiScore(task,{config:{provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'fixture'},complete:async(call:any)=>{
+  const body=call.messages[0].content;
+  for(const file of apiFiles)expect(body).toContain(file.text);
+  for(const file of agentFiles.filter(file=>file.name.endsWith('.py'))){expect(body).not.toContain(file.text);expect(body).not.toContain(file.name);}
+  expect(body).not.toContain('python3');expect(body).not.toContain(context.answer_approach);expect(body).toContain('answer_quotes');expect(body).toContain('计分条目.json');
+  const oldBody=[buildScoreMessage(input),'【以下为本次评分文件的完整正文】',...agentFiles.map(file=>`<file name="${file.name}">\n${file.text}\n</file>`)].join('\n\n');
+  expect(body.length).toBeLessThan(oldBody.length);
+  return{text:raw,provider:'openrouter',requested_model:'fixture',usage:null,duration_ms:1} as any;
+ }});
+ expect(result.validation.valid).toBe(true);expect(result.raw_text).toBe(raw);
+ expect(result.execution_request.input_files).toHaveLength(apiFiles.length);
+});
 const report='amount：1 / 1分。金额正确。答案原文证据：“100元”。\n最终总分：1 / 1 分';
 const reply=(call:any,text=report)=>({result:call.validate(text),session_id:'independent-session',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:'fixture'});
 test('新报告核对指令冻结到执行快照，旧协议摘要保持不变',()=>{

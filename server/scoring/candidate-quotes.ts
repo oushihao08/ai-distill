@@ -42,9 +42,16 @@ except (KeyError, IndexError, TypeError, ValueError, OSError) as error:
 
 export function buildCandidateQuoteFiles(){return [{name:'核验候选引文.py',text:checker}];}
 
-export const CANDIDATE_QUOTE_INSTRUCTIONS=[
+const quoteRules=[
  '候选引文协议literal_v1：每项JSON增加answer_quotes字符串数组。对候选文字作肯定、否定或错误认定时，摘录相关原句；所有声称来自候选的逐字引文都放入本数组，reason引用它们并说明判断。题面、附件、Rubric、校准标答的文字不能冒充候选引文。',
  '引文逐字复制，保留原标点与空格，不拼接、不用省略号改写。未找到可引用内容时填[]，在reason说明实际回查范围及缺失判断；不得为填数组编造证据。空数组不证明该内容不存在，引文存在也不证明该项满足。',
+];
+const quoteSummary='提交前确认评审正文、reason、answer_quotes和汇总相互一致；程序返回后再次核验，错引报告保留原文但不产生有效比较指标。';
+export const CANDIDATE_QUOTE_INSTRUCTIONS=[...quoteRules,
  '有文件工具时，把最终报告JSON保存为文件，执行python3 核验候选引文.py <JSON路径>。若有错引，回读待评答案.txt后自行更正相关判断、理由和成绩，并重核汇总；不得仅删除错引而保留未经核实的结论。此工具只给来源检查结果，不给分。无文件工具的API模式逐字回查本次提供的候选全文，不声称执行工具。',
- '提交前确认评审正文、reason、answer_quotes和汇总相互一致；程序返回后再次核验，错引报告保留原文但不产生有效比较指标。',
+ quoteSummary,
+].join('\n');
+export const API_CANDIDATE_QUOTE_INSTRUCTIONS=[...quoteRules,
+ '逐字回查本次提供的候选全文。若有错引，回读待评答案后自行更正相关判断、理由和成绩，并重核汇总；不得仅删除错引而保留未经核实的结论。',
+ quoteSummary,
 ].join('\n');

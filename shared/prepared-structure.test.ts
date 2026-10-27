@@ -48,3 +48,13 @@ test('删除扫描尾注后的纯换行分段仍保持完整覆盖且不伪造�
  expect(result.documents.map(d=>d.text).join('')).toBe('正文\n\n');
  expect(documentBlocksToText(result.documents[1]!.document.pages[0]!.blocks)).toBe('\n');
 });
+
+test('显示标题与安全输出路径分离，空标题及净化后同名不阻断正文',()=>{
+ const text='第一段\n第二段\n第三段',source={file_id:'f',page:1,text,structure:[{id:'a',kind:'paragraph' as const,text:'第一段'},{id:'b',kind:'paragraph' as const,text:'第二段'},{id:'c',kind:'paragraph' as const,text:'第三段'}]};
+ const titles=['../标题:含/非法\\字符?'+ '😀'.repeat(120),'../标题:含/非法\\字符?'+ '😀'.repeat(120),''];
+ const out=prepareStructuredMaterialData({edits:[],documents:titles.map((title,i)=>({id:`d${i}`,title,segments:[{file_id:'f',page:1,start:i*4,end:i===2?11:(i+1)*4}]}))},[source]);
+ expect(out.documents[0]!.title).toBe(titles[0]);expect(out.documents[2]!.title).toBe('材料3');
+ expect(new Set(out.documents.map(d=>d.file)).size).toBe(3);
+ for(const doc of out.documents){expect(doc.file.split('/')).toHaveLength(2);expect(doc.file).not.toContain('\\');expect(doc.file.split('/')[1]!.length).toBeLessThan(110);}
+ expect(out.documents.map(d=>d.text).join('')).toBe(text);
+});

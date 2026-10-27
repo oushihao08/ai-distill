@@ -35,14 +35,17 @@ export function prepareMaterialData(plan:any,input:PreparedPage[]){
  const coverage=new Map<string,{start:number;end:number}[]>();
  const ids=new Set<string>();const documents:{id:string;title:string;file:string;text:string}[]=[];
  for(const [i,doc] of plan.documents.entries()){
-  if(typeof doc?.id!=='string'||ids.has(doc.id)||typeof doc.title!=='string'||!doc.title.trim()||doc.title.length>100||/[\\/<>:"|?*\u0000-\u001f]/.test(doc.title)||!Array.isArray(doc.segments)||!doc.segments.length)fail('文书身份、名称或分册范围无效');
+  if(typeof doc?.id!=='string'||ids.has(doc.id)||typeof doc.title!=='string'||!Array.isArray(doc.segments)||!doc.segments.length)fail('文书身份、名称或分册范围无效');
   ids.add(doc.id);const parts:string[]=[];
   for(const segment of doc.segments){
    const k=key(segment?.file_id,segment?.page),p=pages.get(k);if(!p)fail('分册引用了不存在的来源页');
    const r=range(segment.start,segment.end,p.text);parts.push(p.text.slice(r.start,r.end));
    const list=coverage.get(k)??[];list.push(r);coverage.set(k,list);
   }
-  documents.push({id:doc.id,title:doc.title,file:`材料/${String(i+1).padStart(3,'0')}-${doc.title}.md`,text:parts.join('\n\n')});
+  const title=doc.title.trim()?doc.title:`材料${i+1}`;
+  // 显示标题不参与路径解释；序号保证净化后同名文书也不会覆盖。
+  const filename=Array.from(title.replace(/[\\/<>:"|?*\u0000-\u001f]/g,'_')).slice(0,50).join('').replace(/[. ]+$/g,'')||'材料';
+  documents.push({id:doc.id,title,file:`材料/${String(i+1).padStart(3,'0')}-${filename}.md`,text:parts.join('\n\n')});
  }
  for(const [k,p] of pages){
   if(!p.text.length)continue;

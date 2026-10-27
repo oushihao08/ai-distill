@@ -168,6 +168,8 @@ export interface CreateLibraryJobRequest {
   template_id?: string;
   project_id?: string;
   agent_settings?: {model:string;reasoning_effort:string};
+  /** 显式选择API整包化名，省略时仍使用Agent；与agent_settings互斥。 */
+  api_settings?: import('./types').ModelApiConfig;
 }
 
 export interface CreateLibraryQuestionRequest {

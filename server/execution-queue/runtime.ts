@@ -18,6 +18,27 @@ export function withLocalExecution<T>(queue:LocalQueue,job:QueueJob,execute:()=>
 /** 仅用于领取/失租清理的SQL；UUID经过校验，alias仅允许代码内标识。 */
 export function localClaimSql(alias:string,stale=false){if(!localQueueEnabled())return '';if(!/^[a-z_]+$/.test(alias))throw new Error('执行表别名无效');const c=current.getStore();if(stale||!c)return ' AND FALSE ';assertJobId(c.job.id);return ` AND ${alias}.id='${c.job.id}'::uuid `;}
 export function localWaitingSql(alias:string){return localQueueEnabled()&&current.getStore()?`${alias}.status IN ('waiting','running')`:`${alias}.status='waiting'`;}
+type ReplaceableKind='step'|'library'|'skill'|'advice';
+/** 共享记录仅证明未开始的业务意图，不证明他机排队。与领取UPDATE竞争行锁；续作/已有结果不在此范围。 */
+export function foreignUnstartedSql(alias:string,kind:ReplaceableKind,target:'local'|'server'='local'){
+ if(!/^[a-z_]+$/.test(alias))throw new Error('执行表别名无效');
+ if(!localQueueEnabled()||target!=='local')return 'FALSE';
+ const owner=localExecutionQueue().executorId;assertJobId(owner);
+ const state=kind==='library'
+  ?`${alias}.status='queued' AND ${alias}.started_at IS NULL AND ${alias}.heartbeat_at IS NULL AND ${alias}.lease_token IS NULL AND ${alias}.result_summary='{}'::jsonb AND ${alias}.progress='{}'::jsonb AND ${alias}.execution_target='local'`
+  :`${alias}.status='waiting' AND ${alias}.result IS NULL${kind==='advice'?'':` AND ${alias}.heartbeat_at IS NULL AND ${alias}.session_id IS NULL`}${kind==='step'?` AND ${alias}.execution_target='local' AND NOT EXISTS(SELECT 1 FROM ai_distill.artifacts queued_artifact WHERE queued_artifact.attempt_id=${alias}.id)`:''}`;
+ return `(${state} AND ${alias}.finished_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.execution_dispatches queued_owner WHERE queued_owner.job_id=${alias}.id AND queued_owner.job_kind='${kind}' AND queued_owner.executor_id<>'${owner}'::uuid AND queued_owner.generation=0))`;
+}
+type PendingScope={kind:'step';id:string;ordinal:number}|{kind:'library';id:string;jobKind:'intake'|'extract'|'redact'}|{kind:'skill'|'advice';id:string};
+/** 仅在用户新派发的原业务事务中替代他机未开始意图。失败整体回滚；不转移旧ID、不重放运行/未知调用。 */
+export async function supersedeForeignPending(db:Pick<PoolClient,'query'>,scope:PendingScope,target:'local'|'server'='local'){
+ if(!localQueueEnabled()||current.getStore()||target!=='local')return;
+ const table={step:'step_attempts',library:'library_jobs',skill:'project_skill_attempts',advice:'revision_advice_attempts'}[scope.kind];
+ const selector=scope.kind==='step'?'j.workflow_id=$1 AND j.ordinal=$2':scope.kind==='library'?'j.revision_id=$1 AND j.kind=$2':scope.kind==='skill'?'j.project_id=$1':'j.workflow_id=$1';
+ const values=scope.kind==='step'?[scope.id,scope.ordinal]:scope.kind==='library'?[scope.id,scope.jobKind]:[scope.id];
+ const terminal=scope.kind==='library'?"status='cancelled',error_code='superseded_before_start',error_message='他机未开始待办已由本机明确新派发替代'":"status='skipped',error='他机未开始待办已由本机明确新派发替代'";
+ await db.query(`UPDATE ai_distill.${table} AS j SET ${terminal},finished_at=now() WHERE ${selector} AND ${foreignUnstartedSql('j',scope.kind,target)}`,values);
+}
 export async function registerLocalJob(db:Pick<PoolClient,'query'>,id:string,kind:JobKind,lane:Lane,route:string){
  return registerLocalJobs(db,[{id,kind,lane,route}]);
 }
@@ -140,5 +161,5 @@ export async function rearmLocalJob(db:Pick<PoolClient,'query'>,id:string){
 
 /** 对已结束但本地未确认的任务只读对账；不重放未知调用。 */
 export async function reconcileFinishedJobs(pool:Pool,q:LocalQueue){
- for(const job of reconciliationBatch(q,'finished')){try{const status=await cloudJobState(pool,q,job);if(status==='succeeded')q.settle(job.id,'committed');else if(status==='failed')q.settle(job.id,'failed');else if(status==='skipped'||status==='cancelled')q.settle(job.id,job.cancel_requested?'cancelled':'stale');}catch(error){logEvent('queue.result_sync_failed',{level:'error',component:'local_execution_queue',...classifyLogError(error)});}}
+ for(const job of reconciliationBatch(q,'finished')){try{const status=await cloudJobState(pool,q,job);if(status==='succeeded')q.settle(job.id,'committed',job.generation);else if(status==='failed')q.settle(job.id,'failed',job.generation);else if(status==='skipped'||status==='cancelled')q.settle(job.id,job.cancel_requested?'cancelled':'stale',job.generation);}catch(error){logEvent('queue.result_sync_failed',{level:'error',component:'local_execution_queue',...classifyLogError(error)});}}
 }

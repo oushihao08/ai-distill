@@ -3,6 +3,7 @@
  * 关键方法与用途：`collectProjectResults()` 组装题目数据；`buildProjectExport()` 生成可下载 XLSX；`withProjectExportLock()` 互斥导出并恢复中断记录。
  * 使用场景：由 `app.ts` 导出接口调用；`workbookSha256()` 标记导出文件完整性。
  */
+import {resolveProjectPath} from '../paths';
 import type {Pool,PoolClient} from 'pg';
 import {readCurrentMaterialDocx,readCurrentRedactionForDocx,preparedDocxFilename} from '../materials/redacted-docx-export';
 import {createHash} from 'node:crypto';
@@ -142,7 +143,7 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
    const legacy=!storagePath.startsWith('附件库/');
    if(legacy&&(typeof row.material_root!=='string'||typeof row.source_key!=='string'||storagePath!==join('outputs',row.source_key,'脱敏材料.docx')))throw new Error('redacted_docx_path_invalid');
    const paths=pathsByQuestionAttempt.get(row.question_attempt_id)??[];
-   paths.push(attachmentAddress(legacy?dirname(row.material_root):attachmentRoot,storagePath));
+   paths.push(attachmentAddress(legacy?dirname(resolveProjectPath(row.material_root)):attachmentRoot,storagePath));
    pathsByQuestionAttempt.set(row.question_attempt_id,paths);
   }
   for(const workflowId of acceptedWorkflowIds){

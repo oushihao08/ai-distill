@@ -1,5 +1,8 @@
 /** 验证失败钩子续跑的状态、检查点和副作用确认边界；仅使用本地 Hono 与 SQL 替身。 */
-import {expect,test} from 'bun:test';
+import {expect,test,beforeAll,afterAll} from 'bun:test';
+const previousQueueMode=process.env.EXECUTION_QUEUE_MODE;
+beforeAll(()=>{process.env.EXECUTION_QUEUE_MODE='legacy';});
+afterAll(()=>{if(previousQueueMode===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previousQueueMode;});
 import type {Pool} from 'pg';
 import {Hono} from 'hono';
 const modulePromise=import('./workflow-hook-routes').catch(()=>undefined);
@@ -45,13 +48,13 @@ test('HTTP续跑校验参数并返回202，不以请求完成冒充模型已完�
  const invalid=await app.request(`/api/attempts/${id}/resume-hooks`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({acknowledge_side_effects:'yes'})});expect(invalid.status).toBe(400);
  const response=await app.request(`/api/attempts/${id}/resume-hooks`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});expect(response.status).toBe(202);expect(await response.json()).toMatchObject({id,reused:false});
 });
-test('异步钩子重试不重派或改写主阶段',async()=>{
- const m=(await modulePromise)!,f=fixture({hooks:[{id,status:'failed',idempotent:true}]});
- expect(await m.retryAsyncHook(f.pool,id,false)).toEqual({id,reused:false});
+test('增强重试同步等待，不重派或改写主阶段',async()=>{
+ const m=(await modulePromise)!,f=fixture({hooks:[{id,status:'failed',idempotent:true,snapshot:{hook:{},payload:{}}}]});
+ expect(await m.retryAsyncHook(f.pool,id,false,async()=>({notes:[],data:{}}))).toEqual({id,reused:false,status:'succeeded'});
  expect(f.calls.some(c=>/UPDATE ai_distill\.(steps|step_attempts)/.test(c.sql))).toBe(false);
- const unknown=fixture({hooks:[{id,status:'needs_review',idempotent:false}]});
+ const unknown=fixture({hooks:[{id,status:'needs_review',idempotent:false,snapshot:{hook:{},payload:{}}}]});
  await expect(m.retryAsyncHook(unknown.pool,id,false)).rejects.toThrow('副作用');
- expect(await m.retryAsyncHook(unknown.pool,id,true)).toMatchObject({id,reused:false});
+ expect(await m.retryAsyncHook(unknown.pool,id,true,async()=>({notes:[],data:{}}))).toMatchObject({id,reused:false});
 });
 test('流程配置局部保存仅合并workflow，不覆盖模型、提示词和作答策略',async()=>{
  const m=(await modulePromise)!,f=fixture(),app=new Hono();m.registerWorkflowHookRoutes(app,f.pool);
@@ -67,4 +70,15 @@ test('成功主检查点后尚未登记后置钩子也能续跑，已成功钩�
  const m=(await modulePromise)!;
  const f=fixture({hooks:[{position:'main',mode:'checkpoint',status:'succeeded',idempotent:false}]});
  expect(await m.resumeHookAttempt(f.pool,id,false)).toEqual({id,reused:false});
+});
+
+test('补执行请求等待脚本完成，不登记后台任务',async()=>{
+ const m=(await modulePromise)!,f=fixture({hooks:[{id,status:'waiting',idempotent:true,snapshot:{hook:{},payload:{}}}]});
+ let release!:()=>void,started!:()=>void,finished=false;
+ const gate=new Promise<void>(resolve=>{release=resolve;}),entered=new Promise<void>(resolve=>{started=resolve;});
+ const request=m.retryAsyncHook(f.pool,id,false,async()=>{started();await gate;return {notes:[],data:{}};}).then(result=>{finished=true;return result;});
+ await entered;expect(finished).toBe(false);
+ expect(f.calls.some(c=>c.sql.includes('execution_dispatches'))).toBe(false);
+ release();expect(await request).toMatchObject({status:'succeeded'});
+ expect(f.calls.some(c=>/UPDATE ai_distill\.(steps|step_attempts)/.test(c.sql))).toBe(false);
 });

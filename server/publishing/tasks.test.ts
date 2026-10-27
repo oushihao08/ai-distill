@@ -8,12 +8,14 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import type {Pool} from 'pg';
 import {enqueuePublication,runNextPublication} from './tasks';
+import {projectPublicationCompletions} from '../lifecycle/publication';
+import {lifecycle} from '../lifecycle';
 import {withLocalQueueRoot,localQueue} from '../execution-queue/runtime';
 const workflow=crypto.randomUUID(),project=crypto.randomUUID();
-function fixture(){
+function fixture(parentName:string|null=null){
  let job:any,step='waiting';const writes:string[]=[];
  const query=async(sql:string,values:any[]=[])=>{
-  if(sql.startsWith('SELECT w.project_id'))return{rows:[{project_id:project,title:'fixture',parent_name:null,phase_name:'一期',source_key:'fixture'}]};
+  if(sql.startsWith('SELECT w.project_id'))return{rows:[{project_id:project,title:'fixture',parent_name:parentName,phase_name:'一期',source_key:'fixture'}]};
   if(sql.startsWith('SELECT id,input,result')&&sql.includes('ordinal=7'))return{rows:[{id:'accepted',input:{source_digest:'a'.repeat(64)},result:{decision:'accepted'}}]};
   if(sql.startsWith('SELECT status,result'))return{rows:[{status:'succeeded',result:{decision:'accepted'}}]};
   if(sql.startsWith('SELECT id,input')&&sql.includes('ordinal=8'))return{rows:job&&['waiting','running'].includes(job.status)?[job]:[]};
@@ -82,4 +84,32 @@ test('isolated HTTP publication returns a queryable task ID while artifacts have
   const result=await response.json() as {id:string};expect(result.id).toBe(f.job.id);expect(f.job.status).toBe('waiting');
   const status=await (await fetch(`${base}/api/attempts/${result.id}?view=status`)).json() as {status:string};expect(status.status).toBe('waiting');
  }finally{server?.stop(true);await rm(root,{recursive:true,force:true});}
+});
+
+
+test('归档worker以项目key选择交付尾段，等待完成才发布完成事件',async()=>{
+ const key='isolated-delivery-test',f=fixture(key),order:string[]=[];
+ const root=await mkdtemp(join(tmpdir(),'publication-project-'));
+ let release!:()=>void,entered!:()=>void;
+ const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r);
+ const remove=projectPublicationCompletions.register(key,async()=>{order.push('project');entered();await gate;order.push('project done');});
+ const unsubscribe=lifecycle.register({id:'test-project-completed',stage:'delivery',event:'committed',project_id:project,run:()=>{order.push('committed');}});
+ try{
+  await enqueuePublication(f.pool,workflow,root,undefined,root);
+  const pending=runNextPublication(f.pool,root,new AbortController().signal,undefined,{publish:async()=>{order.push('archive');return{id:f.job.id,reused:false,completed:true};}});
+  await started;expect(order).toEqual(['archive','project']);release();await pending;
+  expect(order).toEqual(['archive','project','project done','committed']);
+ }finally{remove();unsubscribe();await rm(root,{recursive:true,force:true});}
+});
+test('项目交付尾段失败不会发送完整交付成功事件或重跑归档',async()=>{
+ const key='isolated-failed-project',f=fixture(key),root=await mkdtemp(join(tmpdir(),'publication-project-failed-'));
+ let archives=0,committed=0,failed=0;
+ const remove=projectPublicationCompletions.register(key,async()=>{throw new Error('delivery failed');});
+ const unsubscribers=[lifecycle.register({id:'test-project-success',stage:'delivery',event:'committed',project_id:project,run:()=>{committed++;}}),lifecycle.register({id:'test-project-failed',stage:'delivery',event:'failed',project_id:project,run:()=>{failed++;}})];
+ try{
+  await enqueuePublication(f.pool,workflow,root,undefined,root);
+  await runNextPublication(f.pool,root,new AbortController().signal,undefined,{publish:async()=>{archives++;return{id:f.job.id,reused:false,completed:true};}});
+  expect(archives).toBe(1);expect(committed).toBe(0);expect(failed).toBe(1);
+  expect(f.writes.some(sql=>sql.includes('SET status=$2')||sql.includes("steps SET status='failed'"))).toBe(false);
+ }finally{remove();for(const unsubscribe of unsubscribers)unsubscribe();await rm(root,{recursive:true,force:true});}
 });

@@ -1,7 +1,7 @@
 /**
  * 职责：评分上下文读取：校验题目、答案、rubric和题目冻结来源附件的一致性。
  * 关键方法与用途：`readScoreContext()` 组装匿名评分上下文；`validateAnswerScore()` 检查答案和评分绑定。
- * 使用场景：新评分任务不读取项目 skill；仅旧任务绑定校验兼容项目文件与规则快照。
+ * 使用场景：新评分任务不读取项目skill；普通评分不要求思路或标答，显式校准政策要求标答。旧任务仅兼容其冻结项目文件与规则绑定。
  */
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -20,7 +20,7 @@ export async function readScoreContext(db:PoolClient,workflowId:string,attemptId
   const answer=(await db.query("SELECT a.input,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=5 WHERE a.id=$1 AND a.workflow_id=$2 AND a.ordinal=5 AND a.status='succeeded' AND ((s.status='succeeded' AND ((s.result->>'answer_sha256'=a.result->>'answer_sha256' AND s.result->>'input_digest'=a.result->>'input_digest') OR EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(s.result->'models','[]'::jsonb)) model WHERE model->>'attempt_id'=a.id::text AND model->>'status'='succeeded' AND model->>'answer_sha256'=a.result->>'answer_sha256'))) OR (s.status='failed' AND EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(s.result->'models','[]'::jsonb)) model WHERE model->>'attempt_id'=a.id::text AND model->>'status'='succeeded' AND model->>'answer_sha256'=a.result->>'answer_sha256')))",[attemptId,workflowId])).rows[0];
   const author=(await db.query("SELECT a.id,a.input,a.result FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[workflowId])).rows[0];
   if(!answer||!author)throw new HTTPException(409,{message:'当前题目或作答尚未完成'});
-  const question=authoringQuestion(author.result);const input=answer.input;const result=answer.result;
+  const question=authoringQuestion(author.result,w);const input=answer.input;const result=answer.result;
   const rubric_version=author.result.rubric_version;
   const scoring_policy=author.result.scoring_policy as ScoringPolicy|undefined;
   let rubric:ScoreContext['rubric'];
@@ -29,7 +29,7 @@ export async function readScoreContext(db:PoolClient,workflowId:string,attemptId
    rubric=scoreRubricSnapshot(author.result.rubric,scoring_policy);
   }catch{throw new HTTPException(409,{message:'题目评分规则缺失、无效或冻结不一致'});}
   if(typeof rubric_version!=='string'||!rubric_version.trim())throw new HTTPException(409,{message:'题目缺少有效rubric版本'});
-  if(typeof author.result.answer_approach!=='string'||!author.result.answer_approach.trim()||typeof author.result.reference_answer!=='string'||!author.result.reference_answer.trim())throw new HTTPException(409,{message:'题目缺少作答思路或标准答案，请重新出题'});
+  if(scoring_policy?.reference_answer==='calibration'&&(typeof author.result.reference_answer!=='string'||!author.result.reference_answer.trim()))throw new HTTPException(409,{message:'本次评分使用标答校准，但题目缺少标准答案'});
   const ruleInput=author.input;
   let projectContext:ScoreContext['project_prompt'];
   let projectRules:ScoreContext['project_rules'];
@@ -54,7 +54,7 @@ export async function readScoreContext(db:PoolClient,workflowId:string,attemptId
   const answer_sha256=createHash('sha256').update(result.text).digest('hex');
   if(!materialOriginMatches||(input.presentation&&canonicalJson(question.presentation)!==canonicalJson(input.presentation))||author.id!==input.question_attempt_id||question.question_version!==input.question_version||question.question!==input.question||JSON.stringify(question.attachment_ids)!==JSON.stringify(input.attachments.map((a:any)=>a.id))||!matchesInputDigest(snapshot,input.input_digest)||result.input_digest!==input.input_digest||result.answer_sha256!==answer_sha256)throw new HTTPException(409,{message:'题目、附件或作答版本不一致'});
   const materialMode=currentMaterials?.origin.kind==='library_v1'?currentMaterials.origin.material_mode:'redacted';
-  const context:ScoreContext={...(typeof author.result.content_contract==='string'?{content_contract:author.result.content_contract}:{}),project_name:w.project_name,question_id:w.source_key||w.title,material_mode:materialMode,binding:{question_version:question.question_version,input_digest:input.input_digest,rubric_version,rubric_digest:createHash('sha256').update(scoreRubricBindingText(rubric,scoring_policy)).digest('hex'),answer_attempt_id:attemptId,answer_sha256},question:input.question,materials:input.materials,answer:result.text,...(input.presentation?{answer_presentation:input.presentation}:{}),rubric,...(scoring_policy?{scoring_policy}:{}),answer_approach:author.result.answer_approach,reference_answer:author.result.reference_answer,...(projectContext?{project_prompt:projectContext}:{}),...(projectRules?{project_rules:projectRules}:{})};
+  const context:ScoreContext={...(typeof author.result.content_contract==='string'?{content_contract:author.result.content_contract}:{}),project_name:w.project_name,question_id:w.source_key||w.title,material_mode:materialMode,binding:{question_version:question.question_version,input_digest:input.input_digest,rubric_version,rubric_digest:createHash('sha256').update(scoreRubricBindingText(rubric,scoring_policy)).digest('hex'),answer_attempt_id:attemptId,answer_sha256},question:input.question,materials:input.materials,answer:result.text,...(input.presentation?{answer_presentation:input.presentation}:{}),rubric,...(scoring_policy?{scoring_policy}:{}),answer_approach:typeof author.result.answer_approach==='string'?author.result.answer_approach:'',reference_answer:typeof author.result.reference_answer==='string'?author.result.reference_answer:'',...(projectContext?{project_prompt:projectContext}:{}),...(projectRules?{project_rules:projectRules}:{})};
   return context;
  }catch(error){if(error instanceof AnswerInputError)throw new HTTPException(409,{message:error.message});throw error;}
 }

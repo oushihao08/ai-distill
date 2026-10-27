@@ -1,8 +1,0 @@
-{
-  "id":"A00E","item_id":"real-flow","stage_id":"extract","previous_attempt_id":null,"status":"succeeded",
-  "started_at":"2026-10-18T13:29:42+08:00","finished_at":"2026-10-18T13:30:42+08:00",
-  "inputs":[{"ref":"library revision 6458c800-d17e-4132-a789-9821494546ae","version":"manifest f82e927b5bc2e6d9276e2f379a10f3b0bc8c144be2b5eed3fbbb0273f5b616fb","sha256":"f82e927b5bc2e6d9276e2f379a10f3b0bc8c144be2b5eed3fbbb0273f5b616fb"}],
-  "configuration":{"kind":"extract","target":"local","provider":"mineru-api"},"changes_from_previous":[],"external_ids":{"job_id":"b202e828-596e-4bc8-9089-20a7f2c3dc3f"},
-  "environment":{"target":"local","runtime_version":null},"artifacts":[],
-  "verification":[{"kind":"api_status","result":"succeeded","evidence":".storage/verification/doubao-library-20261018/state.json"},{"kind":"issue_summary","result":"93 issues across 57 pages","evidence":".storage/verification/doubao-library-20261018/state.json"}],"error":null
-}

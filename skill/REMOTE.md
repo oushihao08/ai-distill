@@ -39,7 +39,7 @@ CLI 只接受 localhost API 地址。隧道关闭后，远程 CLI 无法连接�
 uuidgen
 ```
 
-将生成值用于远程入库、PDF 提取和脱敏：
+将生成值用于远程旧工作流入库、提取和人工已脱敏声明处理：
 
 ```sh
 bun run ai-distill remote material run \
@@ -49,7 +49,7 @@ bun run ai-distill remote material run \
   --json
 ```
 
-`run` 会提交任务、等待服务器处理，并在成功后按 SHA-256 校验及同步管理副本到本机 `.storage/`。`intake` 只入库/提取，`redact` 只脱敏，`intake-redact` 执行两者。同步的管理副本不替代数据库中的工作流状态；继续本地出题前仍应检查工作流材料及脱敏步骤是否就绪。
+`run` 会提交任务、等待服务器处理，并在成功后按 SHA-256 校验及同步管理副本到本机 `.storage/`。`intake` 只入库/提取；`redact`／`intake-redact` 仅处理全部附件均声明已脱敏的旧工作流，不执行API模型脱敏。生成化名使用本机共享材料库Agent。同步的管理副本不替代数据库中的工作流状态；继续本地出题前仍应检查工作流材料及脱敏步骤是否就绪。
 
 ## 远程处理作答
 
@@ -84,7 +84,7 @@ bun run ai-distill remote answer status --workflow <题目UUID> --request-key <�
 
 | 任务 | 执行位置 |
 | --- | --- |
-| 入库、PDF 提取、API 脱敏、无步骤钩子的模型作答 | 服务器 API/worker |
+| 入库、PDF 提取、人工声明已脱敏的兼容处理、无步骤钩子的模型作答 | 服务器 API/worker |
 | Agent 出题、独立评分、达标判定、归档/导出 | 现有本机/API 流程；远程 worker 不执行 |
 
 命令完整参数、响应和退出码见 [CLI 使用说明](../cli/README.md)；实现及接口定位见 [CLI 工具地图](MAP.md#cli-工具地图)。远程 CLI 分别由 `cli/remote-materials.ts` 和 `cli/remote-answers.ts` 实现，服务端材料任务见 `server/remote-material-operations.ts`，路由在 `server/app.ts` 装配、由 `server/worker.ts` 调度。历史验收计划不作为当前支持范围证明。

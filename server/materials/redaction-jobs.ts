@@ -3,7 +3,8 @@
  * 关键方法与用途：`enqueueRedaction()`冻结人工声明输入；`runNextRedaction()`保存当前版本清洁附件或终结已删除流程；摘要函数固定历史输入身份。
  * 使用场景：`app.ts` 派发，`worker.ts` 执行；不会改写来源文件。
  */
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
+import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
@@ -56,6 +57,7 @@ export async function enqueueRedaction(pool:Pool,id:string,executionTarget:'loca
   const manualOnly=sources.every(source=>source.redaction_mode==='declared_redacted');
   if(!manualOnly)throw new HTTPException(409,{message:'字段映射脱敏已删除，请使用共享材料库Agent化名或提取原文'});
   const config={provider:'manual',text_layout:REDACTION_PROTOCOL_VERSION};
+  await supersedeForeignPending(db,{kind:'step',id,ordinal:9},executionTarget);
   const active=(await db.query("SELECT execution_target FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=9 AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id])).rows[0];
   if(active&&active.execution_target!==executionTarget)throw new HTTPException(409,{message:'当前脱敏任务由另一执行位置处理'});
   const input={materials:sources};
@@ -127,6 +129,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
  const directory=join(resolve(root),job.workflow_id,job.id);let wrote=false,failurePhase='input_validation';
  try{
   // 历史待执行/恢复任务也必须拒绝；在读取正文或初始化任何模型客户端之前终结。
+  await emitLifecycle(pool,'before', {stage:'redact',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
   if(job.config?.provider!=='manual'||!Array.isArray(job.input?.materials)||job.input.materials.some((item:RedactionSource)=>item.redaction_mode!=='declared_redacted'))throw Object.assign(new Error('字段映射脱敏已删除，请使用共享材料库Agent化名或提取原文'),{reason_code:'field_mapping_removed',retryable:false});
   const timeout=job.input?.execution?.task_timeout_ms??1200000;
   if(!Number.isSafeInteger(timeout)||timeout<1||timeout>2147483647)throw new Error('人工声明处理时限无效');
@@ -177,7 +180,9 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
    await tx.query('COMMIT');forgetLocalRegistrations(tx);
    withLogContext({...taskContext,provider,model},()=>logEvent('state_update.committed',{level:'info',state:'succeeded',material_count:materials.length,page_count:result.page_count,output_bytes:files.reduce((sum,file)=>sum+file.size_bytes,0)}));
   }catch(error){await tx.query('ROLLBACK');await releaseRolledBackRegistrations(tx);throw error;}finally{tx.release();}
+  await emitLifecycle(pool,'committed', {stage:'redact',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
  }catch(error){
+  await emitLifecycle(pool,signal?.aborted?'cancelled':'failed',{stage:'redact',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
   deferLocalPublication(error);
   const classified=classifyLogError(error),effectiveFailurePhase=classified.error_kind==='invalid_response'?'output_validation':failurePhase;
   withLogContext(taskContext,()=>logEvent('attempt.failed',{level:'error',state:'failed',...classified,failure_phase:effectiveFailurePhase}));

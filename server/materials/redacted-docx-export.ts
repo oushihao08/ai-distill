@@ -3,6 +3,7 @@
  * 主要入口：`exportCurrentMaterialDocx()` 按冻结模式归档；`readCurrentMaterialDocx()` 校验指纹后读取；`isLibraryDocxPath()` 供下载与重置共用路径契约。
  * 使用场景：由工作流 API 调用；不派发 worker 任务或写入步骤、尝试、发布与返修状态。
  */
+import {resolveProjectPath} from '../paths';
 import {assertAuthoringMaterialBinding,assertOriginalManifest} from '../publishing/feishu-verification';
 
 import {canonicalJson} from '../../shared/workflow-config';
@@ -365,7 +366,7 @@ export async function readCurrentMaterialDocx(pool:Pool|PoolClient,artifactId:st
  if(typeof row.storage_path==='string'&&row.storage_path.startsWith(libraryPrefix)){if(!isLibraryDocxPath(row.storage_path))throw new HTTPException(404,{message:'当前 DOCX 路径无效'});bytes=await readSafeFile(projectExportsRoot,row.storage_path);}
  else{
   if(typeof row.material_root!=='string'||typeof row.source_key!=='string')throw new HTTPException(404,{message:'当前材料 DOCX 路径无效'});
-  const questions=await realpath(row.material_root),projectRoot=await realpath(dirname(questions)),legacyPath=join('outputs',row.source_key,'脱敏材料.docx');
+  const questions=await realpath(resolveProjectPath(row.material_root)),projectRoot=await realpath(dirname(questions)),legacyPath=join('outputs',row.source_key,'脱敏材料.docx');
   if(row.storage_path!==legacyPath)throw new HTTPException(404,{message:'当前材料 DOCX 路径无效'});
   bytes=await readSafeFile(projectRoot,legacyPath);
  }

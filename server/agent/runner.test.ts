@@ -38,6 +38,13 @@ describe('runAgent',()=>{
   expect(result.result).toEqual({ok:true});
   expect(result.provider).toBe('test-backend');
   expect(result.model).toBe('test-model');
+  expect(result.requested_model).toBe('gpt-6.1-sol');
+  expect(result.returned_model).toBeNull();
+ });
+ it('仅保留适配器明确返回的实际模型，不将旧model字段作为返回模型证据',async()=>{
+  const task={task_type:'smoke',directory:'/tmp/agent-task',prompt:'只返回合成结果',model:'requested-model',reasoning_effort:'low',validate:(value:unknown)=>value};
+  const result=await runAgent(task,async()=>({result:{ok:true},session_id:'session',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:'legacy-model',requested_model:'incorrect-request',returned_model:'actual-model'}));
+  expect(result.model).toBe('legacy-model');expect(result.requested_model).toBe('requested-model');expect(result.returned_model).toBe('actual-model');
  });
  it('allows the module default backend to change without changing task callers',async()=>{
   configureAgentAdapter(async task=>({result:{ok:true},session_id:'api-session',usage:null,diagnostic_path:'api-call',duration_ms:7,provider:'api',model:task.model}));

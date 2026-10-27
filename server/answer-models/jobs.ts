@@ -3,12 +3,13 @@
  * 关键方法与用途：`readAnswerAttachment()` 兼容旧题数据库脱敏附件；`enqueueAnswer()` 冻结并创建尝试；`runNextAnswer()` 领取、调用供应商并保存结果。
  * 使用场景：`app.ts` 接收用户派发，`worker.ts` 持续调用消费入口。
  */
+import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {readWorkflowModelSet} from './workflow-models';
 import {canonicalJson,validateWorkflowConfig} from '../../shared/workflow-config';
-import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,registerAsyncAfterHooks,StageHookError,stageHookAffinitySql,type StageWorkerMode} from '../workflow-hook-jobs';
+import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,prepareCommittedStageHooks,runCommittedStageHooks,StageHookError,stageHookAffinitySql,type StageWorkerMode} from '../lifecycle/scripts';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {runExternalCall} from '../external-call';
@@ -30,11 +31,11 @@ import {readQuestionMaterials} from '../question-materials';
 import {resolveEffectiveProjectSkill} from '../rule-files';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 const activeWorkflow="SELECT w.project_id,p.local_skill_path,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
-async function currentQuestion(db:PoolClient,id:string){
+async function currentQuestion(db:PoolClient,id:string,project:import('../lifecycle/step-types').ProjectIdentity={}){
  try {
   const row=(await db.query("SELECT a.id,a.result,a.input FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[id])).rows[0];
   if(!row)throw new AnswerInputError('当前题目尚未出题成功');
-  return {...authoringQuestion({...row.result,...(row.input?.material_origin?{material_origin:row.input.material_origin}:{})}),...(row.result.deliverables!==undefined?{deliverables:row.result.deliverables}:{}),question_attempt_id:row.id};
+  return {...authoringQuestion({...row.result,...(row.input?.material_origin?{material_origin:row.input.material_origin}:{})},project),...(row.result.deliverables!==undefined?{deliverables:row.result.deliverables}:{}),question_attempt_id:row.id};
  }catch(error){throw error;}
 }
 export async function readAnswerAttachment(_root:string,artifact:{storage_path?:string;sha256:string;content?:string|null}){
@@ -60,10 +61,11 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
    const existing=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND execution_target='server' AND input->>'remote_request_key'=$2 ORDER BY attempt",[id,remoteRequestKey])).rows;
    if(existing.length){await db.query('COMMIT');forgetLocalRegistrations(db);return{ id:existing[0].id,ids:existing.map((row:any)=>row.id),reused:true };}
   }
+  await supersedeForeignPending(db,{kind:'step',id,ordinal:5},executionTarget);
   const activeTarget=(await db.query("SELECT DISTINCT execution_target FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND status IN ('waiting','running')",[id])).rows;
   if(activeTarget.some((row:any)=>row.execution_target!==executionTarget))throw new HTTPException(409,{message:'当前作答任务由另一执行位置处理'});
   if(remoteRequestKey&&activeTarget.length)throw new HTTPException(409,{message:'当前已有作答任务；使用原请求标识查询，或等待完成后用新标识提交'});
-  const question=await currentQuestion(db,id);
+  const question=await currentQuestion(db,id,workflow);
   let sources:any[]=[],materialOrigin:QuestionMaterialOrigin|undefined;
   if(workflow.material_backend==='library_v1'||workflow.has_library_snapshot){
    const source=await readQuestionMaterials(db,id);
@@ -113,9 +115,9 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   await db.query('COMMIT');forgetLocalRegistrations(db);for(const [index,item] of queued.entries()){const model=models[index];withLogContext({component:'answer',workflow_id:id,project_id:workflow.project_id,ordinal:5,attempt_id:item.id,operation:'answer_enqueue',provider:model?.config.provider,model:model?.config.model},()=>logEvent(item.reused?'attempt.reused':'attempt.enqueued',{level:'info',state:'waiting'}));}return hasModelSet?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:false}:{id:queued[0]!.id,reused:false};
  }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);if(error instanceof AnswerInputError)throw new HTTPException(409,{message:error.message});if((error instanceof QwenError||error instanceof DomesticError))throw new HTTPException(400,{message:error.message});throw error;}finally{db.release();}
 }
-async function matchesQuestion(db:PoolClient,job:any){
+async function matchesQuestion(db:PoolClient,job:any,project:import('../lifecycle/step-types').ProjectIdentity={}){
  try{
-  const current=await currentQuestion(db,job.workflow_id);
+  const current=await currentQuestion(db,job.workflow_id,project);
   const originMatches=job.input.material_origin
    ?canonicalJson((await readQuestionMaterials(db,job.workflow_id)).origin)===canonicalJson(job.input.material_origin)
    :true;
@@ -256,7 +258,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         try {
             await before.query('BEGIN');
             const w = (await before.query(activeWorkflow, [job.workflow_id])).rows[0];
-            if (!w || !await matchesQuestion(before, job) || !await matchesModelSet(before, job))
+            if (!w || !await matchesQuestion(before, job,w) || !await matchesModelSet(before, job))
                 throw new AnswerInputError('题目或项目模型配置已变化');
             await before.query('COMMIT');
         }
@@ -269,6 +271,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         }
         const generationPolicy = resolveAnswerGenerationPolicy(job.input.answer_generation_policy);
         const callSettings = resolveAnswerCallSettings(generationPolicy);
+        await emitLifecycle(pool,'before', {stage:'answer',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'answer' as const, binding_digest: createHash('sha256').update(canonicalJson({ input: job.input.input_digest, config: job.config, generation_policy: generationPolicy })).digest('hex'), input: { question: buildAnswerMessage(packaged), materials: packaged.materials }, hooks: job.input.hooks, signal };
         const answerConfig = resolveAnswerConfig(job.config), attemptDirectory = join(resolve(root), job.workflow_id, job.id);
         const result = await executeWithStageHooks({ ...hookContext, runMain: () => runExternalCall({ attempt_id: job.id, operation: 'answer' }, call_id => answer({ config: answerConfig, question: buildAnswerMessage(packaged), materials: packaged.materials, system_prompt: job.input.system_prompt, signal, call_id, timeout_ms: callSettings.timeout_ms, ...(answerConfig.provider === 'codex' ? { directory: attemptDirectory } : {}), ...(callSettings.observe_reasoning ? { observe_reasoning: true } : {}) })), outputForHooks: value => ({ text: value.text }) });
@@ -285,14 +288,15 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         const tx = await pool.connect();
         try {
             await tx.query('BEGIN');
-            // 完成的答案按本次attempt原样入库；不因当前题目、附件、模型或状态变化拒收。
-            await tx.query('SELECT id FROM ai_distill.step_attempts WHERE id=$1 FOR UPDATE', [job.id]);
-            await registerAsyncAfterHooks({ ...hookContext, pool: tx }, { text: result.text });
+            // 原样保存答案内容，但已取消/删除任务不再具有发布权；不重新审查当前题目或模型内容。
+            const owner=await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status NOT IN ('skipped','failed') FOR UPDATE", [job.id]);
+            if(!owner.rows.length)throw new Error('作答任务已取消或移除');
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'model_answer', relative(resolve(root), path), answer_sha256, bytes.length, executionTarget === 'server' ? result.text : null]);
             await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE id=$1", [job.id, JSON.stringify(publication)]);
             job.status = 'succeeded';
             job.result = publication;
             await refreshAnswerStep(tx, job);
+            await prepareCommittedStageHooks({...hookContext,pool:tx}, { text: result.text });
             await tx.query('COMMIT');forgetLocalRegistrations(tx);
             logEvent('attempt.completed', { level: 'info', state: 'succeeded', output_bytes: bytes.length, token_usage: result.usage });
         }
@@ -303,9 +307,12 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         finally {
             tx.release();
         }
+        await runCommittedStageHooks(hookContext, { text: result.text });
+        await emitLifecycle(pool,'committed', {stage:'answer',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal,data:{result:publication}});
     }
     catch (error) {
         deferLocalPublication(error);
+        await emitLifecycle(pool,signal?.aborted?'cancelled':'failed', {stage:'answer',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         let qualifiedTimeout = false;
         try {
             qualifiedTimeout = isQualifiedLongGenerationTimeout(error, resolveAnswerGenerationPolicy(job.input.answer_generation_policy));

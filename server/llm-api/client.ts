@@ -1,6 +1,6 @@
 /**
  * 职责：独立的纯文字大模型 API 客户端，统一消息调用、JSON 输出、完整响应、安全错误、超时和取消。
- * 关键入口：createModelApiClient().complete() / completeJson()；供作答、脱敏等业务调用，不访问工作目录或 Agent。
+ * 关键入口：createModelApiClient().complete() / completeJson()；由作答、API评分及项目钩子复用，不访问工作目录或Agent。
  * 只调用冻结配置指定的供应商；不自动换模型或供应商，不在模块内重试收费请求。
  */
 import {withModelApiSlot} from './concurrency';
@@ -56,6 +56,11 @@ function providerError(response: Response, data: unknown, config:ModelApiConfig)
  const retryable = kind === 'timeout' || kind === 'rate_limit' || (kind === 'provider' && response.status >= 500);
  return new ModelApiError(kind, retryable, response.status, code, requestId(response, data),response.status===408?'provider_http_408':undefined);
 }
+/** JSON完整消息与SSE增量共用纯文字契约；缺省、null或空工具数组不代表工具调用。 */
+function unsupportedMessageReason(message:Record<string,unknown>):string|undefined{
+ if((message.tool_calls!=null&&(!Array.isArray(message.tool_calls)||message.tool_calls.length>0))||message.function_call!=null)return 'unexpected_tool_call';
+ if(message.refusal!=null)return 'refusal_response';
+}
 function parseCompletion(data: unknown, response: Response, config: ModelApiConfig, started_at: string, started: number): ModelApiResult {
  const invalid = (reason_code:string) => new ModelApiError('invalid_response', false, response.status, null, requestId(response, data),reason_code);
  if (!record(data) || data.error !== undefined || !Array.isArray(data.choices)) throw invalid('invalid_response_shape');
@@ -67,8 +72,7 @@ function parseCompletion(data: unknown, response: Response, config: ModelApiConf
  const message = choice.message;
  if(message.role!=='assistant')throw invalid('invalid_message_role');
  if(typeof message.content!=='string'||!message.content.trim())throw invalid('empty_content');
- if((message.tool_calls!=null&&(!Array.isArray(message.tool_calls)||message.tool_calls.length>0))||message.function_call!=null)throw invalid('unexpected_tool_call');
- if(message.refusal!=null)throw invalid('refusal_response');
+ const unsupported=unsupportedMessageReason(message);if(unsupported)throw invalid(unsupported);
  return {
   provider:config.provider,text: message.content, requested_model: config.model, model: typeof data.model === 'string' ? data.model : null,
   request_id: requestId(response, data), completion_id: typeof data.id === 'string' ? data.id : null,
@@ -77,9 +81,8 @@ function parseCompletion(data: unknown, response: Response, config: ModelApiConf
  };
 }
 
-function isRecord(value:unknown):value is Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function hasOpenRouterReasoningText(value:unknown):boolean{
- return Array.isArray(value)&&value.some(item=>isRecord(item)&&item.type==='reasoning.text'&&typeof item.text==='string'&&item.text.trim().length>0);
+ return Array.isArray(value)&&value.some(item=>record(item)&&item.type==='reasoning.text'&&typeof item.text==='string'&&item.text.trim().length>0);
 }
 type AbortableReadResult={done:true;value?:Uint8Array}|{done:false;value:Uint8Array};
 function readWithAbort(reader:ReadableStreamDefaultReader<Uint8Array>,signal:AbortSignal):Promise<AbortableReadResult>{
@@ -120,19 +123,20 @@ async function parseStreamingCompletion(response:Response,config:ModelApiConfig,
   streamEvents++;
   if(payload==='[DONE]'){done=true;streamEnd='done';return;}
   let data:unknown;try{data=JSON.parse(payload);}catch{throw invalid('invalid_stream_json');}
-  if(!isRecord(data)||data.error!==undefined)throw invalid('invalid_stream_event');
+  if(!record(data)||data.error!==undefined)throw invalid('invalid_stream_event');
   if(typeof data.model==='string')model=data.model;
   if(typeof data.id==='string')completion_id=data.id;
-  if(isRecord(data.usage))usage=data.usage;
+  if(record(data.usage))usage=data.usage;
   if(!Array.isArray(data.choices))throw invalid('invalid_stream_choices');
   if(data.choices.length===0)return;
-  if(data.choices.length!==1||!isRecord(data.choices[0]))throw invalid(data.choices.length>1?'unexpected_choice_count':'invalid_choice_shape');
+  if(data.choices.length!==1||!record(data.choices[0]))throw invalid(data.choices.length>1?'unexpected_choice_count':'invalid_choice_shape');
   const choice=data.choices[0];
   if(choice.finish_reason!==undefined&&choice.finish_reason!==null){sawFinish=true;if(choice.finish_reason!=='stop')throw Object.assign(invalid('incomplete_finish_reason'),{finish_reason:['length','content_filter','tool_calls'].includes(String(choice.finish_reason))?choice.finish_reason:'unknown'});finished=true;}
   const delta=choice.delta;
   if(delta===undefined||delta===null)return;
-  if(!isRecord(delta))throw invalid('invalid_stream_delta');
+  if(!record(delta))throw invalid('invalid_stream_delta');
   if(typeof delta.role==='string'&&delta.role!=='assistant')throw invalid('invalid_message_role');
+  const unsupported=unsupportedMessageReason(delta);if(unsupported)throw invalid(unsupported);
   if(typeof delta.content==='string')text+=delta.content;
   if(openRouter&&hasOpenRouterReasoningText(delta.reasoning_details))observe('openrouter_reasoning_details');
   else if(openRouter&&typeof delta.reasoning==='string'&&delta.reasoning.length)observe('openrouter_reasoning');

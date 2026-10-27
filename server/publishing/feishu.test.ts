@@ -16,7 +16,7 @@ let state:any;
 mock.module('../materials/redacted-docx-export',()=>({exportCurrentMaterialDocx:async(...args:any[])=>{state.exportOptions=args[5];return{artifacts:[{artifact_id:'docx'}]};},readCurrentMaterialDocx:async()=>({bytes,filename:'脱敏材料.docx'})}));
 mock.module('./feishu-targets',()=>({readFeishuDeliveryConfig:async()=>({default_target:{base_token:base,table_id:table}}),validateFeishuTarget:(x:any)=>x}));
 mock.module('../logging',()=>({logEvent:()=>{}}));
-mock.module('./feishu-api',()=>({SyncError:class extends Error{constructor(public code:string){super(code);}},ensureFeishuSchema:async()=>{},createFeishuTable:async()=>({table_id:table}),removeEmptyFeishuRows:async()=>{},feishuClient:async()=>({list:async(path:string)=>path.endsWith('/records')?state.rows:[],call:async(path:string,method='GET',body?:any)=>{
+mock.module('./feishu-api',()=>({SyncError:class extends Error{constructor(public code:string){super(code);}},ensureFeishuSchema:async()=>{},createFeishuTable:async()=>({table_id:table}),removeEmptyFeishuRows:async()=>{},feishuClient:async()=>({close:async()=>{state.closed=true;},list:async(path:string)=>path.endsWith('/records')?state.rows:[],call:async(path:string,method='GET',body?:any)=>{
  state.calls.push({path,method,body});if(state.networkError)throw new Error('network');
  if(method==='PUT'){Object.assign(state.fields,body.fields);return{};}
  if(path.includes('upload_all'))return{file_token:'token'};
@@ -35,7 +35,7 @@ function setup(existing=true){
  }};
  return{connect:async()=>db,query:async(sql:string,args:any[])=>sql.startsWith('SELECT w.project_id')?{rows:[{project_id:'project',phase_name:'第六期'}]}:db.query(sql,args)} as any;
 }
-test('新记录写可见题目ID，六字段回读通过才成功',async()=>{const pool=setup(false),r=await syncArchivedWorkflowToFeishu(pool,id,'storage','assets');expect(r.status).toBe('succeeded');expect((r as any).verification.status).toBe('passed');expect(state.fields['题目ID']).toBe(id);expect(state.exportOptions.expectedAuthoringInput).toEqual(state.snapshot.authoring_input);});
+test('新记录写可见题目ID，六字段回读通过才成功',async()=>{const pool=setup(false),r=await syncArchivedWorkflowToFeishu(pool,id,'storage','assets');expect(r.status).toBe('succeeded');expect((r as any).verification.status).toBe('passed');expect(state.fields['题目ID']).toBe(id);expect(state.exportOptions.expectedAuthoringInput).toEqual(state.snapshot.authoring_input);expect(state.closed).toBe(true);});
 test('已有记录补空题目ID后重新核对，不重复创建',async()=>{const pool=setup();delete state.fields['题目ID'];const r=await syncArchivedWorkflowToFeishu(pool,id,'storage','assets');expect(r.status).toBe('succeeded');expect(state.calls.filter((c:any)=>c.method==='POST')).toHaveLength(0);expect(state.calls.some((c:any)=>c.method==='PUT')).toBe(true);});
 test('已有记录正文截断返回具体差异，绝不覆写',async()=>{const pool=setup();state.fields.prompt='';const r:any=await syncArchivedWorkflowToFeishu(pool,id,'storage','assets');expect(r.status).toBe('failed');expect(r.verification.status).toBe('failed');expect(r.verification.differences[0].field).toBe('prompt');expect(state.fields.prompt).toBe('');expect(state.calls.some((c:any)=>c.method==='POST')).toBe(false);});
 test('不同的人工题目ID不被覆盖',async()=>{const pool=setup();state.rows[0].fields['题目ID']='manual';state.fields['题目ID']='manual';const r:any=await syncArchivedWorkflowToFeishu(pool,id,'storage','assets');expect(r.status).toBe('failed');expect(r.verification.fields).toContain('题目ID');expect(state.calls.some((c:any)=>c.method==='PUT')).toBe(false);});

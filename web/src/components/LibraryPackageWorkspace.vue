@@ -45,7 +45,7 @@ const names={intake:'入库',extract:'识别原文',redact:'脱敏'};
  </Row>
  <p v-if="props.processingMode" class="px-12 py-8 text-sm text-muted">本期设置：{{ props.processingMode==='original'?'不脱敏，后续使用提取原文':props.processingMode==='mask'?'历史遮挡模式已退役，请先修改本期设置':'Agent 主导化名脱敏' }}</p>
  <v-alert v-if="templateError" type="error" density="compact">{{ templateError }}</v-alert>
- <v-alert v-if="selectedTemplate?.workflow==='codex_plan'" type="info" density="compact">Agent按整包主体表统一化名、保留法院名称并划分文书。使用数据库中本次保存的模板；单次执行最多10分钟，到限停止并保留进度。</v-alert>
+ <v-alert v-if="selectedTemplate?.workflow==='codex_plan'" type="info" density="compact">Agent按整包主体表统一化名、保留法院名称并划分文书。使用数据库中本次保存的模板；单次执行使用本次冻结预算，到限停止并保留进度。</v-alert>
  <Row v-if="active" x="between" wrap y="center" :gap="12" class="px-16 py-12 bg-primary-soft"><span class="text-sm">{{ names[active.kind] }}任务{{ active.status==='queued'?'排队中':'执行中' }}。</span><v-btn size="small" variant="text" @click="emit('refresh')">刷新状态</v-btn></Row>
  <LibraryFileReader v-if="file&&revision" :key="`${revision.id}-${file.id}`" v-model:mode="fileMode" :file="file" :revision="revision" :redaction-id="redactionSelection"/>
  <Column v-else x="center" y="center" :gap="12" class="p-32 min-h-320"><UiIcon name="file" class="text-muted"/><p class="text-sm text-muted">这个材料包还没有文件，请选择材料文件夹导入。</p></Column>

@@ -3,6 +3,7 @@
  * 关键入口：`runNextLibraryJob()` 领取匹配任务；默认Agent按语义计划整包脱敏，旧字段映射仅用于历史冻结任务收尾。
  * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
+import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {deferLocalPublication,readLibraryFailure,saveLibraryFailure} from '../execution-queue/runtime';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -21,7 +22,6 @@ import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-
 import {executeRedaction} from './redaction-runner';
 import {withTaskSignal} from '../task-signal';
 import {cleanupExtractionArtifacts,readExtractionCheckpoint,writeExtractionCheckpoint} from './extraction-checkpoint';
-import {AGENT_REDACTION_MAX_MS} from '../../shared/redaction-templates';
 
 
 async function sourceBytes(root:string,item:any){
@@ -117,7 +117,7 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
  const restore=enterLogContext(context);const local=new AbortController(),abort=()=>local.abort(stopReason('worker_shutdown'));signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
  const agentPlan=job.config_snapshot?.redaction_template?.workflow==='codex_plan';
  const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:any)=>['pdf','docx'].includes(String(file.original_name??'').split('.').at(-1)?.toLowerCase()??''));
- const deadline=Math.min(new Date(job.deadline_at).getTime(),Date.now()+(agentPlan?AGENT_REDACTION_MAX_MS:externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000));
+ const deadline=agentPlan?new Date(job.deadline_at).getTime():Math.min(new Date(job.deadline_at).getTime(),Date.now()+(externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000));
  const deadlineTimer=setTimeout(()=>local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded')),Math.max(0,deadline-Date.now()));
  if(deadline<=Date.now())local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded'));
  let heartbeatRunning=false,settled=false;
@@ -138,13 +138,17 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
  try{
   logEvent('library_job.started',{level:'info',state:'running',provider:job.executor_kind==='api'?job.config_snapshot.settings?.redaction?.api?.provider:job.executor_kind==='agent'?'codex':undefined,material_count:job.input_snapshot.files?.length??0});
   if(local.signal.aborted)throw local.signal.reason;
+  const lifecycleContext={stage:job.kind==='intake'?'intake':job.kind==='extract'?'extract':'redact',execution_id:job.id,project_id:job.input_snapshot?.project_id,signal:local.signal};
+  await emitLifecycle(pool,'before',lifecycleContext);
   await withTaskSignal(local.signal,async()=>{
    if(job.kind==='intake')await executeIntake(pool,root,job,local.signal);
    else if(job.kind==='extract')await executeExtraction(pool,root,job,local.signal);
    else await executeRedaction(pool,root,job,local.signal);
   });
+  await emitLifecycle(pool,'committed',lifecycleContext);
   logEvent('library_job.completed',{level:'info',state:'succeeded'});
  }catch(error){
+  await emitLifecycle(pool,local.signal.aborted?'cancelled':'failed',{stage:job.kind==='intake'?'intake':job.kind==='extract'?'extract':'redact',execution_id:job.id,project_id:job.input_snapshot?.project_id,signal:local.signal});
   deferLocalPublication(error);
   const classified=classifyLogError(error);
   const reason=local.signal.aborted?local.signal.reason:error;
@@ -156,7 +160,7 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   if(code==='already_succeeded'){logEvent('library_job.completion_confirmed',{level:'info',state:'succeeded'});return;}
   if(!/^[a-z][a-z0-9_]{0,79}$/.test(code))code='library_job_failed';
   const cancelled=code==='user_cancelled'||code==='worker_shutdown';
-  const message=code==='agent_redaction_timeout'?'Agent脱敏达到执行预算（最多10分钟），已停止并保留私有进度':cancelled?'材料任务已取消或 worker 已停止':code==='deadline_exceeded'?'材料任务达到本次执行期限':code==='heartbeat_unavailable'?'材料任务心跳不可用，已停止发布':'材料任务执行失败，请检查处理记录和服务配置';
+  const message=code==='agent_redaction_timeout'?'Agent脱敏达到本次冻结执行预算，已停止并保留私有进度':cancelled?'材料任务已取消或 worker 已停止':code==='deadline_exceeded'?'材料任务达到本次执行期限':code==='heartbeat_unavailable'?'材料任务心跳不可用，已停止发布':'材料任务执行失败，请检查处理记录和服务配置';
   const failure=saveLibraryFailure({lease_token:job.lease_token,code,message,status:cancelled?'cancelled':'failed'});
   const saved=await failLibraryJob(pool,job.id,failure.lease_token,failure.code,failure.message,failure.status);
   if(!saved){logEvent('library_job.terminal_not_written',{level:'error',reason_code:code,state:'unknown'});return;}

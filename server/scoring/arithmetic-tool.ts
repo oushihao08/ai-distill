@@ -1,6 +1,6 @@
 /**
  * 职责：为评分 Agent 提供同版 Rubric 权重及本地算术工具，避免手抄权重和汇总错误。
- * 入口：buildScoreArithmeticFiles() 由评分文件构造器调用；不判业务条目，不回写报告或数据库。
+ * 入口：buildScoreArithmeticFiles()提供权重JSON及复算脚本；评分文件构造器只向Codex提供脚本，API保留权重数据。不判业务条目，不回写报告或数据库。
  */
 import type {ScoreContext} from './validate';
 

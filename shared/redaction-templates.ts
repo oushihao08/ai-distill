@@ -5,7 +5,6 @@ export interface LibraryRedactionTemplate {id:string;name:string;workflow:Redact
 export function defaultLibraryRedactionTemplateId(templates:ReadonlyArray<{id:string;workflow:string}>):string{
  return (templates.find(t=>t.id==='aliases'&&t.workflow==='codex_plan')??templates.find(t=>t.workflow==='codex_plan'))?.id??'';
 }
-export const AGENT_REDACTION_MAX_MS=10*60*1000;
 export const ALIAS_REDACTION_PROMPT = `处理整个材料包，完成垃圾清理、主体化名和独立文书划分，供后续出题、作答、评分和DOCX交付使用。
 
 【基本要求】

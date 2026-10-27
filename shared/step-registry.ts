@@ -20,6 +20,7 @@ export type StepKey = typeof STEP_REGISTRY[number]['key'];
 export const STEP_BY_KEY = Object.fromEntries(STEP_REGISTRY.map(step => [step.key, step])) as Record<StepKey, typeof STEP_REGISTRY[number]>;
 export const STEP_BY_ORDINAL = Object.fromEntries(STEP_REGISTRY.map(step => [step.ordinal, step])) as Record<number, typeof STEP_REGISTRY[number]>;
 
+/** 旧步骤9配置/提示词的兼容默认值；不表示字段映射引擎仍执行。新库Agent模板见redaction-templates.ts。 */
 export const DEFAULT_REDACTION_PROMPT = `你将对一份由OCR扫描得到的法律文书文本做“清理+脱敏”。严格按以下顺序处理，只输出处理后的完整全文，不要任何解释、摘要、前后缀或代码块，不得截断，保持原有换行、表格和缩进。
 
 【总原则】

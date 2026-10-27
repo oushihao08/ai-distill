@@ -3,7 +3,7 @@
  * 关键方法与用途：`enqueueIngestion()`／`enqueueIntake()` 创建或复用入库任务；`runNextIntake()` 领取目录材料并接续 PDF 提取。
  * 使用场景：`app.ts` 派发入库，`worker.ts` 消费持久化队列。
  */
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from './execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from './execution-queue/runtime';
 import type { Pool } from 'pg';
 import { HTTPException } from 'hono/http-exception';
 import { readFile } from 'node:fs/promises';
@@ -58,6 +58,7 @@ export async function enqueueIntake(pool: Pool, workflowId: string, executionTar
    await db.query('UPDATE ai_distill.materials SET deleted_at=now() WHERE workflow_id=$1 AND deleted_at IS NULL',[workflowId]);
    row.source_manifest = actual.files;
   }
+  await supersedeForeignPending(db,{kind:'step',id:workflowId,ordinal:1},executionTarget);
   const active = await db.query("SELECT id,execution_target FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=1 AND status IN ('waiting','running')", [workflowId]);
   if(active.rowCount&&active.rows[0].execution_target!==executionTarget)throw new HTTPException(409,{message:'当前入库任务由另一执行位置处理'});
   if (active.rowCount) { await db.query('COMMIT');forgetLocalRegistrations(db); withLogContext({component:'intake',workflow_id:workflowId,project_id:row.project_id,ordinal:1,attempt_id:active.rows[0].id,operation:'intake'},()=>logEvent('attempt.reused',{level:'info',state:'waiting'})); return { id:active.rows[0].id,reused:true }; }

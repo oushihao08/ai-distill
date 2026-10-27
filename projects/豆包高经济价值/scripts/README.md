@@ -16,4 +16,6 @@ OCR 抽查脚本的若干汇总会写入仓库内 `docs/evidence/`；其中审�
 
 ## 按期次提交飞书
 
+通用表格/字段/记录/附件操作复用[feishu-operations](../../../toolSkills/feishu-operations/SKILL.md)的CLI。归档脚本不直接持有凭证或启动CLI，服务端归档后交付入口负责调用和保存回执。临时管理其他表用通用工具；正式补传仍走原工作流入口，以保留版本核对和业务回执。
+
 飞书同步由服务端[`publishing/feishu.ts`](../../../server/publishing/feishu.ts)在归档提交后执行，不由无凭证的交付子进程调用。达标且归档成功才可提交，按期次写入对应数据表；同步失败可独立补传，不重做题目。项目`delivery.ts`的其他交付物要求保持原约定；其成功不等于飞书提交成功。以归档结果`feishu_sync`中的远端record_id及链接为提交回执。

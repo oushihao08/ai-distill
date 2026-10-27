@@ -29,8 +29,8 @@ test('草稿与非文字输入不因成果文字呈现被放开',()=>{
  expect(()=>buildAnswerInput({...fileTask,content_status:{status:'draft'}},[artifact])).toThrow('草稿');
  expect(()=>buildAnswerInput({...fileTask,task_requirements:{...fileTask.task_requirements,input_mode:'image'}},[artifact])).toThrow('文字');
 });
-test('成果清单格式错误明确拒绝，不能静默丢弃要求',()=>{
- expect(()=>buildAnswerInput({...question,deliverables:[{path:'意见.md',required:true}]},[artifact])).toThrow('成果');
+test('缺省说明不阻断成果呈现，名称与要求仍冻结',()=>{
+ expect(buildAnswerInput({...question,deliverables:[{path:'意见.md',required:true}]},[artifact]).presentation?.deliverables).toEqual([{name:'意见.md',description:'',required:true}]);
 });
 
 test('实际作答消息包含成果且快照对清单变化敏感，JSONB键序不影响新增字段',()=>{
@@ -51,4 +51,19 @@ test('兼容已派发的文字呈现摘要，正文变化仍拒绝',()=>{
  const legacy=JSON.stringify(input);const digest=require('node:crypto').createHash('sha256').update(legacy).digest('hex');
  expect(matchesInputDigest(input,digest)).toBe(true);
  expect(matchesInputDigest({...input,question:'篡改'},digest)).toBe(false);
+});
+
+test('large inputs and long version identifiers are preserved without arbitrary character limits',()=>{
+ const text='文'.repeat(8_000_001),q='题'.repeat(2_000_001);
+ const input=buildAnswerInput({...question,question_version:'v'.repeat(161),question:q},[{...artifact,text}]);
+ expect(input.question).toBe(q);expect(input.materials[0]!.text).toBe(text);
+ const artifacts=Array.from({length:101},(_,i)=>({...artifact,id:`a${i}`}));
+ expect(buildAnswerInput({...question,attachment_ids:artifacts.map(a=>a.id)},artifacts).attachments).toHaveLength(101);
+});
+test('optional presentation preserves incomplete values and duplicate names without exposing private metadata',()=>{
+ const input=buildAnswerInput({...question,deliverables:[{name:'成果',desc:'说明',required:'false',rubric:'秘密'},{path:'成果',description:'长'.repeat(10001)},{path:12,required:'未注明'},'原样任务要求']},[artifact]);
+ expect(input.presentation?.deliverables[0]).toEqual({name:'成果',description:'说明',required:false});
+ expect(input.presentation?.deliverables[1]?.description).toHaveLength(10001);
+ expect(buildAnswerMessage(input)).toContain('原始必交标记');expect(buildAnswerMessage(input)).toContain('原样任务要求');expect(JSON.stringify(input)).not.toContain('秘密');
+ expect(buildAnswerInput({...question,deliverables:[]},[artifact]).presentation).toBeUndefined();
 });

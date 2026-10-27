@@ -8,6 +8,7 @@ export interface ModelApiMessage {role:'system'|'user'|'assistant';content:strin
 export type ModelApiResponseFormat={type:'json_object'}|{type:'json_schema';json_schema:{name:string;strict:true;schema:Record<string,unknown>}};
 export interface ModelApiRequest {config:ModelApiConfig;messages:ModelApiMessage[];response_format?:ModelApiResponseFormat;timeout_ms?:number;queue_timeout_ms?:number;signal?:AbortSignal;call_id?:string;observe_reasoning?:boolean}
 export interface ModelApiResult {
+ /** requested_model为冻结请求配置；model为供应商响应标识，未返回时为null，不据请求推断。 */
  text:string;requested_model:string;model:string|null;provider:ModelApiProvider;
  request_id:string|null;completion_id:string|null;usage:Record<string,unknown>|null;
  started_at:string;finished_at:string;duration_ms:number;queue_wait_ms?:number;

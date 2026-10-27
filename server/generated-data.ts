@@ -3,6 +3,7 @@
  * 关键方法与用途：`clearGeneratedData()` 锁定工作流、隔离文件并清除处理数据，保留工作流身份与来源清单。
  * 使用场景：由 `app.ts` 的重置接口调用；活动任务存在时拒绝竞争性清理。
  */
+import {resolveProjectPath} from './paths';
 import {adviceAvailable} from './revision-advice/jobs';
 import type {Pool} from 'pg';
 import {isLibraryDocxPath} from './materials/redacted-docx-export';
@@ -64,7 +65,7 @@ export async function clearGeneratedData(pool:Pool,storageRoot:string,id:string,
    if(artifact.kind==='redacted_docx'&&artifact.storage_path.startsWith('outputs/')){
     if(typeof workflow.source_key!=='string'||!workflow.source_key||workflow.source_key==='.'||workflow.source_key==='..'||/[\\/\u0000-\u001f]/.test(workflow.source_key)||typeof workflow.material_root!=='string')throw new HTTPException(409,{message:'旧版 DOCX 导出路径无法安全核对，停止重置'});
     const expected=join('outputs',workflow.source_key,'脱敏材料.docx');if(artifact.storage_path!==expected)throw new HTTPException(409,{message:'旧版 DOCX 导出路径无效，停止重置'});
-    let projectRoot:string;try{projectRoot=await realpath(dirname(workflow.material_root));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+    let projectRoot:string;try{projectRoot=await realpath(dirname(resolveProjectPath(workflow.material_root)));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
     const path=resolve(projectRoot,expected),within=relative(projectRoot,path);if(!within||within==='..'||within.startsWith(`..${sep}`)||isAbsolute(within))throw new HTTPException(409,{message:'旧版 DOCX 导出路径越界，停止重置'});
     candidates.push({path,root:projectRoot});continue;
    }

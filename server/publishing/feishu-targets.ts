@@ -48,7 +48,8 @@ export function registerFeishuTargetRoutes(app:Hono,pool:Pool){
   const id=uuid(c.req.param('id'));await requireProject(pool,id);const body=await payload(c);
   if(Object.keys(body).some(k=>k!=='default_target'))throw bad('只允许修改default_target');
   const target=validateFeishuTarget(body.default_target);
-  try{await ensureFeishuSchema(await feishuClient(),target.base_token,target.table_id);}catch(error){remoteError(error);}
+  let api:Awaited<ReturnType<typeof feishuClient>>|undefined;
+  try{api=await feishuClient();await ensureFeishuSchema(api,target.base_token,target.table_id);}catch(error){remoteError(error);}finally{await api?.close();}
   const saved=await pool.query(`INSERT INTO ai_distill.project_step_configs AS existing(project_id,ordinal,config)
    VALUES($1,8,jsonb_build_object('feishu_delivery',$2::jsonb)) ON CONFLICT(project_id,ordinal)
    DO UPDATE SET config=existing.config||EXCLUDED.config,updated_at=now() RETURNING project_id`,[id,JSON.stringify({default_target:target})]);
@@ -60,17 +61,17 @@ export function registerFeishuTargetRoutes(app:Hono,pool:Pool){
   if(Object.keys(body).some(k=>!['base_token','table_name'].includes(k)))throw bad('仅接受base_token和table_name');
   const base=body.base_token===undefined?DEFAULT_BASE:token(body.base_token,'base');
   if(typeof body.table_name!=='string'||!body.table_name.trim()||body.table_name.trim().length>100||/[\x00-\x1f]/.test(body.table_name))throw bad('请填写1至100字的新表名称');
-  const name=body.table_name.trim(),db=await pool.connect();let tx=false;
+  const name=body.table_name.trim(),db=await pool.connect();let tx=false,api:Awaited<ReturnType<typeof feishuClient>>|undefined;
   try{
    await db.query('BEGIN');tx=true;
    const lock=(await db.query("SELECT pg_try_advisory_xact_lock(hashtext('feishu-base-v2'),hashtext($1)) AS locked",[base])).rows[0]?.locked;
    if(!lock)throw new HTTPException(409,{message:'同一多维表格正在创建数据表，请稍后核对'});
-   const api=await feishuClient(),tables=await api.list(`/bitable/v1/apps/${base}/tables`);
+   api=await feishuClient();const tables=await api.list(`/bitable/v1/apps/${base}/tables`);
    if(tables.some(t=>t.name===name))throw new HTTPException(409,{message:'已有同名数据表；追加请使用该表ID，不重复创建'});
    const target=await createFeishuTable(api,base,name);
    await db.query('COMMIT');tx=false;
    return c.json({target,table_name:name,default_changed:false,url:`https://ncn9ze979yuh.feishu.cn/base/${base}?table=${target.table_id}`},201);
   }catch(error){if(tx){await db.query('ROLLBACK');tx=false;}remoteError(error);}
-  finally{db.release();}
+  finally{try{await api?.close();}finally{db.release();}}
  });
 }

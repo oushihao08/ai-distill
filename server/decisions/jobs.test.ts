@@ -2,7 +2,7 @@
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import {test,expect} from 'bun:test';
-import {buildAcceptanceInput,buildEvaluationRecordRefs,readAcceptanceSnapshot} from './jobs';
+import {buildAcceptanceInput,buildEvaluationRecordRefs,readAcceptanceSnapshot,runAcceptance} from './jobs';
 import {scoreRubricBindingText} from '../scoring/validate';
 import type {PoolClient} from 'pg';
 import {createHash} from 'node:crypto';
@@ -41,4 +41,56 @@ test('accepted source fingerprint changes when the actual question or answer cha
  expect(module.acceptanceSourceDigest({...source,config:{minimum_score_by_model:config.minimum_score_by_model,required_models:config.required_models}})).toBe(fingerprint);
  expect(module.acceptanceSourceDigest({...source,question:{...question,result:{...question.result,question:'changed'}}})).not.toBe(fingerprint);
  expect(module.acceptanceSourceDigest({...source,answers:[{...answer,result:{...answer.result,text:'changed'}}]})).not.toBe(fingerprint);
+});
+
+/** SQL替身运行完整判定事务，观察实际写入；不替代PG行锁验收。 */
+function acceptanceFixture(){
+ const state={question:structuredClone(question),answer:structuredClone(answer),score:{...structuredClone(score),id:'s1'},config:structuredClone(config),previous:null as any,step:null as any,archiveStatus:'waiting',writes:[] as string[]};
+ const db={release(){},async query(sql:string,args:any[]=[]):Promise<any>{
+  if(['BEGIN','COMMIT','ROLLBACK'].includes(sql))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT id FROM ai_distill.workflows'))return{rows:[{id:'workflow'}],rowCount:1};
+  if(sql.startsWith('SELECT status FROM ai_distill.steps'))return{rows:[{status:state.archiveStatus}]};
+  if(sql.startsWith('SELECT w.project_id'))return{rows:[{project_id:'project'}]};
+  if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:sql.includes('ordinal=5')?[]:[{config:state.config}]};
+  if(sql.includes('FROM ai_distill.project_answer_models'))return{rows:[],rowCount:0};
+  if(sql.includes('s.status AS step_status'))return{rows:state.previous?[{...state.previous,step_status:state.step?.status,step_result:state.step?.result}]:[]};
+  if(sql.startsWith('SELECT a.id,a.status,a.input,a.result'))return{rows:[state.question]};
+  if(sql.startsWith('SELECT DISTINCT ON'))return{rows:[state.answer]};
+  if(sql.startsWith("SELECT id,input->'context'"))return{rows:[state.score]};
+  if(sql.startsWith('INSERT INTO ai_distill.step_attempts')){state.writes.push(sql);state.previous={id:args[1],status:'succeeded',input:JSON.parse(args[2]),result:JSON.parse(args[3])};return{rowCount:1,rows:[]};}
+  if(sql.startsWith('UPDATE ai_distill.steps SET implemented=true')){state.writes.push(sql);state.step={status:args[2],result:JSON.parse(args[1])};return{rowCount:1,rows:[]};}
+  if(sql.startsWith('UPDATE ')){state.writes.push(sql);return{rowCount:1,rows:[]};}
+  throw new Error(`unexpected acceptance SQL: ${sql}`);
+ }};
+ return{state,pool:{connect:async()=>db,query:db.query} as any};
+}
+
+test('同依据连续达标判断复用最新记录，不写入或使下游失效',async()=>{
+ const f=acceptanceFixture();const first=await runAcceptance(f.pool,'workflow');expect(first.reused).toBe(false);
+ const writes=f.state.writes.length;const second=await runAcceptance(f.pool,'workflow');
+ expect(second).toEqual({...first,reused:true});expect(f.state.writes).toHaveLength(writes);
+});
+
+test.each(['threshold','score','question','answer','rubric','model','algorithm','invalidated','failed_latest','waiting'])('依据或当前结果变化后正常更新：%s',async change=>{
+ const f=acceptanceFixture();await runAcceptance(f.pool,'workflow');const writes=f.state.writes.length;
+ if(change==='threshold')f.state.config.minimum_score_by_model.qwen=7;
+ if(change==='score')f.state.score.result.report.total=6;
+ if(change==='question')f.state.question.result.question_version='qv3';
+ if(change==='answer')f.state.answer.result.text='新答案';
+ if(change==='rubric')f.state.question.result.rubric[0]!.criterion='新判据';
+ if(change==='model')f.state.config={required_models:['other-model'],minimum_score_by_model:{'other-model':8}};
+ if(change==='algorithm'){f.state.previous.result.decision='accepted';f.state.step.result.decision='accepted';}
+ if(change==='invalidated')f.state.step={status:'waiting',result:null};
+ if(change==='failed_latest')f.state.previous.status='failed';
+ if(change==='waiting')f.state.answer.status='running';
+ expect((await runAcceptance(f.pool,'workflow')).reused).toBe(false);expect(f.state.writes.length).toBeGreaterThan(writes);
+ if(change==='waiting'){
+  const currentWrites=f.state.writes.length;
+  expect((await runAcceptance(f.pool,'workflow')).reused).toBe(true);expect(f.state.writes).toHaveLength(currentWrites);
+ }
+});
+
+test('已归档题目继续拒绝重新判定',async()=>{
+ const f=acceptanceFixture();await runAcceptance(f.pool,'workflow');f.state.archiveStatus='succeeded';const writes=f.state.writes.length;
+ await expect(runAcceptance(f.pool,'workflow')).rejects.toThrow('已归档');expect(f.state.writes).toHaveLength(writes);
 });

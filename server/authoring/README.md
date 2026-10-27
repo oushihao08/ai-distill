@@ -10,12 +10,14 @@
 | `executor.ts` | `runAuthoring()`建立本次私有输入，调用Agent并接收JSON，不以Markdown存在或一致性阻断保存；`renderPublicQuestionPackage()`排除思路、标答及Work内部研究信息，`renderPrivateQuestionPackage()`用于完整渲染。 |
 | `receive.ts`、`validate.ts` | 前者的`validateDraft()`只转换下游兼容字段，后者仅保留旧导入路径；不校验内容、数量、附件引用或runner声明。 |
 | `restore.ts` | 显式恢复原任务已完成的本地检查点，不重新调用作者；仅接收最新、未取消且因保存失败的出题尝试。 |
-| `work-contract.ts` | `workQuestionSchema()`提供显式work_legal_v1字段说明；`projectReference()`/`projectRule()`从原始字段派生兼容标答和判据。 |
+| `work-contract.ts` | 旧导入兼容；schema、同源标答/判据和Work交付要求的实现位于`../lifecycle/projects/work-contract.ts`。 |
 | `jobs.test.ts` | 队列冻结、摘要、重出和绑定相关回归；注入数据库/作者替身不证明真实worker或Codex执行。 |
 | `executor.test.ts` | 作者输入、产物渲染与能力边界；替身执行不证明实际工具可用。 |
 | `validate.test.ts` | 原字段保留、默认兼容转换和JSON对象接收边界。 |
 | `restore.test.ts` | 原检查点恢复、重复请求、新任务保护和数据库失败回滚。 |
 | `work-contract.test.ts` | Work内容、同源派生及关联读取回归；其中子进程只证明所执行的本地渲染路径。 |
+
+默认出题计划及判据文本分别复用生命周期模块的`defaultAuthoringPlan()`和`formatCriterionRule()`；Work仅覆盖项目差异。判据文本共用不改变`validateDraft()`保留作者显式criterion/rule的行为，也不添加保存拦截，详见[生命周期说明](../lifecycle/README.md)。
 
 ## 来源与设计输入
 
@@ -48,7 +50,7 @@ Work与豆包等项目共用直接接收策略：保留模型原字段，按现�
 
 消费前读取冻结输入；作者返回后不再复核当前来源、设计及Skill指纹。只核对本次任务仍是当前未取消的最新尝试，避免写入其他任务。普通任务缺少当前出题契约标记需重新派发，不自动兼容执行旧历史反馈任务。五分钟失联的运行尝试终结为失败，不据心跳存在推断外部模型仍在生成。
 
-before/after钩子由`../workflow-hook-*`处理：冻结脚本和绑定，主检查点可用于明确续跑，异步后置动作与主成功同事务登记。无钩子不依赖钩子表；有钩子须具备相应迁移。脚本可信边界、收费调用未知状态及恢复授权以该模块实现为准，不重复执行未知请求。
+before/after钩子由[生命周期模块](../lifecycle/README.md)处理：冻结脚本和绑定，主检查点可用于明确续跑，后置待执行记录与主成功同事务登记，释放事务后同步执行，失败不回滚主结果。无钩子不依赖钩子表；有钩子须具备相应迁移。脚本可信边界、收费调用未知状态及恢复授权以该模块实现为准，不重复执行未知请求。
 
 本说明来自源码静态核对，不证明当前数据库迁移、真实模型、网页或完整业务已运行验收。维护时同步检查调用方、题目版本、作答隔离、评分投影和归档映射；操作授权遵循根AGENTS.md。
 
@@ -71,3 +73,11 @@ before/after钩子由`../workflow-hook-*`处理：冻结脚本和绑定，主检
 普通出题仍不注入历史题包、作答和评分。用户通过独立[返修建议入口](../revision-advice/README.md)生成的同版有效建议是明确例外：派发冻结建议身份、来源摘要和文本，执行时将建议文本拼接到项目步骤提示词；原历史正文不传给作者。建议参与输入规范摘要，保存前不再核对。活动任务保持同一建议快照；新题不继承旧版建议。此功能不自动出题或修改评分标准。
 
 已归档题目由共享派发保护拒绝重新出题；仅显式撤回归档后才允许返修。
+
+## 项目生命周期隔离
+
+Work专属schema、提示片段、题包同源派生、公开/私有投影和版本字段由[lifecycle/projects/work.ts](../lifecycle/projects/work.ts)注册，经`lifecycle/steps.ts`调用。公共executor不判断Work名称/目录/契约来执行业务；普通项目和豆包采用默认策略。`work-contract.ts`保留旧导入兼容，实际契约在`lifecycle/projects/work-contract.ts`。生成阅读稿的子进程调用同一接收/渲染入口，不序列化第二套项目函数。
+
+提示正文、schema、字段投影及版本摘要的迁移回归基线位于生命周期模块；当前接收不执行内容准入或Markdown一致性拦截。
+
+本机明确新派发可在同一事务替代他机尚未开始的同范围待办；运行、结果未知和续作仍受保护，新派发失败则旧意图变更回滚。适用范围、共享状态兼容与验证边界见[执行队列的跨机准入](../execution-queue/README.md#他机未开始待办与本机明确派发)。

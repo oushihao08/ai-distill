@@ -47,6 +47,18 @@ test('batch preserves library snapshot readiness and reports capacity overflow s
  expect(data.results.map((row:any)=>row.status)).toEqual(['queued','capacity_exceeded']);
  expect(data.results[1].attempt_id).toBeUndefined();expect(data.results[1].reason).toContain('未派发');
 });
+test('batch acceptance preserves business decisions and reasons even when execution succeeds or is reused',async()=>{
+ const decisions=['waiting','accepted','repair','quarantine'] as const;
+ const ids:string[]=decisions.map(()=>crypto.randomUUID());
+ const repository={projectExists:async()=>true,selectWorkflows:async()=>ids.map(id=>({id,project_id:'11111111-1111-4111-8111-111111111111'})),readStepStates:async()=>ids.flatMap(workflow_id=>[6,7].map(ordinal=>({workflow_id,ordinal,status:ordinal===6?'succeeded':'waiting',enabled:true,active:false,result:ordinal===6?{models:[{answer_status:'succeeded',score_status:'succeeded',score:9,max_score:20}]}:null})))};
+ const app=setupExecutionRoutes(repository,async workflowId=>({id:crypto.randomUUID(),completed:true,reused:workflowId===ids[0],decision:decisions[ids.indexOf(workflowId)],reasons:workflowId===ids[0]?['minimum_score_missing:model-id']:[]}));
+ const response=await app.request(`/api/projects/${id}/steps/7/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:ids})});
+ expect(response.status).toBe(202);
+ const data=await response.json() as any;
+ expect(data.results.map((row:any)=>row.status)).toEqual(['succeeded','succeeded','succeeded','succeeded']);
+ expect(data.results.map((row:any)=>row.decision)).toEqual([...decisions]);
+ expect(data.results[0]).toMatchObject({reused:true,reasons:['minimum_score_missing:model-id']});
+});
 test('batch author, answer and score never dispatch a currently accepted question',async()=>{
  let calls=0;
  const repository={projectExists:async()=>true,selectWorkflows:async()=>[{id,project_id:id}],readStepStates:async()=>[4,5,6,7].map(ordinal=>({workflow_id:id,ordinal,status:ordinal===7?'succeeded':'waiting',enabled:true,active:false,result:ordinal===7?{decision:'accepted'}:null}))};

@@ -32,11 +32,11 @@
 
 ## 当前性与记录边界
 
-`readAcceptanceSnapshot()`按当前模型集合摘要选各模型最新答案，再选该答案的最新评分；`buildAcceptanceInput()`核对答案SHA及题面、Rubric、输入和答案attempt绑定，；legacy 原文按模型明确报告的总分或合计读取，旧逐项校验失败不再阻断，原始评分记录保持不变。model_report 仍按其显式契约读取。新报告直接使用evaluation_percent，raw_score/full_score仅留存，独立否决不会在本模块自动归零或阻止低分达标。项目若要求否决影响通过，必须明确设计对应政策，不能从字段存在推断。
+`readAcceptanceSnapshot()`按当前模型集合摘要选各模型最新答案，再选该答案的最新评分；`buildAcceptanceInput()`核对答案SHA及题面、Rubric、输入和答案attempt绑定；legacy 原文按模型明确报告的总分或合计读取，旧逐项校验失败不再阻断，原始评分记录保持不变。model_report 仍按其显式契约读取。新报告直接使用evaluation_percent，raw_score/full_score仅留存，独立否决不会在本模块自动归零或阻止低分达标。项目若要求否决影响通过，必须明确设计对应政策，不能从字段存在推断。
 
 主项目/期次身份不改变此计算；模型身份和顺序来自本期模型集合。存在旧完整达标配置时，其required_models须与当前集合逐项一致；没有模型集合时只允许完整历史配置回退。判定不补跑缺失答案/评分。
 
-每次执行创建新的步骤7尝试，刷新当前结果并清空步骤8当前归档状态、使Excel导出失效；不自动重新归档或上传。`evaluation_records`用于追溯各模型答案/评分attempt，来源摘要用于发布再核对；本模块本身不重新提取附件全文或再做专业评分。
+在工作流行锁内读取最新判定。完整来源摘要相同、当前步骤投影有效且本次重新计算的结果一致时，返回原attempt及reused=true，不新增记录、不重置步骤8、不使Excel导出失效；否则创建新步骤7尝试并按原规则更新下游。不自动重新归档或上传。复用保留原before通知语义，不重复发committed或误发failed通知。`evaluation_records`用于追溯各模型答案/评分attempt，来源摘要用于发布再核对；本模块本身不重新提取附件全文或再做专业评分。
 
 `acceptance.test.ts`覆盖边界比较/均分/缺失/无效/否决分离；`config.test.ts`覆盖配置形状；`jobs.test.ts`用注入查询核对快照/绑定/摘要。以上不等于真实数据库及完整归档验收。
 
@@ -54,3 +54,9 @@ legacy 达标直接按模型明确报告的总分/满分与当前项目门槛比
 当期次通过 `future_only:true` 切换后续作答模型时，本题判定使用本题答案冻结的模型集合，由 `answer-models/workflow-models.ts` 统一读取；仍按当前期次达标规则比较，不把旧答案冒充新模型答案。整体失效切换保留原语义。
 
 已归档题目拒绝重新判定，保留已归档版本的达标依据。
+
+生命周期回调由[同步增强层](../lifecycle/README.md)统一注册，事件接入现有执行/保存边界；无注册时保持原流程。
+
+达标计算保留纯配置驱动，不按Work或豆包复制算法。生命周期before/committed/failed支持主项目key订阅；项目回调不能修改已保存的分数/门槛或自动派发其他步骤。身份只用于事件路由，不加入判定依据摘要。
+
+批量判断回执保留 `decision` 和 `reasons`；`status=succeeded` 仅表示判断计算完成，`decision=waiting` 仍需补齐配置或评分，不代表达标。重复判断可返回原结论及 `reused=true`。

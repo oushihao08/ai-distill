@@ -24,6 +24,9 @@ ai-distill/
 │   └── README.md                  # 快速开始、命令参考、状态契约与验证边界
 ├── shared/step-registry.ts        # 唯一稳定步骤身份来源
 ├── server/app.ts                  # 现有API装配
+├── server/lifecycle/             # 项目策略、生命周期通知和Work/豆包交付注册
+├── server/agent/                 # 单次Agent任务和配置公共入口
+├── server/llm-api/               # 纯文字/JSON API、供应商配置和用量
 ├── server/worker.ts               # local/api/materials/server 等持久化任务消费模式
 ├── server/remote-material-routes.ts # 令牌保护的远程材料及作答 API
 └── projects/<项目>/skill/         # 各项目出题规则，非本操作Skill
@@ -98,6 +101,7 @@ flowchart LR
 | monitor show | GET `/api/monitor` | 运行监控快照，不等于供应商生成进度 |
 | 主项目和期次 | GET `/api/project-groups`、GET `/api/project-groups/:id/phases`、PATCH `/api/projects/:id/phase-identity` | 归组、期次导航及显式期次身份维护；期次身份是写接口；不改题目工作流结果 |
 | 全局材料库 | `/api/material-library/*`、`/api/projects/:id/material-candidates`、`loaded-materials`、`material-uses` | 包、不可变版本、提取/脱敏任务、原件预览、期次加载与使用状态；按 `server/material-library/README.md` 导航 |
+| 恢复与复核 | `/api/workflows/:id/authoring-results/:attemptId/restore`、`authoring-direction`、`withdraw-archive`、`hooks`；`/api/hooks/:id/retry`、`/api/attempts/:id/resume-hooks`；材料库`/redactions/:id/revalidate` | 对象ID明确后显式恢复；参数及副作用见[CLI恢复说明](../cli/README.md#显式恢复与交付确认)及当前路由 |
 | 旧材料导入 | `/api/projects/:id/legacy-materials`、`legacy-material-imports` | 预检并将旧入库原件/提取文本同步到全局材料库；来源摘要核验后激活 |
 
 ## CLI 工具地图
@@ -109,12 +113,16 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 | 项目管理 | `project list/show/create/update/delete/sync` | `commands.ts`、`client.ts` | 本机工作台 API；create/update/delete/sync 是写操作，删项目要求精确名称 |
 | 项目设置 | `project settings show/apply` | `commands.ts`、JSON 设置文件 | 本机 API；按 Codex、模型、步骤、作答策略顺序写入，部分成功不会回滚 |
 | 项目题目与状态 | `question list/show`、`workflow status`、`rules list/file` | `commands.ts` | 本机 API；材料正文只允许 `material text --redacted-only` |
+| 队列与手动建议 | `queue show/diagnose/cancel`、`advice show/generate` | `commands.ts`、`queue-diagnostics.ts` | 本机队列状态/取消及显式建议任务；不自动返修 |
+| 飞书交付 | `feishu config/table/sync/sync-batch` | `feishu.ts`、`server/publishing/` | 明确目标的配置、建表与同步；保留逐目标回执，未知结果不自动重发 |
+| 显式恢复 | `workflow design update/authoring restore/archive withdraw/hooks show`、`hook retry`、`attempt resume-hooks`、`library redaction revalidate` | `commands.ts` | 复用现有恢复API；副作用确认须显式传入，不自动重做模型 |
+| 交付状态 | `workflow delivery show` | `commands.ts`、`server/workflow-view.ts` | 只读归档与逐目标安全回执；查询完成与外部交付完成分开 |
 | 模型与运行 | `models catalog/show`、`attempt show/wait`、`monitor show` | `commands.ts`、`client.ts` | 本机 API；默认 wait 只看元信息，`--full` 才读取结果正文 |
 | 工作流步骤 | `step list`、`step dispatch STEP_KEY` | `commands.ts`、`shared/step-registry.ts` | 本机 API；只派发一个可见稳定步骤，不自动推进 |
 | 批次计划 | `batch create/show/skip` | `batches.ts`、`commands.ts` | 本机 JSON 文件；固定范围，不派发任务、不覆盖服务器状态 |
 | 结果与交付 | `result list/show`、`export list/create/download`、`artifact download`、`siriser download` | `commands.ts`、`client.ts` | 本机 API 与显式下载；`publish_export`归档与Siriser五件套ZIP下载、Excel导出分开；Siriser下载仅取当前有效归档，不上传或提交 |
 | 未达标复核 | `export failed`、`export review` | `failed-export.ts` | 读取当前绑定的题目/答案/评分并写入固定 `assets/未达标题目/`，不改数据库状态 |
-| 远程材料 | `remote material start/run/status/sync` | `remote-materials.ts`、`remote-material-routes.ts`、`remote-material-operations.ts` | SSH 隧道 + 固定 token；旧材料工作流服务器入库/提取/API脱敏；sync只取回旧工作流副本，不处理全局库blob |
+| 远程材料 | `remote material start/run/status/sync` | `remote-materials.ts`、`remote-material-routes.ts`、`remote-material-operations.ts` | SSH 隧道 + 固定 token；旧材料工作流服务器入库/提取/人工声明兼容处理；sync只取回旧工作流副本，不处理全局库blob |
 | 远程作答 | `remote answer start/run/status` | `remote-answers.ts`、`remote-material-routes.ts`、`answer-models/jobs.ts` | SSH 隧道 + 固定 token；服务器执行 server-owned 作答 attempt；状态查询不返回答案正文 |
 | 主项目/期次 | `project-group list/phases/rename/archive/restore`、`project phase-update` | `commands.ts`、`server/project-groups.ts` | 查询和维护主项目期次身份；phase-update 有活动任务时拒绝 |
 | 全局材料库 | `library package/revision/job/documents/redaction/file/processing` | `commands.ts`、`server/material-library/` | 包与版本、入库/提取/脱敏任务、正文查看、原件下载及全库处理设置 |
@@ -127,7 +135,8 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 | 步骤/功能 | 本机 CLI/API | 服务器 CLI/API + `WORKER_MODE=server` |
 | --- | --- | --- |
 | 项目查询、状态、设置、题目结果读取 | 支持，通过本机 API | 远程命令不提供这一整套代理；可用隧道打开常规工作台 API |
-| 入库、PDF提取、脱敏 | 本机现有 worker/API 路径 | 支持，材料操作接口提交并由服务器 worker 执行 |
+| 入库、PDF/DOCX提取 | 本机现有 worker/API 路径 | 旧材料操作接口提交并由服务器 worker 执行 |
+| 生成化名／旧声明处理 | 新库Agent化名或成功提取原文 | remote redact只支持全部附件已声明脱敏；不执行API模型脱敏或新库Agent化名 |
 | 模型作答 | 本机 `execution_target=local` 队列 | 支持 `execution_target=server`，请求键用于幂等关联 |
 | Agent/Codex 出题 | 走本机作者执行链 | 不支持；server worker 不领取 Agent 队列 |
 | 独立评分、达标判定 | 走本机/API配置的现有链 | 不支持；服务器 worker 不领取评分或判定队列 |
@@ -149,7 +158,12 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 | 退出码或进程信号 | `cli/index.ts` | 命令信封、CLI README |
 | 步骤就绪/阻断投影 | `server/project-folders.ts`、`workflow-view.ts` | API、Web与可选CLI共用口径 |
 | 新步骤身份 | `shared/step-registry.ts` | 服务端装配、worker、持久化兼容、CLI、Skill步骤卡 |
+| 项目策略或交付注册 | [lifecycle/projects](../server/lifecycle/projects/README.md)、[生命周期](../server/lifecycle/README.md) | 建题/出题/转换/作答/评分与交付调用点；CLI经相同API，不另注册项目规则 |
+| Agent执行或配置 | [server/agent](../server/agent/README.md) | 独立任务、项目/步骤覆盖、请求/返回模型身份；全局配置/测试目前用HTTP |
+| API模型连接或调用 | [server/llm-api](../server/llm-api/README.md) | 作答/API评分/项目钩子复用，CLI不直接调用模型；API目录以HTTP接口为准 |
 | 模型作答/评分/达标逻辑 | `server/answer-models/`、`scoring/`、`decisions/` | 当前绑定、逐模型结果、对应模块README与测试 |
 | 任务执行或恢复问题 | `server/worker.ts`、`worker-pool.ts`及对应业务jobs | 先按workflow/attempt ID查日志，不直接改数据库状态 |
 
 维护时先核对源码与模块README；历史证据只说明当时范围。操作Skill不存当前题目、附件、评分报告或密钥。
+
+飞书通用远端操作见[toolSkills/feishu-operations](../toolSkills/feishu-operations/README.md)：表/字段/记录/视图/附件CLI，不是第二套队列。豆包归档/补传仍由原工作流入口触发，服务端调用此通用CLI。

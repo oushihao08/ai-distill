@@ -20,7 +20,7 @@ CLI 是工作流客户端，不是新的业务执行器：本机命令覆盖项�
 
 先读`GET /api/projects/:id/material-processing`或步骤4配置的`material_processing_mode`：`aliases`默认Agent化名、`original`使用提取原文；`mask`仅历史兼容，新请求禁止。由程序状态选流程，不能用提示词/Skill覆盖。项目材料任务带`project_id`；CLI仅用户要求时使用`library job start --project <期次UUID>`。原文无需脱敏，直接选择成功提取版本；化名选匹配的成功结果后建题，不能把历史遮挡结果冒充化名版本。待脱敏材料可以先加载本期，再打开带期次上下文的材料页处理。旧题按冻结快照继续作答、评分和交付，不按当前期次设置切换正文。
 
-Agent主体表为私有辅助记录；成功标准是程序校验完成并发布`library_redactions`，不是写出计划、消息称完成或临时文件存在。Agent内置本地校验工具只修正本次产物，不调用其他模型；单次最多10分钟，超时停并保留进度，不自动重试。不要在当前聊天手工脱敏后冒称程序验证成功。具体模块与恢复见[材料库](../server/material-library/README.md)。
+Agent主体表为私有辅助记录；成功标准是程序校验完成并发布`library_redactions`，不是写出计划、消息称完成或临时文件存在。Agent内置本地校验工具只修正本次产物，不调用其他模型；单次使用任务冻结执行预算及领取后的deadline，超时停止并保留进度，不自动重试。不要在当前聊天手工脱敏后冒称程序验证成功。具体模块与恢复见[材料库](../server/material-library/README.md)。
 
 ## 材料包与题目身份
 
@@ -54,7 +54,7 @@ Agent主体表为私有辅助记录；成功标准是程序校验完成并发布
 | 重新生成 | 先核对服务端 API 是否支持重做；普通批量接口拒绝已完成步骤时报告能力缺口，不冒充已重做 |
 | 导出未达标题包 | 目前只有本机 CLI 文件导出实现，没有对应 HTTP 导出路由。只有用户明确要求使用命令行时才运行 `export failed`；否则说明该能力缺少 API 入口，不暗中切换 CLI。输出路径和文件格式由 `cli/failed-export.ts` 定义，首次导出时创建目录 |
 | 复核指定低分作答 | 目前只有本机 CLI 文件导出实现，没有对应 HTTP 导出路由。只有用户明确要求使用命令行时才运行 `export review`；否则说明该能力缺少 API 入口。清单保留系统真实判定，低分不等于作答调用失败；输出路径和文件格式由 `cli/failed-export.ts` 定义 |
-| 旧材料工作流远程入库／脱敏 | 用户要求服务器执行旧材料工作流时，用 `remote material start|run`；响应不确定时用同一题目与 request-key 执行 `status`／`sync`。只做入库或只做脱敏可选择 `--mode intake`／`redact` |
+| 旧材料工作流远程入库／脱敏 | 用户要求服务器执行旧材料工作流时，用 `remote material start|run`；响应不确定时用同一题目与 request-key 执行 `status`／`sync`。只做入库或只做脱敏可选择 `--mode intake`／`redact`；后者仅支持全部附件均声明已脱敏，不执行模型脱敏 |
 | 远程服务器作答 | 用户要求服务器执行模型作答时，用 `remote answer start|run`，以 `status` 按同一题目与 request-key 恢复查询；不得通过本机步骤派发冒充服务器执行 |
 
 “全部等待出题的题做到评分”：只在指定项目读取状态，筛出服务端显示出题就绪的题目 ID；固定这组 ID，后续不会把新加入题目或其他题目带入。只对用户明确授权的整个项目操作读取全部题目。示例不是默认范围。
@@ -63,11 +63,11 @@ Agent主体表为私有辅助记录；成功标准是程序校验完成并发布
 
 ### 远程服务器执行
 
-按 [远程 CLI 操作流程](REMOTE.md) 建立隧道并核对服务器前置。远程 CLI 只负责提交、查询和本机文件同步，真正的入库、脱敏及作答仍由服务器 API/worker 执行。执行前确认部署版本、共享数据库、服务器项目来源目录、所需迁移、`WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server`、至少32字符的 `REMOTE_MATERIAL_TOKEN`，以及本机 `.env` 中指向 SSH 本地端口的 `REMOTE_MATERIAL_API_URL` 和同一令牌。服务器部署状态未知时，先只读核对；不能因 CLI 命令存在就断言远程已就绪。
+按 [远程 CLI 操作流程](REMOTE.md) 建立隧道并核对服务器前置。远程 CLI 只负责提交、查询和本机文件同步，真正的旧工作流入库、人工声明处理及作答仍由服务器 API/worker 执行。执行前确认部署版本、共享数据库、服务器项目来源目录、所需迁移、`WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server`、至少32字符的 `REMOTE_MATERIAL_TOKEN`，以及本机 `.env` 中指向 SSH 本地端口的 `REMOTE_MATERIAL_API_URL` 和同一令牌。服务器部署状态未知时，先只读核对；不能因 CLI 命令存在就断言远程已就绪。
 
 材料操作生成 request-key 后必须保存并复用：网络失败或中断时，用同一 `workflow` 和 `request-key` 查状态/同步，不生成新标识重发。`run` 会等待任务并取回本机所需文件；`start` 只提交，`status` 只读服务器任务，`sync` 只处理已成功操作的文件收尾。远程作答同样复用 request-key 恢复状态；`status` 不含答案正文，答案通过常规工作流结果接口查看。作答请求可能为每个模型创建 attempt，必须确认整个作答集合的结果。失败后的显式新尝试使用新 request-key，并在用户授权范围内进行。
 
-远程 worker 仅执行服务器归属的入库、PDF 提取、API 脱敏和无步骤钩子的作答；它不运行 Agent 出题、评分、判定或归档。远程材料的附件取回是本机管理副本；`ready_for_local_authoring` 只在同步非 intake 模式的材料后报告，仍需由工作流状态确认脱敏就绪。实际能力以部署版本和 API 响应为准。
+远程 worker 仅执行服务器归属的入库、PDF 提取、人工声明已脱敏的兼容处理和无步骤钩子的作答；它不运行 Agent 出题、评分、判定或归档。远程材料的附件取回是本机管理副本；`ready_for_local_authoring` 只在同步非 intake 模式的材料后报告，仍需由工作流状态确认脱敏就绪。实际能力以部署版本和 API 响应为准。
 
 ## 执行
 
@@ -81,6 +81,16 @@ Agent主体表为私有辅助记录；成功标准是程序校验完成并发布
 用户要求导出未达标题目时，只按当前第七步 `repair` 判定选择，不把模型调用失败误认为有效未达标评分。固定导出工具通过 API 核对题目版本、rubric、作答哈希、评分绑定和判定后，将出题、逐模型作答、逐模型评分写入 `assets/未达标题目/<项目UUID>/<题目>-<工作流UUID>/<判定尝试UUID>/`；不写 `assets/out/`，不把这些文件带回出题 Agent。重跑同一判定只核对、不覆盖；缺项逐题报告，不猜测旧记录。此本机文件导出没有 HTTP 路由；未获明确命令行要求时，不调用 CLI 并说明接口缺口。
 
 ## 任务关联与恢复
+
+先核对原workflow／attempt ID、当前输入及错误，再选择恢复操作；不因存在恢复接口自动重做。入口地图见[恢复说明](../cli/README.md#显式恢复与交付确认)。
+
+- 出题结果已写检查点但未保存：在授权范围调用`POST /api/workflows/:id/authoring-results/:attemptId/restore`，不重新调用模型；服务端拒绝失效结果时停止覆盖。
+- 已发布Agent脱敏需程序复核：调用材料库`POST /redactions/:id/revalidate`；它追加校验历史，不改原件或旧题快照。返回valid与usable_for_question，不能把HTTP成功当复核通过。
+- 钩子失败：先读`GET /api/workflows/:id/hooks`。新后置增强用`POST /api/hooks/:id/retry`；旧主尝试明确为project_hook_failed才考虑`POST /api/attempts/:id/resume-hooks`。非幂等副作用先核实，acknowledge_side_effects仅在确认可重复执行时显式true；运行或回执未知不自动重放。
+- 修改已归档题目前，按用户返修范围显式调用`POST /api/workflows/:id/withdraw-archive`，保留归档/提交历史和材料占用；设计修改使用authoring-direction接口，不直接改数据库。
+- 归档attempt终态只代表本地归档；豆包仍须读取准确目标的飞书回执及verification，succeeded且核对passed才报告该次同步成功。逐目标回执来自工作流详情，缺失或旧回执保持未知；服务端记录不等于实时查询远端。只补失败同步，不为补传重做模型或归档。
+
+
 
 ### 分批执行
 
@@ -133,7 +143,7 @@ Agent主体表为私有辅助记录；成功标准是程序校验完成并发布
 
 - 查询：返回用户所查内容及必要的不确定项，不附加无关模型评测。
 - 执行：逐题列出已完成步骤、失败/未就绪原因、仍活动的attempt ID及是否到达目标。
-- 评分/达标：在执行结果上补充逐模型得分、满分、百分制、阈值、评分有效性和系统判定；缺失项明确标出。
+- 评分/达标：在执行结果上补充逐模型得分、满分、百分制、阈值、评分有效性和系统判定；缺失项明确标出。普通评分不要求思路或标答，显式calibration评分要求标答；不能据此删除项目交付必需内容。达标返回reused=true表示复用同依据的当前记录，不代表新执行了模型。
 - 下载/导出：报告生成记录、文件路径及实际结果，不以命令成功代替文件已交付。
 
 按用户要求控制详细程度，只披露任务必要内容，不把部分成功汇总成全部完成。

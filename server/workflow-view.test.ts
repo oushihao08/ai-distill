@@ -50,4 +50,16 @@ test('项目状态可复用项目详情已经读取的状态行与出题尝试�
  expect(result[workflowId]?.steps.map(step=>step.ordinal)).toEqual([4,5]);
 });
 
-test('归档投影保留安全飞书核对回执，不暴露整个归档私有结果',()=>{const sql=stepResultProjection('s',true);expect(sql).toContain("ordinal=8");expect(sql).toContain("{feishu_sync,verification}");expect(sql).not.toContain("THEN s.result");});
+test('归档投影保留安全飞书核对回执，不暴露整个归档私有结果',()=>{const sql=stepResultProjection('s',true);expect(sql).toContain("ordinal=8");expect(sql).toContain("{feishu_sync,verification}");expect(sql).not.toMatch(/THEN s\.result(?:\s|$)/);});
+
+// 各目标回执也只投影公开状态；不整份暴露归档或远端请求产物。
+test('轻量及详情交付投影包含各目标安全回执，兼容无旧回执及非对象历史值',()=>{
+ for(const content of [false,true]){
+  const sql=stepResultProjection('s',content).split('WHEN s.ordinal=8')[1]!.split('WHEN s.ordinal=7')[0]!;
+  expect(sql).toContain("jsonb_typeof(s.result->'feishu_deliveries')='object'");
+  expect(sql).toContain("ELSE '{}'::jsonb");
+  for(const key of ['status','verification','reason_code','url','record_id'])expect(sql).toContain(`receipt.value->'${key}'`);
+  expect(sql).not.toMatch(/jsonb_object_agg\(receipt.key,\s*receipt.value\)/);
+  for(const key of ['snapshot','input','attachment_tokens','api_key'])expect(sql).not.toContain(`->'${key}'`);
+ }
+});

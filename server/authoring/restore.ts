@@ -26,7 +26,7 @@ export async function restoreAuthoringResult(pool:Pool,root:string,workflowId:st
   const result=q.completedCall<AuthoringResult>(attemptId,`${job.generation}:authoring_complete`);
   if(!result)throw new HTTPException(409,{message:'没有已完成的作者结果检查点；未重跑模型'});
   const stored={...result.draft,...(row.input.scoring_policy?{scoring_policy:row.input.scoring_policy}:{}),question_id:result.question_id,question_version:result.question_version,rubric_version:result.rubric_version,codex:{author:result.codex},result_recovery:{prior_failure:row.result,prior_error:row.error}};
-  const bytes=Buffer.from(renderPublicQuestionPackage({question:row.input.title,question_id:row.input.question_id,source_files:row.input.source_files??[]},result.draft));
+  const bytes=Buffer.from(renderPublicQuestionPackage({project_name:row.input.project_name,question:row.input.title,question_id:row.input.question_id,source_files:row.input.source_files??[]},result.draft));
   const path=join(resolve(root),workflowId,attemptId,'authored_question.md');await mkdir(join(resolve(root),workflowId,attemptId),{recursive:true,mode:0o700});await writeFile(path,bytes,{mode:0o600});
   await db.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1",[attemptId,JSON.stringify(stored),result.codex.session_id]);
   await db.query("UPDATE ai_distill.steps SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=4",[workflowId,JSON.stringify(stored)]);

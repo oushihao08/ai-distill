@@ -99,3 +99,17 @@ test('评分回读文字成果快照并拒绝清单与当前题目不一致',asy
  expect(ctx.answer_presentation).toEqual(presentation);expect(ctx.question).toBe('题目');
  await expect(readScoreContext(failedAggregateContext({presentation:{...presentation,instructions:'偷偷改变要求'},author_overrides}).db,'workflow','answer')).rejects.toThrow('版本不一致');
 });
+
+test.each([undefined,{contract:'model_report_v1',rules_text:'按判据评分',reference_answer:'none'}])('普通评分不要求未使用的思路或标答：%o',async scoring_policy=>{
+ const rubric=scoring_policy?[{id:'fact',criterion:'依据材料',rule:'按事实评分'}]:undefined;
+ const context=await readScoreContext(failedAggregateContext({scoring_policy,rubric,author_overrides:{answer_approach:undefined,reference_answer:undefined}}).db,'workflow','answer');
+ expect(context.answer).toBe('答案');expect(context.answer_approach).toBe('');expect(context.reference_answer).toBe('');
+});
+
+test('校准评分只要求标答，不要求作答思路',async()=>{
+ const scoring_policy={contract:'model_report_v1',rules_text:'按判据评分',reference_answer:'calibration'};
+ const rubric=[{id:'fact',criterion:'依据材料',rule:'按事实评分'}];
+ await expect(readScoreContext(failedAggregateContext({scoring_policy,rubric,author_overrides:{answer_approach:undefined,reference_answer:' '}}).db,'workflow','answer')).rejects.toThrow('缺少标准答案');
+ const context=await readScoreContext(failedAggregateContext({scoring_policy,rubric,author_overrides:{answer_approach:undefined}}).db,'workflow','answer');
+ expect(context.reference_answer).toBe('依据材料作答');
+});

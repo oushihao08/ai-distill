@@ -3,6 +3,7 @@
  * 关键方法与用途：`scanProjectFolder()`／`scanQuestionFolder()` 扫描只读来源；`registerQuestionFolders()` 登记工作流；`validateStepConfig()` 校验保存设置；`validateStepConfigForExecution()` 校验已保存 Codex 步骤配置而不把模型缓存当执行白名单；`projectStepSummary()` 汇总可派发状态。
  * 使用场景：`app.ts` 提供目录同步与列表接口，入库队列按扫描结果处理材料。
  */
+import {foreignUnstartedSql} from './execution-queue/runtime';
 import {executionAttemptProjection,projectStepExecutions,type ExecutionAttempt} from './execution-queue/status';
 import type {StepExecution} from '../shared/execution-state';
 import {mergeRedactionDefaults,validateRedactionConfig,type RedactionConfig} from './materials/redaction-config';
@@ -11,7 +12,7 @@ import {resolveModelApiConfig,type ModelApiConfig} from './llm-api';
 import {mergeCodexDefaults,validateAgentModel,readProjectAgentSettings} from './agent/config';
 import { readdir, realpath, readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import {resolveRepositoryPath} from './paths';
+import {resolveProjectPath,projectPathReference} from './paths';
 import {MAX_FILE,MAX_BATCH,MAX_FOLDER_BATCH} from './validation';
 import {splitLargePdf} from './materials/pdf-split';
 import { createHash } from 'node:crypto';
@@ -23,14 +24,14 @@ import { SYSTEM_STEP_PROMPTS } from '../shared/step-prompts';
 import {resolveQwenConfig,QwenError} from './answer-models/qwen';
 import {resolveAnswerConfig} from './answer-models/dispatch';
 import {DomesticError} from './answer-models/domestic';
-import {workAnswerCapabilityIssue} from './answer-models/input';
+import {answerCapabilityIssue} from './answer-models/input';
 import {validateAcceptanceConfig,validateAcceptancePolicy} from './decisions/config';
 import { text } from './validation';
 import {validateWorkflowConfig,type WorkflowConfig} from '../shared/workflow-config';
 export interface FolderFile { name: string; path: string; sha256: string; size: number; split_from?: string }
 export interface QuestionFolder { key: string; files: FolderFile[] }
 const supportedDocument=/\.(pdf|docx|txt|md)$/i;
-export interface WorkflowStepState { execution_attempts?:ExecutionAttempt[];executions?:StepExecution[]; ordinal:number;status:string;result?:any;enabled:boolean;active:boolean;has_pdf?:boolean;extraction_status?:string|null;workflow_kind?:'question'|'material_package';source_workflow_id?:string|null;library_source?:boolean }
+export interface WorkflowStepState { project_key?:string; execution_attempts?:ExecutionAttempt[];executions?:StepExecution[]; ordinal:number;status:string;result?:any;enabled:boolean;active:boolean;has_pdf?:boolean;extraction_status?:string|null;workflow_kind?:'question'|'material_package';source_workflow_id?:string|null;library_source?:boolean }
 /** 与达标入口共用可比较分数口径；不复算报告、不将旧validation标记作为额外门槛。 */
 function hasComparableScoreResult(result:any){
  const numeric=(value:unknown)=>typeof value==='number'&&Number.isFinite(value);
@@ -56,7 +57,7 @@ export function workflowStepReadiness(ordinal:number,steps:Map<number,WorkflowSt
  const retryingUnusableScore=ordinal===6&&status==='succeeded'&&!hasComparableScoreResult(current.result);
  if(!['waiting','failed'].includes(status)&&!(status==='succeeded'&&(retryingRepair||retryingUnusableScore)))return{ready:false,reason:current.active?'此步骤已有排队或运行任务':status==='succeeded'?'此步骤已完成':'当前步骤状态不可执行'};
  if(current.active)return{ready:false,reason:'此步骤已有排队或运行任务'};
- if(ordinal===5){const issue=workAnswerCapabilityIssue(steps.get(4)?.result);if(issue)return{ready:false,reason:issue};}
+ if(ordinal===5){const issue=answerCapabilityIssue(steps.get(4)?.result,{project_name:identity?.project_key});if(issue)return{ready:false,reason:issue};}
  if(ordinal===7){
   // 只检查是否有可比较的最终分数，不复算逐项、不重新引入已移除的评分门槛。
   if(!hasComparableScoreResult(steps.get(6)?.result))return{ready:false,reason:'尚未取得明确评分分数，请检查评分记录或草稿'};
@@ -86,16 +87,21 @@ export function splitIntoBatches<T>(values:T[],size:number):T[][]{
 }
 export async function readProjectWorkflowStepRows(pool:Pool,projectId:string,workflowIds?:string[]){
  // 远端数据库逐行传输此状态表成本明显高于单个JSON载荷；外部仍返回相同rows结构。
- const result=await pool.query("SELECT COALESCE(jsonb_agg(to_jsonb(state_rows)),'[]'::jsonb) AS items FROM (SELECT w.id AS workflow_id,w.workflow_kind,w.source_workflow_id,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS library_source,s.ordinal,s.status,s.error,s.started_at,s.finished_at,CASE WHEN s.ordinal=4 THEN jsonb_build_object('content_contract',s.result->'content_contract','content_status',s.result->'content_status','task_requirements',s.result->'task_requirements') WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','aggregate',s.result->'aggregate','reasons',s.result->'reasons') WHEN s.ordinal=6 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','answer_status',m->'answer_status','score_status',m->'score_status','score_contract',m->'score_contract','score',m->'score','max_score',m->'max_score','raw_score',m->'raw_score','full_score',m->'full_score','evaluation_percent',m->'evaluation_percent','veto_triggered',m->'veto_triggered','valid',m->'valid')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx')) AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   (SELECT x.error FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_error,\n   (SELECT x.started_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_started_at,\n   (SELECT x.finished_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_finished_at,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx'))))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active,"+executionAttemptProjection('s')+" AS execution_attempts\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position) state_rows",[projectId,workflowIds??null]);
+ const result=await pool.query("SELECT COALESCE(jsonb_agg(to_jsonb(state_rows)),'[]'::jsonb) AS items FROM (SELECT w.id AS workflow_id,(SELECT COALESCE(p.parent_name,split_part(p.name,' - ',1)) FROM ai_distill.projects p WHERE p.id=w.project_id) AS project_key,w.workflow_kind,w.source_workflow_id,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS library_source,s.ordinal,s.status,s.error,s.started_at,s.finished_at,CASE WHEN s.ordinal=4 THEN jsonb_build_object('content_contract',s.result->'content_contract','content_status',s.result->'content_status','task_requirements',s.result->'task_requirements') WHEN s.ordinal=7 THEN jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','aggregate',s.result->'aggregate','reasons',s.result->'reasons') WHEN s.ordinal=6 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','answer_status',m->'answer_status','score_status',m->'score_status','score_contract',m->'score_contract','score',m->'score','max_score',m->'max_score','raw_score',m->'raw_score','full_score',m->'full_score','evaluation_percent',m->'evaluation_percent','veto_triggered',m->'veto_triggered','valid',m->'valid')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) WHEN s.ordinal=5 THEN jsonb_build_object('models',(SELECT COALESCE(jsonb_agg(jsonb_build_object('model_id',m->'model_id','name',m->'name','status',m->'status','attempt_id',m->'attempt_id')),'[]'::jsonb) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.result->'models')='array' THEN s.result->'models' ELSE '[]'::jsonb END) m)) ELSE NULL END AS result,s.implemented,s.enabled,\n   EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx')) AS has_pdf,\n   (SELECT x.status FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_status,\n   (SELECT x.error FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_error,\n   (SELECT x.started_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_started_at,\n   (SELECT x.finished_at FROM ai_distill.steps x WHERE x.workflow_id=w.id AND x.ordinal=2) AS extraction_finished_at,\n   EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.status IN ('waiting','running') AND NOT ("+foreignUnstartedSql('a','step')+") AND ((s.ordinal=1 AND (a.ordinal=1 OR (a.ordinal=2 AND EXISTS(SELECT 1 FROM ai_distill.materials m WHERE m.workflow_id=w.id AND m.deleted_at IS NULL AND (lower(m.original_name) LIKE '%.pdf' OR lower(m.original_name) LIKE '%.docx'))))) OR (s.ordinal<>1 AND a.ordinal=s.ordinal))) AS active,"+executionAttemptProjection('s')+" AS execution_attempts\n   FROM ai_distill.workflows w JOIN ai_distill.steps s ON s.workflow_id=w.id\n   WHERE w.project_id=$1 AND w.deleted_at IS NULL AND s.ordinal NOT IN (2,3,10) AND ($2::uuid[] IS NULL OR w.id=ANY($2::uuid[])) ORDER BY w.id,s.display_position) state_rows",[projectId,workflowIds??null]);
  const rows:(WorkflowStepState&Record<string,any>)[]=(result.rows[0]?.items??[]).map((row:WorkflowStepState)=>{const {execution_attempts,...state}=row;return {...state,executions:projectStepExecutions(execution_attempts)};});
  return{...result,rows,rowCount:rows.length};
 }
 export async function validateFolder(value: unknown, label = '材料文件夹') {
  const path = text(value, label, 4096);
- try { const actual = await realpath(resolveRepositoryPath(path)); if (!(await stat(actual)).isDirectory()) throw new Error('not directory'); return actual; }
+ try { const actual = await realpath(resolveProjectPath(path)); if (!(await stat(actual)).isDirectory()) throw new Error('not directory'); return actual; }
  catch { throw new HTTPException(400, { message: `${label}不存在或无法读取` }); }
 }
+/** 新项目配置只保存仓库内相对引用；通用目录读取仍返回本机实际路径。 */
+export async function validateProjectFolder(value:unknown,label='材料文件夹'){
+ return projectPathReference(await validateFolder(value,label));
+}
 export async function scanProjectFolder(root: string): Promise<QuestionFolder[]> {
+ root=resolveProjectPath(root);
  try {
   const entries = await readdir(root, { withFileTypes: true });
   if (entries.some(entry => entry.isFile() && supportedDocument.test(entry.name))) throw new HTTPException(400, { message: '请将材料放入每道题目的子文件夹，项目根目录不能直接放文件' });
@@ -107,6 +113,7 @@ export async function scanProjectFolder(root: string): Promise<QuestionFolder[]>
  } catch (error) { if (error instanceof HTTPException) throw error; throw new HTTPException(400, { message: '材料文件夹读取失败，请检查访问权限' }); }
 }
 export async function scanQuestionFolder(root: string, key: string): Promise<QuestionFolder> {
+ root=resolveProjectPath(root);
  const files: FolderFile[] = [];
  let hasSplitPdf=false;
  async function visit(directory: string, prefix = '') {

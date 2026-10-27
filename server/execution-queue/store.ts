@@ -93,7 +93,7 @@ export class LocalQueue {
  finish(id:string,lease:string,state:QueueState,error:string|null=null){return this.db.query('UPDATE jobs SET state=?,error=?,lease=NULL,pid=NULL,updated_at=? WHERE id=? AND lease=?').run(state,error,Date.now(),id,lease).changes===1;}
  cancel(id:string){this.db.query("UPDATE jobs SET cancel_requested=1,cancel_synced=0,state=CASE WHEN state IN ('pending_registration','queued','result_pending_commit') THEN 'cancelled' ELSE state END,updated_at=? WHERE id=? AND state NOT IN ('committed','failed','cancelled','stale')").run(Date.now(),id);}
  resolve(id:string,state:QueueState){this.db.query('UPDATE jobs SET state=?,lease=NULL,pid=NULL,updated_at=? WHERE id=?').run(state,Date.now(),id);}
- settle(id:string,state:QueueState){this.db.query("UPDATE jobs SET state=?,updated_at=? WHERE id=? AND state IN ('needs_review','result_pending_commit')").run(state,Date.now(),id);}
+ settle(id:string,state:QueueState,generation:number){this.db.query("UPDATE jobs SET state=?,updated_at=? WHERE id=? AND state IN ('queued','needs_review','result_pending_commit') AND generation=?").run(state,Date.now(),id,generation);}
  rearm(id:string,generation:number,limit?:number){return this.db.transaction(()=>{
   const row=this.get(id);if(!row)throw new Error('原任务本机记录缺失');
   if(limit!==undefined){const capacity=this.capacity(row.lane,limit),counted=!row.cancel_requested&&(row.state==='queued'||row.state==='pending_registration'&&Boolean(this.db.query('SELECT 1 FROM admissions WHERE job_id=?').get(id)));if(capacity.waiting+(counted?0:1)>limit)throw new QueueCapacityError(row.lane,limit,capacity.waiting,1);}

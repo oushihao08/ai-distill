@@ -1,10 +1,23 @@
 /**
  * 职责：通用任务轮询：控制并发、空闲等待、错误退避和退出信号，不承载业务阶段规则。
- * 关键方法与用途：`runWorkerPool()` 按并发上限轮询并处理停止信号；`createFairQueueHandler()` 轮转探测多个业务队列；`createSharedQueueProbe()` 合并可用性探测并短暂缓存空结果。
+ * 关键方法与用途：`runWorkerPool()` 轮询与停止；`createFairQueueHandler()` 公平轮转；`createSharedQueueProbe()` 合并空探测；`watchWorkerBatchInput()` 将临时批次管道EOF转换为仅停止领取的信号。
  * 使用场景：由 `worker.ts` 注册业务 handler；本模块不决定各业务阶段规则。
  */
 import {classifyLogError,logEvent,withLogContext} from './logging';
 const activeHandlers=new Map<symbol,{component:string;started:number}>();
+/** 临时批次的私有stdin关闭时只请求排空；此signal只供领取循环使用，不能传给在途模型。 */
+export function watchWorkerBatchInput(input:ReadableStream<Uint8Array>){
+  const controller=new AbortController(),reader=input.getReader();let released=false;
+  const finished=(async()=>{
+    try{while(!(await reader.read()).done){/* 仅EOF表示父执行器结束，不接受命令内容。 */}}
+    catch(error){logEvent('worker.batch_control_failed',{level:'error',...classifyLogError(error)});}
+    finally{
+      controller.abort();released=true;reader.releaseLock();
+      logEvent('service.shutdown_requested',{level:'info',reason_code:'batch_input_closed',state:'draining'});
+    }
+  })();
+  return{signal:controller.signal,async close(){if(!released)await reader.cancel();await finished;}};
+}
 export interface WorkerPoolOptions {
   concurrency: number;
   signal: AbortSignal;

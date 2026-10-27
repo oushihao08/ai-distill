@@ -2,10 +2,14 @@
  * 职责：独立评分队列：逐答案冻结匿名评分上下文、执行评分并聚合当前模型集合的结果。
  * 关键方法与用途：`enqueueScore()` 按答案冻结上下文；`runNextScore()` 执行单个模型评分并聚合当前集合；摘要函数去重输入。
  * 使用场景：`app.ts` 派发，`worker.ts` 消费持久化评分队列。
+ * 项目差异：评分协议选择由生命周期项目策略提供，通用队列只冻结和执行所选协议。
  */
+import {runScoringEnhancements as automaticallyJudgeAfterScoring} from '../lifecycle/scoring';
+import {projectStepPolicies,resolveStepProjectKey} from '../lifecycle/steps';
+import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {runExternalCall} from '../external-call';
@@ -17,7 +21,7 @@ import {createHash} from 'node:crypto';
 import {mkdir,writeFile,rm} from 'node:fs/promises';
 import {dirname,join,resolve,relative} from 'node:path';
 import {readScoreContext} from './context';
-import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,registerAsyncAfterHooks,StageHookError,stageHookAffinitySql,type StageWorkerMode} from '../workflow-hook-jobs';
+import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,prepareCommittedStageHooks,runCommittedStageHooks,StageHookError,stageHookAffinitySql,type StageWorkerMode} from '../lifecycle/scripts';
 import {buildAnonymousInput,buildScoreFiles,runIndependentScore,runIndependentApiScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
 import {extractTextScore,extractModelReport,validateScore,type ScoreContext} from './validate';
 import {validateStepConfigForExecution} from '../project-folders';
@@ -62,8 +66,9 @@ export async function enqueueScore(pool:Pool,id:string){
   const needsHooks=!!(config.workflow?.hooks.before.length||config.workflow?.hooks.after.length);
   const skill=needsHooks?await resolveEffectiveProjectSkill(w):undefined;
   const hooks=skill?await freezeStageHooks(dirname(skill.path),config.workflow):undefined;
+  await supersedeForeignPending(db,{kind:'step',id,ordinal:6});
   for(const answerId of answerIds){
-   const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];if(context.content_contract==='work_legal_v1'&&context.scoring_policy?.contract==='model_report_v1')context.candidate_quote_check='literal_v1';buildAnonymousInput(context);
+   const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:context.project_name,content_contract:context.content_contract}),{context});buildAnonymousInput(context);
    const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider,context.scoring_policy?.contract,context.candidate_quote_check),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
@@ -82,7 +87,7 @@ interface ScoreRun {report:unknown;session_id:string;usage:unknown;duration_ms:n
 type Grader=(context:ScoreContext,options:any)=>Promise<ScoreRun>;
 async function stillCurrent(db:PoolClient,job:any){
  const w=(await db.query(workflowSql,[job.workflow_id])).rows[0];if(!w)return false;
- try{const current=await readScoreContext(db,job.workflow_id,job.input.context.binding.answer_attempt_id,!!job.input.context.project_rules,!!job.input.context.project_prompt);if(job.input.context.candidate_quote_check!==undefined){if(current.content_contract!=='work_legal_v1')return false;current.candidate_quote_check=job.input.context.candidate_quote_check;}if(job.input.context.step_prompt!==undefined)current.step_prompt=job.input.context.step_prompt;if(job.input.context.project_name===undefined){delete current.project_name;delete current.question_id;}return scoreContextDigest(current)===job.input.digest;}
+ try{const current=await readScoreContext(db,job.workflow_id,job.input.context.binding.answer_attempt_id,!!job.input.context.project_rules,!!job.input.context.project_prompt);if(job.input.context.candidate_quote_check!==undefined){if(!projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:current.project_name,content_contract:current.content_contract}),{context:current,frozen:job.input.context}))return false;}if(job.input.context.step_prompt!==undefined)current.step_prompt=job.input.context.step_prompt;if(job.input.context.project_name===undefined){delete current.project_name;delete current.question_id;}return scoreContextDigest(current)===job.input.digest;}
  catch(error){if(error instanceof HTTPException&&[404,409].includes(error.status))return false;throw error;}
 }
 /** 只汇总当前成功答案绑定的最新评分；执行成功与validation.valid分开，达标由decisions判断。 */
@@ -130,12 +135,6 @@ async function refreshScoreStep(db: PoolClient, job: any) {
     const status = succeeded ? 'succeeded' : settled ? 'failed' : running ? 'running' : 'waiting';
     await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=$4,finished_at=CASE WHEN $2 IN ('succeeded','failed') THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=6 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)", [job.workflow_id, status, JSON.stringify({ models }), status === 'failed' ? '部分模型评分未通过或执行失败' : null]);
     return status;
-}
-/** 调用方必须先释放评分事务连接；达标判断有自己的事务，失败只记日志。 */
-async function automaticallyJudgeAfterScoring(job:any,status:string,judge:(workflowId:string)=>Promise<unknown>){
- if(!['succeeded','failed'].includes(status))return;
- try{await judge(job.workflow_id);}
- catch(error){logEvent('acceptance.auto_failed',{level:'error',workflow_id:job.workflow_id,...classifyLogError(error)});}
 }
 /**
  * 领取一份答案的评分任务，通过冻结的Codex/API配置评分并校验上下文摘要和报告结构。
@@ -228,6 +227,7 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
         if (executionProvider === 'api' && (!config.api || typeof config.api.model !== 'string'))
             throw new Error('invalid frozen config');
         failurePhase = 'agent_execution';
+        await emitLifecycle(pool,'before', {stage:'scoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'scoring' as const, binding_digest: createHash('sha256').update(canonicalJson({ input: job.input.digest, config: job.config })).digest('hex'), input: { files: buildScoreFiles(buildAnonymousInput({ ...job.input.context, project_name: undefined, question_id: undefined, project_prompt: undefined, project_rules: undefined }), false) }, hooks: job.input.hooks, signal };
         const invocation = await executeWithStageHooks({
             ...hookContext,
@@ -291,7 +291,6 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
             await tx.query('BEGIN');
             if (!await stillCurrent(tx, job) || !(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE", [job.id])).rowCount)
                 throw new Error('obsolete');
-            await registerAsyncAfterHooks({ ...hookContext, pool: tx }, { raw_text: invocation.raw_text ?? '', report: invocation.report });
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes) VALUES($1,$2,$3,$4,$5,$6,$7)', [crypto.randomUUID(), job.workflow_id, job.id, 'score_report', relative(resolve(root), path), createHash('sha256').update(bytes).digest('hex'), bytes.length]);
             const succeeded = isModelReport ? textReturned || validation.valid : validation.valid;
             const status = succeeded ? 'succeeded' : 'failed', error = succeeded ? null : isModelReport ? '评分结果缺失，详见报告记录' : '评分未返回可用最终总分，请重新评分；原文已保留';
@@ -299,6 +298,7 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
             job.status = status;
             job.result = publication;
             scoreStepStatus = await refreshScoreStep(tx, job);
+            await prepareCommittedStageHooks({...hookContext,pool:tx}, { raw_text: invocation.raw_text ?? '', report: invocation.report });
             await tx.query('COMMIT');forgetLocalRegistrations(tx);
             logEvent('attempt.completed', { level: validation.valid ? 'info' : 'error', state: status, output_bytes: bytes.length, token_usage: invocation.usage, ...(!validation.valid ? { failure_phase: 'result_validation' } : {}) });
         }
@@ -309,10 +309,13 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
         finally {
             tx.release();
         }
+        await runCommittedStageHooks(hookContext, { raw_text: invocation.raw_text ?? '', report: invocation.report });
+        await emitLifecycle(pool,job.status==='succeeded'?'committed':'failed', {stage:'scoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal,data:{result:publication}});
         await automaticallyJudgeAfterScoring(job, scoreStepStatus, judgeAcceptance);
     }
     catch (error) {
         deferLocalPublication(error);
+        await emitLifecycle(pool,signal?.aborted?'cancelled':'failed', {stage:'scoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         logEvent('attempt.failed', { level: 'error', state: 'failed', ...classifyLogError(error), failure_phase: failurePhase });
         const failure = saveStepFailure(error instanceof RecordedStepFailure ? error.failure : { status: 'failed', message: '评分或钩子执行失败，或版本已失效，可检查记录后重试', result: error instanceof StageHookError ? { error_code: 'project_hook_failed' } : { failure_phase: failurePhase, ...classifyLogError(error) } });
         if (wrote)

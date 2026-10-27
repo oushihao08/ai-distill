@@ -85,7 +85,7 @@ export function registerExecutionQueueRoutes(app:Hono,pool:Pool,root:string){
    await db.query("UPDATE ai_distill.step_attempts SET status='failed',result=COALESCE(result,'{}'::jsonb)||jsonb_build_object('error',$2::jsonb,'failure_reconciled',true),error=$3,finished_at=now() WHERE id=$1 AND status='running'",[id,JSON.stringify(error),message]);
    const updated=await db.query("UPDATE ai_distill.steps SET status='failed',result=COALESCE(result,'{}'::jsonb)||jsonb_build_object('error',$3::jsonb,'failure_reconciled',true),error=$4,finished_at=now() WHERE workflow_id=$1 AND ordinal=$2 AND status='running'",[attempt.workflow_id,attempt.ordinal,JSON.stringify(error),message]);
    if(updated.rowCount!==1)throw new HTTPException(409,{message:'步骤状态并发变化，事务已回滚'});
-   await db.query('COMMIT');forgetLocalRegistrations(db);q.settle(id,'failed');
+   await db.query('COMMIT');forgetLocalRegistrations(db);q.settle(id,'failed',job.generation);
    return c.json({id,state:'failed',reconciled:true,evidence_event_id:eventId});
   }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
  });

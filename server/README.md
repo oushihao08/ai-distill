@@ -1,6 +1,6 @@
 # 服务端与 worker
 
-Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务，独立 worker 消费队列。`app.ts` 负责装配接口，业务模块负责输入冻结、执行和结果提交；请求等待时间不决定后台任务生命周期。
+Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务意图、执行归属和结果；local模式由每机SQLite持久化排队、独立worker消费。`app.ts` 负责装配接口，业务模块负责输入冻结、执行和结果提交；请求等待时间不决定后台任务生命周期。
 
 材料库版本上传的HTTP限制与200MiB整包业务上限对齐，另留1MiB封装开销；其他接口仍保持100MiB加封装开销，单文件限制由validation.ts校验。
 
@@ -14,12 +14,12 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | [authoring/](authoring/README.md) | 出题队列、作者执行、内容契约及结果校验 |
 | [answer-models/](answer-models/README.md) | 模型目录/项目集合、作答输入隔离、逐模型队列和结果 |
 | [scoring/](scoring/README.md) | 同版匿名评分输入、Codex/API执行、报告解析及版本校验 |
-| [decisions/](decisions/README.md) | 按项目配置解释评分指标并保存达标依据 |
+| [decisions/](decisions/README.md) | 按项目配置解释评分指标，同依据及当前结果复用原判定，变化时更新达标依据 |
 | [document-generation/](document-generation/README.md) | 各项目共用DOCX与XLSX字节生成、表格显示布局，不承担项目交付资格 |
 | [publishing/](publishing/README.md) | 持久派发第八步、复核达标、调用各项目交付、产物齐全后记录归档/撤回及下载五件套 |
 | [reporting/](reporting/README.md) | 单题/项目 Excel、版本一致性、费用与统计投影 |
 | [agent/](agent/README.md)、[codex/](codex/README.md) | 本地 Agent 任务契约及底层 Codex CLI/配置；作者和盲作答/评分使用不同隔离策略 |
-| [llm-api/](llm-api/README.md) | API供应商配置、凭证引用、消息/JSON传输、完整响应和本机请求槽位 |
+| [llm-api/](llm-api/README.md) | API配置、凭证、JSON/SSE共用的消息字段拒绝规则及本机请求槽位；model返回值未知时为null |
 | [skill-generation/](skill-generation/README.md) | 项目规则生成候选 Skill、来源校验与采用 |
 | [monitoring/](monitoring/README.md) | 本机资源、worker、活动尝试和安全队列状态 |
 
@@ -29,11 +29,11 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | --- | --- |
 | `index.ts` | API进程入口；创建pool/app、配置HOST/PORT，可选提供web/dist，退出时关闭资源 |
 | `app.ts` | `createApp()`：请求/错误/日志中间件与项目、配置、文件和模块路由装配；题目附件全文接口按共享题快照读取冻结的原文或脱敏正文 |
-| `paths.ts` | `repositoryRoot`、`resolveRepositoryPath()`、`storageDirectory()`：路径相对仓库解析，绝对路径保持 |
+| `paths.ts` | `repositoryRoot`、存储路径，以及项目目录的 `resolveProjectPath()` / `projectPathReference()`：项目配置保存仓库相对引用，运行时解析本机目录；存储路径保持原语义 |
 | `db.ts` | `createPool()`：启用TLS证书验证及可选channel binding；连接/查询安全日志，不输出SQL正文或参数。`readStatusRows()`供取消轮询与worker统计复用有界只读事务，失败连接销毁 |
 | `migrate.ts` | 人工迁移入口：互斥事务内按完整文件名执行所有未登记SQL；API健康检查不执行迁移 |
 | `concurrency.ts` | `readConcurrencySettings()` / `saveWorkerConcurrencySettings()` 管理本机持久并发；`AgentConcurrencyGate` 协调同一STORAGE_DIR下的Agent槽位 |
-| `worker.ts` | 进程入口：按模式、执行端和任务provider注册材料/API/Agent及钩子消费者，传播停止信号 |
+| `worker.ts` | 进程入口：按模式、执行端和任务provider装配材料/API/Agent/交付；local队列兼容历史hook任务。限定临时worker可用 `WORKER_BATCH_STDIN=1` 接受自有父执行器的管道EOF，先停领再等待在途完成；常驻worker默认不启用 |
 | `worker-pool.ts` | `runWorkerPool()` 控制循环并发、空闲/失败退避；`createFairQueueHandler()` 公平轮转业务队列并在轮转间检查停止；`createWorkerShutdown()` 一次性广播停止、记录请求及10秒未完成诊断，不强杀进程 |
 | `task-signal.ts` | `watchTaskCancellation()` 合并查询持久任务状态并取消失效执行；状态SQL服务端限时2秒，BEGIN/SET/SELECT/COMMIT及回滚逐次驱动限时3秒，读取失败不误取消模型；`withTaskSignal()` 传递调用链信号 |
 | `attempt-heartbeat.ts` | 出题/作答/评分共用10秒心跳；防止重叠写入，去重失败并记录恢复；调用方在finally停止，不改变任务状态或重试模型 |
@@ -43,7 +43,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `project-groups.ts` | `resolveProjectGroup()` / `registerProjectGroupRoutes()`：稳定主项目、期次导航、归档恢复；`updatePhaseIdentity()` 修改身份前后比较业务摘要 |
 | `project-folders.ts` | 旧目录扫描/登记；`workflowStepReadiness()` 共用前置条件；`projectStepSummary()` 汇总；阶段配置校验和批量分块 |
 | `material-package-questions.ts` | 旧项目内材料包兼容：列成功脱敏版本并复制私有题目快照；不等同于全局材料库包 |
-| `question-materials.ts` | `readQuestionMaterials()`：校验共享材料题冻结的原文/脱敏来源，或读取旧题成功脱敏；新库缺快照不回退旧ordinal9 |
+| `question-materials.ts` | `readQuestionMaterials()`：校验共享材料题冻结的原文/脱敏来源；数据库先读身份/摘要元数据，优先复用 `STORAGE_DIR` 下本题同摘要文件，缺失/损坏/越界时仅回读缺少的正文；保留完整来源及内容核验。有限事件 `material.snapshot.read` 记录命中方式与回读正文/索引的UTF-8字节数（不含元数据和协议开销）。可选第三参数指定隔离存储根；旧题脱敏读取不变，新库缺快照不回退旧ordinal9 |
 | `intake.ts` | `receiveMaterials()`：旧上传/目录接收、原件及指纹、材料修改后下游失效；库级上传另由material-library管理 |
 | `intake-jobs.ts` | `enqueueIngestion()` / `enqueueIntake()` 与 `runNextIntake()`：持久目录接收及接续提取，按执行端领取 |
 | `system-step-prompts.ts` | 当前出题/作答/评分默认提示词与历史脱敏提示词兼容读取；出题专用model/effort独立保存，新期步骤4显式复制，既有期次与其他模型配置不回写 |
@@ -53,12 +53,13 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `step-dispatch.ts` | `dispatchWorkflowStep()`：稳定ordinal映射到现有业务入口，本身不做队列或达标判断 |
 | `workflow-execution-routes.ts` | `registerWorkflowExecutionRoutes()`：单题/批量派发、有限等待、attempt视图；逐题返回资格和失败原因 |
 | `attempts.ts` | `waitForAttempt()` / `waitDuration()`：只读有限等待；`cancelWaitingScore()` 取消未领取评分；`cancelStoppedExecutorAttempt()` 在用户确认原机停止后显式终止未知旧尝试，不自动重跑 |
-| `workflow-view.ts` | 轻量列表、按需详情及安全尝试摘要投影；当前模型结果按attempt引用，不按历史时间猜测 |
+| `workflow-view.ts` | 轻量列表、按需详情及安全尝试摘要投影；当前模型结果按attempt引用，不按历史时间猜测；归档投影含最近与逐目标飞书安全回执，供[CLI交付查询](../cli/README.md#显式恢复与交付确认)使用 |
 | `generated-data.ts` | `clearGeneratedData()`：无活动任务时重置旧工作流生成数据和管理文件；先隔离文件，数据库失败恢复，不修改用户来源目录 |
 | `workflow-hooks.ts` | 冻结可信项目脚本和声明依赖，在私有临时目录运行或请求受控API复核，只收集附加结果 |
-| `workflow-hook-jobs.ts` | 钩子冻结/同步执行、主检查点、异步登记和中断恢复；无钩子不查询可选新表 |
-| `workflow-hook-worker.ts` | local/all异步附加任务消费；不改主阶段成绩，未知非幂等副作用转待核 |
-| `workflow-hook-routes.ts` | 受限钩子记录读取、原尝试续跑与异步重试；未知主调用不自动重新执行 |
+| `lifecycle/` | [同步可插拔增强层](lifecycle/README.md)：各步骤事件注册、顺序回调、按项目key分派；项目专属注册位于lifecycle/projects，公共步骤不写项目分支；兼容旧脚本 |
+| `workflow-hook-jobs.ts` | 旧导入路径兼容，统一转到 lifecycle/scripts |
+| `workflow-hook-worker.ts` | 历史记录有效性SQL与旧消费者；本机队列仍可按明确ID消费历史hook，主worker不再新增独立旧hook轮询池 |
+| `workflow-hook-routes.ts` | 受限钩子记录读取、旧原尝试续跑与同步增强补执行；未知主调用不自动重新执行 |
 | `remote-material-routes.ts` | 显式server执行端和token保护的旧材料组合操作/远程作答/文件取回入口 |
 | `remote-material-operations.ts` | 持久编排旧工作流入库/提取/人工已脱敏声明，固定request key恢复；不同于library_jobs |
 
@@ -87,9 +88,9 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 | `task-signal.test.ts` | 持久任务取消到AbortSignal的传递和轮询故障隔离 |
 | `attempt-heartbeat.test.ts` | 以定时器、数据库及日志替身核对间隔、无重叠、失败/恢复和停止，不连接真实数据库 |
 | `rule-loading.test.ts` | 旧编号规则入口明确停用，不重建历史步骤 |
-| `workflow-hook-jobs.test.ts` | 同步/异步钩子检查点、恢复和主结果不重复执行 |
-| `workflow-hook-routes.test.ts` | 钩子续跑与异步重试路由的输入、状态及副作用边界 |
-| `workflow-hook-worker.test.ts` | worker钩子lane归属、异步结果隔离及停机恢复 |
+| `workflow-hook-jobs.test.ts` | 同步增强/主调用检查点、历史声明兼容、恢复和主结果不重复执行 |
+| `workflow-hook-routes.test.ts` | 旧主尝试续跑与同步单增强补执行的输入、状态及副作用边界 |
+| `workflow-hook-worker.test.ts` | 历史hook消费者归属、独立结果及停机恢复 |
 | `workflow-hooks.test.ts` | 钩子冻结输入、环境白名单、进程取消和声明副作用校验 |
 | `worker-pool.test.ts` | worker并发、资源暂停/恢复、停机与公平队列轮转 |
 
@@ -107,16 +108,16 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务状态和持久化任务
 
 模式及执行端的实际注册以 `worker.ts` 为准：
 
-- `all` 是未设置时的本机兼容模式，注册本机材料、API、Agent及钩子队列。
-- `local` 注册本机材料、Agent和钩子，也注册受本地钩子归属条件筛选的API队列；不能仅凭模式名称认定所有API任务都可领取。
+- `all` 是未设置时的兼容模式，处理本机材料、API、Agent及交付。local队列模式还保留历史hook路由；新生命周期脚本在原任务中同步等待。
+- `local` 处理本机材料、Agent、交付及带本地脚本的API任务；local队列还可消费历史hook记录。不能仅凭模式名称认定所有API任务都可领取。
 - `api` 不运行Agent或本地脚本；按执行端处理可领取的API任务，server目标还可处理服务器材料/组合操作。
 - `materials` 必须是server目标，处理服务器材料、人工声明及旧组合操作；不作答或评分。
 - `server` 必须是server目标，处理服务器材料/人工声明和无本地钩子的API作答，不运行Agent和评分。
-- 可选 `WORKER_WORKFLOW_IDS` 接收逗号分隔的工作流 UUID；设置后，worker 只领取这些工作流的出题、作答和评分任务，并跳过材料、脱敏、项目 Skill 与异步钩子队列。未设置时保持上述默认行为。该范围只限制领取和中断恢复，不改变已冻结任务输入。
+- 可选 `WORKER_WORKFLOW_IDS` 接收逗号分隔的工作流 UUID；设置后，仅处理范围内工作流的出题、作答、评分及交付；local队列还允许显式返修建议。材料、脱敏、项目Skill和历史hook任务不进入该范围。未设置时保持上述默认行为。该范围只限制领取和中断恢复，不改变已冻结任务输入。
 
 新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发逐项优先读取 `.env`／进程环境中的 `AGENT_CONCURRENCY`、`LLM_API_CONCURRENCY`（1–32），未设置或空白才读取 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，均缺失时默认Agent2/API8；非法环境值直接报错，两项均配置时不读取持久设置。修改环境变量后须重启API和worker；页面保存的是回退设置，被环境变量覆盖的项不因保存而改变生效值；页面可设置Agent 1–6、API 1–8；范围以 `concurrency.ts` 的常量为准，环境兼容范围另见该文件，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
 
-`steps`是当前状态，`step_attempts`是尝试历史。`waiting`须结合活动尝试、就绪原因和worker归属判断；HTTP202只表示已接受或等待未终结。按原attempt/job/request key恢复，不因超时重新派发。单题与批量资格分别由入口及业务模块复核；批量一题失败不把其余结果改成失败。ordinal 6若步骤状态为`succeeded`但至少一个模型评分摘要`valid=false`，且ordinal 7仍`waiting`，可由用户显式重新派发独立评分；有效评分或已有达标结论不因此开放重复评分，也不会自动重试。
+`steps`是当前状态，`step_attempts`是尝试历史。`waiting`须结合活动尝试、就绪原因和worker归属判断；HTTP202只表示已接受或等待未终结。按原attempt/job/request key恢复，不因超时重新派发。单题与批量资格分别由入口及业务模块复核；批量一题失败不把其余结果改成失败。独立评分已完成但缺少明确可比较分数、且达标仍waiting时，可由用户显式重新评分；旧validation标记本身不是达标门槛。已有达标或归档结果仍受重复派发保护，不自动重试。
 
 钩子采用独立检查点和事件，不恢复通用自动返修链。可选033表缺失不阻断无钩子旧流程；启用钩子、迁移和恢复副作用分别遵守对应接口与授权。
 
@@ -181,3 +182,15 @@ readActiveConcurrencyLimit的只读SQLite连接沿用槽位写连接的5秒busy_
 `workflow-archive-guard.ts` 在派发事务中锁定工作流并检查当前归档状态：已归档题目拒绝再次出题、作答、评分、达标判定和归档（HTTP 409），不创建新尝试或清空结果。批量入口返回 `already_archived` 并继续其他题目；显式撤回归档后可返修，下载和辅助导出不受影响。
 
 批量run-batch保留原批次读取及逐题结果顺序，入队同时最多处理2题，避免单个批量请求一次争抢全部连接；不改变worker模型执行并发。数据库慢/失败日志附加SQL内容的不可逆query_id摘要；连接占用超过1秒释放时记录db.connection.held，耗时含本地准备和SQL等待，不能直接等同慢SQL。
+
+1—7的运行时项目策略统一由`lifecycle/steps.ts`装配，各项目在`lifecycle/projects/`注册。`emitProjectLifecycle`为各步骤按主项目key路由通知；必要纯策略、外部必需交付、可选通知分别遵守其失败语义，详见生命周期README。
+
+页面及批量派发的active判断与业务新派发共用[他机未开始意图判据](execution-queue/README.md#他机未开始待办与本机明确派发)，共享waiting/queued不代表本机容量；旧字段保留协议兼容。
+
+## 项目目录与多机路径
+
+面向项目配置、API和CLI维护者。`projects.workspace_path`、`local_skill_path`及旧项目`material_root`新指定目录须在当前仓库内，保存为正斜杠仓库相对引用，例如`projects/豆包高经济价值/skill`；不保存用户名或某台机器的仓库根。API创建、修改及创建回执恢复使用同一目录校验；仅表示从绝对改相对不失效题目结果。Skill候选采用写入也使用相同保存规则。
+
+`paths.ts`是唯一解析入口：运行时相对当前源码仓库根定位，不依赖启动cwd；仓库内绝对输入校验后转为相对引用。旧`.../ai-distill/projects/...`及`.../ai-distill/.storage/project-skills/...`配置可在其他机器映射到本机同名子树；仓库外历史目录保留原位置，不猜测搬迁。原件、产物存储和Codex凭证不应用项目路径映射，也不自动同步。旧配置只兼容读取，未批量更新数据库。
+
+任务私有执行目录及运行时文件访问仍使用实际绝对路径；已有任务快照及摘要不批量重写。目录在另一台机器可定位不表示文件内容已经同步；材料/Skill须实际存在。新增持久化写入需用`projectPathReference()`，比较旧绑定用`comparableProjectPath()`，不能把相对配置直接传给依赖cwd的文件API。此说明不代表服务已重载或跨机业务验收。

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "key": "doubao-high-value",
+  "name": "豆包高经济价值",
+  "project_group_id": "315407cd-43db-49d1-8eb3-c2dff77af859",
+  "authentication": {
+    "identity": "bot",
+    "application_name": "ai",
+    "app_id": "cli_aa56494e3338dbb3",
+    "credential_environment_keys": ["FEISHU_APP_ID", "FEISHU_APP_SECRET"]
+  },
+  "roster": {
+    "base_token": "Xl6lb8KvTaESHjsPze0ctsBunvh",
+    "name": "人员名单",
+    "primary_table_id": "tblxzjHeQIzYoJ78",
+    "view_id": "vewjWyh7OC",
+    "tables": [
+      {"table_id": "tblxzjHeQIzYoJ78", "name": "内部有资质名单", "role": "user_designated_roster"},
+      {"table_id": "tblsdZJZnxcFdjlg", "name": "久盈提供名单", "role": "additional_roster"},
+      {"table_id": "tblx2EtDTrr7FOwu", "name": "关联久盈名单", "role": "additional_roster"}
+    ],
+    "fields": {"name": "姓名", "expert_id": "ID", "account_mobile": "飞书号（手机号码）", "expert_source": "专家来源", "notes": "备注"}
+  },
+  "question_targets": [
+    {
+      "key": "sixth-period-mock",
+      "name": "模仿项目方填写表·第六期",
+      "role": "mock_submission",
+      "phase": "第六期",
+      "base_token": "DuizblJJwavfGjsB4KJcPH0TnRg",
+      "table_id": "tblbT3gCovrk5lf0",
+      "view_id": "vewzZJYBEu",
+      "project_id": "c16164a7-efff-4a7a-bceb-1990cb0b3ec9",
+      "fields": {"question_id": "题目ID", "sync_id": "系统同步ID", "expert_id": "xpert uid", "account_user": "飞书账号", "expert_source": "专家来源"}
+    }
+  ],
+  "identity_mapping": {
+    "expert_id_is_text": true,
+    "expert_id_source": "roster.ID",
+    "expert_id_target": "question.xpert uid",
+    "account_source": "roster.飞书号（手机号码）",
+    "account_target": "question.飞书账号",
+    "account_resolution": "mobile_to_same_application_open_id",
+    "expert_source_source": "roster.专家来源",
+    "expert_source_target": "question.专家来源",
+    "expert_source_aliases": {}
+  },
+  "assignment_policy": {
+    "relationship": "one_person_to_many_questions",
+    "question_identity": "target_base_token/target_table_id/question_id",
+    "person_identity": "expert_id_with_roster_record_reference",
+    "questions_per_person": null,
+    "allocation_order": null,
+    "automatic_allocation_enabled": false
+  },
+  "test_resources": {
+    "role": "synthetic_test_only",
+    "base_token": "XWf6bPBDpakcAasqavJc6BzOn7e",
+    "name": "ai-distill飞书通用工具验收-20261027-093821",
+    "owner_kind": "application",
+    "tables": [
+      {"table_id": "tbl1jpL81eeB8i32", "name": "数据表"},
+      {"table_id": "tblptjJsJjSqNIZ0", "name": "通用操作验证-已验收"},
+      {"table_id": "tbln8t0xiX0RJsvh", "name": "豆包等价交付验证"}
+    ]
+  }
+}

@@ -1,8 +1,9 @@
 /**
  * 职责：达标事务服务：读取当前题目和模型评分快照，计算依据指纹并保存第七阶段决策。
  * 关键方法与用途：`readAcceptanceSnapshot()` 读取当前版本证据；`buildAcceptanceInput()` 组装纯决策输入；`runAcceptance()` 锁定并保存第七阶段结果；指纹函数固定来源。
- * 使用场景：由HTTP单步/批量入口或评分队列终态后调用；每次判断保存新尝试，不调用模型。
+ * 使用场景：由HTTP单步/批量入口或评分队列终态后调用；同依据及当前结果复用最新尝试，不调用模型。
  */
+import {emitProjectLifecycle as emitLifecycle,lifecycle} from '../lifecycle';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
 import {readWorkflowModelSet} from '../answer-models/workflow-models';
 import type {Pool,PoolClient} from 'pg';
@@ -14,6 +15,7 @@ import {projectReportedScore} from './score-projection';
 import {createHash} from 'node:crypto';
 import {answerModelSetDigest,readProjectModelSet} from '../answer-models/model-set';
 import {classifyLogError,enterLogContext,logEvent} from '../logging';
+import {canonicalJson} from '../../shared/workflow-config';
 const workflowSql="SELECT w.project_id FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL FOR UPDATE OF w";
 export type AcceptanceSnapshot=Parameters<typeof buildAcceptanceInput>[0];
 export function buildConfiguredAcceptanceConfig(models:{model_id:string;minimum_score:number|null}[],policyRaw?:unknown):AcceptanceConfig{
@@ -89,7 +91,12 @@ export function buildEvaluationRecordRefs(snapshot:AcceptanceSnapshot,modelScore
  * 输入摘要绑定本次判定依据；配置始终来自当前项目模型集合及步骤设置。
  */
 export async function runAcceptance(pool:Pool,workflowId:string){
+ let lifecycleProjectId:string|undefined;
+ if(lifecycle.has('before','acceptance'))lifecycleProjectId=(await pool.query('SELECT project_id FROM ai_distill.workflows WHERE id=$1',[workflowId])).rows[0]?.project_id;
+ await emitLifecycle(pool,'before',{stage:'acceptance',execution_id:workflowId,workflow_id:workflowId,project_id:lifecycleProjectId});
  const db:PoolClient=await pool.connect();let restoreLogContext=()=>{};
+ let lifecycleResult: {attemptId:string;projectId:string;result:Record<string,unknown>}|undefined;
+ let reused=false;
  try{
   await db.query('BEGIN');await assertWorkflowNotArchived(db,workflowId);
   const workflow=(await db.query(workflowSql,[workflowId])).rows[0];
@@ -109,16 +116,30 @@ export async function runAcceptance(pool:Pool,workflowId:string){
   const input={...buildAcceptanceInput(snapshot),source_digest:acceptanceSourceDigest(snapshot)};
   const decision=decideAcceptance(input);
   const result={...decision,evaluation_records:buildEvaluationRecordRefs(snapshot,decision.model_scores??{})};
+  const stepStatus=result.decision==='waiting'?'waiting':'succeeded';
+  const previous=(await db.query(`SELECT a.id,a.status,a.input,a.result,s.status AS step_status,s.result AS step_result
+   FROM ai_distill.step_attempts a JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=7
+   WHERE a.workflow_id=$1 AND a.ordinal=7 ORDER BY a.attempt DESC LIMIT 1`,[workflowId])).rows[0];
+  // 同时核对当前步骤投影及重新计算的结果，不能复用已失效记录或旧算法结论。
+  if(previous?.status==='succeeded'&&previous.input?.source_digest===input.source_digest&&previous.step_status===stepStatus&&
+    canonicalJson(previous.result)===canonicalJson(result)&&canonicalJson(previous.step_result)===canonicalJson(result)){
+   await db.query('COMMIT');reused=true;
+   logEvent('acceptance.reused',{level:'info',state:result.decision,attempt_id:previous.id});
+   return{id:previous.id,completed:true,reused:true,...result};
+  }
   const attemptId=crypto.randomUUID();
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,config,finished_at) SELECT $2,$1::uuid,7,COALESCE(max(attempt),0)+1,'succeeded',$3,$4,$5,now() FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=7",[workflowId,attemptId,JSON.stringify(input),JSON.stringify(result),JSON.stringify(config)]);
   // The threshold outcome lives in result.decision; this step records that the decision completed.
-  const stepStatus=result.decision==='waiting'?'waiting':'succeeded';
   await db.query("UPDATE ai_distill.steps SET implemented=true,status=$3,result=$2,error=NULL,started_at=COALESCE(started_at,now()),finished_at=now() WHERE workflow_id=$1 AND ordinal=7",[workflowId,JSON.stringify(result),stepStatus]);
   await db.query("UPDATE ai_distill.project_exports SET status='stale',error='达标判定已更新',finished_at=now() WHERE status IN ('running','succeeded') AND project_id=(SELECT project_id FROM ai_distill.workflows WHERE id=$1)",[workflowId]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=8",[workflowId]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[workflowId]);
   await db.query('COMMIT');
   logEvent('acceptance.completed',{level:result.decision==='accepted'?'info':'warn',state:result.decision,attempt_id:attemptId});
-  return {id:attemptId,completed:true,...result};
- }catch(error){logEvent('acceptance.failed',{level:'error',...classifyLogError(error)});await db.query('ROLLBACK');throw error;}finally{restoreLogContext();db.release();}
+  lifecycleResult={attemptId,projectId:workflow.project_id,result};
+  return {id:attemptId,completed:true,reused:false,...result};
+ }catch(error){logEvent('acceptance.failed',{level:'error',...classifyLogError(error)});await db.query('ROLLBACK');throw error;}finally{db.release();
+  if(lifecycleResult)await emitLifecycle(pool,'committed',{stage:'acceptance',execution_id:lifecycleResult.attemptId,workflow_id:workflowId,project_id:lifecycleResult.projectId,data:{result:lifecycleResult.result}});
+  else if(!reused)await emitLifecycle(pool,'failed',{stage:'acceptance',execution_id:workflowId,workflow_id:workflowId});
+  restoreLogContext();}
 }

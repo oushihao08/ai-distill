@@ -10,7 +10,7 @@ import {runExternalCall} from '../external-call';
 import {assertLibraryExtractionUsable,finishLibraryJob} from './jobs';
 import {insertLibraryTextBlob} from './storage';
 import {prepareAgentLibraryMaterials} from './agent-redaction';
-import {AGENT_REDACTION_MAX_MS} from '../../shared/redaction-templates';
+import {apiMaterialExecutor} from './api-redaction';
 import {hash,jobDirectory,ensurePages} from './execution-shared';
 
 /** 只描述本执行器实际读取的冻结字段；原始队列行的其他元数据不参与正文组装。 */
@@ -44,7 +44,7 @@ async function readExtractedDocuments(pool:Pool,job:RedactionJob){
  });
 }
 
-export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,signal:AbortSignal){
+export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,signal:AbortSignal,execute:typeof runAgent=runAgent){
  // 旧冻结队列也不能回退到已删除的字段映射引擎；不调用模型、不改写历史结果。
  if(job.config_snapshot.redaction_template?.workflow!=='codex_plan')throw new Error('字段映射脱敏已删除，请重新创建Agent化名任务');
  const documents=await readExtractedDocuments(pool,job),settings=job.config_snapshot.settings;
@@ -53,11 +53,14 @@ export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,si
  const template=job.config_snapshot.redaction_template;
  if(template?.workflow==='codex_plan'){
   const agentConfig=settings.redaction;
-  if(agentConfig.provider!=='codex')throw new Error('Agent材料任务冻结模型配置无效');
+  const api=agentConfig.provider==='api'?agentConfig.api:undefined;
+  const model=agentConfig.provider==='codex'?agentConfig.model:api!.model;
+  const reasoning=agentConfig.provider==='codex'?agentConfig.reasoning_effort:'none';
+  const executeModel=api?apiMaterialExecutor(api):execute;
   const output=await cachedExternalCall('library_preparation_complete',()=>prepareAgentLibraryMaterials({directory:join(jobDirectory(root,job.id),'private'),files:documents.map(d=>({file_id:d.file_id,text_sha256:hash(d.pages.map(p=>p.text).join('\n')),pages:d.pages.map(p=>{if(!p.structure)throw new Error('Agent脱敏要求完整提取结构');return{...p,structure:p.structure};})})),revision_id:job.revision_id,extraction_job_id:job.input_snapshot.extraction_job_id,
-   template,model:agentConfig.model,reasoning_effort:agentConfig.reasoning_effort,signal,timeout_ms:Math.min(AGENT_REDACTION_MAX_MS,new Date(job.deadline_at).getTime()-Date.now()),
+   template,model,reasoning_effort:reasoning,...(api?{api}:{}),signal,timeout_ms:new Date(job.deadline_at).getTime()-Date.now(),
    ...(job.previous_job_id?{previous_directory:join(jobDirectory(root,job.previous_job_id),'private')}:{}),
-   execute:options=>runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,operation:'library_preparation_agent'},call_id=>runAgent({...options,call_id})),
+   execute:options=>runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,operation:api?'library_preparation_api':'library_preparation_agent'},call_id=>executeModel({...options,call_id})),
   }));
   const materials=documents.map(d=>({material_id:d.file_id,pages:output.prepared.pages.filter(p=>p.file_id===d.file_id).map(p=>({page:p.page,text:p.text,structure:p.structure,issues:d.pages.find(original=>original.page===p.page)?.issues}))}));
   const rendered=renderRedactedMaterials(materials),index=JSON.parse(rendered.index);
@@ -66,7 +69,7 @@ export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,si
   index.redaction_template={id:template.id,digest:template.digest,workflow:'codex_plan'};
   const indexText=JSON.stringify(index),outputDigest=hash({source:job.input_digest,markdown:hash(rendered.markdown),index:hash(indexText)});
   const report={material_processing_mode:'aliases',redaction_template_workflow:'codex_plan',usable_for_question:true,protocol:'agent-material-plan-v1',structure_mode:'preserved-structure',content_validation_scope:'exact_edits_and_source_coverage',redaction_template_id:template.id,redaction_template_name:template.name,redaction_template_digest:template.digest,file_count:documents.length,page_count:output.prepared.pages.length,document_count:output.prepared.documents.length,entity_count:output.entity_count,unresolved_count:output.unresolved_count,extraction_issues:documents.filter(d=>d.issues.length).map(d=>({file_id:d.file_id,issues:d.issues}))};
-  await finishLibraryJob(pool,job.id,job.lease_token,{...report,output_digest:outputDigest,model_provider:output.provider,model:output.model,usage:output.usage,duration_ms:output.duration_ms},async db=>{
+  await finishLibraryJob(pool,job.id,job.lease_token,{...report,output_digest:outputDigest,model_provider:output.provider,model:output.model,requested_model:output.requested_model,returned_model:output.returned_model,usage:output.usage,duration_ms:output.duration_ms},async db=>{
    const markdown=await insertLibraryTextBlob(db,rendered.markdown,'text/markdown; charset=utf-8'),indexBlob=await insertLibraryTextBlob(db,indexText,'application/vnd.ai-distill.redacted-index+json');
    await db.query(`INSERT INTO ai_distill.library_redactions(id,package_id,revision_id,extraction_job_id,redaction_job_id,markdown_blob_id,index_blob_id,input_digest,output_digest,validation_report) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,[crypto.randomUUID(),job.package_id,job.revision_id,job.input_snapshot.extraction_job_id,job.id,markdown.id,indexBlob.id,job.input_digest,outputDigest,JSON.stringify(report)]);
   });

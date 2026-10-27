@@ -37,15 +37,14 @@ test('changing alias length remaps document boundaries without asking model for 
  const out=compileAgentMaterialPlan(plan,files,identity);
  expect(out.prepared.documents).toHaveLength(2);expect(out.plan.documents[0]!.segments[0]!.end).toBe(out.plan.documents[1]!.segments[0]!.start);
 });
-test('rejects masking amount digits without their unit, including partial numeric edits',()=>{
- for(const source_text of ['10000','000']){
+test('explicit exact edits are not vetoed by amount or date patterns',()=>{
+ for(const source_text of ['10000','000','2023年1月1日']){
   const {files,plan}=fixture();plan.edits.push({target_id:'f1p1b1f1',source_text,occurrence:1,kind:'identifier',keep_prefix:''});
-  let error:unknown;try{compileAgentMaterialPlan(plan,files,identity);}catch(cause){error=cause;}
-  expect(error).toMatchObject({reason_code:'agent_business_value_edit'});
+  const out=compileAgentMaterialPlan(plan,files,identity);
+  expect(out.plan.edits.some(e=>e.source_text===source_text)).toBe(true);
  }
- const {files,plan}=fixture();plan.edits.push({target_id:'f1p1b2f1',source_text:'13812345678',occurrence:1,kind:'identifier',keep_prefix:''});
- plan.edits.shift();expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();
 });
+
 test('post-Agent cleanup preserves mapped identifiers and compiles exact cleanup coordinates',()=>{
  const {files,plan}=fixture(),page=files[0]!.pages[0]!;
  page.structure.push({id:'code',kind:'paragraph',text:'12345678'},{id:'noise',kind:'paragraph',text:'[NO TEXT]\n221\n-22-\n4751 2025-04-25 15:24:08'});
@@ -55,15 +54,15 @@ test('post-Agent cleanup preserves mapped identifiers and compiles exact cleanup
  expect(text).toContain('12****78');expect(text).toContain('10000元，2023年1月1日');expect(text).not.toMatch(/NO TEXT|15:24:08/);expect(text).toContain('221\n-22-');
  for(const edit of out.plan.edits)expect(page.text.slice(edit.start,edit.end)).toBe(edit.source_text);
 });
-test('rejects overlapping identities, uncovered blocks and aliases colliding with original names',()=>{
+test('rejects overlapping identities and uncovered blocks while allowing source-equal aliases',()=>{
  const {files,plan}=fixture();plan.entities.push({id:'p2',kind:'person',alias:'周行舟',variants:[{text:'世豪',targets:[]}]});
  expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();plan.entities.pop();
  plan.documents[0]!.ranges[0]!.last_block_id='f1p1b1';expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();
- plan.documents[0]!.ranges[0]!.last_block_id='f1p1b2';plan.entities[0]!.alias='欧世豪';expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();
+ plan.documents[0]!.ranges[0]!.last_block_id='f1p1b2';plan.entities[0]!.alias='欧世豪';expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text).toContain('欧世豪');
 });
-test('unresolved privacy blocks publication; uncertain noise can remain without blocking',()=>{
+test('uncertainty flags are private context rather than publication vetoes',()=>{
  const {files,plan}=fixture();plan.unresolved=[{target_id:'f1p1b1f1',kind:'noise',blocking:false,reason:'无法确认，不删除'}];
- expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();plan.unresolved[0]!.blocking=true;expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();
+ expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();plan.unresolved[0]!.blocking=true;expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();
 });
 test('zero occurrence applies the same confirmed edit to every literal occurrence in one field',()=>{
  const {files,plan}=fixture();const page=files[0]!.pages[0]!;
@@ -72,9 +71,9 @@ test('zero occurrence applies the same confirmed edit to every literal occurrenc
  expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text.match(/138\*+78/g)).toHaveLength(2);
  plan.edits[0]!.source_text='不存在的片段';expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();
 });
-test('identity and boundary uncertainty must identify real source fields instead of hiding an entire pack',()=>{
+test('uncertainty locations do not control actual edit validity',()=>{
  const {files,plan}=fixture();
- for(const kind of ['identity','boundary'] as const){plan.unresolved=[{target_id:'all',kind,blocking:false,reason:'未逐项确认'}];expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();}
+ for(const kind of ['identity','boundary'] as const){plan.unresolved=[{target_id:'all',kind,blocking:false,reason:'未逐项确认'}];expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();}
  plan.unresolved=[{target_id:'f1p1b1f1',kind:'identity',blocking:false,reason:'敏感名称已化名，未合并不确定身份'}];expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();
 });
 test('declared duplicate links are preserved without dropping source and unknown links fail',()=>{
@@ -112,28 +111,22 @@ test('scanner cleanup respects table fields while retaining independent values a
  expect(JSON.stringify(files)).toBe(before);
 });
 
-test('compiled redaction rejects unmasked party names, identity numbers and labeled phone numbers',()=>{
- const text='原告：张三，身份证号：500100199001012345，联系电话：13812345678。';
- const files:PreparationFile[]=[{file_id:'33333333-3333-4333-8333-333333333333',text_sha256:createHash('sha256').update(text).digest('hex'),pages:[{page:1,text,structure:[{id:'a',kind:'paragraph',text}]}]}];
- const plan:AgentMaterialPlan={entities:[],edits:[],documents:[{id:'d',title:'委托材料',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
- let error:any;try{compileAgentMaterialPlan(plan,files,identity);}catch(cause){error=cause;}
- expect(error).toMatchObject({reason_code:'agent_sensitive_value_remaining'});
- expect(error.validation_details.findings.map((item:any)=>item.kind)).toEqual(expect.arrayContaining(['party_name','identifier','phone']));
- expect(JSON.stringify(error.validation_details)).not.toContain('张三');
- expect(JSON.stringify(error.validation_details)).not.toContain('500100199001012345');
- expect(JSON.stringify(error.validation_details)).not.toContain('13812345678');
+test('labeled source values and ordinary replies are not classified by the compiler',()=>{
+ const text='原告：是的，已收款。原告：张三，身份证号：500100199001012345，联系电话：13812345678。地址：重庆市南岸区。';
+ const files:PreparationFile[]=[{file_id:'file',text_sha256:'h',pages:[{page:1,text,structure:[{id:'b',kind:'paragraph',text}]}]}];
+ const plan:AgentMaterialPlan={entities:[],edits:[],documents:[{id:'d',title:'材料',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
+ expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text).toBe(text);
 });
 
-test('compiled redaction rejects a planned identity left outside scoped target fields',()=>{
+test('scoped aliases do not force replacements outside the declared fields',()=>{
  const first='原告：欧世豪，';const second='联系人：欧世豪，电话13812345678。';const text=`${first}\n${second}`;
  const files:PreparationFile[]=[{file_id:'33333333-3333-4333-8333-333333333333',text_sha256:createHash('sha256').update(text).digest('hex'),pages:[{page:1,text,structure:[{id:'a',kind:'paragraph',text:first},{id:'b',kind:'paragraph',text:second}]}]}];
  const plan:AgentMaterialPlan={entities:[{id:'p',kind:'person',alias:'林远舟',variants:[{text:'欧世豪',targets:['f1p1b1f1']}]}],edits:[],documents:[{id:'d',title:'委托材料',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b2'}],duplicate_of:null}],unresolved:[]};
- let error:any;try{compileAgentMaterialPlan(plan,files,identity);}catch(cause){error=cause;}
- expect(error).toMatchObject({reason_code:'agent_sensitive_value_remaining'});
- expect(error.validation_details.findings).toContainEqual(expect.objectContaining({kind:'planned_entity',target_id:'f1p1b2f1'}));
+ const out=compileAgentMaterialPlan(plan,files,identity);
+ expect(out.prepared.documents[0]!.text).toBe(`原告：林远舟，\n${second}`);
 });
 
-test('hearing replies and generic postal routing remain intact while real identities and addresses stay blocked',()=>{
+test('compiler preserves source text without guessing identities or addresses',()=>{
  const compile=(text:string)=>{
   const files:PreparationFile[]=[{file_id:'33333333-3333-4333-8333-333333333333',text_sha256:createHash('sha256').update(text).digest('hex'),pages:[{page:1,text,structure:[{id:'a',kind:'paragraph',text}]}]}];
   const plan:AgentMaterialPlan={entities:[],edits:[],documents:[{id:'d',title:'笔录',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
@@ -142,10 +135,7 @@ test('hearing replies and generic postal routing remain intact while real identi
  for(const text of ['审：听清楚否？是否上诉？\n原告：清楚，上诉以书面意见为准。','原告是否清楚诉讼权利？是否申请回避？\n原告：清楚，不申请。','回执反馈地址:邮政局速递局法院专递业务档案室收']){
   expect(compile(text).prepared.documents[0]!.text).toBe(text);
  }
- for(const text of ['原告：清楚，男，汉族。','审：是否申请回避？\n原告：清楚，男，汉族。','原告：张三，男，汉族。','回执反馈地址:邮政局速递局东街10号档案室']){
-  let error:any;try{compile(text);}catch(cause){error=cause;}
-  expect(error).toMatchObject({reason_code:'agent_sensitive_value_remaining'});
- }
+ for(const text of ['原告：清楚，男，汉族。','原告：张三，男，汉族。','回执反馈地址:邮政局速递局东街10号档案室'])expect(compile(text).prepared.documents[0]!.text).toBe(text);
 });
 
 test('a postal timestamp following a masked phone is preserved and does not become another phone finding',()=>{
@@ -154,19 +144,14 @@ test('a postal timestamp following a masked phone is preserved and does not beco
  const plan:AgentMaterialPlan={entities:[],edits:[{target_id:'f1p1b1f1',source_text:'13812345678',occurrence:0,kind:'phone',keep_prefix:''}],documents:[{id:'d',title:'投递记录',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
  const out=compileAgentMaterialPlan(plan,files,identity);
  expect(out.prepared.documents[0]!.text).toContain('138******78)2023-08-09 15:31:59');
- plan.edits=[];
- let error:any;try{compileAgentMaterialPlan(plan,files,identity);}catch(cause){error=cause;}
- expect(error).toMatchObject({reason_code:'agent_sensitive_value_remaining'});
- expect(error.validation_details.findings).toContainEqual({kind:'phone',target_id:'f1p1b1f1',page:1});
+ plan.edits=[];expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text).toBe(text);
 });
 
-test('publication blocks intact labeled access codes, organization identifiers and parenthetical contact phones',()=>{
+test('explicit credential edits execute without an additional residual scanner',()=>{
  const text='查询密码:123456。统一社会信用代码:91500107512345678Q。受试人：张三（13812345678）。款项123456元。';
  const files:PreparationFile[]=[{file_id:'33333333-3333-4333-8333-333333333333',text_sha256:createHash('sha256').update(text).digest('hex'),pages:[{page:1,text,structure:[{id:'a',kind:'paragraph',text}]}]}];
  const plan:AgentMaterialPlan={entities:[],edits:[],documents:[{id:'d',title:'材料',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
- let error:any;try{compileAgentMaterialPlan(plan,files,identity);}catch(cause){error=cause;}
- expect(error).toMatchObject({reason_code:'agent_sensitive_value_remaining'});
- expect(error.validation_details.findings.map((x:any)=>x.kind)).toEqual(expect.arrayContaining(['identifier','phone']));
+ expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text).toBe(text);
  plan.edits=[{target_id:'f1p1b1f1',source_text:'123456',occurrence:1,kind:'credential',keep_prefix:''},{target_id:'f1p1b1f1',source_text:'91500107512345678Q',occurrence:1,kind:'identifier',keep_prefix:''},{target_id:'f1p1b1f1',source_text:'13812345678',occurrence:1,kind:'phone',keep_prefix:''}];
  // 与密码恰好相同的业务金额不应被残留检查误判为未脱敏密码。
  expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();
@@ -178,7 +163,7 @@ test('credentials are fully hidden while bank accounts use partial masking and b
  const plan:AgentMaterialPlan={entities:[],edits:[{target_id:'f1p1b1f1',source_text:'123456789012',kind:'identifier',occurrence:0,keep_prefix:''},{target_id:'f1p1b1f1',source_text:'AB123456',kind:'credential',occurrence:0,keep_prefix:''}],documents:[{id:'d',title:'业务记录',duplicate_of:null,ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}]}],unresolved:[]};
  expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text).toBe(text.replace('123456789012','12********12').replace('AB123456','**'));
  plan.edits=[{target_id:'f1p1b1f1',source_text:'10000',kind:'credential',occurrence:0,keep_prefix:''}];
- expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();
+ expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text).toContain('金额**元');
 });
 
 test('an address without a confirmed administrative prefix can be fully masked without deleting neighboring words',()=>{
@@ -197,4 +182,27 @@ test('a complete cross-page contract and another same-page document preserve tab
  expect(out.prepared.documents).toHaveLength(2);expect(out.prepared.documents[0]!.document.pages).toHaveLength(2);
  expect(out.prepared.documents[0]!.text).not.toContain('青杉');expect(out.prepared.documents[1]!.text).toBe('另附收据：周文远收款10000元。');
  expect((out.prepared.documents[0]!.document.pages[1]!.blocks[0] as any).rows[0].cells[0]).toEqual({text:'周文远',rowSpan:2});
+});
+
+test('alias style, existing words and organization keywords are semantic decisions',()=>{
+ const text='张*向人民法院申请，李四与周文远联系。';
+ const files:PreparationFile[]=[{file_id:'file',text_sha256:'h',pages:[{page:1,text,structure:[{id:'b',kind:'paragraph',text}]}]}];
+ const plan:AgentMaterialPlan={entities:[{id:'a',kind:'person',alias:'人员甲',variants:[{text:'张*',targets:[]}]},{id:'b',kind:'organization',alias:'某某机构',variants:[{text:'人民法院',targets:[]}]},{id:'c',kind:'person',alias:'周文远',variants:[{text:'李四',targets:[]}]}],edits:[],documents:[{id:'d',title:'材料',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
+ expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text).toBe('人员甲向某某机构申请，周文远与周文远联系。');
+ plan.entities[0]!.alias='周文远';expect(()=>compileAgentMaterialPlan(plan,files,identity)).not.toThrow();
+ plan.entities[0]!.alias='';expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();
+});
+test('OCR phone characters and a full address prefix are executable without semantic vetoes',()=>{
+ const text='电话138O12345678，住址重庆市南岸区。';
+ const files:PreparationFile[]=[{file_id:'file',text_sha256:'h',pages:[{page:1,text,structure:[{id:'b',kind:'paragraph',text}]}]}];
+ const plan:AgentMaterialPlan={entities:[],edits:[{target_id:'f1p1b1f1',source_text:'138O12345678',occurrence:0,kind:'phone',keep_prefix:''},{target_id:'f1p1b1f1',source_text:'重庆市南岸区',occurrence:0,kind:'address',keep_prefix:'重庆市南岸区'}],documents:[{id:'d',title:'联系记录',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
+ expect(compileAgentMaterialPlan(plan,files,identity).prepared.documents[0]!.text).toBe('电话138O******78，住址重庆市南岸区。');
+ plan.edits[1]!.keep_prefix='北京市';expect(()=>compileAgentMaterialPlan(plan,files,identity)).toThrow();
+});
+test('a document may span files with source structure and complete coverage intact',()=>{
+ const files:PreparationFile[]=['第一页','第二页'].map((text,i)=>({file_id:`file${i}`,text_sha256:'h',pages:[{page:1,text,structure:[{id:'b',kind:'paragraph',text}]}]}));
+ const plan:AgentMaterialPlan={entities:[],edits:[],documents:[{id:'d',title:'合同:跨文件',ranges:[{first_block_id:'f1p1b1',last_block_id:'f2p1b1'}],duplicate_of:null}],unresolved:[]};
+ const out=compileAgentMaterialPlan(plan,files,identity);
+ expect(out.prepared.documents[0]!.text).toBe('第一页\n\n第二页');expect(out.prepared.documents[0]!.document.pages).toHaveLength(2);
+ expect(out.plan.documents[0]!.segments.map(s=>s.file_id)).toEqual(['file0','file1']);
 });

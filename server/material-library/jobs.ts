@@ -3,7 +3,7 @@
  * 关键入口：`enqueueLibraryJob()` 冻结任务；`assertLibraryExtractionUsable()` 在派发和执行前检查提取完整性；`claimLibraryJob()` 在 worker 持有资源槽后领取；终态更新须匹配 lease_token。
  * 使用场景：材料库 routes 与现有 worker API/Agent/材料消费池；本模块不创建项目步骤或 step_attempt。
  */
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localQueueEnabled,localCancellationRequested} from '../execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localQueueEnabled,localCancellationRequested} from '../execution-queue/runtime';
 import {projectStepExecution} from '../execution-queue/status';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
@@ -14,7 +14,7 @@ import type {CreateLibraryJobRequest,LibraryExecutionTarget,LibraryExecutorKind,
 import {readLibraryProcessingSettings} from './settings';
 import {resolveLibraryTemplate} from './templates';
 import {readAgentDefaults,validateAgentModelSettings} from '../agent';
-import {AGENT_REDACTION_MAX_MS} from '../../shared/redaction-templates';
+import {resolveModelApiConfig} from '../llm-api';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
@@ -46,19 +46,22 @@ export async function hasLibraryQueueWork(pool:Pool,executor:LibraryExecutorKind
 
 export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest{
  if(!value||typeof value!=='object'||Array.isArray(value))throw new HTTPException(400,{message:'材料处理任务参数无效'});
- const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','extraction_job_id','previous_job_id','template_id','project_id','agent_settings'];
+ const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','extraction_job_id','previous_job_id','template_id','project_id','agent_settings','api_settings'];
  if(Object.keys(body).some(key=>!allowed.includes(key))||!['intake','extract','redact'].includes(String(body.kind))||typeof body.request_key!=='string'||!uuidPattern.test(body.request_key)||!['local','server'].includes(String(body.execution_target)))throw new HTTPException(400,{message:'材料处理任务参数无效'});
  if(body.kind==='redact'&&(typeof body.extraction_job_id!=='string'||!uuidPattern.test(body.extraction_job_id)))throw new HTTPException(400,{message:'脱敏任务必须明确指定成功的文本提取任务'});
  if(body.kind!=='redact'&&body.extraction_job_id!==undefined)throw new HTTPException(400,{message:'仅脱敏任务可以指定文本提取任务'});
  if(body.previous_job_id!==undefined&&(typeof body.previous_job_id!=='string'||!uuidPattern.test(body.previous_job_id)))throw new HTTPException(400,{message:'重试来源任务 ID 无效'});
  if(body.template_id!==undefined&&(body.kind!=='redact'||typeof body.template_id!=='string'||! /^[a-z][a-z0-9_-]{0,47}$/.test(body.template_id)))throw new HTTPException(400,{message:'仅脱敏任务可指定有效模板'});
  if(body.project_id!==undefined&&(typeof body.project_id!=='string'||!uuidPattern.test(body.project_id)))throw new HTTPException(400,{message:'材料处理期次标识无效'});
+ if(body.api_settings!==undefined&&(body.kind!=='redact'||body.agent_settings!==undefined))throw new HTTPException(400,{message:'API设置仅用于脱敏且不能同时指定Agent设置'});
+ let apiSettings:CreateLibraryJobRequest['api_settings'];
+ if(body.api_settings!==undefined){try{apiSettings=resolveModelApiConfig(body.api_settings);}catch(error){throw new HTTPException(400,{message:'脱敏API模型配置无效',cause:error});}}
  let agentSettings:CreateLibraryJobRequest['agent_settings'];
  if(body.agent_settings!==undefined){
   if(body.kind!=='redact'||!body.agent_settings||typeof body.agent_settings!=='object'||Array.isArray(body.agent_settings)||Object.keys(body.agent_settings).some(key=>!['model','reasoning_effort'].includes(key)))throw new HTTPException(400,{message:'仅化名脱敏任务可指定本次Agent模型设置'});
   agentSettings=validateAgentModelSettings(body.agent_settings);
  }
- return{...(agentSettings?{agent_settings:agentSettings}:{}),...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
+ return{...(apiSettings?{api_settings:apiSettings}:{}),...(agentSettings?{agent_settings:agentSettings}:{}),...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
 }
 
 export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:string;redaction_mode?:'model'|'declared_redacted'}>,settings:{provider?:string}|null,target:LibraryExecutionTarget='local'):LibraryExecutorKind{
@@ -68,6 +71,7 @@ export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:st
   if(target==='server')throw new HTTPException(409,{message:'Agent 脱敏只能在本机执行'});
   return'agent';
  }
+ if(settings?.provider==='api')return'api';
  throw new HTTPException(409,{message:'材料库脱敏仅支持Agent化名，旧字段映射执行已删除'});
 }
 
@@ -87,7 +91,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    FROM ai_distill.library_files f JOIN ai_distill.library_blobs b ON b.id=f.blob_id WHERE f.revision_id=$1 ORDER BY f.position`,[revisionId])).rows as LibraryFileRow[];
   if(files.length!==Number(revision.file_count))throw conflict('材料文件集合清单不完整');
   if(files.some(file=>file.storage_target!==request.execution_target))throw conflict('所选执行位置无法读取文件集合中的全部原件');
-  const intent={version:1,...(request.agent_settings?{agent_settings:request.agent_settings}:{}),...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
+  const intent={version:1,...(request.api_settings?{api_settings:request.api_settings}:{}),...(request.agent_settings?{agent_settings:request.agent_settings}:{}),...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
   const requestDigest=hash(intent);
   const previousRequest=(await db.query('SELECT id,input_snapshot FROM ai_distill.library_jobs WHERE package_id=$1 AND request_key=$2',[packageId,request.request_key])).rows[0];
   if(previousRequest){
@@ -103,8 +107,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   // 请求重放已在上方返回；此处只拒绝新建旧流程，不改写历史任务快照。
   if(template&&template.workflow!=='codex_plan')throw conflict('字段映射脱敏已退役，请选择Agent化名模板');
   if(template?.workflow==='codex_plan'){
-   settings.redaction={...template.redaction,...(request.agent_settings??await readAgentDefaults(db))};
-   settings.execution.task_timeout_ms=Math.min(settings.execution.task_timeout_ms,AGENT_REDACTION_MAX_MS);
+   settings.redaction=request.api_settings?{provider:'api',api:request.api_settings,prompt:template.redaction.prompt}:{...template.redaction,...(request.agent_settings??await readAgentDefaults(db))};
   }
   const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:file.redaction_mode})),settings.redaction,request.execution_target);
   if(request.kind==='extract'&&executor==='api'&&!process.env.MINERU_KEY?.trim())throw conflict('文本提取服务尚未配置');
@@ -132,6 +135,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   const pdfProvider=process.env.PDF_EXTRACTION_PROVIDER||'mineru-api';
   if(request.kind==='extract'&&executor==='api'&&!['mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取供应商配置无效');
   const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id}:{})},configDigest=hash(configSnapshot),id=randomUUID();
+  await supersedeForeignPending(db,{kind:'library',id:revisionId,jobKind:request.kind},request.execution_target);
   const active=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND status IN ('queued','running') LIMIT 1",[revisionId])).rows[0];
   if(active)throw conflict('该文件集合已有活动任务，请等待完成或取消后重试');
   const result=await db.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,previous_job_id,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
@@ -188,8 +192,9 @@ export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,tar
    ORDER BY j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1`,values)).rows[0];
   if(!job){await db.query('COMMIT');forgetLocalRegistrations(db);return null;}
   const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:Record<string,unknown>)=>['pdf','docx'].includes(fileFormat(String(file.original_name??''))));
-  const ceiling=job.config_snapshot?.redaction_template?.workflow==='codex_plan'?AGENT_REDACTION_MAX_MS:externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000;
-  const leaseToken=randomUUID(),timeout=Math.max(1,Math.min(ceiling,Number(job.config_snapshot?.settings?.execution?.task_timeout_ms)||1200000));
+  const ceiling=externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000;
+  const configuredTimeout=Number(job.config_snapshot?.settings?.execution?.task_timeout_ms)||1200000;
+  const timeout=Math.max(1,job.kind==='redact'?configuredTimeout:Math.min(ceiling,configuredTimeout)),leaseToken=randomUUID();
   const claimed=await db.query(`UPDATE ai_distill.library_jobs SET status='running',lease_token=$2,started_at=now(),deadline_at=CASE WHEN status='running' THEN deadline_at ELSE now()+($3::text||' milliseconds')::interval END,heartbeat_at=now(),lease_expires_at=now()+($4::text||' milliseconds')::interval,error_code=NULL,error_message=NULL
    WHERE id=$1 AND ${localQueueEnabled()?"status IN ('queued','running')":"status='queued'"} RETURNING *`,[job.id,leaseToken,timeout,LIBRARY_JOB_LEASE_MS]);
   if(!claimed.rowCount)throw conflict('材料任务已由其他 worker 领取');

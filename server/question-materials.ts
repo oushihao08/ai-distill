@@ -4,15 +4,20 @@
  * 使用场景：出题、作答、评分、归档和导出共用；不执行 OCR、脱敏或文件写入。
  */
 import {createHash} from 'node:crypto';
+import {readFile,realpath,stat} from 'node:fs/promises';
+import {resolve,relative,sep,isAbsolute} from 'node:path';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../shared/workflow-config';
 import {documentBlocksToText} from './materials/pdf';
 import type {QuestionMaterialOrigin} from '../shared/material-library';
 import {resolveMaterialProcessingMode,materialProcessingSourceMode} from '../shared/material-library';
+import {storageDirectory} from './paths';
+import {logEvent} from './logging';
 
 type Db=Pool|PoolClient;
 type MaterialArtifact={id:string;kind:string;attempt_id:string|null;sha256:string;content:string|null};
+type SnapshotArtifact=Omit<MaterialArtifact,'content'>&{content?:string|null;storage_path?:string;size_bytes?:number|string};
 export interface QuestionMaterialAttachment {id:string;sha256:string;content:string;source_names:string[];attempt_id:string|null}
 export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:QuestionMaterialAttachment[];digest:string}
 
@@ -42,7 +47,28 @@ async function readLegacyMaterials(db:Db,workflowId:string):Promise<QuestionMate
  return{origin,attachments,digest:hash(canonicalJson(attachments.map(({id,sha256})=>({id,sha256}))))};
 }
 
-async function readLibraryMaterials(db:Db,workflowId:string):Promise<QuestionMaterials>{
+/** 本机副本只作内容缓存：数据库身份/摘要仍是依据，缺失、越界或损坏均回读数据库。 */
+async function readLocalSnapshot(root:string,workflowId:string,artifact:SnapshotArtifact):Promise<string|undefined>{
+ if(typeof artifact.storage_path!=='string'||!Number.isSafeInteger(Number(artifact.size_bytes))||Number(artifact.size_bytes)<0)return undefined;
+ const inside=(base:string,path:string)=>{const part=relative(base,path);return part!==''&&part!=='..'&&!part.startsWith(`..${sep}`)&&!isAbsolute(part);};
+ const path=resolve(root,artifact.storage_path);
+ if(!inside(resolve(root,workflowId),path))return undefined;
+ try{
+  const [realRoot,actualPath]=await Promise.all([realpath(root),realpath(path)]);
+  if(!inside(resolve(realRoot,workflowId),actualPath))return undefined;
+  if((await stat(actualPath)).size!==Number(artifact.size_bytes))return undefined;
+  const bytes=await readFile(actualPath);
+  if(bytes.length!==Number(artifact.size_bytes)||hash(bytes)!==artifact.sha256)return undefined;
+  const content=bytes.toString('utf8');
+  return hash(content)===artifact.sha256?content:undefined;
+ }catch{
+  // 本地文件不是唯一副本；I/O失败不能使原有数据库读取路径不可用。
+  return undefined;
+ }
+}
+
+async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise<QuestionMaterials>{
+ const started=performance.now();
  const row=(await db.query(`SELECT project_id,package_id,revision_id,redaction_id,material_mode,source_digest,snapshot_manifest,snapshot_digest,markdown_artifact_id,index_artifact_id
   FROM ai_distill.question_library_sources WHERE workflow_id=$1`,[workflowId])).rows[0];
  if(!row)throw conflict('library_v1 题目缺少来源快照');
@@ -55,16 +81,26 @@ async function readLibraryMaterials(db:Db,workflowId:string):Promise<QuestionMat
    !Array.isArray(manifest.files)||hash(canonicalJson(manifest))!==row.snapshot_digest){
   throw conflict('library_v1 题目材料来源快照结构或摘要无效');
  }
- const artifacts=(await db.query(`SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts
-  WHERE workflow_id=$1 AND id=ANY($2::uuid[])`,[workflowId,[row.markdown_artifact_id,row.index_artifact_id]])).rows as MaterialArtifact[];
+ // 不在元数据查询中携带大字段；本地命中时不再下载整份结构索引。
+ const artifacts=(await db.query(`SELECT id,kind,attempt_id,sha256,storage_path,size_bytes FROM ai_distill.artifacts
+  WHERE workflow_id=$1 AND id=ANY($2::uuid[])`,[workflowId,[row.markdown_artifact_id,row.index_artifact_id]])).rows as SnapshotArtifact[];
  if(artifacts.length!==2)throw conflict('library_v1 题目正文或索引缺失');
  const markdown=artifacts.find(item=>item.id===row.markdown_artifact_id),index=artifacts.find(item=>item.id===row.index_artifact_id);
  const expectedMarkdownKind=mode==='original'?'source_markdown':'redacted_markdown',expectedIndexKind=mode==='original'?'source_index':'redacted_index';
  if(markdown?.kind!==expectedMarkdownKind||index?.kind!==expectedIndexKind||markdown.attempt_id!==null||index.attempt_id!==null||
-   typeof markdown.content!=='string'||typeof index.content!=='string'||hash(markdown.content)!==markdown.sha256||hash(index.content)!==index.sha256||
    markdown.sha256!==markdownEntry.sha256||index.sha256!==indexEntry.sha256){
   throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  }
+ await Promise.all(artifacts.map(async artifact=>{artifact.content=await readLocalSnapshot(root,workflowId,artifact);}));
+ const missing=artifacts.filter(artifact=>typeof artifact.content!=='string').map(artifact=>artifact.id);
+ let databaseBytes=0;
+ if(missing.length){
+  const remote=(await db.query(`SELECT id,content FROM ai_distill.artifacts
+   WHERE workflow_id=$1 AND id=ANY($2::uuid[])`,[workflowId,missing])).rows as {id:string;content:string|null}[];
+  databaseBytes=remote.reduce((sum,artifact)=>sum+Buffer.byteLength(artifact.content??''),0);
+  for(const artifact of artifacts)if(missing.includes(artifact.id))artifact.content=remote.find(value=>value.id===artifact.id)?.content;
+ }
+ if(typeof markdown.content!=='string'||typeof index.content!=='string'||hash(markdown.content)!==markdown.sha256||hash(index.content)!==index.sha256)throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  let parsedIndex:any;
  try{parsedIndex=JSON.parse(index.content);}catch{throw conflict('library_v1 题目材料索引格式无效');}
  if(mode==='original'){
@@ -86,14 +122,15 @@ async function readLibraryMaterials(db:Db,workflowId:string):Promise<QuestionMat
   if(materialProcessingSourceMode(processingMode)!==mode)throw conflict('题目冻结的处理方式与正文来源不一致');
  }
  const origin:QuestionMaterialOrigin={kind:'library_v1',material_mode:mode,...(processingMode?{material_processing_mode:processingMode}:{}),package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id===null?null:String(row.redaction_id),snapshot_digest:String(row.snapshot_digest)};
+ logEvent('material.snapshot.read',{level:'info',component:'question_materials',workflow_id:workflowId,state:missing.length?'database_fallback':'local_snapshot',material_count:artifacts.length,input_bytes:databaseBytes,duration_ms:Math.round(performance.now()-started)});
  return{origin,attachments:[{id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null}],digest:String(row.snapshot_digest)};
 }
 
-export async function readQuestionMaterials(db:Db,workflowId:string):Promise<QuestionMaterials>{
+export async function readQuestionMaterials(db:Db,workflowId:string,root=storageDirectory()):Promise<QuestionMaterials>{
  const row=(await db.query(`SELECT p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources s WHERE s.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w
   JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL`,[workflowId])).rows[0];
  if(!row)throw new HTTPException(404,{message:'工作流不存在'});
- if(row.material_backend==='library_v1'||row.has_library_snapshot)return readLibraryMaterials(db,workflowId);
+ if(row.material_backend==='library_v1'||row.has_library_snapshot)return readLibraryMaterials(db,workflowId,root);
  if(row.material_backend!=='legacy')throw conflict('题目材料后端无效');
  return readLegacyMaterials(db,workflowId);
 }

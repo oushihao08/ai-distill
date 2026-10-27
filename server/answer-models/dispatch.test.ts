@@ -57,6 +57,14 @@ test('Codex Agent answer receives only the frozen question and redacted material
   expect(received).toMatchObject({task_type:'model_answer',model:'gpt-6-astra',reasoning_effort:'ultra',output_format:'text'});
   expect(received.prompt).toContain('题面');expect(received.prompt).toContain('已脱敏材料');expect(received.prompt).toContain('作答系统指令');
   expect(received.prompt).not.toMatch(/reference_answer|answer_approach|rubric|score|历史答案|标准答案/);
-  expect(result).toMatchObject({text:'候选答案',execution_mode:'agent',reasoning_effort:'ultra',model:'gpt-6-astra'});
+  expect(result).toMatchObject({text:'候选答案',execution_mode:'agent',reasoning_effort:'ultra',requested_model:'gpt-6-astra',model:null});
+ }finally{configureAgentAdapter(null);}
+});
+
+test('Agent作答只将显式returned_model写入实际模型字段',async()=>{
+ configureAgentAdapter(async task=>({result:'合成答案',session_id:'session',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:task.model,returned_model:'actual-model'}));
+ try{
+  const result=await createAnswerClient({}).answer({config:{provider:'codex',model:'requested-model',reasoning_effort:'low'},directory:'/tmp/answer-agent-identity',question:'题面',materials:[]});
+  expect(result.requested_model).toBe('requested-model');expect(result.model).toBe('actual-model');expect(result.text).toBe('合成答案');
  }finally{configureAgentAdapter(null);}
 });

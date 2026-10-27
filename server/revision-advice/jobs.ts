@@ -1,5 +1,5 @@
 /** 手动返修建议：冻结当前出题/匿名作答/评分，不改变原结果；HTTP派发，本机Agent队列消费，作者仅接收绑定的建议文本。 */
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,cachedExternalCall,deferLocalPublication,localClaimSql,localQueueEnabled,registerLocalJob} from '../execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,cachedExternalCall,deferLocalPublication,localClaimSql,localQueueEnabled,registerLocalJob} from '../execution-queue/runtime';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {createHash,randomUUID} from 'node:crypto';
@@ -69,6 +69,7 @@ export async function enqueueRevisionAdvice(pool:Pool,id:string){
   const workflow=(await db.query('SELECT w.project_id FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w',[id])).rows[0];
   if(!workflow)throw new HTTPException(404,{message:'题目不存在'});
   const source=await currentSource(db,id),source_digest=digest(source);
+  await supersedeForeignPending(db,{kind:'advice',id});
   const previous=(await db.query("SELECT id,source_digest FROM ai_distill.revision_advice_attempts WHERE workflow_id=$1 AND (status IN ('waiting','running') OR (status='succeeded' AND source_digest=$2)) ORDER BY started_at DESC LIMIT 1",[id,source_digest])).rows[0];
   if(previous){if(previous.source_digest!==source_digest)throw new HTTPException(409,{message:'旧版本返修建议仍在执行'});await db.query('COMMIT');forgetLocalRegistrations(db);return{id:previous.id,reused:true};}
   const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[workflow.project_id])).rows[0]?.config;

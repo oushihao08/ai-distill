@@ -4,9 +4,9 @@
 
 Codex 或维护者通过 CLI 调用现有 Hono API，API 冻结输入并派发给现有 worker。普通本机命令不读数据库、不发送服务端凭证，不另建模型执行器或调度器；Bun运行时可按正常方式加载环境，命令只使用其声明的配置；远程命令按下文从本机 `.env` 读取专用 token。
 
-远程命令是唯一需要本机凭证的入口：Bun 从本机 `.env` 读取 `REMOTE_MATERIAL_API_URL` 与 `REMOTE_MATERIAL_TOKEN`，通过 SSH 隧道连接服务器回环 API。材料命令发起入库、PDF 提取、API 脱敏并取回管理副本；作答命令让服务器按现有模型配置生成答案。两者都不执行 Agent。材料组合命令只接受旧项目内材料包或旧目录题目的workflow ID，不接受全局材料库package/revision/job ID。先确认服务器已同步这些工作流的来源目录、运行数据库已应用 `034_remote_material_operations.sql`，并部署 `WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server` 的 worker。服务器 API 仅在 `MATERIAL_EXECUTION_TARGET=server` 且配置至少32字符 `REMOTE_MATERIAL_TOKEN` 时注册远程路由。本机通过 SSH 建立本地转发，例如：
+远程命令是唯一需要本机凭证的入口：Bun 从本机 `.env` 读取 `REMOTE_MATERIAL_API_URL` 与 `REMOTE_MATERIAL_TOKEN`，通过 SSH 隧道连接服务器回环 API。材料命令发起入库、PDF 提取、人工声明已脱敏的兼容处理并取回管理副本；作答命令让服务器按现有模型配置生成答案。两者都不执行 Agent。材料组合命令只接受旧项目内材料包或旧目录题目的workflow ID，不接受全局材料库package/revision/job ID。先确认服务器已同步这些工作流的来源目录、运行数据库已应用 `034_remote_material_operations.sql`，并部署 `WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server` 的 worker。服务器 API 仅在 `MATERIAL_EXECUTION_TARGET=server` 且配置至少32字符 `REMOTE_MATERIAL_TOKEN` 时注册远程路由。本机通过 SSH 建立本地转发，例如：
 
-**远程 CLI 只调用服务器已开放的 API 能力，不会在服务器启动 Codex Agent。**当前远程范围是入库、PDF/DOCX 提取、API 脱敏和模型作答；不能通过远程命令运行 Agent 出题或 Agent 评分。出题和 Agent 评分仍需在有 Codex 的本机环境，通过本机 API/worker 执行。若步骤选择大模型 API 评分，应按本机 API 工作流执行；远程服务器 worker 当前不领取评分队列。
+**远程 CLI 只调用服务器已开放的 API 能力，不会在服务器启动 Codex Agent。**当前远程范围是入库、PDF/DOCX 提取、人工声明已脱敏的兼容处理和模型作答；不能通过远程命令运行 Agent 出题或 Agent 评分。出题和 Agent 评分仍需在有 Codex 的本机环境，通过本机 API/worker 执行。若步骤选择大模型 API 评分，应按本机 API 工作流执行；远程服务器 worker 当前不领取评分队列。
 
 ```sh
 ssh -N -L 13700:127.0.0.1:3700 <ssh-user>@<server-host>
@@ -30,17 +30,21 @@ bun cli/index.ts remote answer start --workflow <题目UUID> --request-key <本�
 bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本次UUID>
 ```
 
-`run` 一次提交并等待服务器完成，再下载本机所需原件副本和脱敏产物；`start` 只提交，`status` 查询服务器状态，`sync` 可在断线后继续本机文件收尾。只入库或只脱敏分别使用 `--mode intake`、`--mode redact`。相同题目、模式和请求标识重复提交返回同一操作；请求响应不确定时用原 `workflow` 和 `request-key` 查询或同步，不能生成新标识盲目重做。本机文件完整且指纹一致时才报告 `ready_for_local_authoring`；服务器成功但本机下载失败时继续运行 `sync`。全局库的 `library job --target server`另要求该revision所有blob的storage_target匹配；当前普通上传只建立local blob，remote material不自动迁移库级文件。CLI 只接受 localhost URL，以 SSH 隧道转发到服务器端口；不在命令行输入令牌。
+`run` 一次提交并等待服务器完成，再下载本机所需原件副本和脱敏产物；`start` 只提交，`status` 查询服务器状态，`sync` 可在断线后继续本机文件收尾。只入库使用 `--mode intake`；`--mode redact` 仅兼容人工已脱敏声明。相同题目、模式和请求标识重复提交返回同一操作；请求响应不确定时用原 `workflow` 和 `request-key` 查询或同步，不能生成新标识盲目重做。本机文件完整且指纹一致时才报告 `ready_for_local_authoring`；服务器成功但本机下载失败时继续运行 `sync`。全局库的 `library job --target server`另要求该revision所有blob的storage_target匹配；当前普通上传只建立local blob，remote material不自动迁移库级文件。CLI 只接受 localhost URL，以 SSH 隧道转发到服务器端口；不在命令行输入令牌。
 
 远程作答复用既有 ordinal 5 队列：服务器只领取 `execution_target=server` 的作答 attempt；相同题目与请求标识重复提交返回原 attempt 集合，失败后若要显式重试须生成新请求标识。`status` 仅返回 attempt 状态和时间，不返回答案正文；共享数据库中的正常工作流页面和结果接口仍负责查看作答。服务器作答暂不支持项目步骤钩子；普通本机派发仍使用 `execution_target=local`，既有本地队列行为不变。
 
+远程 `redact`／`intake-redact` 不执行 API 模型脱敏，只兼容全部附件均为 `declared_redacted` 的旧工作流。需要生成化名时使用本机共享材料库 Agent；旧模式有任一附件需要模型处理即拒绝。
+
 ## 共享材料库与期次
 
-材料处理仅两种：默认Agent化名使用`library job start --kind redact --extraction-job UUID --project 期次UUID`；原文无需脱敏，直接使用成功提取版本。新任务模板固定codex_plan，历史mask读取保留但不得再派发。任务读取并冻结数据库提示词，最多10分钟，到限不自动重试。
+项目目录使用仓库相对引用，如`--workspace-path projects/豆包高经济价值/第六期 --skill-path projects/豆包高经济价值/skill`。创建/修改均由API校验本机目录存在并保存相对路径；仓库内绝对输入仍可接受，不能新绑定仓库外目录。`project update --workspace-path`用于调整材料库期次工作区；只是同一目录的表示变化不失效结果。规则与历史兼容见[项目目录契约](../server/README.md#项目目录与多机路径)。材料上传清单、下载输出目录等本机文件参数保持各自契约。
+
+材料处理仅两种：默认Agent化名使用`library job start --kind redact --extraction-job UUID --project 期次UUID`；原文无需脱敏，直接使用成功提取版本。新任务模板固定codex_plan，历史mask读取保留但不得再派发。任务读取并冻结数据库提示词，使用本次冻结执行预算，到限不自动重试。
 
 计划导入和导出共用服务端采用的格式校验；模板身份与摘要须成对提供。旧计划完全不带模板字段时保留兼容。导出成功只证明来源、精确编辑及覆盖有效；正式导入还需核对当前模板、活动任务和数据库事务。重放原导入请求须保留原plan与request-key，不能修改plan后复用旧key。
 
-全局材料包不隶属于单个项目；主项目用稳定 group ID 关联多个期次，每期仍是独立 project/workflow 范围。创建新期次用 `project create --material-backend library_v1 --workspace-path <绝对路径> --parent-name <主项目> --phase-name <期名> --phase-no <正整数>`，或用 `--project-group UUID` 关联已有主项目。缺省backend为library_v1；旧目录创建须显式指定legacy。首期必须以--skill-path明确共享Skill目录，后续期次复用主项目既有路径。
+全局材料包不隶属于单个项目；主项目用稳定 group ID 关联多个期次，每期仍是独立 project/workflow 范围。创建新期次用 `project create --material-backend library_v1 --workspace-path <仓库相对路径> --parent-name <主项目> --phase-name <期名> --phase-no <正整数>`，或用 `--project-group UUID` 关联已有主项目。缺省backend为library_v1；旧目录创建须显式指定legacy。首期必须以--skill-path明确共享Skill目录，后续期次复用主项目既有路径。
 
 仅指定`--project-group`时，CLI先读取该ID的当前主项目名称再创建期次；显式给出`--parent-name`仍由服务端核对一致性。不能用期次显示名称代替主项目名称。
 
@@ -87,7 +91,7 @@ CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、�
 | 等待已派发任务 | `attempt wait` | CLI → 本机 API | 默认只读状态元信息；到期/中断不取消后台任务 |
 | 查询/下载成果和 Excel | `result`、`export list/create/download`、`artifact download`、`siriser download` | CLI → 本机 API | 读取或显式生成/下载；下载仅写新文件，不覆盖 |
 | 导出未达标题包或指定题目的复核包 | `export failed/review` | CLI → 本机 API并写仓库固定目录 | 依当前题目、作答、评分绑定导出文件；不改变工作流状态 |
-| 让服务器执行入库、PDF提取、脱敏 | `remote material start/run/status/sync` | CLI → SSH 隧道 → 服务器 API/worker | 固定 request-key 幂等提交；成功后按哈希同步本机管理副本 |
+| 让服务器执行入库、PDF提取、人工声明处理 | `remote material start/run/status/sync` | CLI → SSH 隧道 → 服务器 API/worker | 固定 request-key 幂等提交；成功后按哈希同步本机管理副本 |
 | 让服务器执行模型作答 | `remote answer start/run/status` | CLI → SSH 隧道 → 服务器 API/worker | 创建/查找服务器归属的作答尝试；不返回答案正文 |
 
 远程部署已具备源码路径不等于当前服务器已具备运行能力。远程命令仅能验证它连接到的服务实际返回；迁移、部署、共享数据库、文件挂载和 worker 状态应另行核对。
@@ -111,6 +115,13 @@ CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、�
 | `question delete` | `--project`、`--workflow`、`--confirm-title` | 精确核对期次、题目类型和标题后软删除单题；有活动尝试时拒绝 | `commands.ts` → `DELETE /api/workflows/:id` |
 | `workflow status` | `--project` + `--ids` 或 `--all` | 当前状态、就绪原因及活动尝试摘要 | `commands.ts` |
 | `workflow design update` | `--workflow` + 一个或多个 `--direction`、`--scenario`、`--role` | 更新既有题目的出题设计输入；值变化时会重置步骤4—8并使相关导出失效 | `commands.ts` → `PATCH /api/workflows/:id/authoring-direction` |
+| `workflow authoring restore` | `--workflow UUID --attempt UUID` | 恢复已保存且可恢复的出题结果；不重新调用模型 | `POST /api/workflows/:id/authoring-results/:attemptId/restore` |
+| `workflow archive withdraw` | `--workflow UUID` | 显式撤回归档，保留历史；重新执行仍需单独派发 | `POST /api/workflows/:id/withdraw-archive` |
+| `library redaction revalidate` | `--redaction UUID` | 复核已发布Agent产物，追加复核记录；不修改原文、旧题快照或自动重新脱敏 | `POST /api/material-library/redactions/:id/revalidate` |
+| `workflow hooks show` | `--workflow UUID` | 读取钩子状态、错误及检查点标记 | `GET /api/workflows/:id/hooks` |
+| `hook retry` | `--hook UUID [--acknowledge-side-effects]` | 显式同步补执行；非幂等副作用确认仅在指定旗标时发送 | `POST /api/hooks/:id/retry` |
+| `attempt resume-hooks` | `--attempt UUID [--acknowledge-side-effects]` | 兼容旧主尝试的钩子失败续跑，不代替新后置钩子补执行 | `POST /api/attempts/:id/resume-hooks` |
+| `workflow delivery show` | `--workflow UUID` | 只读归档状态、最近及逐目标飞书回执；查询成功不等于交付成功 | `GET /api/workflows/:id?view=status` |
 | `rules list/file` | `--project`；file另需 `--path` | 读取项目规则清单/规则文件，不修改规则 | `commands.ts` |
 | `models catalog/show` | show需 `--project` | 查看系统可选模型或项目模型及阈值 | `commands.ts` |
 | `material text` | `--workflow`、`--material`、`--redacted-only` | 只读取当前脱敏正文；不能省略显式脱敏旗标 | `commands.ts` |
@@ -156,7 +167,8 @@ bun run ai-distill result show --workflow <题目UUID> --json
   ],
   "steps": {
     "author_question": { "model": "gpt-6.1-sol", "reasoning_effort": "high", "material_processing_mode": "aliases", "material_source_mode": "redacted", "prompt": "查看指定 skill，依据本次附件出题。" },
-    "independent_score": { "model": "gpt-6.1-sol", "reasoning_effort": "medium", "prompt": "按题面和rubric逐项评分。" }
+    "independent_score": { "model": "gpt-6.1-sol", "reasoning_effort": "medium", "prompt": "按题面和rubric逐项评分。" },
+    "accept_or_revise": { "aggregation": { "mode": "mean_at_most", "model_count": 2, "threshold": 50 } }
   },
   "answer_generation_policy": { "request_timeout_minutes": 60, "reasoning_threshold_minutes": 45, "skip_scoring_on_qualified_timeout": false }
 }
@@ -164,11 +176,21 @@ bun run ai-distill result show --workflow <题目UUID> --json
 
 各配置键可单独省略；`codex: null` 表示恢复全局 Codex 默认，`steps` 中支持恢复默认的步骤可用 `null`。新 `library_v1` 题目的 `author_question.material_source_mode` 可设为 `redacted` 或 `original`，省略时服务端默认为 `redacted`；该选择只影响之后创建的题目，并由题目快照冻结，已有题目不切换来源。`models` 必须提供至少一个已登记系统模型及其阈值，CLI不擅自替用户挑模型或设分数；先用 `models catalog` 查看可选模型，再用 `models show --project` 核对当前集合。设置按顺序调用现有 API；中途失败时此前成功项保留，返回已应用和未应用项，不自动回滚。`project update` 只提交指定字段并沿用其余当前值；改变材料根目录会按服务端契约同步发现题目，改变 skill 路径会使相关出题结果失效。
 
+`steps` 可配置 `author_question`、`model_answer`、`independent_score`、`accept_or_revise`。达标 `{}` 恢复逐模型严格分数上限，`aggregation` 显式选择均分规则；均分例子只适用于用户指定的模型数量和门槛，不是默认值。修改达标配置会由服务端使当前判定、归档及相关导出失效；CLI不主动重算或重新派发。达标配置不接受 `null` 删除，使用 `{}`。仅出题、评分配置支持 `null` 恢复默认。
+
+API 评分时，将 `steps.independent_score` 替换为以下对象（不会修改项目作答模型集合）：
+
+```json
+{ "provider": "api", "api": { "provider": "openrouter", "base_url": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-v4.1-flash" }, "prompt": "按题面和rubric逐项评分。" }
+```
+
+模型和供应商是配置示例，不代表本机额度或供应商已验收；凭证由服务端解析，不能写进设置文件。项目 Agent 默认仍使用兼容键 `codex`，步骤覆盖及新任务配置冻结由服务端管理。设置与执行语义分别见 [Agent](../server/agent/README.md)、[API调用](../server/llm-api/README.md)、[评分](../server/scoring/README.md)。CLI不提供独立底层模型调用入口，也不绕过业务队列。
+
 删除需要 `--confirm-name` 与当前项目名称完全一致。CLI删除的是项目数据库工作流数据；服务端保留项目配置容器及全局设置，不删来源目录、skill 和本地管理文件。删除是显式操作，不会由普通流程或 `--all` 隐式触发。
 
 `material text` 需要题目 ID、材料 ID 和 `--redacted-only`，始终读取当前数据库脱敏产物。`question show`/`result show` 返回现有工作流详情，含当前题目、作答、评分、判定与产物清单；`attempt show` 按精确任务 ID 读取完整尝试，可能含敏感业务正文，仅按需使用。默认不输出原件正文或私有文件。
 
-第八步也异步派发：HTTP返回任务ID，使用attempt wait等待；全部必需产物成功才提交归档成功，不以派发202作为可下载证明。各项目继续使用自身交付脚本和成果契约。
+第八步异步派发：HTTP返回任务ID，使用attempt wait等待本地归档终态；Work必需五件套在归档前完成，豆包飞书在归档后同步并保存独立回执。不以派发202或本地归档成功作为外部交付证明。各项目继续使用自身交付脚本和成果契约。
 
 第七步在评分全部结束后自动计算达标状态；未达标题目由用户决定是否按普通步骤重新出题、作答和评分。`publish_export` 是归档步骤，`export create` 是单独的 Excel 操作。下载命令必须给 `--out`，父目录须存在，文件权限600且禁止覆盖已有文件。创建、修改、删除项目及应用设置均为显式写操作，按当前 API 的校验、事务和失效规则执行。
 
@@ -186,7 +208,17 @@ Work 五件套的 CLI 流程：先用 `step dispatch publish_export --project UU
 bun run ai-distill workflow design update --workflow <题目UUID> --direction <新出题方向> --scenario <场景> --role <角色视角>
 ```
 
-至少提供一个字段；未提供的字段保持原值。只有值实际变化时，服务端才重置 ordinal 4—8、使活动尝试失效并标记相关导出过期。该命令不派发出题；设置确认后仍须显式执行 `step dispatch author_question`，再按普通步骤重新作答和评分。全局材料包工作流不支持此接口。
+至少提供一个字段；未提供的字段保持原值，传入空文本（例如 `--direction ""`）清空该字段。只有值实际变化时，服务端才重置 ordinal 4—8、使活动尝试失效并标记相关导出过期。该命令不派发出题；设置确认后仍须显式执行 `step dispatch author_question`，再按普通步骤重新作答和评分。全局材料包工作流不支持此接口。
+
+## 显式恢复与交付确认
+
+先读取原 workflow／attempt／hook ID 的状态与错误，再选择恢复入口；写请求响应未知时继续查询同一对象，不自动重试。
+
+- 已有出题保存检查点：`workflow authoring restore` 复用原结果，服务端决定是否仍可恢复，不能用它覆盖新版本。
+- 脱敏复核：`library redaction revalidate` 仅复核Agent已发布产物；`valid=false` 或 `usable_for_question=false` 返回部分失败，不自动生成新任务。
+- 钩子失败：先 `workflow hooks show`；新后置增强用 `hook retry`，旧失败主尝试才用 `attempt resume-hooks`。未指定 `--acknowledge-side-effects` 时发送false，副作用不明或运行中的拒绝由服务端保留，不能为绕过拒绝自动补确认。同步补执行HTTP最多等待180秒；超时不表示服务端未执行，先读原hook状态。续跑命令只返回接受回执，随后按原attempt查询。
+- 归档后返修：先显式 `workflow archive withdraw`，再按用户要求修改设计／派发；撤回不释放主项目材料历史使用记录。
+- `attempt wait` 的 `completion_scope=attempt` 只确认尝试终态。豆包飞书尾段在本地归档后运行，另用 `workflow delivery show` 读取最近及逐目标回执；`outcome=complete` 只代表查询完成。核对准确目标、当前版本和 `status=succeeded`、`verification.status=passed`；缺失、旧回执或旧服务不含逐目标字段均保持未知。该查询不实时访问飞书；远端现状不确定时不能宣称仍已交付。`unknown`／`dispatching` 先核实远端，只有明确失败或缺失才在授权内显式补传，不重新归档。
 
 ## 状态和错误契约
 
@@ -194,7 +226,7 @@ bun run ai-distill workflow design update --workflow <题目UUID> --direction <�
 
 `library documents export --plan 私有计划.json --out 新目录` 由 CLI 通过 HTTP 重新读取已入库提取原文，验证来源摘要，应用 Codex 明确给出的编辑，再按材料范围生成独立 Markdown、正文 JSON 和材料清单。它不运行模型、不重新OCR、不入库、不派发后续任务；自然人关联、代称和分册判断由 Codex 按项目 Skill 先完成。执行成功仅证明机械校验及文件写入，不证明脱敏无遗漏或文书边界正确。
 
-计划 `format=codex-material-export-v1`，包含 `revision_id`、`extraction_job_id`、`files[{file_id,text_sha256}]`、`edits[{file_id,page,start,end,source_text,replacement_text}]`、`documents[{id,title,segments[{file_id,page,start,end}]}]`，以及可选安全 `notes`。文件摘要是该文件所有页原文按 `\n` 拼接后的UTF-8 SHA256；偏移使用JavaScript UTF-16、左闭右开，编辑定位原文，分册定位编辑后的页文本。全部附件、非空处理后页必须完整覆盖；重叠编辑、来源变化、分册遗漏/重复及不安全文件名被拒绝。计划包含原文片段，只能私有保存，不放入交付目录。输出目录必须不存在；写入失败清理本次创建目录。正文不添加原页定位和识别提示，来源范围留在私有计划。
+计划 `format=codex-material-export-v1`，包含 `revision_id`、`extraction_job_id`、`files[{file_id,text_sha256}]`、`edits[{file_id,page,start,end,source_text,replacement_text}]`、`documents[{id,title,segments[{file_id,page,start,end}]}]`，以及可选安全 `notes`。文件摘要是该文件所有页原文按 `\n` 拼接后的UTF-8 SHA256；偏移使用JavaScript UTF-16、左闭右开，编辑定位原文，分册定位编辑后的页文本。全部附件、非空处理后页必须完整覆盖；重叠编辑、来源变化、分册遗漏/重复被拒绝；标题与安全文件名分开，空标题使用序号、非法文件名字符自动净化，序号防止同名覆盖。计划包含原文片段，只能私有保存，不放入交付目录。输出目录必须不存在；写入失败清理本次创建目录。正文不添加原页定位和识别提示，来源范围留在私有计划。
 
 `material-export.ts` 实现上述机械处理，`commands.ts` 仅分发命令。项目操作 Skill 见 `projects/Work法律全场景/material-prep/SKILL.md`。
 
@@ -214,7 +246,7 @@ bun run ai-distill workflow design update --workflow <题目UUID> --direction <�
 
 等待按轮次公平查询全部任务，最多4个并发读取；终态不再轮询，前几个长任务不占住后续查询。等待上限1小时，GET单次等待不超过30秒；HTTP传输等待35秒是单次请求故障边界，不改变模型执行超时。读取故障保留其他任务结果，不取消任务；下次直接以同一 ID 读取。POST 永不自动重试，超时/断开/响应解析失败标记 `outcome_unknown`，先查状态再处理。后组派发失败保留此前已取得的任务 ID 和未发送范围。
 
-`attempt wait` 默认请求 `view=status`，仅保留 id、workflow_id、ordinal、status、error、started_at、finished_at、completed 和单项 read_error，不读取题面、答案及评分正文；旧服务忽略视图时 CLI 仍投影这些字段。`attempt show` 或 `attempt wait --full` 可按需读取原有完整结果，HTTP 默认视图仍保留完整 result。服务端长轮询每秒查询一次，剩余预算不足1秒则只等待剩余时间；取消及时唤醒，不取消持久任务。无需正文时不使用 `--full`。
+`attempt wait` 返回 `completion_scope=attempt`，不覆盖外部交付确认。默认请求 `view=status`，仅保留 id、workflow_id、ordinal、status、error、started_at、finished_at、completed 和单项 read_error，不读取题面、答案及评分正文；旧服务忽略视图时 CLI 仍投影这些字段。`attempt show` 或 `attempt wait --full` 可按需读取原有完整结果，HTTP 默认视图仍保留完整 result。服务端长轮询每秒查询一次，剩余预算不足1秒则只等待剩余时间；取消及时唤醒，不取消持久任务。无需正文时不使用 `--full`。
 
 ## 可配置批次清单
 
@@ -253,7 +285,7 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/remote-materials.test
 
 ## 选择脱敏模板
 
-`library template list`及`library template show --template ID`读取提示词、workflow、digest；不要从旧笔记推断当前规则。`library job start --kind redact ... --template ID`按数据库模板选择实际流程；省略模板默认aliases/codex_plan，自动进入本机Agent消费池。Agent模型和推理强度沿用系统Agent设置并在入队冻结。Agent读取整包、维护私有固定虚构姓名表、保留法院名称并输出字段/结构块语义计划；程序计算偏移、校验并在现有事务保存。最多10分钟，到限停止保留私有进度，不自动重试。显式mask或旧字段映射新任务会被拒绝；CLI本身不调用模型。
+`library template list`及`library template show --template ID`读取提示词、workflow、digest；不要从旧笔记推断当前规则。`library job start --kind redact ... --template ID`按数据库模板选择实际流程；省略模板默认aliases/codex_plan，自动进入本机Agent消费池。Agent模型和推理强度沿用系统Agent设置并在入队冻结。Agent读取整包、维护私有固定虚构姓名表、保留法院名称并输出字段/结构块语义计划；程序计算偏移、校验并在现有事务保存。使用本次冻结执行预算，到限停止保留私有进度，不自动重试。显式mask或旧字段映射新任务会被拒绝；CLI本身不调用模型。
 
 新计划在既有`codex-material-export-v1`上增加`template_id`和`template_digest`。单文件documents show返回structure及field_ranges，原页UTF-16编辑必须位于单个字段内，分册定位替换后正文且不切断表格/列表。export与import均校验模板摘要和结构；import保存新版本，不切换项目选版。无模板旧计划保留文本兼容，不能声称保留表格结构。
 

@@ -3,9 +3,9 @@
  * 关键方法与用途：`enqueueProjectSkill()` 冻结来源和配置；`runNextProjectSkill()` 生成并保存候选；`listProjectSkillAttempts()` 查询尝试历史。
  * 使用场景：`app.ts` 提交／查询，`worker.ts` 执行生成任务。
  */
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {runExternalCall} from '../external-call';
-import {resolveRepositoryPath} from '../paths';
+import {resolveRepositoryPath,resolveProjectPath} from '../paths';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -26,9 +26,10 @@ export async function enqueueProjectSkill(pool:Pool,id:string,raw:unknown,option
   const config={provider:'codex',model:validated.model,reasoning_effort:validated.reasoning_effort};
   const paths=await resolveRuleWorkspacePaths(project),workspace=paths.workspace_path;
   const template=typeof project.parent_name==='string'&&typeof project.local_skill_path==='string'
-   ?resolve(project.local_skill_path)
+   ?resolveProjectPath(project.local_skill_path)
    :resolveRepositoryPath(options.template??process.env.SKILL_BASE_TEMPLATE_DIR??'templates/company-legal-task');
   const source=await scanRuleWorkspace(workspace,template,'workspace',paths.materials_path);if(source.issues.length)throw new HTTPException(409,{message:'基础模板或本期资料不完整'});
+  await supersedeForeignPending(db,{kind:'skill',id});
   const existing=(await db.query("SELECT id,status,input,config FROM ai_distill.project_skill_attempts WHERE project_id=$1 AND status IN ('waiting','running','succeeded') ORDER BY created_at DESC",[id])).rows;
   const previous=existing.find(row=>row.input.source_digest===source.source_digest&&JSON.stringify(row.config)===JSON.stringify(config));
   // JSONB property order is irrelevant to frozen config equality.

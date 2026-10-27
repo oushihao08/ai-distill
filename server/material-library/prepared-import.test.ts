@@ -23,7 +23,7 @@ test('同版模板导入保留结构，配置变更后原请求仍幂等，新�
  const root=await mkdtemp(join(tmpdir(),'redaction-template-'));const s=settings();saveLibraryProcessingSettings(root,0,s);
  const template=resolveLibraryTemplate(s,'aliases'),text='姓名\t张三',structure=[{id:'t',kind:'table',rows:[{cells:[{text:'姓名'},{text:'张三',columnSpan:2}]}]}];
  const doc=JSON.stringify({version:1,source_sha256:'source',pages:[{page:1,text,structure,issues:[]}]});
- const plan={format:'codex-material-export-v1',template_id:template.id,template_digest:template.digest,revision_id:rid,extraction_job_id:ext,files:[{file_id:file,text_sha256:sha(text)}],edits:[{file_id:file,page:1,start:3,end:5,source_text:'张三',replacement_text:'人员甲'}],documents:[{id:'d',title:'确认书',segments:[{file_id:file,page:1,start:0,end:6}]}]};
+ const plan={format:'codex-material-export-v1',template_id:template.id,template_digest:template.digest,revision_id:rid,extraction_job_id:ext,files:[{file_id:file,text_sha256:sha(text)}],edits:[{file_id:file,page:1,start:3,end:5,source_text:'张三',replacement_text:'人员甲'}],documents:[{id:'d',title:'确认书:../'+'长'.repeat(101),segments:[{file_id:file,page:1,start:0,end:6}]}]};
  let prior:any,frozen:any,index:any,inserts=0;
  const query=async(sql:string,values:any[]=[])=>{
   if(sql.startsWith('SELECT package_id'))return{rows:[{package_id:'package'}]};
@@ -49,6 +49,6 @@ test('同版模板导入保留结构，配置变更后原请求仍幂等，新�
   const legacy=await importPreparedLibraryMaterials(pool,rid,{request_key:key,plan:legacyPlan},root);
   expect(legacy).toMatchObject({structure_mode:'extracted-page-text'});expect(inserts).toBe(2);
   expect(index.materials[0].document.pages[0].blocks).toEqual([{id:'prepared-1',kind:'paragraph',text:'姓名\t人员甲'}]);
-  expect(index.preparation_layout).toBe('extracted-page-text');
+  expect(index.preparation_layout).toBe('extracted-page-text');expect(index.prepared_documents[0].title).toBe(plan.documents[0]!.title);
  }finally{await rm(root,{recursive:true,force:true});}
 });

@@ -3,7 +3,8 @@
  * 关键方法与用途：`enqueueExtraction()` 冻结解析设置并排队；`runNextExtraction()` 领取当前版本任务、复用缓存并发布页级文本。
  * 使用场景：`app.ts` 与目录入库队列派发，`worker.ts` 消费。
  */
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
+import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication} from '../execution-queue/runtime';
 import {runExternalCall} from '../external-call';
 import {ProjectDocumentExtractor,type DocumentExtractor} from './document';
 import {invalidateMaterialResults} from './state';
@@ -38,6 +39,7 @@ export async function enqueueExtraction(pool: Pool, id: string, executionTarget:
   const pdfProvider=resolvePdfProvider();
   const pdfConfig={pdf_provider:pdfProvider,model:'mineru-vlm',base_url:'https://mineru.net',ocr_version:MINERU_OCR_VERSION,processor:'pdf-text-ingestion-structured-v1'};
   const config=materialCheck.rows[0]?.docxs?{...pdfConfig,docx_version:MINERU_DOCX_VERSION}:pdfConfig;
+  await supersedeForeignPending(client,{kind:'step',id,ordinal:2},executionTarget);
   const active=(await client.query("SELECT execution_target FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=2 AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id])).rows[0];
   if(active&&active.execution_target!==executionTarget)throw new HTTPException(409,{message:'当前 PDF 提取任务由另一执行位置处理'});
   // Keep active work unique; only successful work with the same frozen configuration is reusable.
@@ -78,6 +80,7 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
  const heartbeat=setInterval(()=>{if(heartbeatInFlight)return;heartbeatInFlight=true;pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running'",[job.id]).catch(error=>withLogContext(taskContext,()=>{logEvent('heartbeat.write_failed',{level:'error',...classifyLogError(error)});console.error('处理任务心跳写入失败');})).finally(()=>{heartbeatInFlight=false;});},10000);
  let publication;
  try{
+  await emitLifecycle(pool,'before', {stage:'extract',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
   const materials=await pool.query("SELECT id,storage_path,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND (lower(original_name) LIKE '%.pdf' OR lower(original_name) LIKE '%.docx') ORDER BY created_at,id",[job.workflow_id]);
   if(JSON.stringify(materials.rows.map(({id,sha256})=>({id,sha256})).sort((a,b)=>a.id.localeCompare(b.id)))!==JSON.stringify(job.input?.materials))throw new Error('任务附件已变化，结果未发布');
   const cacheRows=await pool.query("SELECT DISTINCT ON (m.sha256) m.sha256 AS source_sha256,ar.storage_path,ar.sha256,a.id AS attempt_id,m.id AS material_id FROM ai_distill.artifacts ar JOIN ai_distill.materials m ON m.id=ar.material_id JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE m.workflow_id=$1 AND lower(m.original_name) LIKE '%.pdf' AND ar.kind='private_extracted_pages' AND a.ordinal=2 AND COALESCE(a.config->>'pdf_provider','glm-ocr')=COALESCE($2::jsonb->>'pdf_provider','glm-ocr') AND (a.config->>'ocr_version')=($2::jsonb->>'ocr_version') AND (a.config->>'model')=($2::jsonb->>'model') AND (a.config->>'base_url')=($2::jsonb->>'base_url') ORDER BY m.sha256,ar.created_at DESC,ar.id DESC",[job.workflow_id,JSON.stringify(job.config)]);
@@ -116,7 +119,9 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
    await db.query('COMMIT');forgetLocalRegistrations(db);
    logEvent('attempt.completed',{level:publication.blocked?'error':'info',state:status});
   }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
+  await emitLifecycle(pool,publication.blocked?'failed':'committed', {stage:'extract',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
  }catch(error){
+  await emitLifecycle(pool,signal?.aborted?'cancelled':'failed',{stage:'extract',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
   deferLocalPublication(error);
   if(signal?.aborted){await requeueExtraction(pool,job);return true;}
   logEvent('attempt.failed',{level:'error',state:'failed',...classifyLogError(error)});

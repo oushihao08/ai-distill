@@ -35,6 +35,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   project settings show --project UUID
   question list --project UUID | question show --workflow UUID
   workflow status --project UUID (--ids UUID,... | --all)
+  workflow hooks show --workflow UUID | workflow delivery show --workflow UUID
   material text --workflow UUID --material UUID --redacted-only
   rules list --project UUID | rules file --project UUID --path skill/SKILL.md
   models catalog | models show --project UUID
@@ -48,7 +49,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
 显式写入：
   batch create --project UUID (--ids UUID,... | --all) --size 数量 --to STEP_KEY --out 清单路径
   batch skip --file 清单路径 --ids UUID,... --reason 原因（仅记录本轮跳过，不取消任务）
-  project create --name 显示名称 [--material-backend legacy --material-root 绝对路径 | --material-backend library_v1 --workspace-path 绝对路径] [--parent-name 主项目 --phase-name 期数 --phase-no N] [--project-group UUID] [--skill-path 绝对路径] [--settings-file JSON]
+  project create --name 显示名称 [--material-backend legacy --material-root 仓库相对路径 | --material-backend library_v1 --workspace-path 仓库相对路径] [--parent-name 主项目 --phase-name 期数 --phase-no N] [--project-group UUID] [--skill-path 仓库相对路径] [--settings-file JSON]
     默认 library_v1、期号1、Agent化名；需要 --workspace-path，首期明确 --skill-path；旧目录须显式 --material-backend legacy。
   project phase-update --project UUID --phase-no N --phase-name 期名 --expected-name 当前完整名称
   project-group rename|archive|restore --group UUID [--name 主项目名称]
@@ -63,13 +64,19 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   project materials remove|restore --project UUID --link UUID --version N
   project materials question --project UUID --link UUID --version N (--redaction UUID | --revision UUID) --title 名称 --request-key UUID [--role 角色] [--scenario 场景] [--level L2|L3|L4|L5] [--direction 方向] [--tags a,b]
   question delete --project UUID --workflow UUID --confirm-title 精确题目名（软删除单题；有活动尝试时拒绝）
+  workflow design update --workflow UUID [--direction 文本] [--scenario 文本] [--role 文本]（至少一项；空文本清空，不派发）
+  workflow authoring restore --workflow UUID --attempt UUID（恢复已保存结果，不重新调用模型）
+  workflow archive withdraw --workflow UUID（撤回当前归档，保留历史）
+  library redaction revalidate --redaction UUID（复核已发布Agent产物，追加校验记录）
+  hook retry --hook UUID [--acknowledge-side-effects]（显式补执行；不自动确认副作用）
+  attempt resume-hooks --attempt UUID [--acknowledge-side-effects]（仅旧失败主尝试续跑）
   project material use update --project UUID --use UUID --version N --status in_use|submitted --reason 原因 [--evidence-file JSON]
   project legacy-materials list --project UUID | project legacy-materials import --project UUID --workflow UUID --request-key UUID [--apply --digest SHA256] | project legacy-materials activate --project UUID --import UUID
   library processing show | library processing update --version N --file JSON
   library package revisions|usage --package UUID
   project material-mode --project UUID --clear-existing（隐藏旧题并切换为材料包模式）
   question create --material-package UUID --redaction-attempt UUID --title 名称 [--scenario 场景] [--role 角色] [--level L2|L3|L4|L5] [--direction 出题方向]（旧材料包兼容接口）
-  project update --project UUID [--name 显示名称] [--parent-name 主项目] [--phase-name 期数] [--description 说明] [--material-root 绝对路径] [--skill-path 绝对路径]
+  project update --project UUID [--name 显示名称] [--parent-name 主项目] [--phase-name 期数] [--description 说明] [--workspace-path 仓库相对路径] [--material-root 仓库相对路径] [--skill-path 仓库相对路径]
   project delete --project UUID --confirm-name 项目完整名称
   project settings apply --project UUID --file JSON
   project sync --project UUID（刷新来源清单并按页数／大小切割超限PDF，可能使旧结果失效）
@@ -91,7 +98,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   feishu sync --workflow UUID [--base-token BASE --table TABLE]
   feishu sync-batch --project UUID --ids UUID,... --out 新进度文件.json [--base-token BASE --table TABLE]
 STEP_KEY 使用 step list；不使用页面序号。派发只执行一个步骤，不自动继续。
-attempt wait 默认仅返回状态元信息；完整正文使用 attempt show 或 wait --full。
+attempt wait 默认仅返回状态元信息；完整正文使用 attempt show 或 wait --full；归档终态不代表飞书交付完成，另查 workflow delivery show。
 退出码：0 完成/派发已接受（不等于业务达标），1 命令/HTTP 错误，2 部分失败/未就绪，3 等待到期仍运行，130 中断。
 `;
 
@@ -102,9 +109,9 @@ function parse(args: string[]) {
     if (!value.startsWith('--')) { words.push(value); continue; }
     const key=value.slice(2);
     if (flags.has(key)) throw new CliError(`参数重复：--${key}`);
-    if (['all','redacted-only','json','help','full','clear-existing','ready-only','archived-only','include-removed','apply'].includes(key)) flags.set(key,true);
+    if (['all','redacted-only','json','help','full','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects'].includes(key)) flags.set(key,true);
     else {
-      const next=args[++i]; if(!next||next.startsWith('--')) throw new CliError(`参数缺值：--${key}`);
+      const next=args[++i]; if(next===undefined||next.startsWith('--')) throw new CliError(`参数缺值：--${key}`);
       flags.set(key,next);
     }
   }
@@ -150,7 +157,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'project list':[], 'project show':['project'], 'project create':['name','parent-name','phase-name','phase-no','project-group','description','material-root','workspace-path','skill-path','settings-file','material-mode','material-backend'],
       'project phase-update':['project','phase-no','phase-name','expected-name'],
       'project material-mode':['project','clear-existing'],
-      'project update':['project','name','parent-name','phase-name','description','material-root','skill-path'], 'project delete':['project','confirm-name'],
+      'project update':['project','name','parent-name','phase-name','description','material-root','workspace-path','skill-path'], 'project delete':['project','confirm-name'],
       'project settings show':['project'], 'project settings apply':['project','file'], 'project sync':['project'],
       'project-group list':[],'project-group phases':['group'],'project-group rename':['group','name'],'project-group archive':['group'],'project-group restore':['group'],
       'project material candidates':['project','q','page','page-size','source-mode'],'project material uses':['project'],
@@ -168,11 +175,16 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project'],
       'library job show':['job'],'library job cancel':['job'],
       'library template list':[],'library template show':['template'],
+      'library redaction revalidate':['redaction'],
       'library documents show':['revision','extraction-job','file'],'library documents export':['plan','out'],'library documents import':['plan','request-key'],'library redaction show':['redaction','file'],
       'library file download':['file','out'],
       'library processing show':[],'library processing update':['version','file'],
       'material-package list':['project'],'material-package versions':['workflow'],
       'question list':['project'],'question show':['workflow'],'question delete':['project','workflow','confirm-title'],'question create':['material-package','redaction-attempt','title','scenario','role','level','direction'],'workflow status':['project','ids','all'],
+      'workflow design update':['workflow','direction','scenario','role'],
+      'workflow authoring restore':['workflow','attempt'],'workflow archive withdraw':['workflow'],
+      'workflow hooks show':['workflow'],'workflow delivery show':['workflow'],
+      'hook retry':['hook','acknowledge-side-effects'],'attempt resume-hooks':['attempt','acknowledge-side-effects'],
       'material text':['workflow','material','redacted-only'],'rules list':['project'],'rules file':['project','path'],
       'models catalog':[],'models show':['project'],'attempt show':['attempt'],'attempt wait':['ids','timeout','full'],
       'queue show':[],'queue diagnose':[],'queue cancel':['job'],'advice show':['workflow'],'advice generate':['workflow','project','ids','all'],
@@ -241,8 +253,8 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const steps=object(settings.steps,'步骤设置');
         for(const [key,value] of Object.entries(steps)){
           const step=getStepDefinition(key);
-          if(!step?.visible||![4,5,6].includes(step.ordinal))throw new CliError(`不支持通过设置文件修改步骤：${key}`);
-          if(value===null){if(![4,6,9].includes(step.ordinal))throw new CliError(`步骤 ${key} 不支持恢复默认`);operations.push({key:`steps.${key}`,path:`/api/projects/${projectId}/steps/${step.ordinal}/config`,method:'DELETE'});}
+          if(!step?.visible||![4,5,6,7].includes(step.ordinal))throw new CliError(`不支持通过设置文件修改步骤：${key}`);
+          if(value===null){if(![4,6].includes(step.ordinal))throw new CliError(`步骤 ${key} 不支持恢复默认`);operations.push({key:`steps.${key}`,path:`/api/projects/${projectId}/steps/${step.ordinal}/config`,method:'DELETE'});}
           else operations.push({key:`steps.${key}`,path:`/api/projects/${projectId}/steps/${step.ordinal}/config`,method:'PUT',body:object(value,`步骤 ${key} 设置`)});
         }
       }
@@ -279,6 +291,36 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
     };
     let data: any;
     switch(command) {
+      case 'workflow design update': {
+        const workflow=uuid('workflow'),body:Record<string,string|null>={};
+        for(const [flag,key] of [['direction','authoring_direction'],['scenario','scenario'],['role','role_perspective']] as const){
+          if(!flags.has(flag))continue;
+          const value=flags.get(flag);
+          if(typeof value!=='string')throw new CliError(`--${flag} 须为文本`);
+          body[key]=value.trim()?value:null;
+        }
+        if(!Object.keys(body).length)throw new CliError('至少提供出题方向、场景或角色视角');
+        data=await patch(`/api/workflows/${workflow}/authoring-direction`,body);break;
+      }
+      case 'workflow authoring restore': data=await post(`/api/workflows/${uuid('workflow')}/authoring-results/${uuid('attempt')}/restore`);break;
+      case 'workflow archive withdraw': data=await post(`/api/workflows/${uuid('workflow')}/withdraw-archive`);break;
+      case 'library redaction revalidate': {
+        data=object(await post(`/api/material-library/redactions/${uuid('redaction')}/revalidate`),'脱敏复核');
+        return{outcome:data.valid===true&&data.usable_for_question===true?'complete':'partial',data};
+      }
+      case 'workflow hooks show': data=await get(`/api/workflows/${uuid('workflow')}/hooks`);break;
+      case 'attempt resume-hooks': data=await post(`/api/attempts/${uuid('attempt')}/resume-hooks`,{acknowledge_side_effects:flags.has('acknowledge-side-effects')});break;
+      case 'hook retry': {
+        data=object(await api.json(`/api/hooks/${uuid('hook')}/retry`,'POST',{acknowledge_side_effects:flags.has('acknowledge-side-effects')},signal,{},180000),'钩子补执行');
+        return{outcome:data.status==='succeeded'?'complete':'partial',data};
+      }
+      case 'workflow delivery show': {
+        const workflow=uuid('workflow').toLowerCase(),detail=object(await get(`/api/workflows/${workflow}?view=status`),'交付状态');
+        if(detail.workflow?.id!==workflow||!Array.isArray(detail.steps))throw new CliError('交付响应身份或步骤无效',{kind:'invalid_response'});
+        const archive=detail.steps.find((step:any)=>step.ordinal===8);
+        return{outcome:'complete',data:{workflow_id:workflow,archive:{status:archive?.status??null,error:archive?.error??null},feishu_sync:archive?.result?.feishu_sync??null,feishu_deliveries:archive?.result?.feishu_deliveries??null},
+          note:'只读服务端当前归档状态与飞书回执；查询完成不代表交付成功。逐目标核对succeeded及verification.status=passed；缺失或旧回执保持未知，不自动同步或重试。'};
+      }
       case 'feishu config show': data=await readFeishuConfig(api,uuid('project'),signal);break;
       case 'feishu config set': {
         const project=uuid('project'),target=feishuTarget(required('base-token'),required('table'))!;
@@ -458,8 +500,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const root=flags.has('material-root')?required('material-root'):undefined;
         const workspace=flags.has('workspace-path')?required('workspace-path'):undefined;
         const skill=flags.has('skill-path')?required('skill-path'):undefined;
-        if((backend==='legacy'&&(!root||!root.startsWith('/')))||(backend==='library_v1'&&(!workspace||!workspace.startsWith('/')))
-          ||(root&&!root.startsWith('/'))||(workspace&&!workspace.startsWith('/'))||(skill&&!skill.startsWith('/')))throw new CliError('目录须为本机绝对路径；legacy 需要 material-root，library_v1 需要 workspace-path');
+        if((backend==='legacy'&&!root)||(backend==='library_v1'&&!workspace))throw new CliError('legacy 需要 material-root，library_v1 需要 workspace-path；项目目录使用仓库相对路径');
         const settings=flags.has('settings-file')?await readJsonFile(required('settings-file'),'项目设置'):undefined;
         const materialMode=flags.has('material-mode')?required('material-mode'):(backend==='legacy'?'question_folders':'material_packages');
         if(!['question_folders','material_packages'].includes(materialMode))throw new CliError('material-mode 须为 question_folders 或 material_packages');
@@ -495,13 +536,14 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'project update': {
         const projectId=uuid('project'),current=object(await get(`/api/projects/${projectId}`),'项目').project;
         if(!current)throw new CliError('项目响应缺少详情',{kind:'invalid_response'});
-        if(!['name','parent-name','phase-name','description','material-root','skill-path'].some(key=>flags.has(key)))throw new CliError('project update 至少需要一个要修改的字段');
+        if(!['name','parent-name','phase-name','description','material-root','workspace-path','skill-path'].some(key=>flags.has(key)))throw new CliError('project update 至少需要一个要修改的字段');
         const library=current.material_backend==='library_v1';
+        if(!library&&flags.has('workspace-path'))throw new CliError('旧目录项目使用 material-root，不设置材料库工作区');
         if(library&&flags.has('material-root'))throw new CliError('材料库期次通过加载材料包使用材料，不设置旧材料目录');
         const root=flags.has('material-root')?required('material-root'):current.material_root;
         const skill=flags.has('skill-path')?required('skill-path'):undefined;
-        if((!library&&(typeof root!=='string'||!root.startsWith('/')))||(skill!==undefined&&!skill.startsWith('/')))throw new CliError('材料目录和 skill 目录须为本机绝对路径');
-        data=await patch(`/api/projects/${projectId}`,{name:flags.has('name')?required('name'):current.name,description:flags.has('description')?required('description'):current.description,...(!library?{material_root:root}:{}),...(flags.has('parent-name')?{parent_name:required('parent-name')} : {}),...(flags.has('phase-name')?{phase_name:required('phase-name')} : {}),...(skill!==undefined?{local_skill_path:skill}:{})});break;
+        if(!library&&(typeof root!=='string'||!root.trim()))throw new CliError('旧目录项目需要材料目录');
+        data=await patch(`/api/projects/${projectId}`,{name:flags.has('name')?required('name'):current.name,description:flags.has('description')?required('description'):current.description,...(!library?{material_root:root}:{}),...(flags.has('parent-name')?{parent_name:required('parent-name')} : {}),...(flags.has('phase-name')?{phase_name:required('phase-name')} : {}),...(skill!==undefined?{local_skill_path:skill}:{}),...(flags.has('workspace-path')?{workspace_path:required('workspace-path')}:{})});break;
       }
       case 'project delete': {
         const projectId=uuid('project'),current=object(await get(`/api/projects/${projectId}`),'项目');
@@ -626,5 +668,5 @@ async function waitAttempts(api: ApiClient, ids: string[], timeout: number, sign
   const attempts=ids.map(attempt=>({id:attempt,...(snapshots.get(attempt)??{}),...(errors.has(attempt)?{read_error:errors.get(attempt)}:{})}));
   const stillRunning=attempts.some(a=>!a.status||['waiting','running'].includes(a.status));
   return {outcome:errors.size||attempts.some(a=>a.status==='failed')?'partial':stillRunning?'waiting':'complete',attempts,
-    note:'终态仅代表执行结束；达标结论须重新读取 result show。等待到期不会取消或重新派发任务。'};
+    completion_scope:'attempt',note:'终态仅代表attempt执行结束；达标结论须重新读取 result show。归档成功不代表飞书交付完成，须另查 workflow delivery show 的回执。等待到期不会取消或重新派发任务。'};
 }

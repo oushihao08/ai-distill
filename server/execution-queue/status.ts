@@ -14,7 +14,7 @@ export function projectStepExecution(attempt:ExecutionAttempt|null|undefined,que
  const q=queue??(localQueueEnabled()?localExecutionQueue():null);if(!q)return;
  const base={source:'local_queue' as const,attempt_id:attempt.id,executor_id:attempt.executor_id??null,generation:attempt.generation??null};
  if(!attempt.executor_id)return{...base,source:'shared_attempt',scope:'unowned',state:attempt.status,active:false,label:'旧任务未归属，待核实'};
- if(attempt.executor_id!==q.executorId)return{...base,source:'shared_attempt',scope:'other_executor',state:attempt.status,active:false,label:attempt.status==='running'?'其他执行端 · 运行待核实':'其他执行端 · 排队待核实'};
+ if(attempt.executor_id!==q.executorId)return{...base,source:'shared_attempt',scope:'other_executor',state:attempt.status,active:false,label:attempt.status==='running'?'其他执行端 · 运行待核实':'其他执行端 · 未执行意图（非本机队列）'};
  const job=q.get(attempt.id);
  if(!job)return{...base,scope:'local',state:'missing',active:false,label:'本机任务记录缺失，待核实'};
  if(job.generation!==attempt.generation)return{...base,scope:'local',state:'generation_mismatch',active:false,label:'执行代次不一致，待核实'};

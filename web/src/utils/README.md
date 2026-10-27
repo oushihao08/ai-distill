@@ -8,3 +8,5 @@
 `material-folder.ts` 统一新包与新文件集合的文件夹选择规则：PDF/DOCX/TXT/MD、最多100份、拒绝同名文件；仅处理File引用，不读取正文。
 
 `material-folder.test.ts` 用合成File清单验证PDF/DOCX混合目录、目录命名、忽略其他类型和同名冲突；不替代操作系统原生文件夹选择验收。
+
+`workflow-status.ts` 同时提供批量判断的结论计数和原因翻译，区分计算完成、达标、未达标、等待及隔离；两个批量入口共用，未知原因保留原码。

@@ -3,6 +3,7 @@
  * 关键方法与用途：`receiveMaterials()` 校验并保存原件与指纹，解析本地文档并更新附件及下游失效状态。
  * 使用场景：由上传 API 或入库队列调用；material_packages兼容模式登记材料包工作流，question_folders登记题目；全局库上传由material-library处理，派生题目的附件不能在此重写。
  */
+import {emitProjectLifecycle as emitLifecycle} from './lifecycle';
 import type { Pool } from 'pg';
 import {invalidateMaterialResults} from './materials/state';
 import { HTTPException } from 'hono/http-exception';
@@ -18,7 +19,7 @@ export interface IntakeInput { projectId: string; requestId: string; title: stri
  * 以数据库事务登记本次材料并把上传字节写入受管理存储；文件系统与数据库不是同一原子事务，来源原件不会被改写。
  * 附件变化时同步使旧步骤失效，提交结果不确定时保留文件供核对，避免误删已提交材料。
  */
-export async function receiveMaterials(pool: Pool, storageRoot: string, input: IntakeInput) {
+async function receiveMaterialsCore(pool: Pool, storageRoot: string, input: IntakeInput) {
  const { projectId, requestId } = input;
  const restoreLogContext=enterLogContext({component:'intake',operation_id:requestId,operation:'receive_materials',project_id:projectId,workflow_id:input.workflowId,attempt_id:input.job?.attemptId});
  logEvent('intake.started',{level:'info',material_count:input.files.length,input_bytes:input.files.reduce((sum,file)=>sum+file.size,0)});
@@ -146,4 +147,16 @@ export async function receiveMaterials(pool: Pool, storageRoot: string, input: I
      }
      throw error;
    } finally { client.release();restoreLogContext(); }
+}
+
+/** 上传与队列共用生命周期边界；回调不在材料事务中执行。 */
+export async function receiveMaterials(pool:Pool,storageRoot:string,input:IntakeInput){
+ const context={stage:'intake',execution_id:input.job?.attemptId??input.requestId,project_id:input.projectId,workflow_id:input.job?.workflowId??input.workflowId};
+ try{
+  await emitLifecycle(pool,'before',context);
+  const result=await receiveMaterialsCore(pool,storageRoot,input);
+  await emitLifecycle(pool,'reused' in result&&result.reused?'skipped':input.files.length?'committed':'skipped',{...context,workflow_id:result.id,data:{result}});
+  if(!('reused' in result)&&input.files.length&&!input.files.some(file=>/\.(pdf|docx)$/i.test(file.name)))await emitLifecycle(pool,'skipped',{...context,stage:'extract',workflow_id:result.id});
+  return result;
+ }catch(error){await emitLifecycle(pool,'failed',context);throw error;}
 }

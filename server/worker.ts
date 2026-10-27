@@ -12,7 +12,7 @@ import {createAnswerClient} from './answer-models/dispatch';
 import { runNextExtraction } from './materials/jobs';
 import { runNextRedaction } from './materials/redaction-jobs';
 import { runNextIntake } from './intake-jobs';
-import { createFairQueueHandler,createSharedQueueProbe,createWorkerShutdown,runWorkerPool } from './worker-pool';
+import { createFairQueueHandler,createSharedQueueProbe,createWorkerShutdown,runWorkerPool,watchWorkerBatchInput } from './worker-pool';
 import { createWorkerMonitor } from './monitoring/worker-monitor';
 import {runNextScore} from './scoring/jobs';
 import {runIndependentApiScore} from './scoring/executor';
@@ -20,7 +20,6 @@ import {runNextProjectSkill} from './skill-generation/jobs';
 import {runNextPublication} from './publishing/tasks';
 import {runNextAuthoring} from './authoring/jobs';
 import {stageHookAffinitySql,type StageWorkerMode} from './workflow-hook-jobs';
-import {runNextHook} from './workflow-hook-worker';
 import {runNextRemoteMaterialOperation} from './remote-material-operations';
 import {hasLibraryQueueWork} from './material-library/jobs';
 import {runNextLibraryJob} from './material-library/runner';
@@ -69,6 +68,11 @@ let pool:ReturnType<typeof createPool>;
 try{pool=createPool();}catch(error){logEvent('service.start_failed',{level:'error',component:'task_worker',...classifyLogError(error)});await logger.close();throw error;}
  configureAgentCredentialHome(()=>readAgentCredentialHome(pool));
 const controller = new AbortController();
+const batchInput=process.env.WORKER_BATCH_STDIN;
+if(batchInput!==undefined&&(batchInput!=='1'||!localQueueEnabled()||!workflowIds?.length)){
+ await pool.end();await logger.close();throw new Error('WORKER_BATCH_STDIN=1仅用于明确限定工作流的本机临时worker');
+}
+let batchDrain:ReturnType<typeof watchWorkerBatchInput>|undefined;
 const shutdown=createWorkerShutdown(controller);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => shutdown.request(signal));
 const monitor = createWorkerMonitor(pool, root, {min_available_percent:Number(process.env.WORKER_MIN_AVAILABLE_PERCENT ?? 10)});
@@ -86,8 +90,9 @@ let agentConcurrencyGate:ReturnType<typeof getAgentConcurrencyGate>|undefined;
 console.log(`后台任务进程已启动，模式 ${workerMode}${workflowIds?.length?`，限定 ${workflowIds.length} 个工作流`:''}。材料 ${workflowIds?.length?0:workerMode==='api'&&materialExecutionTarget!=='server'?0:materialConcurrency} 路，Agent ${workerMode==='api'||workerMode==='materials'||workerMode==='server'?0:concurrency.agent} 路，模型 API ${workerMode==='local'||workerMode==='materials'?0:concurrency.llmApi} 路。`);
 logEvent('service.started',{level:'info',component:'task_worker',pid:process.pid});
 try {
+ if(batchInput==='1')batchDrain=watchWorkerBatchInput(Bun.stdin.stream());
  await monitor.start();
- if(localQueueEnabled()){await runLocalQueueWorker(pool,root,controller.signal,concurrency,monitor.beforeDispatch,workerMode,workflowIds,materialExecutionTarget);}else{
+ if(localQueueEnabled()){await runLocalQueueWorker(pool,root,controller.signal,concurrency,monitor.beforeDispatch,workerMode,workflowIds,materialExecutionTarget,batchDrain?.signal);}else{
  const dispatchAgentQueue=createFairQueueHandler(workflowIds?.length?[
   ()=>runNextAnswer(pool,root,createAnswerClient().answer,controller.signal,'all','local','codex',workflowIds),
   ()=>runNextAuthoring(pool,root,undefined,controller.signal,workflowIds),
@@ -121,10 +126,6 @@ try {
  if(workerMode==='all'||workerMode==='local')pools.push(runWorkerPool(
   ()=>runNextPublication(pool,root,controller.signal,workflowIds),
   {component:'publication',concurrency:1,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000},
- ));
- if(!workflowIds?.length&&(workerMode==='all'||workerMode==='local'))pools.push(runWorkerPool(
-  async()=>{try{return await runNextHook(pool,controller.signal,workerMode as 'local'|'all');}catch(error){throw error;}},
-  {component:'workflow_hooks',concurrency:1,beforeDispatch:monitor.beforeDispatch,signal:controller.signal,idleMs:3000,errorDelayMs:5000,onError:()=>{console.error('项目附加钩子执行失败，请查看对应记录');}},
  ));
  if(!workflowIds?.length&&(workerMode==='materials'||workerMode!=='api'||materialExecutionTarget==='server'))pools.push(runWorkerPool(
   async()=>await probeMaterials()&&!controller.signal.aborted?dispatchMaterialQueue():false,
@@ -188,4 +189,4 @@ try {
  await Promise.all(pools);
  }
 } catch(error) { logEvent('service.runtime_failed',{level:'error',component:'task_worker',...classifyLogError(error)});throw error; }
-finally { try { await monitor.stop(); } finally { if(agentConcurrencyGate)closeAgentConcurrencyGate(root);await pool.end();shutdown.dispose();logEvent('service.stopped',{level:'info'});await logger.close(); } }
+finally { try { try{await batchDrain?.close();}finally{await monitor.stop();} } finally { if(agentConcurrencyGate)closeAgentConcurrencyGate(root);await pool.end();shutdown.dispose();logEvent('service.stopped',{level:'info'});await logger.close(); } }

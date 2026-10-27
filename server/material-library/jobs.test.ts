@@ -67,8 +67,8 @@ test('selects existing provider lanes from frozen files and settings',()=>{
  expect(chooseLibraryExecutor('intake',[],null)).toBe('internal');
  expect(chooseLibraryExecutor('extract',[{format:'txt'}],null)).toBe('internal');
  expect(chooseLibraryExecutor('extract',[{format:'pdf'}],null)).toBe('api');
- expect(()=>chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'declared_redacted'}],{provider:'api'})).toThrow('已删除');
- expect(()=>chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'model'}],{provider:'api'})).toThrow('已删除');
+ expect(chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'declared_redacted'}],{provider:'api'})).toBe('api');
+ expect(chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'model'}],{provider:'api'})).toBe('api');
  expect(chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'model'}],{provider:'codex'})).toBe('agent');
  expect(()=>chooseLibraryExecutor('redact',[{format:'docx',redaction_mode:'model'}],{provider:'codex'},'server')).toThrow();
 });
@@ -150,4 +150,55 @@ test('library history projects a whole active group in one SELECT and skips term
   const rows=await projectLibraryJobExecutions(pool,jobs);expect(count).toBe(1);expect(rows.map(row=>(row as any).execution?.scope)).toEqual(['unowned','unowned',undefined]);
   await projectLibraryJobExecutions(pool,[jobs[2]!]);expect(count).toBe(1);
  });}finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
+});
+
+test('Agent claim uses the frozen budget above ten minutes without a second ceiling',async()=>{
+ const previous=process.env.EXECUTION_QUEUE_MODE;let timeout=0;
+ const client={query:async(sql:string,v:any[]=[])=>{
+  if(sql.startsWith('SELECT j.*,p.name'))return{rows:[{id:'job',kind:'redact',config_snapshot:{redaction_template:{workflow:'codex_plan'},settings:{execution:{task_timeout_ms:1200000}}}}]};
+  if(sql.startsWith("UPDATE ai_distill.library_jobs SET status='running'")){timeout=v[2];return{rows:[{id:'job'}],rowCount:1};}
+  return{rows:[],rowCount:0};
+ },release(){}};
+ try{process.env.EXECUTION_QUEUE_MODE='legacy';await claimLibraryJob({query:async()=>({rows:[{available:true}]}),connect:async()=>client} as any,'agent','local');expect(timeout).toBe(1200000);}
+ finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;}
+});
+
+test('Agent enqueue freezes the saved execution budget without reducing it to ten minutes',async()=>{
+ const {mkdtemp,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const {saveLibraryProcessingSettings}=await import('./settings');const root=await mkdtemp(join(tmpdir(),'library-budget-'));
+ const previous=process.env.EXECUTION_QUEUE_MODE;let frozen:any;
+ const settings={version:1,extraction:{protocol:'v1',provider_config:{}},redaction:{provider:'codex',model:'gpt-6-luna',reasoning_effort:'high',prompt:'合成模板'},execution:{task_timeout_ms:1200000,request_timeout_ms:1000},policy:{preserve_dates:true,preserve_amounts:true}};
+ const query=async(sql:string,v:any[]=[])=>{
+  if(sql.startsWith('SELECT id,processing_settings'))return{rows:[{id:'package'}]};
+  if(sql.startsWith('SELECT id,package_id,state'))return{rows:[{id:'revision',package_id:'package',state:'ready',manifest_sha256:'hash',file_count:1}]};
+  if(sql.startsWith('SELECT f.id'))return{rows:[{id:'file',original_name:'synthetic.txt',storage_target:'local',position:1,sha256:'hash',size_bytes:1}]};
+  if(sql.startsWith('SELECT id,status,input_digest'))return{rows:[{id:'extraction',status:'succeeded'}]};
+  if(sql.startsWith('SELECT d.id AS document_id'))return{rows:[{document_id:'doc',file_id:'file',source_sha256:'hash',document_sha256:'doc-hash',text_sha256:'text-hash',page_count:1,issues:[]}]};
+  if(sql.startsWith('INSERT INTO ai_distill.library_jobs')){frozen=JSON.parse(v[9]);return{rows:[{id:'job'}]};}
+  return{rows:[],rowCount:0};
+ };
+ try{process.env.EXECUTION_QUEUE_MODE='legacy';saveLibraryProcessingSettings(root,0,settings);
+  await enqueueLibraryJob({connect:async()=>({query,release(){}})} as any,'package','revision',{kind:'redact',extraction_job_id:'11111111-1111-4111-8111-111111111111',request_key:'22222222-2222-4222-8222-222222222222',execution_target:'local',agent_settings:{model:'gpt-6-luna',reasoning_effort:'high'}},root);
+  expect(frozen.settings.execution.task_timeout_ms).toBe(1200000);
+ }finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
+});
+
+test('API enqueue freezes explicit model and uses API lane without consulting Agent defaults',async()=>{
+ const {mkdtemp,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const {saveLibraryProcessingSettings}=await import('./settings');const root=await mkdtemp(join(tmpdir(),'library-budget-'));
+ const previous=process.env.EXECUTION_QUEUE_MODE;let frozen:any,lane:unknown;
+ const settings={version:1,extraction:{protocol:'v1',provider_config:{}},redaction:{provider:'codex',model:'gpt-6-luna',reasoning_effort:'high',prompt:'合成模板'},execution:{task_timeout_ms:1200000,request_timeout_ms:1000},policy:{preserve_dates:true,preserve_amounts:true}};
+ const query=async(sql:string,v:any[]=[])=>{
+  if(sql.startsWith('SELECT id,processing_settings'))return{rows:[{id:'package'}]};
+  if(sql.startsWith('SELECT id,package_id,state'))return{rows:[{id:'revision',package_id:'package',state:'ready',manifest_sha256:'hash',file_count:1}]};
+  if(sql.startsWith('SELECT f.id'))return{rows:[{id:'file',original_name:'synthetic.txt',storage_target:'local',position:1,sha256:'hash',size_bytes:1}]};
+  if(sql.startsWith('SELECT id,status,input_digest'))return{rows:[{id:'extraction',status:'succeeded'}]};
+  if(sql.startsWith('SELECT d.id AS document_id'))return{rows:[{document_id:'doc',file_id:'file',source_sha256:'hash',document_sha256:'doc-hash',text_sha256:'text-hash',page_count:1,issues:[]}]};
+  if(sql.startsWith('INSERT INTO ai_distill.library_jobs')){frozen=JSON.parse(v[9]);lane=v[10];return{rows:[{id:'job'}]};}
+  return{rows:[],rowCount:0};
+ };
+ try{process.env.EXECUTION_QUEUE_MODE='legacy';saveLibraryProcessingSettings(root,0,settings);
+  await enqueueLibraryJob({connect:async()=>({query,release(){}})} as any,'package','revision',{kind:'redact',extraction_job_id:'11111111-1111-4111-8111-111111111111',request_key:'22222222-2222-4222-8222-222222222222',execution_target:'local',api_settings:{provider:'siliconflow',base_url:'https://api.siliconflow.com/v1',model:'deepseek-ai/DeepSeek-V4.1-Flash'}},root);
+  expect(frozen.settings.execution.task_timeout_ms).toBe(1200000);expect(lane).toBe('api');expect(frozen.settings.redaction.provider).toBe('api');expect(frozen.settings.redaction.api.model).toBe('deepseek-ai/DeepSeek-V4.1-Flash');expect(frozen.redaction_template.workflow).toBe('codex_plan');
+ }finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
 });

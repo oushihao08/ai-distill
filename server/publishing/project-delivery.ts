@@ -1,7 +1,7 @@
 /**
  * 职责：解析主项目的可选交付脚本，并在归档校验通过后以独立进程执行。
  * 关键入口：`resolveProjectDelivery()` 固定脚本版本；`loadProjectArchive()`读取可选项目准备入口；`runProjectDelivery()`执行交付。
- * 使用场景：`publishWorkflow()` 在写入 ordinal 8 成功状态前调用；未配置脚本时执行内置空函数。
+ * 使用场景：`publishWorkflow()` 在写入 ordinal 8 成功状态前调用；未配置脚本时直接返回，不生成项目专属产物。
  */
 import {logEvent} from '../logging';
 import type {RedactedDocumentStructure} from '../materials/redacted-docx';
@@ -80,8 +80,6 @@ export async function resolveProjectDelivery(parentName:unknown):Promise<Project
  return{mode:'script',digest:sha256(JSON.stringify(files)),path,projectRoot:root};
 }
 
-async function noopDelivery(_input:DeliveryInput){return;}
-
 /** 无项目准备文件时直接放行；项目准备代码在服务端运行，不向交付子进程传入凭证。 */
 export async function loadProjectArchive(delivery:ProjectDelivery):Promise<ProjectArchiveModule|undefined>{
  if(delivery.mode==='noop'||!delivery.projectRoot)return;
@@ -96,7 +94,7 @@ export async function loadProjectArchive(delivery:ProjectDelivery):Promise<Proje
 
 /** 子进程只接收当前题目数据，不继承数据库凭证；非零退出不允许本次归档成功。outputDir 为该题成果目录。 */
 export async function runProjectDelivery(delivery:ProjectDelivery,input:DeliveryInput,outputDir:string):Promise<void>{
- if(delivery.mode==='noop'){await noopDelivery(input);return;}
+ if(delivery.mode==='noop')return;
  if(!delivery.path||!delivery.projectRoot)throw new HTTPException(409,{message:'项目交付脚本路径缺失'});
  if(!outputDir||!isAbsolute(outputDir))throw new HTTPException(409,{message:'项目交付目录无效'});
  const currentFiles=await deliveryFiles(delivery.projectRoot,delivery.path);

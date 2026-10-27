@@ -38,6 +38,7 @@ function fake(options:{reuse?:boolean;previousByModel?:Record<string,string>;que
   if(sql.startsWith('SELECT config'))return {rowCount:1,rows:[{config:options.projectConfig??config}]};
   if(sql.includes("input->>'model_set_digest' IS DISTINCT FROM"))return {rowCount:0,rows:[]};
   if(options.models?.length&&sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("input->>'model_id' IS NOT DISTINCT FROM")){const prior=options.previousByModel?.[values[3] as string];return {rowCount:prior?1:0,rows:prior?[{id:prior}]:[]};}
+  if(sql.startsWith("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status NOT IN ('skipped','failed')"))return {rows:options.inactive?[]:[{id:'answer'}],rowCount:options.inactive?0:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&!sql.includes("status='running'"))return {rowCount:options.reuse?1:0,rows:options.reuse?[{id:'existing'}]:[]};
   if(sql.startsWith('SELECT a.*'))return {rowCount:options.empty?0:1,rows:options.empty?[]:[job]};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return {rowCount:options.inactive?0:1,rows:options.inactive?[]:[{id:'answer'}]};
@@ -51,6 +52,12 @@ function fake(options:{reuse?:boolean;previousByModel?:Record<string,string>;que
 }
 async function fixture(run:(root:string)=>Promise<void>){const root=await mkdtemp(join(tmpdir(),'answer-jobs-'));try{await writeFile(join(root,'source.md'),'脱敏');await run(root);}finally{await rm(root,{recursive:true,force:true});}}
 const answer=async()=>({text:'答案',requested_model:'qwen/qwen-plus',model:'actual',request_id:null,completion_id:'c',usage:{total_tokens:8},started_at:'2026-10-08T00:00:00Z',finished_at:'2026-10-08T00:00:01Z',duration_ms:1000});
+test('Agent作答落库保留请求模型，实际模型未知时保存null而不回填配置值',async()=>fixture(async root=>{
+ const f=fake();f.job.config={provider:'codex',model:'requested-model',reasoning_effort:'low'};
+ await runNextAnswer(f.pool,root,async()=>({...await answer(),requested_model:'requested-model',model:null,execution_mode:'agent',reasoning_effort:'low'}));
+ const saved=f.calls.find(call=>call.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));
+ expect(saved).toBeDefined();expect(JSON.parse(saved!.values[1])).toMatchObject({requested_model:'requested-model',model:null,text:'答案',execution_mode:'agent'});
+}));
 test('作答领取及中断恢复都按 worker 主机筛选脚本任务',async()=>{
  const f=fake({empty:true});await runNextAnswer(f.pool,'unused',answer,undefined,'api');
  for(const call of f.calls.filter(c=>c.sql.startsWith('SELECT a.*')||c.sql.startsWith('SELECT a.id,a.workflow_id,')))expect(call.sql).toContain("NOT (a.input->'hooks'");
@@ -240,3 +247,10 @@ test.each(['failed','skipped'] as const)('local answer terminal %s restores with
   const write=f.calls.find(c=>c.sql.startsWith('UPDATE ai_distill.step_attempts SET status=$4'));expect(write?.values[3]).toBe(status);expect(write?.values[1]).toBe('已记录终态');
  }finally{queue.close();if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
 });
+
+test('cancellation after a provider response revokes publication without discarding newer state',async()=>fixture(async root=>{
+ const state={inactive:false};const {pool,calls}=fake(state);let invoked=0;
+ await runNextAnswer(pool,root,async()=>{invoked++;state.inactive=true;return answer();});
+ expect(invoked).toBe(1);expect(calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
+ expect(calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(false);
+}));

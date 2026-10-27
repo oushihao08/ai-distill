@@ -3,6 +3,9 @@
  * 入口：resumeHookAttempt() 恢复原失败尝试；registerWorkflowHookRoutes() 装配 Hono 路由。
  * 约束：只恢复程序标记的钩子失败；不自动重复未知主模型调用，不读取或返回私有脚本快照。
  */
+import {runHookScript} from './workflow-hooks';
+import {createHash} from 'node:crypto';
+import {canonicalJson} from '../shared/workflow-config';
 import {releaseRolledBackRegistrations,forgetLocalRegistrations,rearmLocalJob,registerLocalJob} from './execution-queue/runtime';
 import type {Pool} from 'pg';
 import type {Hono} from 'hono';
@@ -46,23 +49,32 @@ export async function resumeHookAttempt(pool:Pool,id:string,acknowledgeSideEffec
   await db.query('COMMIT');forgetLocalRegistrations(db);return {id,reused:false};
  }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
 }
-/** 附加任务独立重试，不触碰主模型任务或达标状态。 */
-export async function retryAsyncHook(pool:Pool,id:string,acknowledgeSideEffects:boolean){
- const db=await pool.connect();
+/** 显式补执行单个增强并等待终态；retryAsyncHook为历史导出名，当前不派队列或模型任务，兼容旧async记录。 */
+export async function retryAsyncHook(pool:Pool,id:string,acknowledgeSideEffects:boolean,execute:typeof runHookScript=runHookScript){
+ const db=await pool.connect();let row:any;
  try{
   await db.query('BEGIN');if(!await hasTable(db))throw conflict('钩子执行表尚未安装，请先应用033迁移');
-  const row=(await db.query(`SELECT h.* FROM ai_distill.hook_runs h WHERE h.id=$1 AND h.mode='async' AND ${activeHookParentSql()} FOR UPDATE OF h`,[id])).rows[0];
+  row=(await db.query(`SELECT h.* FROM ai_distill.hook_runs h WHERE h.id=$1 AND h.mode<>'checkpoint' AND ${activeHookParentSql()} FOR UPDATE OF h`,[id])).rows[0];
   if(!row)throw conflict('附加任务不存在或输入已失效');
-  if(['waiting','running'].includes(row.status)){await db.query('COMMIT');forgetLocalRegistrations(db);return {id,reused:true};}
-  if(!['failed','needs_review'].includes(row.status))throw conflict('附加任务状态不允许重试');
-  if(!row.idempotent&&!acknowledgeSideEffects)throw conflict('钩子副作用状态需要核实；确认可再次执行后才能重试');
-  const saved=await db.query(`UPDATE ai_distill.hook_runs h SET history=history||jsonb_build_array(jsonb_build_object('status',status,'error',error,'started_at',started_at,'finished_at',finished_at)),status='waiting',error=NULL,finished_at=NULL
-   WHERE h.id=$1 AND h.status IN ('failed','needs_review') AND ${activeHookParentSql()} RETURNING id`,[id]);
+  if(row.status==='succeeded'){await db.query('COMMIT');return {id,reused:true,status:'succeeded'};}
+  if(row.status==='running')throw conflict('增强正在执行或完成状态未知，请先核实原执行');
+  if(!['waiting','failed','needs_review','cancelled'].includes(row.status))throw conflict('附加任务状态不允许重试');
+  if(!row.idempotent&&row.status!=='waiting'&&!acknowledgeSideEffects)throw conflict('钩子副作用状态需要核实；确认可再次执行后才能重试');
+  const saved=await db.query(`UPDATE ai_distill.hook_runs h SET history=history||jsonb_build_array(jsonb_build_object('status',status,'error',error,'started_at',started_at,'finished_at',finished_at)),mode='sync',status='running',error=NULL,started_at=now(),finished_at=NULL
+   WHERE h.id=$1 AND h.status IN ('waiting','failed','needs_review','cancelled') AND ${activeHookParentSql()} RETURNING id`,[id]);
   if(!saved.rowCount)throw conflict('附加任务输入已失效');
-  await registerLocalJob(db,id,'hook','hook','hook');
-  await rearmLocalJob(db,id);
-  await db.query('COMMIT');forgetLocalRegistrations(db);return {id,reused:false};
- }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
+  await db.query('COMMIT');
+ }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+ try{
+  const result=await execute(row.snapshot.hook,row.snapshot.payload);
+  const saved=await pool.query(`UPDATE ai_distill.hook_runs h SET status='succeeded',result=$2,result_digest=$3,error=NULL,finished_at=now() WHERE h.id=$1 AND h.status='running' AND ${activeHookParentSql()} RETURNING id`,[id,JSON.stringify(result),createHash('sha256').update(canonicalJson(result)).digest('hex')]);
+  if(!saved.rowCount)throw conflict('增强结束时输入已失效，请核实副作用');
+  return {id,reused:false,status:'succeeded'};
+ }catch(error){
+  const status=row.idempotent?'failed':'needs_review';
+  await pool.query("UPDATE ai_distill.hook_runs SET status=$2,error='生命周期增强执行失败或中断',finished_at=now() WHERE id=$1 AND status='running'",[id,status]);
+  return {id,reused:false,status};
+ }
 }
 function acknowledgment(body:unknown){
  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>key!=='acknowledge_side_effects')||('acknowledge_side_effects' in body&&typeof body.acknowledge_side_effects!=='boolean'))throw new HTTPException(400,{message:'重试参数无效'});
@@ -88,7 +100,7 @@ export function registerWorkflowHookRoutes(app:Hono,pool:Pool){
  });
  app.post('/api/hooks/:id/retry',async c=>{
   const body:unknown=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'重试参数须为有效JSON'});});
-  return c.json(await retryAsyncHook(pool,uuid(c.req.param('id')),acknowledgment(body)),202);
+  return c.json(await retryAsyncHook(pool,uuid(c.req.param('id')),acknowledgment(body)));
  });
  app.get('/api/workflows/:id/hooks',async c=>{
   const id=uuid(c.req.param('id'));
@@ -96,6 +108,7 @@ export function registerWorkflowHookRoutes(app:Hono,pool:Pool){
   if(!visible.rowCount)throw new HTTPException(404,{message:'工作流不存在'});
   if(!await hasTable(pool))return c.json({available:false,runs:[]});
   const runs=await pool.query(`SELECT h.id,h.attempt_id,h.stage,h.position,h.action_id,h.mode,h.status,h.idempotent,h.error,h.result,h.history,h.created_at,h.started_at,h.finished_at,
+   (SELECT a.status FROM ai_distill.step_attempts a WHERE a.id=h.attempt_id) AS parent_status,
    EXISTS(SELECT 1 FROM ai_distill.hook_runs cp WHERE cp.attempt_id=h.attempt_id AND cp.mode='checkpoint' AND cp.status='succeeded') AS checkpoint_available
    FROM ai_distill.hook_runs h WHERE h.workflow_id=$1 AND h.mode<>'checkpoint' ORDER BY h.created_at DESC,h.id LIMIT 200`,[id]);
   return c.json({available:true,runs:runs.rows});

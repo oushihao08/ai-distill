@@ -4,7 +4,7 @@
  * 边界：冻结达标/项目/脚本身份，复用同输入活动任务；未知调用不重放，不自动派发其他步骤。
  */
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
-import {releaseRolledBackRegistrations,forgetLocalRegistrations,localClaimSql,localWaitingSql,registerLocalJob,withLocalQueueRoot,deferLocalPublication,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,localClaimSql,localWaitingSql,registerLocalJob,withLocalQueueRoot,deferLocalPublication,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {fileURLToPath} from 'node:url';
@@ -12,7 +12,8 @@ import {canonicalJson} from '../../shared/workflow-config';
 import {exportCurrentMaterialDocx} from '../materials/redacted-docx-export';
 import {writeArchivedWorkflowWorkbook} from '../reporting/archive-workbook';
 import {publishWorkflow,type PublicationBinding} from './jobs';
-import {syncArchivedWorkflowToFeishu} from './feishu';
+import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
+import {completeProjectPublication} from '../lifecycle/publication';
 import {resolveProjectDelivery,loadProjectArchive} from './project-delivery';
 import {watchTaskCancellation} from '../task-signal';
 import {logEvent,classifyLogError,withLogContext} from '../logging';
@@ -39,6 +40,7 @@ export async function enqueuePublication(pool:Pool,workflowId:string,root:string
   const projectArchive=await loadProjectArchive(await resolveProjectDelivery(binding.parent_name));
   const legacyAgentConfig=await projectArchive?.readConfig?.(db,binding.project_id,workflowId)??null;
   const input={binding,legacy_agent_config:legacyAgentConfig,delivery_identity:identity??null,exports_root:exportsRoot};
+  await withLocalQueueRoot(root,()=>supersedeForeignPending(db,{kind:'step',id:workflowId,ordinal:8}));
   const previous=(await db.query("SELECT id,input FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
   if(previous){
    if(canonicalJson(previous.input)!==canonicalJson(input))throw new HTTPException(409,{message:'此题已有其他输入的交付任务，请先核对原任务'});
@@ -78,7 +80,7 @@ export async function runNextPublication(pool:Pool,root:string,signal:AbortSigna
  const cancellation=watchTaskCancellation(pool,job.id,signal);
  const taskSignal=cancellation.signal;
  return withLogContext({component:'publishing',workflow_id:job.workflow_id,attempt_id:job.id,ordinal:8},async()=>{
-  let beating=false;
+  let beating=false,archiveCommitted=false;
   const heartbeat=setInterval(()=>{
    if(beating)return;beating=true;
    void pool.query("UPDATE ai_distill.step_attempts SET heartbeat_at=now() WHERE id=$1 AND status='running'",[job.id])
@@ -89,6 +91,7 @@ export async function runNextPublication(pool:Pool,root:string,signal:AbortSigna
    taskSignal.throwIfAborted();
    const expected=job.input?.binding as PublicationBinding|undefined;
    if(!expected)throw new Error('交付任务缺少冻结来源');
+   await emitLifecycle(pool,'before',{stage:'delivery',execution_id:job.id,workflow_id:job.workflow_id,project_id:expected.project_id,signal:taskSignal});
    await (dependencies.publish??publishWorkflow)(pool,job.workflow_id,root,job.input.delivery_identity??undefined,{
     attemptId:job.id,expected,signal:taskSignal,exportsRoot:job.input.exports_root,expectedLegacyAgentConfig:job.input.legacy_agent_config??undefined,
     prepareArtifacts:async()=>{
@@ -98,12 +101,16 @@ export async function runNextPublication(pool:Pool,root:string,signal:AbortSigna
      return{material_docx:{archive_path:docx.archive_path,artifact_count:docx.artifacts.length},archive_workbook:{archive_path:workbook.archive_path,sha256:workbook.sha256,filename:workbook.filename}};
     },
    });
-   // 外部提交发生在本地归档提交之后；失败独立记账，不能把已完成归档改为失败。
-   if(!dependencies.publish){
-    try{await syncArchivedWorkflowToFeishu(pool,job.workflow_id,root,job.input.exports_root??assetRoot);}
-    catch(error){logEvent('publication.feishu_receipt_failed',{level:'warn',...classifyLogError(error)});}
-   }
+   archiveCommitted=true;
+   await completeProjectPublication(expected.parent_name,{pool,workflowId:job.workflow_id,root,exportsRoot:job.input.exports_root??assetRoot,signal:taskSignal});
+   await emitLifecycle(pool,'committed',{stage:'delivery',execution_id:job.id,workflow_id:job.workflow_id,project_id:expected.project_id,signal:taskSignal});
   }catch(error){
+   await emitLifecycle(pool,taskSignal.aborted?'cancelled':'failed',{stage:'delivery',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.input?.binding?.project_id,signal:taskSignal});
+   // 项目尾段失败由其回执和失败事件记录；已提交归档不能进入主任务失败/重放路径。
+   if(archiveCommitted){
+    logEvent('publication.project_delivery_failed',{level:'error',reason_code:'project_delivery_after_archive_failed',...classifyLogError(error)});
+    return true;
+   }
    deferLocalPublication(error);
    const diagnosticId=(error as {diagnostic_id?:unknown})?.diagnostic_id;
    const diagnostic=typeof diagnosticId==='string'&&/^[0-9a-f-]{36}$/i.test(diagnosticId)?{diagnostic_id:diagnosticId}:{};

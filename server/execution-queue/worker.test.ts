@@ -89,3 +89,40 @@ test('already-running worker recovers a newly orphaned owner but never replays u
   expect(q.get(dead)?.state).toBe('needs_review');expect(q.get(live)?.state).toBe('running');expect(q.hasUnknownCall(dead)).toBe(true);expect(q.pending('api')).toHaveLength(0);
  }finally{c.abort();if(worker)await worker;q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;await rm(root,{recursive:true,force:true});}
 },12000);
+
+test('foreign-superseded pending records are settled before workflow affinity without executing or reserving running slots',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'queue-superseded-')),q=localQueue(root),before=process.env.EXECUTION_QUEUE_MODE;
+ const c=new AbortController(),id=randomUUID();let worker:Promise<void>|undefined,claims=0;
+ try{
+  process.env.EXECUTION_QUEUE_MODE='local';q.intent(id,'step','api','invalid-test-route');q.confirm(id);
+  const pool={query:async(input:string|{text:string})=>{
+   const sql=typeof input==='string'?input:input.text;
+   if(sql.includes('to_regclass'))return{rows:[{available:true,app:`ai-distill-executor:${q.executorId}`}]};
+   if(sql.startsWith('SELECT j.id,'))return{rows:[{id,status:'skipped',job:{workflow_id:randomUUID(),ordinal:5}}]};
+   if(sql.includes('SELECT j.status'))claims++;
+   return{rows:[]};
+  }} as unknown as Pool;
+  worker=runLocalQueueWorker(pool,root,c.signal,{agent:1,llmApi:1},async()=>true,'api',[randomUUID()]);
+  const deadline=Date.now()+1000;while(q.get(id)?.state==='queued'&&Date.now()<deadline)await Bun.sleep(10);
+  expect(q.get(id)?.state).toBe('stale');expect(q.get(id)?.pid).toBeNull();expect(q.capacity('api',1).waiting).toBe(0);expect(claims).toBe(0);
+ }finally{c.abort();if(worker)await worker;q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;await rm(root,{recursive:true,force:true});}
+});
+
+test('batch drain during metadata lookup cannot claim the newly inspected task',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'queue-drain-race-')),q=localQueue(root),before=process.env.EXECUTION_QUEUE_MODE;
+ const work=new AbortController(),drain=new AbortController(),id=randomUUID();let release!:()=>void,entered!:()=>void;
+ const lookupStarted=new Promise<void>(resolve=>{entered=resolve;}),lookupGate=new Promise<void>(resolve=>{release=resolve;});
+ let running:Promise<void>|undefined;
+ try{
+  process.env.EXECUTION_QUEUE_MODE='local';q.intent(id,'step','api','answer');q.confirm(id);
+  const pool={query:async(input:string|{text:string})=>{
+   const sql=typeof input==='string'?input:input.text;
+   if(sql.includes('to_regclass'))return{rows:[{available:true,app:`ai-distill-executor:${q.executorId}`}]};
+   if(sql.startsWith('SELECT j.id,')){entered();await lookupGate;return{rows:[{id,status:'waiting',job:{workflow_id:'scope',ordinal:5}}]};}
+   return{rows:[]};
+  }} as unknown as Pool;
+  running=runLocalQueueWorker(pool,root,work.signal,{agent:1,llmApi:1},async()=>true,'api',['scope'],'local',drain.signal);
+  await lookupStarted;drain.abort();release();await running;
+  expect(work.signal.aborted).toBe(false);expect(q.get(id)?.state).toBe('queued');
+ }finally{work.abort();release?.();if(running)await running;q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;await rm(root,{recursive:true,force:true});}
+},5000);

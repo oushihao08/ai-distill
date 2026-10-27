@@ -4,7 +4,7 @@ import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {ApiClient} from './client';
-import {runCommand} from './commands';
+import {HELP,runCommand} from './commands';
 
 const project = '00000000-0000-4000-8000-000000000001';
 const question = '00000000-0000-4000-8000-000000000002';
@@ -337,19 +337,19 @@ describe('命令范围和结果', () => {
     expect(JSON.parse(String(calls[0].init?.body)).project_id).toBe(project);
   });
 
-  test('脱敏模板按ID读取，并在字段映射派发中显式冻结选择', async () => {
+  test('脱敏模板按ID读取，并在Agent化名派发中显式冻结选择', async () => {
     const revision='00000000-0000-4000-8000-000000000014';
     const extraction='00000000-0000-4000-8000-000000000015';
-    const template={id:'strict',name:'严格字段模板',workflow:'field_mapping',digest:'a'.repeat(64),redaction:{provider:'api',prompt:'只替换身份证号'}};
+    const template={id:'aliases',name:'Agent化名模板',workflow:'codex_plan',digest:'a'.repeat(64),redaction:{provider:'codex',prompt:'按整包主体表化名'}};
     const {client,calls}=fixture((url,init)=>{
       if(url.pathname==='/api/material-library/redaction-templates')return{items:[template]};
       if(init?.method==='POST')return{id:second,status:'queued',reused:false};
       return{};
     });
     expect((await runCommand(['library','template','list'],client)).data.items).toEqual([template]);
-    expect((await runCommand(['library','template','show','--template','strict'],client)).data).toEqual(template);
-    await runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','local','--request-key',attempt,'--extraction-job',extraction,'--template','strict'],client);
-    expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({kind:'redact',request_key:attempt,execution_target:'local',template_id:'strict',extraction_job_id:extraction});
+    expect((await runCommand(['library','template','show','--template','aliases'],client)).data).toEqual(template);
+    await runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','local','--request-key',attempt,'--extraction-job',extraction,'--template','aliases'],client);
+    expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({kind:'redact',request_key:attempt,execution_target:'local',template_id:'aliases',extraction_job_id:extraction});
   });
 
   test('Codex材料计划通过CLI请求既有HTTP导入接口并保留完整计划', async () => {
@@ -477,4 +477,127 @@ test('CLI advice stops on capacity overflow and keeps known rejections distinct 
  expect(result.outcome).toBe('partial');expect(result.results).toMatchObject([{status:'capacity_exceeded',outcome_unknown:false,dispatched:false},{status:'not_dispatched'}]);expect(result.advice_attempt_ids).toEqual([]);expect(calls.filter(call=>call.startsWith('POST'))).toHaveLength(1);
  const rejected=new ApiClient(undefined,async()=>Response.json({error:'当前题目已达标'},{status:409}));
  await expect(runCommand(['advice','generate','--workflow',question],rejected)).rejects.toMatchObject({detail:{outcome_unknown:false,dispatched:false,http_status:409}});
+});
+
+test('材料导出使用安全独立文件名，保留长标题、冒号和完整正文',async()=>{
+ const {createHash}=await import('node:crypto');const {readdir}=await import('node:fs/promises');
+ const {exportPreparedMaterials}=await import('./material-export');
+ const root=await mkdtemp(join(tmpdir(),'cli-safe-documents-')),text='第一段\n第二段',hash=createHash('sha256').update(text).digest('hex');
+ const title='../材料:长标题/'+ '😀'.repeat(100);
+ const plan={format:'codex-material-export-v1',revision_id:project,extraction_job_id:attempt,files:[{file_id:question,text_sha256:hash}],edits:[],documents:[{id:'d1',title,segments:[{file_id:question,page:1,start:0,end:4}]},{id:'d2',title,segments:[{file_id:question,page:1,start:4,end:text.length}]}]};
+ const {client,calls}=fixture(url=>url.searchParams.has('file_id')?{items:[{file_id:question,page_count:1,pages:[{page:1,text}]}]}:{items:[{file_id:question}]});
+ try{
+  const path=join(root,'plan.json'),out=join(root,'out');await writeFile(path,JSON.stringify(plan));
+  expect((await exportPreparedMaterials(client,path,out)).document_count).toBe(2);
+  const files=await readdir(join(out,'材料'));expect(files).toHaveLength(2);
+  for(const file of files){expect(Buffer.byteLength(file)).toBeLessThan(255);expect(file).not.toContain('/');}
+  const data=JSON.parse(await readFile(join(out,'出题材料.json'),'utf8'));expect(data.documents[0].title).toBe(title);expect(data.documents.map((d:any)=>d.text).join('')).toBe(text);
+  expect(calls.every(c=>!c.init?.method||c.init.method==='GET')).toBe(true);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+// 本轮新增入口仅验证HTTP契约及结果表达，不连接数据库、不执行模型或外部脚本。
+describe('工作流配置与显式恢复入口',()=>{
+ test('设计更新只发送指定字段，空文本可清空且不隐式派发',async()=>{
+  const {client,calls}=fixture(()=>({updated:true}));
+  await runCommand(['workflow','design','update','--workflow',question,'--direction','新方向','--role',''],client);
+  expect(calls).toHaveLength(1);expect(calls[0].url.pathname).toBe(`/api/workflows/${question}/authoring-direction`);
+  expect(calls[0].init?.method).toBe('PATCH');expect(JSON.parse(String(calls[0].init?.body))).toEqual({authoring_direction:'新方向',role_perspective:null});
+  await expect(runCommand(['workflow','design','update','--workflow',question],client)).rejects.toThrow();
+  await expect(runCommand(['workflow','design','update','--workflow','错误ID','--scenario','场景'],client)).rejects.toThrow();
+  expect(calls).toHaveLength(1);
+ });
+ test('精确恢复、撤回和复核分别调用现有接口，失败复核不报完成',async()=>{
+  const {client,calls}=fixture(url=>url.pathname.endsWith('/revalidate')?{id:second,valid:false,usable_for_question:false}:{id:attempt});
+  await runCommand(['workflow','authoring','restore','--workflow',question,'--attempt',attempt],client);
+  await runCommand(['workflow','archive','withdraw','--workflow',question],client);
+  const result=await runCommand(['library','redaction','revalidate','--redaction',second],client);
+  expect(calls.map(c=>[c.url.pathname,c.init?.method])).toEqual([
+   [`/api/workflows/${question}/authoring-results/${attempt}/restore`,'POST'],
+   [`/api/workflows/${question}/withdraw-archive`,'POST'],[`/api/material-library/redactions/${second}/revalidate`,'POST'],
+  ]);expect(result.outcome).toBe('partial');
+  const ok=fixture(()=>({valid:true,usable_for_question:true}));
+  expect((await runCommand(['library','redaction','revalidate','--redaction',second],ok.client)).outcome).toBe('complete');
+ });
+ test('钩子查询和显式恢复保留副作用确认，不自行判断幂等性',async()=>{
+  const {client,calls}=fixture(url=>url.pathname.endsWith('/hooks')?{available:true,runs:[]}:{id:attempt,status:'succeeded'});
+  await runCommand(['workflow','hooks','show','--workflow',question],client);
+  await runCommand(['hook','retry','--hook',second],client);
+  await runCommand(['hook','retry','--hook',second,'--acknowledge-side-effects'],client);
+  await runCommand(['attempt','resume-hooks','--attempt',attempt,'--acknowledge-side-effects'],client);
+  expect(calls.map(c=>[c.url.pathname,c.init?.method])).toEqual([
+   [`/api/workflows/${question}/hooks`,'GET'],[`/api/hooks/${second}/retry`,'POST'],
+   [`/api/hooks/${second}/retry`,'POST'],[`/api/attempts/${attempt}/resume-hooks`,'POST'],
+  ]);
+  expect(calls.slice(1).map(c=>JSON.parse(String(c.init?.body)))).toEqual([{acknowledge_side_effects:false},{acknowledge_side_effects:true},{acknowledge_side_effects:true}]);
+  const rejected=new ApiClient(undefined,async()=>Response.json({error:'副作用需核实'},{status:409}));
+  await expect(runCommand(['hook','retry','--hook',second],rejected)).rejects.toMatchObject({detail:{http_status:409}});
+  for(const status of ['failed','needs_review']){
+   const bad=fixture(()=>({id:second,status}));
+   expect((await runCommand(['hook','retry','--hook',second],bad.client)).outcome).toBe('partial');expect(bad.calls).toHaveLength(1);
+  }
+ });
+ test('恢复命令无效参数时不产生HTTP请求',async()=>{
+  const {client,calls}=fixture(()=>({}));
+  for(const args of [
+   ['workflow','authoring','restore','--workflow',question,'--attempt','bad'],
+   ['workflow','archive','withdraw','--workflow','bad'],['workflow','hooks','show','--workflow','bad'],
+   ['hook','retry','--hook','bad'],['attempt','resume-hooks','--attempt','bad'],
+   ['library','redaction','revalidate','--redaction','bad'],
+  ])await expect(runCommand(args,client)).rejects.toThrow();
+  expect(calls).toHaveLength(0);
+ });
+ test('达标聚合和API评分配置经设置文件原样转交，不在CLI计算或派发',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'cli-decision-config-'));
+  const {client,calls}=fixture(()=>({saved:true}));
+  const score={provider:'api',api:{provider:'openrouter',model:'deepseek/deepseek-v4.1-flash'},prompt:'逐项评分'};
+  const acceptance={aggregation:{mode:'mean_at_most',model_count:2,threshold:50}};
+  try{
+   const path=join(root,'settings.json');await writeFile(path,JSON.stringify({steps:{independent_score:score,accept_or_revise:acceptance}}));
+   expect((await runCommand(['project','settings','apply','--project',project,'--file',path],client)).outcome).toBe('complete');
+   expect(calls.map(c=>c.url.pathname)).toEqual([`/api/projects/${project}/steps/6/config`,`/api/projects/${project}/steps/7/config`]);
+   expect(calls.map(c=>JSON.parse(String(c.init?.body)))).toEqual([score,acceptance]);
+   await writeFile(path,JSON.stringify({steps:{accept_or_revise:null}}));
+   await expect(runCommand(['project','settings','apply','--project',project,'--file',path],client)).rejects.toThrow('不支持恢复默认');
+   expect(calls).toHaveLength(2);
+  }finally{await rm(root,{recursive:true,force:true});}
+ });
+ test('等待仅确认attempt终态，不声称飞书尾段成功',async()=>{
+  const {client,calls}=fixture(()=>({id:attempt,workflow_id:question,ordinal:8,status:'succeeded',completed:true}));
+  const result=await runCommand(['attempt','wait','--ids',attempt],client);
+  expect(result.outcome).toBe('complete');expect(result.completion_scope).toBe('attempt');
+  expect(result.note).toContain('飞书');expect(calls).toHaveLength(1);
+ });
+ for(const status of ['pending','dispatching','unknown','failed','succeeded'])test(`交付查询区分本地归档与飞书${status}回执，不隐式同步`,async()=>{
+  const receipt={status,verification:{status:status==='succeeded'?'passed':'incomplete'}};
+  const {client,calls}=fixture(()=>({workflow:{id:question},steps:[{ordinal:8,status:'succeeded',result:{archived_at:'2026-10-27',feishu_sync:receipt,feishu_deliveries:{'base/table':receipt}}}]}));
+  const result=await runCommand(['workflow','delivery','show','--workflow',question],client);
+  expect(result.data.archive.status).toBe('succeeded');expect(result.data.feishu_sync).toEqual(receipt);
+  expect(result.data.feishu_deliveries['base/table']).toEqual(receipt);expect(result.note).toContain('回执');
+  expect(calls).toHaveLength(1);expect(calls[0].init?.method).toBe('GET');
+ });
+ test('交付缺回执保持未知，缺步骤或身份不符不伪造成功',async()=>{
+  const missing=fixture(()=>({workflow:{id:question},steps:[]}));
+  const result=await runCommand(['workflow','delivery','show','--workflow',question],missing.client);
+  expect(result.data.archive.status).toBeNull();expect(result.data.feishu_sync).toBeNull();
+  const wrong=fixture(()=>({workflow:{id:second},steps:[]}));
+  await expect(runCommand(['workflow','delivery','show','--workflow',question],wrong.client)).rejects.toThrow('身份');
+ });
+ test('新增命令出现在帮助中',()=>{
+  for(const command of ['workflow design update','workflow authoring restore','workflow archive withdraw','workflow hooks show','hook retry','attempt resume-hooks','library redaction revalidate','workflow delivery show'])expect(HELP).toContain(command);
+ });
+});
+
+// 模拟丢失回执，恢复命令不得自动补确认或重复发送。
+test('同步钩子补执行响应未知时只提交一次，保留可查询的原hook ID',async()=>{
+ let calls=0;const client=new ApiClient(undefined,async()=>{calls++;throw new Error('模拟连接断开');});
+ await expect(runCommand(['hook','retry','--hook',second],client)).rejects.toMatchObject({detail:{outcome_unknown:true}});
+ expect(calls).toBe(1);
+});
+
+test('交付查询规范化UUID大小写，仍核对返回身份且只取轻量视图',async()=>{
+ const workflow='abcdefab-0000-4000-8000-000000000001';
+ const {client,calls}=fixture(()=>({workflow:{id:workflow},steps:[]}));
+ expect((await runCommand(['workflow','delivery','show','--workflow',workflow.toUpperCase()],client)).data.workflow_id).toBe(workflow);
+ expect(calls[0].url.searchParams.get('view')).toBe('status');
 });

@@ -33,9 +33,12 @@ test('无钩子路径不依赖新表且主操作只执行一次',async()=>{
 test('后置钩子失败后复用持久主结果，不重复调用模型',async()=>{
  const m=(await modulePromise)!,f=journal();let main=0,checks=0;
  const options={...base,pool:f.pool,hooks:{before:[],after:[hook]},runMain:async()=>{main++;return {text:'原始答案'};},runScript:async()=>{checks++;if(checks===1)throw new Error('fixture');return {notes:['通过'],data:{}};}};
- await expect(m.executeWithStageHooks(options)).rejects.toThrow('钩子');
+ expect(await m.executeWithStageHooks(options)).toEqual({text:'原始答案'});
+ expect(checks).toBe(0);
+ expect(await m.runCommittedStageHooks(options,{text:'原始答案'})).toEqual([{id:'check',status:'failed'}]);
  expect(main).toBe(1);expect([...f.records.values()].find(r=>r.position==='main')?.result).toEqual({text:'原始答案'});
- expect(await m.executeWithStageHooks(options)).toEqual({text:'原始答案'});expect(main).toBe(1);expect(checks).toBe(2);
+ expect(await m.executeWithStageHooks(options)).toEqual({text:'原始答案'});expect(main).toBe(1);
+ expect(await m.runCommittedStageHooks(options,{text:'原始答案'})).toEqual([{id:'check',status:'succeeded'}]);expect(checks).toBe(2);
 });
 test('冻结输入不同不能复用主检查点',async()=>{
  const m=(await modulePromise)!,f=journal();let main=0;
@@ -50,15 +53,15 @@ test('主检查点正文变化不能被当成原始模型输出复用',async()=>
  [...f.records.values()].find(r=>r.position==='main').result.text='被改写';
  await expect(m.executeWithStageHooks(options)).rejects.toThrow('指纹');expect(main).toBe(1);
 });
-test('异步后置动作留给主结果提交事务登记，不在主操作返回前执行',async()=>{
+test('旧异步配置在提交后同步执行，不创建异步记录',async()=>{
  const m=(await modulePromise)!,f=journal();let scriptCalls=0;
  const asyncHook={...hook,action:{...hook.action,mode:'async' as const}};
  const options={...base,pool:f.pool,hooks:{before:[],after:[asyncHook]},runMain:async()=>({text:'答案'}),runScript:async()=>{scriptCalls++;return {notes:[],data:{}};}};
  await m.executeWithStageHooks(options);
  expect([...f.records.values()].filter(r=>r.position==='after')).toHaveLength(0);
- await m.registerAsyncAfterHooks(options,{text:'答案'});
+ await m.runCommittedStageHooks(options,{text:'答案'});
  const row=[...f.records.values()].find(r=>r.position==='after');
- expect(row).toMatchObject({mode:'async',status:'waiting',snapshot:{payload:{output:{text:'答案'}}}});expect(scriptCalls).toBe(0);
+ expect(row).toMatchObject({mode:'sync',status:'succeeded',snapshot:{payload:{output:{text:'答案'}}}});expect(scriptCalls).toBe(1);
 });
 test('前置附加输入保存检查点并按顺序显式传递，后置结果不覆盖主操作',async()=>{
  const m=(await modulePromise)!,f=journal();let received:unknown;

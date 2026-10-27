@@ -3,6 +3,7 @@
  * 关键方法与用途：任务入队读取当前文件清单；`adoptProjectSkill()` 将已核验候选安装到本期覆盖或非分期项目的稳定目录。
  * 使用场景：由 `app.ts` 文件管理接口调用；新出题读取有效 Skill；评分不读取 Skill 正文，历史绑定另行兼容。
  */
+import {projectPathReference} from './paths';
 import type {Pool,PoolClient} from 'pg';
 import {basename,dirname,join,relative,isAbsolute,sep} from 'node:path';
 import {cp,lstat,mkdir,readdir,realpath,rename,rm} from 'node:fs/promises';
@@ -84,12 +85,12 @@ export async function adoptProjectSkill(pool:Pool,id:string,attemptId:string,sto
   const current=await scanRuleWorkspace(workspace,effective.path,'workspace',paths.materials_path),storageRelative=relative(storage,current.skill_path),usesStorage=storageRelative===''||(!storageRelative.startsWith(`..${sep}`)&&storageRelative!=='..'&&!isAbsolute(storageRelative));
   const adoptedPath=phaseOverride?effective.phase_path!:usesStorage?candidate:current.skill_path;
   if(phaseOverride||!usesStorage)replacement=await installSkillSnapshot(adoptedPath,candidate,files);
-  else if(typeof project.parent_name==='string')await db.query('UPDATE ai_distill.projects SET local_skill_path=$1 WHERE parent_name=$2 AND deleted_at IS NULL',[adoptedPath,project.parent_name]);
-  else await db.query('UPDATE ai_distill.projects SET local_skill_path=$2 WHERE id=$1',[id,adoptedPath]);
+  else if(typeof project.parent_name==='string')await db.query('UPDATE ai_distill.projects SET local_skill_path=$1 WHERE parent_name=$2 AND deleted_at IS NULL',[projectPathReference(adoptedPath),project.parent_name]);
+  else await db.query('UPDATE ai_distill.projects SET local_skill_path=$2 WHERE id=$1',[id,projectPathReference(adoptedPath)]);
   await verifyRuleSnapshot(candidate,files);
   await invalidateProjectRuleOutputs(db,id,phaseOverride?'phase':'project');
   await db.query('COMMIT');
   if(replacement)try{await rm(replacement.backup,{recursive:true,force:true});}catch(error){logEvent('file.cleanup.failed',{level:'warn',component:'rules',file_kind:'project_skill_backup',...classifyLogError(error)});}
-  return{local_skill_path:adoptedPath,workspace_path:workspace,skill_source:phaseOverride?'phase':'project'};
+  return{local_skill_path:projectPathReference(adoptedPath),workspace_path:workspace,skill_source:phaseOverride?'phase':'project'};
  }catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){logEvent('db.transaction.rollback_failed',{level:'error',component:'rules',...classifyLogError(rollbackError)});}if(replacement)await replacement.rollback();throw error;}finally{db.release();}
 }

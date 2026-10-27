@@ -13,6 +13,7 @@ import ProjectLibraryMaterials from '../components/ProjectLibraryMaterials.vue';
 import AcceptedQuestionList from '../components/AcceptedQuestionList.vue';
 import AnswerGenerationPolicySettings from '../components/AnswerGenerationPolicySettings.vue';
 import { api } from '../api/client';
+import {acceptanceBatchSummary,batchStepIssue,type BatchStepResult} from '../utils/workflow-status';
 import {resolveMaterialProcessingMode,materialProcessingSourceMode} from '@shared/material-library';
 import { useResource } from '../composables/useResource';
 import { type ProjectDetail,type ProjectStage } from '../types/api';
@@ -22,7 +23,7 @@ usePageBreadcrumbs(()=>{const project=data.value?.project;return [{title:'出题
 const editOpen=shallowRef(false);const tagsOpen=shallowRef(false);const deleteOpen=shallowRef(false);const modelSettingsOpen=shallowRef(false);const materialsSettingsOpen=shallowRef(false);
 const recordsStep=shallowRef<ProjectStage|null>(null);
 const settings=shallowRef<ProjectStage|null>(null);const busy=shallowRef<number|string|null>(null);const message=shallowRef('');
-const exportError=shallowRef('');
+const exportError=shallowRef('');const actionError=shallowRef('');
 const loadedMaterialCount=shallowRef<number|null>(null);
 const usableMaterialCount=shallowRef<number|null>(null);
 function loadedMaterials(count:number,usable:number|null){loadedMaterialCount.value=count;usableMaterialCount.value=usable;}
@@ -61,7 +62,7 @@ async function exportProject(){
 const visibleSteps=computed(()=>data.value?.steps.filter(step=>step.ordinal!==10&&(!isGroupedMaterialPhase.value||![1,9].includes(step.ordinal)))??[]);
 async function runStep(step:ProjectStage,fromPackages=false){
  try{
-  busy.value=step.ordinal;message.value='';error.value='';batchFailures.value=[];
+  busy.value=step.ordinal;message.value='';actionError.value='';error.value='';batchFailures.value=[];
   const createdIds:string[]=[];
   if(step.ordinal===4&&fromPackages){
    for(const pkg of authorablePackages.value){
@@ -73,7 +74,7 @@ async function runStep(step:ProjectStage,fromPackages=false){
     }catch(cause){batchFailures.value.push({workflow_id:pkg.id,title:pkg.title,reason:cause instanceof Error?cause.message:'建题失败'});}
    }
   }
-  const result=await api<{results:{workflow_id:string;status:string;reused?:boolean;attempt_ids?:string[];reason?:string}[]}>(`/projects/${route.params.id}/steps/${step.ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(step.ordinal===4?{workflow_ids:fromPackages?createdIds:questionWorkflows.value.map(question=>question.id)}:{})});
+  const result=await api<{results:BatchStepResult[]}>(`/projects/${route.params.id}/steps/${step.ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(step.ordinal===4?{workflow_ids:fromPackages?createdIds:questionWorkflows.value.map(question=>question.id)}:{})});
   const queued=result.results.filter(item=>item.status==='queued').length;
   const completed=result.results.filter(item=>item.status==='succeeded').length;
   const acceptedSkipped=result.results.filter(item=>item.status==='already_accepted').length;
@@ -83,10 +84,10 @@ async function runStep(step:ProjectStage,fromPackages=false){
   const taskCount=(item:{attempt_ids?:string[]})=>item.attempt_ids?.length??1;
   const newTasks=result.results.filter(item=>item.status==='queued'&&!item.reused).reduce((sum,item)=>sum+taskCount(item),0);
   const reusedTasks=result.results.filter(item=>item.status==='queued'&&item.reused).reduce((sum,item)=>sum+taskCount(item),0);
-  batchFailures.value.push(...result.results.filter(item=>['failed','not_found','not_ready','capacity_exceeded'].includes(item.status)).map(item=>({workflow_id:item.workflow_id,title:data.value?.workflows.find(workflow=>workflow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看服务端日志'})));
-  message.value=`${fromPackages?'从材料包建题并出题':step.name}批量执行结果：新建 ${createdIds.length} 道题，新派发 ${newTasks} 个任务（${queued} 道题），复用 ${reusedTasks} 个已有任务，已完成 ${completed} 道，已达标跳过 ${acceptedSkipped} 道，未就绪 ${notReady} 道，容量不足未派发 ${capacityExceeded} 道，失败 ${failed+batchFailures.value.filter(item=>materialPackages.value.some(pkg=>pkg.id===item.workflow_id)).length} 道。`;
+  batchFailures.value.push(...result.results.filter(item=>batchStepIssue(item)!==null).map(item=>({workflow_id:item.workflow_id,title:data.value?.workflows.find(workflow=>workflow.id===item.workflow_id)?.title??item.workflow_id,reason:batchStepIssue(item)!})));
+  message.value=`${fromPackages?'从材料包建题并出题':step.name}批量执行结果：新建 ${createdIds.length} 道题，新派发 ${newTasks} 个任务（${queued} 道题），复用 ${reusedTasks} 个已有任务，${step.ordinal===7?acceptanceBatchSummary(result.results):`已完成 ${completed} 道`}，已达标跳过 ${acceptedSkipped} 道，未就绪 ${notReady} 道，容量不足未派发 ${capacityExceeded} 道，失败 ${failed+batchFailures.value.filter(item=>materialPackages.value.some(pkg=>pkg.id===item.workflow_id)).length} 道。`;
   await refresh();
- }catch(cause){error.value=cause instanceof Error?cause.message:'执行失败';await refresh();}finally{busy.value=null;}
+ }catch(cause){actionError.value=cause instanceof Error?cause.message:'执行失败';await refresh();}finally{busy.value=null;}
 }
 async function syncFolder(){
  try{busy.value='sync';syncMessage.value='';syncError.value='';const result=await api<{discovered:number;added:number;changed:number}>(`/projects/${route.params.id}/sync-folder`,{method:'POST'});syncMessage.value=data.value?.project.material_mode==='material_packages'?`发现 ${result.discovered} 个材料包，新增 ${result.added}，来源变化 ${result.changed}。已有题目的快照不变。`:`发现 ${result.discovered} 道题目，新增 ${result.added}，材料变化 ${result.changed}。变化的题目从第一步重新接收。`;await refresh();}
@@ -110,7 +111,8 @@ async function savedTags(){tagsOpen.value=false;await refresh();}
   <Row class="surface-card p-12" x="between" wrap y="center" :gap="8"><Row wrap y="center" :gap="6"><span class="text-sm font-medium text-ink-heading">本期题目标签</span><v-chip v-for="tag in data.project.question_tags??[]" :key="tag" size="small" color="primary" variant="tonal">{{ tag }}</v-chip><span v-if="!data.project.question_tags?.length" class="text-sm text-muted">尚未创建</span></Row><v-btn size="small" variant="outlined" :disabled="busy!==null" @click="tagsOpen=true">{{ data.project.question_tags?.length?'管理标签':'创建标签' }}</v-btn></Row>
   <PhasePreparation :project-id="data.project.id" :authoring="data.steps.find(step=>step.ordinal===4)" :mode="questionProcessingMode" :material-count="loadedMaterialCount" :usable-count="usableMaterialCount" @rules="openMaterialsSettings" @authoring="openAuthoringSettings" @models="modelSettingsOpen=true" @materials="viewPhaseMaterials"/>
   <section class="surface-card p-16" aria-label="本期达标进度"><Row x="between" y="center" :gap="12"><Column :gap="4"><h2 class="text-sm font-semibold text-ink-heading">本期达标进度</h2><p class="text-xs text-muted">{{ qualifiedQuestionCount }} / {{ questionCount }} 道题已达标</p></Column><span class="text-lg font-semibold text-success">{{ qualifiedProgressPercent }}%</span></Row><v-progress-linear class="mt-10" color="success" :model-value="qualifiedProgressPercent" rounded aria-label="本期题目达标百分比" /><p class="mt-6 text-xs text-muted">按本期已加载题目计算；材料包不计入。</p></section>
-  <v-alert v-if="message" type="info" role="status"><Column :gap="6"><span>{{ message }}</span><details v-if="batchFailures.length"><summary class="cursor-pointer">查看派发失败题目</summary><ul class="my-0 pl-20"><li v-for="item in batchFailures" :key="item.workflow_id">{{ item.title }}（{{ item.workflow_id }}）：{{ item.reason }}</li></ul></details></Column></v-alert>
+  <v-alert v-if="actionError" type="error" role="alert">{{ actionError }}</v-alert>
+  <v-alert v-if="message" type="info" role="status"><Column :gap="6"><span>{{ message }}</span><details v-if="batchFailures.length"><summary class="cursor-pointer">查看未完成原因</summary><ul class="my-0 pl-20"><li v-for="item in batchFailures" :key="item.workflow_id">{{ item.title }}（{{ item.workflow_id }}）：{{ item.reason }}</li></ul></details></Column></v-alert>
    <ProjectCodexSettings :key="data.project.id" :project-id="data.project.id" />
   <p class="text-xs text-muted">状态在打开页面、提交操作或手动刷新时更新。“出题就绪”只统计已创建题目；已提取或脱敏、尚未建题的材料包可按本期来源设置创建题目。材料或来源版本不足只影响对应材料包，不阻断其他题目。</p>
   <ProjectLibraryMaterials id="phase-materials" @loaded="loadedMaterials" :project-id="data.project.id" :question-tags="data.project.question_tags??[]" :material-source-mode="questionMaterialMode" :material-processing-mode="questionProcessingMode" @refresh="refresh" />

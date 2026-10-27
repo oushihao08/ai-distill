@@ -1,7 +1,8 @@
 /** 职责：验证重复扫描噪声的精确删除范围及业务数字/日期/表格保留边界；不调用数据库或模型。 */
 import {expect,test} from 'bun:test';
-import {cleanRedactionText,cleanScanNoisePages,type ScanNoisePage} from './scan-noise';
+import {cleanScanNoisePages,type ScanNoisePage} from './scan-noise';
 import {documentBlocksToText} from './document-structure';
+const cleanText=(text:string)=>documentBlocksToText(cleanScanNoisePages([page(1,[text])]).pages[0]!.blocks);
 const page=(n:number,texts:string[]):ScanNoisePage=>({file_id:'f',page:n,blocks:texts.map((text,i)=>({id:`p${n}-${i}`,kind:'paragraph',text}))});
 test('cleans repeated scanner signatures and adjacent page-corner fragments, retaining business date prefix',()=>{
  const pages=[page(1,['业务事实：款项18836元，2025-03-26。','8836\\_2025-03-26 15:27:50','00!','1']),page(2,['业务事实','8836\\_2025-03-26 15:27:51','002','1']),page(3,['业务事实','2022/2/9 8836 2025-03-26 15:27:52','003'])];
@@ -37,23 +38,23 @@ test('removes explicit OCR placeholders in paragraphs and tables without deletin
  expect(text).toContain('法院说明无法识别原因，金额334666元，日期2025-05-23。');expect(text).toContain('10000元');
  expect(text.match(/无法识别/g)).toHaveLength(1);
 });
-test('post-AI text cleanup preserves number-only lines without structural evidence',()=>{
+test('structured cleanup preserves number-only lines without structural evidence',()=>{
  const text='正文[NO TEXT][NO_TEXT][No text detected][UNREADABLE]\r\n1\r\n234\r\n221\r\n-1-\r\n-22-\r\n[证据1] 334666元\r\n本金：\r\n334666\r\n1、请求\r\n-1.5元\r\n43****33';
- const cleaned=cleanRedactionText(text);
+ const cleaned=cleanText(text);
  expect(cleaned).toBe('正文\r\n1\r\n234\r\n221\r\n-1-\r\n-22-\r\n[证据1] 334666元\r\n本金：\r\n334666\r\n1、请求\r\n-1.5元\r\n43****33');
- expect(cleanRedactionText(cleaned)).toBe(cleaned);
+ expect(cleanText(cleaned)).toBe(cleaned);
 });
 test('recognizes a small fixed set of scanner timestamp forms, deleting only matched fragments',()=>{
  for(const stamp of ['4751 2025-04-25 15:24:08','4751_2025/04/25 15:24:08','4751\\_2025.04.25 15：24：08','4751_2025-04-25T15:24:08.123','扫描时间：2025年4月25日 15:24:08']){
-  expect(cleanRedactionText(`前文 ${stamp} 后文`)).toBe('前文  后文');
+  expect(cleanText(`前文 ${stamp} 后文`)).toBe('前文  后文');
  }
- expect(cleanRedactionText('开庭时间2025-04-25 15:24:08，金额4751元')).toBe('开庭时间2025-04-25 15:24:08，金额4751元');
+ expect(cleanText('开庭时间2025-04-25 15:24:08，金额4751元')).toBe('开庭时间2025-04-25 15:24:08，金额4751元');
 });
 
-test('preserves unlabelled split business amounts, terms and identifiers in both cleanup paths',()=>{
+test('preserves unlabelled split business amounts, terms and identifiers in single-field and multi-block inputs',()=>{
  const texts=['欠款','20000','元','期限','12','个月','证据号码','8836','份数','4'];
  const input=texts.join('\n');
- expect(cleanRedactionText(input)).toBe(input);
+ expect(cleanText(input)).toBe(input);
  const source=[page(1,texts)],before=JSON.stringify(source),out=cleanScanNoisePages(source);
  expect(out.edits).toHaveLength(0);expect(documentBlocksToText(out.pages[0]!.blocks)).toBe(input);expect(JSON.stringify(source)).toBe(before);
 });

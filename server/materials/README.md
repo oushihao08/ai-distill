@@ -1,6 +1,6 @@
 # 材料提取、脱敏与DOCX
 
-本模块提供格式解析、MinerU适配、结构化字段脱敏和材料DOCX。旧工作流的入库/提取/脱敏由步骤1、内部2、9执行；全局材料库由`../material-library/`的独立revision/job调用这里的解析和脱敏能力。不要把全局库任务与旧material_package工作流混为一谈。提取成功不等于OCR准确，脱敏结构有效不等于零漏识别。
+本模块提供格式解析、MinerU适配、脱敏正文/索引渲染和材料DOCX。旧工作流使用步骤1、内部2及人工声明的步骤9；当前整包Agent化名由`../material-library/`执行。全局库revision/job与旧材料工作流身份独立。提取成功不等于OCR准确，技术结构有效不等于零脱敏遗漏。
 
 ## 文件与入口
 
@@ -19,7 +19,7 @@
 | `redaction-jobs.ts` | 旧步骤9只处理人工已脱敏声明，重验来源并原子发布；旧字段映射冻结任务明确失败，不再复用或调用模型。 |
 | `redaction.ts` | 仅保留`renderRedactedMaterials()`渲染同源正文/结构索引及历史协议标识，不包含模型执行。 |
 | `redacted-docx.ts` | 兼容导出公共`document-generation/docx.ts`的`buildDocx()`纯文字/结构渲染；默认连续排版并跳过纯空段/空页，只有显式pagination=source才保留扫描页硬分页，表格单元格采用紧凑段距；名称兼容，可接受已核验脱敏或明确冻结原文，不读取原件、数据库或图片。可选 `style: legal` 只供 Work 业务成稿使用宋体正文、黑色标题及行距，并保留逐行文书字段，独立首段使用标题样式；默认附件渲染不变。 |
-| `redacted-docx-export.ts` | `readCurrentRedactionForDocx()`核验所选模式结构，`exportCurrentMaterialDocx()`逐附件生成/复用，`readCurrentMaterialDocx()`安全下载；`readOriginalFilesForDelivery()`仅在归档原文模式按冻结清单和SHA读取原件；`questionResultDirectory()`和`isLibraryDocxPath()`共用目录契约。 |
+| `redacted-docx-export.ts` | `readCurrentRedactionForDocx()`核验所选模式结构，`exportCurrentMaterialDocx()`按冻结顺序合并为一份DOCX并生成/复用，`readCurrentMaterialDocx()`安全下载；`readOriginalFilesForDelivery()`仅在归档原文模式按冻结清单和SHA读取原件；`questionResultDirectory()`和`isLibraryDocxPath()`共用目录契约。 |
 
 `*.test.ts`验证范围分别看文件头与用例，未运行不能说通过。材料/缓存/续接测试覆盖旧解析；redaction队列测试覆盖旧任务拒绝及人工声明发布；DOCX测试覆盖结构字节与来源绑定。测试、真实供应商、GUI视觉和完整业务分别报告。
 
@@ -49,7 +49,7 @@
 
 提取入队可复用同来源/配置的成功尝试，活动去重；执行时另选同来源/供应商配置的历史PDF产物，校验文件、SHA、结构文字投影，不等于只读取成功尝试缓存。损坏缓存可重新提取。只对OCR空白页或empty_page/truncated_response/ocr_page_error/unreadable问题做一次复查；image_without_text、未知块/表格结构提示不触发再次收费。复查通过pdfseparate/pdfunite在私有临时目录构造问题页子集，交给原provider，验证子集摘要、原件绑定及返回页数/页序后只替换指定页，正常缓存页保留复用及usage身份。缺少extractPages能力的注入提取器保留原文并添加ocr_recheck_unavailable，不降级为整份重传；结果仍有问题时保留issues，不阻断旧入库。全局库有自己的可用性判断，不套用旧队列状态。
 
-无业务调用的redact.ts及其专用旧规则断言已移除，字段映射模型引擎及专用批次/预算工具已删除，redaction.ts仅保留共用渲染；从未创建的DocumentProviderError及其instanceof分支也已移除，失败分类继续使用共用安全日志。processMaterials保留旧调用签名占位参数以兼容现有工具，但不执行Vision实体识别或旧配置，不把这些参数当作新的控制开关。
+`redaction.ts`只保留正文/索引渲染及历史协议标识；不执行字段映射或模型脱敏。`processMaterials()`的旧签名参数仅兼容现有工具，不作为Vision实体识别或旧配置的执行开关。
 
 旧任务按execution_target领取，入库派生提取继承目标；管理文件在执行机.storage，远程旧材料同步通过HTTP清单/摘要，不负责全局库blob搬运。worker主动停止可退回旧提取等待，五分钟失联记失败；全局库租约过期则失败，不能用同一恢复描述。
 
@@ -65,11 +65,11 @@
 
 DOCX可声明declared_redacted，仍完整提取，声明内容原样进入正文/结构，旧流程仅全声明附件可直通，含未声明附件拒绝并提示使用共享库；共享库Agent化名仍审阅整包。声明需绑定当前附件身份，变更影响旧流程当前下游，替换附件恢复默认；全局库声明随不可变文件集合冻结。
 
-材料DOCX接口不注册新步骤或attempt。普通导出要求适用流程完成、步骤8归档且无活动任务；共享库题仅检查4—8，旧题按注册表适用步骤。归档队列内部生成随归档交付的DOCX时，可显式允许本次正在运行的步骤8，但仍要求其他适用步骤完成，且不能有其他活动任务；该选项不用于普通导出。`readCurrentRedactionForDocx()`供归档预先取结构，不要求先完成8，不是绕过导出资格。
+材料DOCX接口不注册新步骤或attempt。有有效脱敏结果或冻结原文来源即可独立生成，不以出题、评分、达标、归档完成或这些步骤空闲为前置。`readCurrentRedactionForDocx()`复用同一来源读取器；版本、结构、文件归属及摘要校验仍保留。`allowPublicationInProgress`仅保留调用签名兼容，不是当前导出资格开关。
 
-每原附件生成一个DOCX并保留私有原件副本；正文来自题目所选模式索引，不重新OCR。原文模式按显式快照读取MinerU结构，脱敏模式禁止混入原文结构。旧无结构索引用Markdown兼容渲染，不能声称保留不存在的结构。渲染支持标题（最多三级）、段落、项目列表、表格合并、脚注段落样式及分页；不创建真实Word脚注关系、不含图片、不承诺逐像素版式。
+当前材料导出一题一份“脱敏材料.docx”或“原文材料.docx”，按冻结的分册/原件顺序组合正文与结构；不重新OCR。脱敏模式禁止混入原文结构。旧无结构索引使用Markdown兼容渲染，不能声称保留不存在的结构。渲染支持标题、段落、列表、表格合并、脚注段落样式及分页；不创建真实Word脚注关系、不含图片、不承诺逐像素版式。
 
-生成/复用检查来源模式、正文/结构、manifest、渲染版本和DOCX摘要。下载检查当前来源索引、模式、material_id、attempt、受管路径与文件SHA，不重新核对全部生成manifest字段；旧readCurrentRedactedDocx别名并非强制脱敏。重试逐文件复用，旧合并索引不进入新Excel；磁盘历史文件与当前索引区分。
+生成/复用检查来源模式、正文/结构、manifest、渲染版本和DOCX摘要。下载检查当前来源索引、模式、material_id、attempt、受管路径与文件SHA；`readCurrentRedactedDocx`只是兼容别名，不强制切换来源模式。当前产物索引与磁盘历史文件分开；历史文件不作为当前下载入口。
 
 产物位于assets/out/附件库/<主项目>/<期次>/<题目>/，兼容无期次旧路径；原件/DOCX均私有，原件副本不代表允许把它发送给脱敏作答者。材料导出只更新artifact，不改业务步骤；失败尝试恢复文件，但文件与数据库非原子，提交未知必须核对。工作流重置另按共同路径契约清理，不混同逻辑移除或材料库归档。
 
@@ -87,10 +87,16 @@ DOCX渲染版本为redacted-structure-docx-v3，版本参与缓存索引；连�
 
 脱敏DOCX的权威输入是通过摘要验证的冻结脱敏正文和结构。本机不存在原始PDF时，仅省略可选的原件备份；不回退原文、不补造原件。原文模式以及存在但指纹错误、路径越界的原件仍拒绝。
 
-材料 DOCX 可在已有有效脱敏结果或冻结原文来源时独立生成，不以出题、作答、评分、达标、归档完成或这些步骤空闲为前置。来源版本、结构、文件归属及摘要校验仍执行；导出不修改业务步骤状态。
 
-材料导出按一题一份生成“脱敏材料.docx”或“原文材料.docx”：按已验证分册/原件顺序组合结构和表格，冻结来源不改写；重新生成后只保留一个当前 DOCX 产物索引，历史文件不作为当前下载入口。
+
+
 
 飞书交付调用材料导出时提供`expectedAuthoringInput`，生成前校验有效出题的来源绑定、原件集合的大小和SHA（共享题按冻结源artifact元数据比较）；普通DOCX导出仍独立于题目是否出题。核对回执与失败展示见[飞书交付](../publishing/README.md#飞书交付一致性核对)。
 
 飞书交付的原件核对先读取完整冻结清单；新快照检查source_document产物ID、摘要及大小。字段不存在或为null的旧快照按冻结material ID/SHA核对并强制实读原件大小/摘要，不修改历史快照；存在非空产物ID但关联丢失或损坏不走兼容路径。
+
+生命周期回调由[同步增强层](../lifecycle/README.md)统一注册，事件接入现有执行/保存边界；无注册时保持原流程。
+
+项目差异统一从[lifecycle](../lifecycle/README.md)注册；提取provider、来源模式和脱敏执行仍属通用配置。步骤事件支持按主项目key订阅，只有实际存在key订阅时才查身份，不更改历史材料/任务快照。
+
+本机明确新派发可在同一事务替代他机尚未开始的同范围待办；运行、结果未知和续作仍受保护，新派发失败则旧意图变更回滚。适用范围、共享状态兼容与验证边界见[执行队列的跨机准入](../execution-queue/README.md#他机未开始待办与本机明确派发)。

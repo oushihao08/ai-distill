@@ -7,7 +7,7 @@
 import { api,ApiRequestError } from '../api/client';
 import { dateLabel } from '../utils/format';
 import { readAcceptanceResult, readAnswerStepResult, readScoreStepResult, statusLabels, type Attempt, type ProjectWorkflowStatus, type ScoreStepModelSummary, type Workflow, type WorkflowDetail } from '../types/api';
-import {workflowStepDisplay,type WorkflowStatusView} from '../utils/workflow-status';
+import {workflowStepDisplay,acceptanceBatchSummary,batchStepIssue,type BatchStepResult,type WorkflowStatusView} from '../utils/workflow-status';
 import RevisionAdvice from './RevisionAdvice.vue';
 import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
 import ModelEvaluationSummary from './ModelEvaluationSummary.vue';
@@ -194,10 +194,10 @@ async function runBatch(ordinal:number){
  const selected=[...filteredWorkflows.value],name=stageColumns.value.find(stage=>stage.ordinal===ordinal)?.name??'步骤';
  try{
   batchOrdinal.value=ordinal;batchMessage.value='';batchIssues.value=[];
-  const result=await api<{results:{workflow_id:string;status:string;reason?:string}[]}>(`/projects/${props.projectId}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:selected.map(flow=>flow.id)})});
+  const result=await api<{results:BatchStepResult[]}>(`/projects/${props.projectId}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:selected.map(flow=>flow.id)})});
   const counts:Record<string,number>={};for(const item of result.results)counts[item.status]=(counts[item.status]??0)+1;
-  batchIssues.value=result.results.filter(item=>['failed','not_found','not_ready','capacity_exceeded'].includes(item.status)).map(item=>({id:item.workflow_id,title:selected.find(flow=>flow.id===item.workflow_id)?.title??item.workflow_id,reason:item.reason??'派发失败，请查看任务记录'}));
-  batchMessage.value=`${name}：匹配 ${selected.length} 道，排队 ${counts.queued??0}，已完成 ${counts.succeeded??0}，已归档跳过 ${counts.already_archived??0}，已达标跳过 ${counts.already_accepted??0}，未就绪 ${counts.not_ready??0}，容量不足未派发 ${counts.capacity_exceeded??0}，失败 ${(counts.failed??0)+(counts.not_found??0)}。`;
+  batchIssues.value=result.results.filter(item=>batchStepIssue(item)!==null).map(item=>({id:item.workflow_id,title:selected.find(flow=>flow.id===item.workflow_id)?.title??item.workflow_id,reason:batchStepIssue(item)!}));
+  batchMessage.value=`${name}：匹配 ${selected.length} 道，排队 ${counts.queued??0}，${ordinal===7?acceptanceBatchSummary(result.results):`已完成 ${counts.succeeded??0}`}，已归档跳过 ${counts.already_archived??0}，已达标跳过 ${counts.already_accepted??0}，未就绪 ${counts.not_ready??0}，容量不足未派发 ${counts.capacity_exceeded??0}，失败 ${(counts.failed??0)+(counts.not_found??0)}。`;
   emit('refresh');
  }catch(cause){batchMessage.value=cause instanceof Error?cause.message:`批量${name}失败`;await refreshDetails();}
  finally{batchOrdinal.value=null;}
@@ -239,7 +239,7 @@ async function generateBatchAdvice(){
   <p v-if="statusLoading" class="text-xs text-muted" role="status">正在读取全部题目状态及评分…</p>
   <v-alert v-if="Object.keys(detailErrors).length" type="error" density="compact">部分题目状态或评分读取失败，请刷新后重试。</v-alert>
   <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">筛选结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部筛选结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null||adviceBatch" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn><v-btn size="small" variant="outlined" :loading="adviceBatch" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null||adviceBatch" @click="generateBatchAdvice">批量返修建议</v-btn></Row>
-  <v-alert v-if="batchMessage" type="info" density="compact" role="status"><Column :gap="4"><span>{{ batchMessage }}</span><details v-if="batchIssues.length"><summary class="cursor-pointer">查看未执行题目</summary><ul class="my-0 pl-20"><li v-for="item in batchIssues" :key="item.id">{{ item.title }}：{{ item.reason }}</li></ul></details></Column></v-alert>
+  <v-alert v-if="batchMessage" type="info" density="compact" role="status"><Column :gap="4"><span>{{ batchMessage }}</span><details v-if="batchIssues.length"><summary class="cursor-pointer">查看未完成原因</summary><ul class="my-0 pl-20"><li v-for="item in batchIssues" :key="item.id">{{ item.title }}：{{ item.reason }}</li></ul></details></Column></v-alert>
   <p v-if="!visibleWorkflows.length&&!statusLoading" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。请在“本期材料”中选择材料包并设置题目名称、场景、角色、等级、方向和标签。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-1080px">

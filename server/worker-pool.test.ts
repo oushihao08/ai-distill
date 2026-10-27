@@ -118,3 +118,36 @@ test('shared positive availability does not share claimed jobs or serialize exec
  await Promise.all(Array.from({length:4},async()=>{if(await probe()){const id=++next;seen.push(id);peak=Math.max(peak,++active);await Bun.sleep(5);active--;}}));
  expect(probes).toBe(1);expect(new Set(seen).size).toBe(4);expect(peak).toBe(4);
 });
+
+test('private batch stdin EOF drains in-flight work without aborting it or claiming again',async()=>{
+ const moduleUrl=new URL('./worker-pool.ts',import.meta.url).href;
+ const source=`import {watchWorkerBatchInput,runWorkerPool} from ${JSON.stringify(moduleUrl)};
+ const drain=watchWorkerBatchInput(Bun.stdin.stream()),work=new AbortController();let calls=0;
+ await runWorkerPool(async()=>{calls++;console.log('ready');await Bun.sleep(100);if(work.signal.aborted)throw new Error('in-flight aborted');console.log('completed');return true;},{concurrency:1,signal:AbortSignal.any([work.signal,drain.signal]),idleMs:1});
+ await drain.close();console.log('stopped:'+calls);`;
+ const child=Bun.spawn([process.execPath,'-e',source],{stdin:'pipe',stdout:'pipe',stderr:'pipe'}),reader=child.stdout.getReader();
+ try{
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain('ready');
+  child.stdin.end();expect(await child.exited).toBe(0);
+  let rest='';while(true){const part=await reader.read();if(part.done)break;rest+=new TextDecoder().decode(part.value);}
+  expect(rest).toContain('completed');expect(rest).toContain('stopped:1');
+ }finally{child.kill();await child.exited;await reader.cancel();}
+},3000);
+
+test('batch supervisor closes only its owned worker on success and on coordinator error',async()=>{
+ const {manageTemporaryWorker}=await import('../scripts/runtime/run-scoped-batch');
+ const root=await mkdtemp(join(tmpdir(),'batch-owner-'));
+ const other=Bun.spawn([process.execPath,'-e','await Bun.stdin.text()'],{stdin:'pipe',stdout:'ignore',stderr:'ignore'});
+ try{
+  for(const fail of [false,true]){
+   const marker=join(root,String(fail)),ready=join(root,String(fail)+'-ready'),stops:number[]=[];
+   const source=`await Bun.write(${JSON.stringify(ready)},'ready');await Bun.stdin.text();await Bun.sleep(20);await Bun.write(${JSON.stringify(marker)},'done');`;
+   const running=manageTemporaryWorker({command:[process.execPath,'-e',source],cwd:root,env:process.env,logPath:join(root,'worker.log'),intervalMs:1,onStarted(){},onStopped(_pid,code){stops.push(code);},async tick(){
+    const deadline=Date.now()+2000;while(!await Bun.file(ready).exists()&&Date.now()<deadline)await Bun.sleep(5);
+    expect(await Bun.file(ready).exists()).toBe(true);if(fail)throw new Error('fixture tick failure');return true;
+   }});
+   if(fail)await expect(running).rejects.toThrow('fixture tick failure');else await running;
+   expect(await Bun.file(marker).exists()).toBe(true);expect(stops).toEqual([0]);expect(other.exitCode).toBeNull();
+  }
+ }finally{await other.stdin.end();await other.exited;await rm(root,{recursive:true,force:true});}
+},5000);

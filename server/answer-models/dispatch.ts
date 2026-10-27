@@ -1,7 +1,7 @@
 /**
  * 职责：把已隔离的作答输入转换为独立 llm-api 请求，按冻结供应商配置调用API或隔离Codex并返回答案。
  * 关键入口：resolveAnswerConfig() 使用系统API默认并保留显式历史Qwen配置；createAnswerClient() 供作答队列使用。
- * 仅发送隔离后的作答指令、题面、白名单附件及允许的成果呈现清单；不透传 rubric、标答、目标分数或历史作答数据。
+ * 仅发送作答指令、题面及允许附件；不透传rubric、标答或历史评测。结果区分requested_model与实际返回model，Agent无返回模型证据时后者为null。
  */
 import {createModelApiClient,readModelApiDefaults,resolveModelApiConfig,resolveQwenConfig,ModelApiError,type ModelApiConfig} from '../llm-api';
 import type {AnswerClient,AnswerRequest} from './provider';
@@ -41,7 +41,7 @@ export function createAnswerClient(env:NodeJS.ProcessEnv=process.env,request:(in
    const started=Date.now();
    const agent=await runAgent<string>({task_type:'model_answer',directory:input.directory,prompt:JSON.stringify({messages}),model:config.model,reasoning_effort:config.reasoning_effort,output_format:'text',timeout_ms:input.timeout_ms,signal:input.signal,call_id:input.call_id,validate(value){return typeof value==='string'?value:String(value??'');}});
    const finished=Date.now();
-   return{text:agent.result,requested_model:config.model,model:agent.model,request_id:null,completion_id:agent.session_id,usage:agent.usage&&typeof agent.usage==='object'?agent.usage as Record<string,unknown>:null,started_at:new Date(started).toISOString(),finished_at:new Date(finished).toISOString(),duration_ms:agent.duration_ms,execution_mode:'agent',reasoning_effort:config.reasoning_effort,agent_session_id:agent.session_id};
+   return{text:agent.result,requested_model:config.model,model:agent.returned_model??null,request_id:null,completion_id:agent.session_id,usage:agent.usage&&typeof agent.usage==='object'?agent.usage as Record<string,unknown>:null,started_at:new Date(started).toISOString(),finished_at:new Date(finished).toISOString(),duration_ms:agent.duration_ms,execution_mode:'agent',reasoning_effort:config.reasoning_effort,agent_session_id:agent.session_id};
   }
   const messages=answerMessages(input);
   const {provider,...result}=await api.complete({config,messages,timeout_ms:input.timeout_ms,signal:input.signal,...(input.call_id?{call_id:input.call_id}:{}),...(input.observe_reasoning?{observe_reasoning:true}:{})});

@@ -48,3 +48,9 @@
 作答步骤可以通过系统作答模型目录登记 Codex Agent provider/model/reasoning effort，ordinal 5 本机 Agent 队列执行。盲作答会话只接收题面、该题冻结来源允许的附件、公开成果呈现约定和作答步骤提示词；答案思路、标准答案、Rubric、既有答案、评分结果和项目 Skill 均不进入输入。执行使用隔离上下文，关闭宿主 Skill、插件、MCP、浏览器、记忆和网络，文件权限限本次 attempt 工作区；不能据此宣称执行了外部检索。
 
 模型设置保存的结构校验不依赖缓存，但系统作答目录登记Codex模型目前另行要求模型/档位在本机目录中；业务worker还验证自身允许的推理强度枚举。不能把通用设置允许保存解释成任何模型/档位都可成功执行。`runner.test.ts`检查任务配置/适配转交，`processes.test.ts`检查PID引用计数；均不证明实际CLI能力或额度。
+
+## 请求与返回模型身份
+
+`runAgent()`统一补齐`requested_model`，值来自本次任务配置；`returned_model`只保留适配器明确提供的返回模型，缺失为null，不根据请求或旧字段推断。当前Codex客户端未返回可靠的实际模型标识，因此其returned_model为null。旧`model`保持适配器原值，Codex适配器中仍是请求配置，不能作为实际模型确认；新字段在类型上可选以兼容旧适配器和历史记录。现有历史结果不回写。
+
+作答适配器将requested_model保存为请求模型，将returned_model映射到作答结果的model（未知为null）；评分、脱敏等已有model配置记录继续按原字段兼容读取。此语义只表达已有证据，不证明供应商的真实底层路由。

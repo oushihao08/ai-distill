@@ -3,6 +3,7 @@
  * 关键方法与用途：`createApp()` 注册并组合项目、题目、配置、步骤、下载与报表路由。
  * 使用场景：由 `index.ts` 创建本地服务实例；路由处理器调用各业务模块完成读写。
  */
+import {resolveProjectPath,projectPathReference,comparableProjectPath} from './paths';
 import {enqueueRevisionAdvice,listRevisionAdvice} from './revision-advice/jobs';
 import {executionAttemptProjection,projectStepExecutions} from './execution-queue/status';
 import {registerExecutionQueueRoutes} from './execution-queue/routes';
@@ -24,7 +25,7 @@ import { resolve, join, relative, isAbsolute, sep, dirname, basename } from 'nod
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { receiveMaterials } from './intake';
-import { validateFolder, scanProjectFolder, registerQuestionFolders, projectStepSummary,readProjectWorkflowStepRows, validateStepConfig,workflowStepReadiness,type WorkflowStepState } from './project-folders';
+import { validateFolder, validateProjectFolder, scanProjectFolder, registerQuestionFolders, projectStepSummary,readProjectWorkflowStepRows, validateStepConfig,workflowStepReadiness,type WorkflowStepState } from './project-folders';
 import { enqueueIngestion } from './intake-jobs';
 import { enqueueRedaction } from './materials/redaction-jobs';
 import {clearGeneratedData} from './generated-data';
@@ -100,7 +101,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   'patch:/api/projects/:id/loaded-materials/:linkId':{operation:'project.material_package.update',fields:['redaction_id','position']},
   'delete:/api/projects/:id/loaded-materials/:linkId':{operation:'project.material_package.remove',fields:[]},
   'post:/api/projects/:id/loaded-materials/:linkId/questions':{operation:'project.library_question.create',fields:['request_key','redaction_id','title','scenario','role_perspective','target_level','authoring_direction','question_tags']},
-  'patch:/api/projects/:id':{operation:'project.update',fields:['name','description','material_root','local_skill_path']},
+  'patch:/api/projects/:id':{operation:'project.update',fields:['name','description','material_root','local_skill_path','workspace_path']},
   'delete:/api/projects/:id':{operation:'project.delete',fields:[]},
   'post:/api/answer-models':{operation:'answer_model.register',fields:['provider','model','reasoning_effort']},
   'put:/api/answer-models/:id':{operation:'answer_model.update',fields:['enabled']},
@@ -342,22 +343,22 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    const materialBackend=body?.material_backend??'library_v1';
    if(!['legacy','library_v1'].includes(materialBackend))throw new HTTPException(400,{message:'项目材料后端无效'});
    if(materialBackend==='library_v1'&&materialMode!=='material_packages')throw new HTTPException(400,{message:'共享材料库新期使用material_packages；旧目录模式须显式选择legacy'});
-   const workspacePath=materialBackend==='library_v1'?await validateFolder(body?.workspace_path,'项目规则工作区'):null;
-   const materialRoot = materialBackend==='legacy'?await validateFolder(body?.material_root):null;
-   const questions = materialRoot?await scanProjectFolder(materialRoot):[];
+   const workspacePath=materialBackend==='library_v1'?await validateProjectFolder(body?.workspace_path,'项目规则工作区'):null;
+   const materialRoot = materialBackend==='legacy'?await validateProjectFolder(body?.material_root):null;
+   const questions = materialRoot?await scanProjectFolder(resolveProjectPath(materialRoot)):[];
    const id = crypto.randomUUID();
    const db = await pool.connect();
    try {
     await db.query('BEGIN');
     const existingSkills=await db.query('SELECT DISTINCT local_skill_path FROM ai_distill.projects WHERE parent_name=$1 AND deleted_at IS NULL AND local_skill_path IS NOT NULL ORDER BY local_skill_path',[parentName]);
-    const skillPaths=[...new Set(existingSkills.rows.map(row=>String(row.local_skill_path)))];
+    const skillPaths=[...new Set(existingSkills.rows.map(row=>comparableProjectPath(String(row.local_skill_path))))];
     if(skillPaths.length>1)throw new HTTPException(409,{message:'同一项目的期次绑定了多个 skill 目录，请先统一项目 skill 路径'});
-    const requestedSkill=body?.local_skill_path?await validateFolder(body.local_skill_path,'本地skill目录'):undefined;
+    const requestedSkill=body?.local_skill_path?await validateProjectFolder(body.local_skill_path,'本地skill目录'):undefined;
     if(requestedSkill&&skillPaths.length&&requestedSkill!==skillPaths[0])throw new HTTPException(409,{message:'该项目已有共享 skill 目录，请使用项目现有 skill 路径'});
     const inferredProjectRoot=materialBackend==='legacy'?(phaseName&&materialRoot&&basename(dirname(materialRoot))===phaseName?dirname(dirname(materialRoot)):undefined):undefined;
     if(materialBackend==='library_v1'&&!requestedSkill&&!skillPaths.length)throw new HTTPException(400,{message:'首期创建须明确主项目共享Skill目录，不从本期工作区推断'});
-    const skillPath=requestedSkill??skillPaths[0]??(inferredProjectRoot?join(inferredProjectRoot,'skill'):resolve(storageRoot,'project-skills',id));
-    await mkdir(skillPath,{recursive:true,mode:0o700});
+    const skillPath=projectPathReference(requestedSkill??skillPaths[0]??(inferredProjectRoot?join(inferredProjectRoot,'skill'):projectPathReference(resolve(storageRoot,'project-skills',id))));
+    await mkdir(resolveProjectPath(skillPath),{recursive:true,mode:0o700});
     const group=await resolveProjectGroup(db,parentName,body?.project_group_id);
     const phaseNo=body?.phase_no===undefined?(materialBackend==='library_v1'?1:null):validatePhaseNumber(body.phase_no);
     const result = await db.query('INSERT INTO ai_distill.projects(id,name,description,material_root,local_skill_path,parent_name,phase_name,material_mode,question_tags,material_backend,workspace_path,project_group_id,phase_no) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',[id,name,description,materialRoot,skillPath,parentName,phaseName,materialMode,tags,materialBackend,workspacePath,group.id,phaseNo]);
@@ -530,35 +531,40 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    const id = uuid(c.req.param('id'));
    const body = await c.req.json().catch(() => { throw new HTTPException(400,{message:'请提交有效JSON'}); });
    const legacyName = body?.name===undefined?undefined:text(body.name,'项目名称',120); const description = text(body?.description ?? '','项目说明',2000,false);
-   const skill = body?.local_skill_path ? await validateFolder(body.local_skill_path,'本地skill目录') : undefined;
+   const skill = body?.local_skill_path ? await validateProjectFolder(body.local_skill_path,'本地skill目录') : undefined;
    const db = await pool.connect();
    try {
     await db.query('BEGIN');
     const previous = await db.query('SELECT * FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[id]);
     if (!previous.rowCount) throw new HTTPException(404,{message:'项目不存在'});
-    const prior=previous.rows[0],root=prior.material_backend==='library_v1'?null:await validateFolder(body?.material_root),parentName=body?.parent_name===undefined?(prior.parent_name??legacyName??prior.name):text(body.parent_name,'项目名称',120),phaseName=body?.phase_name===undefined?(prior.phase_name??''):text(body.phase_name,'期数',120,false);
+    const prior=previous.rows[0],root=prior.material_backend==='library_v1'?null:comparableProjectPath(await validateFolder(body?.material_root)),parentName=body?.parent_name===undefined?(prior.parent_name??legacyName??prior.name):text(body.parent_name,'项目名称',120),phaseName=body?.phase_name===undefined?(prior.phase_name??''):text(body.phase_name,'期数',120,false);
+    if(root&&root!==(prior.material_root?comparableProjectPath(prior.material_root):null))projectPathReference(root);
     const tags=body?.question_tags===undefined?prior.question_tags:questionTags(body.question_tags);
     const groupedName=body?.parent_name!==undefined||body?.phase_name!==undefined?projectPhaseLabel(parentName,phaseName):legacyName??prior.name;
     const groupChanged=parentName!==prior.parent_name;
     if(prior.project_group_id&&(groupChanged||(body?.project_group_id!==undefined&&body.project_group_id!==prior.project_group_id)))throw new HTTPException(409,{message:'请在主项目入口修改名称，期次不能通过改名更换所属主项目'});
     const phaseNo=body?.phase_no===undefined?prior.phase_no:validatePhaseNumber(body.phase_no);
-    let nextSkill=skill??prior.local_skill_path;
+    const priorSkill=prior.local_skill_path?comparableProjectPath(prior.local_skill_path):null;
+    let nextSkill=skill??priorSkill;
     if(groupChanged){
      const groupSkills=await db.query('SELECT DISTINCT local_skill_path FROM ai_distill.projects WHERE parent_name=$1 AND deleted_at IS NULL AND id<>$2 AND local_skill_path IS NOT NULL ORDER BY local_skill_path',[parentName,id]);
-     const paths=[...new Set(groupSkills.rows.map(row=>String(row.local_skill_path)))];
+     const paths=[...new Set(groupSkills.rows.map(row=>comparableProjectPath(String(row.local_skill_path))))];
      if(paths.length>1)throw new HTTPException(409,{message:'目标项目的期次绑定了多个 skill 目录，请先统一项目 skill 路径'});
-     if(skill&&skill!==prior.local_skill_path&&paths.length&&skill!==paths[0])throw new HTTPException(409,{message:'目标项目已有共享 skill 目录，请先统一项目 skill 路径'});
+     if(skill&&skill!==priorSkill&&paths.length&&skill!==paths[0])throw new HTTPException(409,{message:'目标项目已有共享 skill 目录，请先统一项目 skill 路径'});
      const inferredProjectRoot=prior.material_backend==='library_v1'?prior.workspace_path:phaseName&&root&&basename(dirname(root))===phaseName?dirname(dirname(root)):undefined;
-     nextSkill=paths[0]??(skill&&skill!==prior.local_skill_path?skill:undefined)??(inferredProjectRoot?join(inferredProjectRoot,'skill'):undefined)??prior.local_skill_path??resolve(storageRoot,'project-skills',id);
+     nextSkill=paths[0]??(skill&&skill!==priorSkill?skill:undefined)??(inferredProjectRoot?join(inferredProjectRoot,'skill'):undefined)??priorSkill??projectPathReference(resolve(storageRoot,'project-skills',id));
     }
-    nextSkill??=resolve(storageRoot,'project-skills',id);
-    const skillBindingChanged=root!==previous.rows[0].material_root||nextSkill!==previous.rows[0].local_skill_path;
-    const result = await db.query('UPDATE ai_distill.projects SET name=$2,description=$3,material_root=$4,local_skill_path=$5,parent_name=$6,phase_name=$7,question_tags=$8 WHERE id=$1 RETURNING *',[id,groupedName,description,root,nextSkill,parentName,phaseName,tags]);
+    nextSkill??=projectPathReference(resolve(storageRoot,'project-skills',id));
+    nextSkill=comparableProjectPath(nextSkill);
+    const workspacePath=prior.material_backend==='library_v1'?(body?.workspace_path!==undefined?await validateProjectFolder(body.workspace_path,'项目规则工作区'):prior.workspace_path?comparableProjectPath(prior.workspace_path):null):null;
+    const workspaceChanged=workspacePath!==(prior.workspace_path?comparableProjectPath(prior.workspace_path):null);
+    const skillBindingChanged=workspaceChanged||root!==(previous.rows[0].material_root?comparableProjectPath(previous.rows[0].material_root):null)||nextSkill!==priorSkill;
+    const result = await db.query('UPDATE ai_distill.projects SET name=$2,description=$3,material_root=$4,local_skill_path=$5,parent_name=$6,phase_name=$7,question_tags=$8,workspace_path=$9 WHERE id=$1 RETURNING *',[id,groupedName,description,root,nextSkill,parentName,phaseName,tags,workspacePath]);
     if(body?.phase_no!==undefined){await db.query('UPDATE ai_distill.projects SET phase_no=$2 WHERE id=$1',[id,phaseNo]);result.rows[0].phase_no=phaseNo;}
     if(skill&&skillBindingChanged)await db.query('UPDATE ai_distill.projects SET local_skill_path=$2 WHERE parent_name=$1 AND deleted_at IS NULL',[parentName,nextSkill]);
     // 期次展示名称不属于题目内容，修改期次时保留原题名、结果和冻结输入。
-    await mkdir(result.rows[0].local_skill_path,{recursive:true,mode:0o700});
-    if (root&&root !== previous.rows[0].material_root) await registerQuestionFolders(db,id,groupedName,await scanProjectFolder(root),previous.rows[0].material_mode);
+    await mkdir(resolveProjectPath(result.rows[0].local_skill_path),{recursive:true,mode:0o700});
+    if (root&&root !== comparableProjectPath(previous.rows[0].material_root)) await registerQuestionFolders(db,id,groupedName,await scanProjectFolder(resolveProjectPath(root)),previous.rows[0].material_mode);
     if(skillBindingChanged)await invalidateProjectRuleOutputs(db,id);
     await db.query('COMMIT'); return c.json(result.rows[0]);
    } catch(error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }

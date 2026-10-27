@@ -15,6 +15,7 @@ import {runNextIntake} from '../intake-jobs';
 import {runNextExtraction} from '../materials/jobs';
 import {runNextRedaction} from '../materials/redaction-jobs';
 import {runNextLibraryJob} from '../material-library/runner';
+/** 已登记的历史hook任务兼容；新生命周期脚本不进入此路由。 */
 import {runNextHook} from '../workflow-hook-worker';
 import {runNextRemoteMaterialOperation} from '../remote-material-operations';
 import {logEvent,classifyLogError} from '../logging';
@@ -56,7 +57,9 @@ export function canRunLocalTask(mode:string,job:QueueJob,raw:{workflow_id?:strin
  if(mode==='api'&&target==='local'&&job.lane==='internal')return false;
  return true;
 }
-export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSignal,limits:{agent:number;llmApi:number},beforeDispatch:()=>Promise<boolean>,mode='all',workflowIds?:string[],target='local'){
+export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSignal,limits:{agent:number;llmApi:number},beforeDispatch:()=>Promise<boolean>,mode='all',workflowIds?:string[],target='local',drainSignal?:AbortSignal){
+ // 排空只结束领取循环和槽位等待；已领取任务仍使用原signal完成模型、结算与心跳。
+ const claimSignal=drainSignal?AbortSignal.any([signal,drainSignal]):signal;
  await assertLocalQueueEnvironment(pool,root);
  const q=localQueue(root);q.recover();const lanes:Lane[]=mode==='server'||mode==='materials'||mode==='api'?['api','internal','remote']:['agent','api','internal','hook','remote'];
  const laneLimit=(lane:Lane)=>lane==='agent'?limits.agent:lane==='api'||lane==='internal'?limits.llmApi:1;
@@ -75,7 +78,7 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
   })().finally(()=>{nextSync=Date.now()+5000;reconciliation=undefined;});
  };
  const consume=async(lane:Lane)=>{
-  sync();if(signal.aborted)return false;
+  sync();if(claimSignal.aborted)return false;
   // 在SQLite领取前将明确工作流范围投影为任务ID；不领取后再丢弃范围外任务。
   const metadataById=new Map<string,Record<string,any>>();
   let allowedIds:string[]|undefined;
@@ -89,13 +92,19 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
     const projection=kind==='step'
      ?"jsonb_build_object('workflow_id',j.workflow_id,'ordinal',j.ordinal,'execution_target',j.execution_target,'config',jsonb_build_object('provider',j.config->>'provider'),'input',jsonb_build_object('hooks',CASE WHEN j.input->'hooks' IS NOT NULL AND j.input->'hooks'<>'null'::jsonb THEN '{}'::jsonb ELSE NULL END))"
      :kind==='advice'?"jsonb_build_object('workflow_id',j.workflow_id)":kind==='library'?"jsonb_build_object('executor_kind',j.executor_kind,'execution_target',j.execution_target)":"'{}'::jsonb";
-    const query:QueryConfig&{query_timeout:number}={text:`SELECT j.id,${projection} AS job FROM ai_distill.${tables[kind]} j WHERE j.id=ANY($1::uuid[])`,query_timeout:15000};
+    const query:QueryConfig&{query_timeout:number}={text:`SELECT j.id,j.status,${projection} AS job FROM ai_distill.${tables[kind]} j WHERE j.id=ANY($1::uuid[])`,query_timeout:15000};
     const rows=(await pool.query(query,[selected.map(j=>j.id)])).rows;
     const candidatesById=new Map(selected.map(candidate=>[candidate.id,candidate]));
-    for(const row of rows){const candidate=candidatesById.get(row.id);if(candidate&&canRunLocalTask(mode,candidate,row.job,target,workflowIds)){allowedIds.push(candidate.id);metadataById.set(candidate.id,row.job);}}
+    for(const row of rows){
+     const candidate=candidatesById.get(row.id);if(!candidate)continue;
+     // 他机明确派发可能已替代本机未开始意图。先释放旧待办容量，不受worker模式/范围过滤影响。
+     const terminal=row.status==='skipped'?'stale':row.status==='cancelled'?'cancelled':row.status==='succeeded'?'committed':row.status==='failed'?'failed':null;
+     if(terminal){q.settle(candidate.id,terminal,candidate.generation);continue;}
+     if(canRunLocalTask(mode,candidate,row.job,target,workflowIds)){allowedIds.push(candidate.id);metadataById.set(candidate.id,row.job);}
+    }
    }
   }
-  if(signal.aborted)return false;
+  if(claimSignal.aborted)return false;
   const job=q.claim(lane,allowedIds);if(!job)return false;
   const controller=new AbortController(),abort=()=>controller.abort(signal.reason);signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
   const heartbeat=setInterval(()=>{if(!q.heartbeat(job.id,job.lease!))controller.abort(new Error('本机任务取消或失租'));},500);heartbeat.unref();
@@ -115,7 +124,7 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
   }finally{clearInterval(heartbeat);signal.removeEventListener('abort',abort);}
  };
  try{await Promise.all(lanes.map(lane=>runWorkerPool(async()=>{
-  const permit=await gates.get(lane)!.run(()=>consume(lane),{signal});return permit.acquired?permit.value:false;
- },{component:`local_${lane}`,concurrency:laneLimit(lane),beforeDispatch,signal,idleMs:3000,errorDelayMs:5000})));}
+  const permit=await gates.get(lane)!.run(()=>consume(lane),{signal:claimSignal});return permit.acquired?permit.value:false;
+ },{component:`local_${lane}`,concurrency:laneLimit(lane),beforeDispatch,signal:claimSignal,idleMs:3000,errorDelayMs:5000})));}
  finally{if(reconciliation)await reconciliation;for(const lane of lanes)closeAgentConcurrencyGate(gateRoot(lane));}
 }

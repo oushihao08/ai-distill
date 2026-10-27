@@ -115,14 +115,14 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
   const selected=await data.selectWorkflows(projectId,requestedIds);
   const byId=new Map(selected.map(row=>[row.id,row]));
   const workflowIds=requestedIds??selected.map(row=>row.id);
-  const results:{workflow_id:string;status:'queued'|'succeeded'|'not_ready'|'failed'|'not_found'|'capacity_exceeded'|'already_accepted'|'already_archived';attempt_id?:string;attempt_ids?:string[];reused?:boolean;reason?:string}[]=[];
+  const results:{workflow_id:string;status:'queued'|'succeeded'|'not_ready'|'failed'|'not_found'|'capacity_exceeded'|'already_accepted'|'already_archived';attempt_id?:string;attempt_ids?:string[];reused?:boolean;reason?:string;decision?:StepDispatchTask['decision'];reasons?:string[]}[]=[];
   for(const workflowBatch of splitIntoBatches(workflowIds,batchChunkSize)){
    const validIds=workflowBatch.filter(workflowId=>byId.get(workflowId)?.project_id===projectId);
    const stateRows=validIds.length?await data.readStepStates(projectId,validIds):[];
    const statesByWorkflow=new Map<string,Map<number,WorkflowStepState>>();
    for(const row of stateRows){
     if(!statesByWorkflow.has(row.workflow_id))statesByWorkflow.set(row.workflow_id,new Map());
-    statesByWorkflow.get(row.workflow_id)!.set(row.ordinal,{ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source)});
+    statesByWorkflow.get(row.workflow_id)!.set(row.ordinal,{project_key:row.project_key,ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source)});
    }
    // 入队事务限制并行，避免整批请求占满连接池；不改变worker执行并发。
    const batchResults=[];
@@ -137,7 +137,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
     if(!eligibility.ready)return{workflow_id:workflowId,status:'not_ready' as const,reason:eligibility.reason};
     try{
      const task=await dispatch(workflowId,ordinal as WorkflowStepOrdinal);
-     return{workflow_id:workflowId,status:task.completed?'succeeded' as const:'queued' as const,attempt_id:task.id,...(task.ids?{attempt_ids:task.ids}:{}),reused:task.reused??false};
+     return{workflow_id:workflowId,status:task.completed?'succeeded' as const:'queued' as const,attempt_id:task.id,...(task.ids?{attempt_ids:task.ids}:{}),reused:task.reused??false,...(task.decision?{decision:task.decision,reasons:task.reasons??[]}: {})};
     }catch(error){
      if(error instanceof QueueCapacityError)return{workflow_id:workflowId,status:'capacity_exceeded' as const,reason:error.message};
      if(error instanceof HTTPException&&error.status===409)return{workflow_id:workflowId,status:'not_ready' as const,reason:error.message};

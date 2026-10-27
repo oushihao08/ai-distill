@@ -1,7 +1,7 @@
 /**
- * 职责：本地异步钩子消费者，独立保存附加结果，不写主步骤或模型成绩。
- * 入口：runNextHook() 供 local/all worker 轮询；API worker 不领取本地脚本。
- * 行为：失效输入取消，失联幂等动作可恢复，非幂等未知副作用转待核；未迁移时保持旧队列可用。
+ * 职责：历史异步钩子记录兼容消费者，独立保存附加结果，不写主步骤或模型成绩。
+ * 入口：runNextHook()由execution-queue/worker的历史hook路由调用；activeHookParentSql()供同步补执行路由复用。
+ * 边界：只处理已登记历史任务；新before/after由lifecycle/scripts在主调用内顺序等待，不向此消费者入队。
  */
 import {localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall} from './execution-queue/runtime';
 import type {Pool} from 'pg';

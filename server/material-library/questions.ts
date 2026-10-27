@@ -2,7 +2,9 @@
  * 文件职责：按期次来源模式，将选定脱敏结果或成功提取原文冻结为题目私有附件、结构和来源记录。
  * 关键入口：`createLibraryQuestion()` 负责幂等建题、来源复制、锁序复核与步骤 4–8 创建；不创建旧材料步骤或 attempts。
  * 使用场景：项目加载材料后调用；生成目录只归本题所有，材料库更新不改写已创建题目。
+ * 项目差异：材料包与题目数量策略在 lifecycle/projects 注册，本模块持有锁并执行通用建题事务。
  */
+import {projectStepPolicies,resolveStepProjectKey} from '../lifecycle/steps';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
@@ -89,7 +91,8 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
  const activeQuestion=(await db.query(`SELECT q.workflow_id
   FROM ai_distill.question_library_sources q JOIN ai_distill.workflows w ON w.id=q.workflow_id
   WHERE q.project_id=$1 AND q.package_id=$2 AND w.deleted_at IS NULL LIMIT 1`,[projectId,packageId])).rows[0];
- if(activeQuestion&&singleQuestionPerPackage(project))throw conflict('Work法律全场景每个材料包只能对应一道题，请在原题返修');
+ const projectIssue=projectStepPolicies.materialQuestion.execute(resolveStepProjectKey({parent_name:project.parent_name,name:project.name}),{project,active:!!activeQuestion});
+ if(projectIssue)throw conflict(projectIssue);
  if(project.project_group_id)await assertMaterialUse(db,projectId,packageId,link.material_use_id);
  if(Number(link.lock_version)!==input.expected_link_version)throw conflict('材料选择已更新，请刷新项目后重试');
  const authorConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[projectId])).rows[0]?.config;
@@ -250,5 +253,5 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
 
 /** Work项目明确一包一道；其他主项目不继承此业务限制。历史题目与来源不改写。 */
 export function singleQuestionPerPackage(project:{parent_name?:string|null;name?:string|null}){
- return(project.parent_name??project.name?.split(' - ')[0])==='Work法律全场景';
+ return projectStepPolicies.materialQuestion.execute(resolveStepProjectKey({parent_name:project.parent_name,name:project.name}),{project,active:true})!==null;
 }

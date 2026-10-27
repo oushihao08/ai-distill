@@ -61,7 +61,10 @@ export function stepResultProjection(alias:string,content:boolean){
   WHEN ${alias}.ordinal=4 THEN ${content?`(SELECT jsonb_object_agg(key,value) FROM jsonb_each(COALESCE(${alias}.result,'{}'::jsonb)) WHERE key IN ('content_contract','task_metadata','input_files','deliverables','reference_outputs','research_records','task_requirements','content_status','header','question_id','task_name','task_type','question','rubric','answer_approach','reference_answer','answer_requirements','question_version','rubric_version','scoring_policy'))`:`NULL`}
   WHEN ${alias}.ordinal=5 THEN jsonb_build_object('models',${content?`${alias}.result->'models'`:models})
   WHEN ${alias}.ordinal=6 THEN jsonb_build_object('models',${alias}.result->'models')
-  WHEN ${alias}.ordinal=8 THEN jsonb_build_object('feishu_sync',CASE WHEN ${alias}.result->'feishu_sync' IS NOT NULL THEN jsonb_build_object('status',${alias}.result#>'{feishu_sync,status}','verification',${alias}.result#>'{feishu_sync,verification}','reason_code',${alias}.result#>'{feishu_sync,reason_code}','url',${alias}.result#>'{feishu_sync,url}','record_id',${alias}.result#>'{feishu_sync,record_id}') ELSE NULL END)
+  WHEN ${alias}.ordinal=8 THEN jsonb_build_object('feishu_sync',CASE WHEN ${alias}.result->'feishu_sync' IS NOT NULL THEN jsonb_build_object('status',${alias}.result#>'{feishu_sync,status}','verification',${alias}.result#>'{feishu_sync,verification}','reason_code',${alias}.result#>'{feishu_sync,reason_code}','url',${alias}.result#>'{feishu_sync,url}','record_id',${alias}.result#>'{feishu_sync,record_id}') ELSE NULL END,
+   'feishu_deliveries',(SELECT jsonb_object_agg(receipt.key,jsonb_build_object(
+    'status',receipt.value->'status','verification',receipt.value->'verification','reason_code',receipt.value->'reason_code','url',receipt.value->'url','record_id',receipt.value->'record_id'))
+    FROM jsonb_each(CASE WHEN jsonb_typeof(${alias}.result->'feishu_deliveries')='object' THEN ${alias}.result->'feishu_deliveries' ELSE '{}'::jsonb END) receipt))
   WHEN ${alias}.ordinal=7 THEN jsonb_build_object('decision',${alias}.result->'decision','model_scores',${alias}.result->'model_scores','aggregate',${alias}.result->'aggregate','reasons',${alias}.result->'reasons')
   ELSE NULL END`;
 }

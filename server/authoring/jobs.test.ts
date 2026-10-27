@@ -50,7 +50,8 @@ async function projectFixture(){
   if(state.library){
    if(sql.startsWith('SELECT p.material_backend'))return{rows:[{material_backend:'library_v1',has_library_snapshot:true}],rowCount:1};
    if(sql.startsWith('SELECT project_id,package_id,revision_id'))return{rows:[library().row],rowCount:1};
-   if(sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))return{rows:library().artifacts,rowCount:2};
+   if(sql.startsWith('SELECT id,kind,attempt_id,sha256,storage_path,size_bytes FROM ai_distill.artifacts'))return{rows:library().artifacts,rowCount:2};
+   if(sql.startsWith('SELECT id,content FROM ai_distill.artifacts'))return{rows:library().artifacts.filter(row=>values[1].includes(row.id)),rowCount:2};
   }
   if(sql.startsWith('SELECT * FROM ai_distill.hook_runs')){const row=[...state.hookRuns.values()].find((r:any)=>r.attempt_id===values[0]&&r.position===values[1]&&r.action_id===values[2]);return {rows:row?[structuredClone(row)]:[],rowCount:row?1:0};}
   if(sql.startsWith('INSERT INTO ai_distill.hook_runs')){const row={id:values[0],workflow_id:values[1],attempt_id:values[2],stage:values[3],position:values[4],action_id:values[5],mode:values[6],binding_digest:values[7],snapshot:JSON.parse(values[8]),idempotent:values[9],status:'waiting'};state.hookRuns.set(row.id,row);return {rows:[structuredClone(row)],rowCount:1};}
@@ -114,8 +115,8 @@ test('active attempts are reused while terminal reauthoring creates a new attemp
 });
 test.each([
  ['result_missing','出题会话已结束，但未生成 result.json'],
- ['result_validation_failed','出题结果未通过程序校验'],
- ['codex_timeout','出题执行超过本次时限，未取得通过校验的完整题目'],
+ ['result_validation_failed','出题结果无法转换为可保存的JSON题包，请检查本次私有执行记录'],
+ ['codex_timeout','出题执行超过本次时限，未取得可接收的完整结果'],
 ])('出题失败 %s 保存安全原因码和明确说明',async(reasonCode,message)=>{
  const f=await projectFixture();try{
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
@@ -232,7 +233,7 @@ test('作者阶段冻结并实际执行前后钩子，附加结果不修改题�
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
-test('后置钩子失败保留检查点并向续跑入口记录明确失败标记',async()=>{
+test('后置增强失败不妨碍主结果保存，失败记录独立保留',async()=>{
  const f=await projectFixture();let called=0;
  try{
   await mkdir(join(f.root,'hooks'));await writeFile(join(f.root,'hooks/fail.ts'),"throw new Error('private failure');");
@@ -240,7 +241,9 @@ test('后置钩子失败保留检查点并向续跑入口记录明确失败标�
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
   await runNextAuthoring(f.pool,join(f.root,'storage'),async()=>{called++;return authored;});
   const failed=f.calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"));
-  expect(JSON.parse(failed!.values[1])).toMatchObject({error_code:'project_hook_failed'});
+  expect(failed).toBeUndefined();
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
+  expect([...f.state.hookRuns.values()].find((r:any)=>r.position==='after').status).toBe('failed');
   expect([...f.state.hookRuns.values()].find((r:any)=>r.position==='main')).toMatchObject({status:'succeeded',result:authored});expect(called).toBe(1);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
@@ -254,8 +257,8 @@ test('续跑后的作者worker复用主检查点，实际后置脚本恢复后�
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
   const author=async()=>{mainCalls++;return authored;};
   await runNextAuthoring(f.pool,join(f.root,'storage'),author);
-  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(false);
-  // 模拟续跑 API 已将同一失败尝试退回 waiting；SQL替身在下次领取时返回同一冻结任务。
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
+  // 模拟本地队列恢复同一次执行；主检查点必须复用，后置增强才再次执行。
   await runNextAuthoring(f.pool,join(f.root,'storage'),author);
   expect(mainCalls).toBe(1);expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
   expect([...f.state.hookRuns.values()].find((r:any)=>r.position==='after').result.notes).toEqual(['恢复完成']);
@@ -295,10 +298,10 @@ test.each(['redacted','original'])('library %s loads once at startup and saves w
   f.state.library=mode;await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;f.calls.length=0;
   await runNextAuthoring(f.pool,f.root,async options=>{
    expect(options.materials[0]?.text).toContain('100元');
-   expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))).toHaveLength(1);
+   expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,storage_path,size_bytes FROM ai_distill.artifacts'))).toHaveLength(1);
    return authored;
   });
-  expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,content FROM ai_distill.artifacts'))).toHaveLength(1);
+  expect(f.calls.filter(c=>c.sql.startsWith('SELECT id,kind,attempt_id,sha256,storage_path,size_bytes FROM ai_distill.artifacts'))).toHaveLength(1);
   expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
@@ -373,4 +376,23 @@ test('返回后业务写入失败且当前材料已变化，当前步骤仍结�
   await runNextAuthoring(pool,f.root,async()=>{f.state.text='changed during execution';return authored;});
   expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.steps SET status='failed'"))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('生命周期前置先于模型，后置在提交释放连接后同步等待，异常不回滚题目',async()=>{
+ const {lifecycle}=await import('../lifecycle');
+ const f=await projectFixture();const order:string[]=[];let release!:()=>void,arrive!:()=>void;
+ const gate=new Promise<void>(resolve=>{release=resolve;});const entered=new Promise<void>(resolve=>{arrive=resolve;});
+ const removeBefore=lifecycle.register({id:'fixture.author.before',stage:'authoring',event:'before',run:()=>{order.push('before');}});
+ const removeAfter=lifecycle.register({id:'fixture.author.after',stage:'authoring',event:'committed',run:async context=>{
+  expect(context.data?.result).toMatchObject({question:authored.draft.question});
+  expect(f.calls.some(call=>call.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
+  expect(f.calls.at(-1)?.sql).toBe('COMMIT');order.push('after');arrive();await gate;throw new Error('enhancement only');
+ }});
+ try{
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  const running=runNextAuthoring(f.pool,join(f.root,'storage'),async()=>{order.push('model');return authored;}).then(()=>order.push('returned'));
+  await entered;expect(order).toEqual(['before','model','after']);release();await running;
+  expect(order).toEqual(['before','model','after','returned']);
+  expect(f.calls.some(call=>call.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(false);
+ }finally{release?.();removeBefore();removeAfter();await rm(f.root,{recursive:true,force:true});}
 });

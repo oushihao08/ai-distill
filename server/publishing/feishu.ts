@@ -26,6 +26,7 @@ export async function syncArchivedWorkflowToFeishu(pool:Pool,workflowId:string,s
  let tableId='table_id' in target?target.table_id:undefined;
  let db=await pool.connect(),connectionHeld=true;let transaction=false,archiveId:string|undefined,archiveAttemptId:string|undefined;
  let verification:any={status:'incomplete',checked_at:new Date().toISOString()};
+ let api:Awaited<ReturnType<typeof feishuClient>>|undefined;
  try{
   const snapshot=async()=> (await db.query(`SELECT q.result AS question,a.result AS acceptance,r.result AS archive,(SELECT input FROM ai_distill.step_attempts WHERE workflow_id=q.workflow_id AND ordinal=4 AND status='succeeded' AND result->>'question_version'=q.result->>'question_version' AND result->>'rubric_version'=q.result->>'rubric_version' ORDER BY attempt DESC LIMIT 1) AS authoring_input,(SELECT id FROM ai_distill.step_attempts WHERE workflow_id=q.workflow_id AND ordinal=8 AND status='succeeded' ORDER BY attempt DESC LIMIT 1) AS archive_attempt_id
    FROM ai_distill.steps q JOIN ai_distill.steps a ON a.workflow_id=q.workflow_id AND a.ordinal=7 JOIN ai_distill.steps r ON r.workflow_id=q.workflow_id AND r.ordinal=8
@@ -56,7 +57,8 @@ export async function syncArchivedWorkflowToFeishu(pool:Pool,workflowId:string,s
 
   const lockedSnapshot=await snapshot();
   if(!lockedSnapshot||lockedSnapshot.archive_attempt_id!==archiveAttemptId||lockedSnapshot.archive.source_digest!==archiveId)throw new VerificationError('feishu_source_changed',['题目版本']);
-  const api=await feishuClient(),tables=await api.list(`/bitable/v1/apps/${base}/tables`);
+  api=await feishuClient();const tables=await api.list(`/bitable/v1/apps/${base}/tables`);
+  const remote=api;
   const phase='table_name' in target?target.table_name:String(context.phase_name??'').trim();
   if(!tableId&&!phase)throw new SyncError('feishu_phase_missing');
   if(!tableId){
@@ -93,7 +95,7 @@ export async function syncArchivedWorkflowToFeishu(pool:Pool,workflowId:string,s
    if(!latest||latest.archive_attempt_id!==archiveAttemptId||latest.archive.source_digest!==archiveId||canonicalJson(latest.question)!==canonicalJson(initial.question)||canonicalJson(latest.authoring_input)!==canonicalJson(initial.authoring_input))throw new VerificationError('feishu_source_changed',['题目版本']);
   };
   const verify=async(recordId:string,uploadedTokens?:string[])=>{
-   const readback=await api.call(path+'/records/'+recordId),actual=readback.record?.fields??{};
+   const readback=await remote.call(path+'/records/'+recordId),actual=readback.record?.fields??{};
    const differences=compareFeishuText(expected,actual);
    const remoteFiles=actual['输入附件'];
    const names=files.map(file=>`材料-${createHash('sha256').update(file.bytes).digest('hex').slice(0,16)}.docx`);
@@ -144,7 +146,7 @@ export async function syncArchivedWorkflowToFeishu(pool:Pool,workflowId:string,s
   let releaseError:Error|undefined;
   try{if(transaction)await db.query('ROLLBACK');}
   catch{releaseError=new Error('feishu_lock_release_failed');}
-  finally{if(connectionHeld)db.release(releaseError);}
+  finally{try{await api?.close();}finally{if(connectionHeld)db.release(releaseError);}}
  }
  async function save(receipt:unknown){
   const payload=JSON.stringify(receipt),destination=`${base}/${tableId??('table_name' in target?target.table_name:'unknown')}`;
