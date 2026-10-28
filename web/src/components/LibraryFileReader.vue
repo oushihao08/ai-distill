@@ -19,7 +19,7 @@ const effectiveExtraction=computed(()=>mode.value==='compare'?selectedRedaction.
 const extractionItems=computed(()=>extractions.value.map((item,index)=>({title:`识别版本 ${extractions.value.length-index} · ${dateLabel(item.created_at)}`,value:item.id})));
 const extractionSelection=computed({get:()=>selectedExtraction.value??'',set:(id:string)=>{extractionId.value=id;}});
 const comparePages=computed(()=>source.value.map(page=>({source:page,redacted:redacted.value.find(item=>item.page===page.page)})));
-const issueCount=computed(()=>source.value.reduce((sum,page)=>sum+(page.issues?.length??0),0));
+const issueCount=computed(()=>source.value.reduce((sum,page)=>sum+(page.issues?.filter(issue=>issue!=='image_without_text').length??0),0));
 const emptyMessage=computed(()=>mode.value==='source'?(effectiveExtraction.value?'':'此文件尚未识别原文，请先执行“识别原文”。'):!selectedRedaction.value?'此文件尚无成功的脱敏版本，请先完成脱敏。':'');
 let controller:AbortController|undefined;
 async function load(){

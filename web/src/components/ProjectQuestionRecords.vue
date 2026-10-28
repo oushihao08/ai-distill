@@ -14,6 +14,21 @@ import ModelEvaluationSummary from './ModelEvaluationSummary.vue';
 
 const props=defineProps<{workflows:Workflow[];packages:Workflow[];projectId:string;workflowStatus?:Record<string,ProjectWorkflowStatus>;materialPackagesEnabled?:boolean}>();
 const emit=defineEmits<{refresh:[]}>();
+const materialsOpen=shallowRef(false),materialsBusy=shallowRef(false),materialsError=shallowRef('');
+const materialsDetail=shallowRef<WorkflowDetail>();
+let materialsRequest=0;
+let materialsController:AbortController|undefined;
+async function openMaterials(flow:Workflow){
+ materialsController?.abort();const controller=new AbortController();materialsController=controller;
+ const token=++materialsRequest;materialsOpen.value=true;materialsBusy.value=true;materialsError.value='';materialsDetail.value=undefined;
+ try{
+  const result=await api<WorkflowDetail>(`/workflows/${flow.id}?view=status`,{signal:controller.signal});
+  if(token===materialsRequest&&materialsOpen.value)materialsDetail.value=result;
+ }catch(cause){if(token===materialsRequest&&materialsOpen.value)materialsError.value=cause instanceof Error?cause.message:'读取题目附件失败';}
+ finally{if(token===materialsRequest)materialsBusy.value=false;}
+}
+watch(materialsOpen,open=>{if(!open){materialsRequest++;materialsController?.abort();materialsDetail.value=undefined;materialsBusy.value=false;}});
+onUnmounted(()=>{materialsRequest++;materialsController?.abort();});
 const search=shallowRef<string|null>('');
 const selectedTag=shallowRef<string|null>(null);
 const authorStatus=shallowRef<string|null>(null),answerStatus=shallowRef<string|null>(null),scoreStatus=shallowRef<string|null>(null);
@@ -243,14 +258,14 @@ async function generateBatchAdvice(){
   <p v-if="!visibleWorkflows.length&&!statusLoading" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。请在“本期材料”中选择材料包并设置题目名称、场景、角色、等级、方向和标签。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-1080px">
-    <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">返修建议</th><th scope="col">步骤操作</th></tr></thead>
+    <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visibleWorkflows" :key="flow.id">
-      <td class="max-w-260px"><Row :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Row></td>
+      <td class="max-w-260px"><Column :gap="4"><Row :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Row><RevisionAdvice :workflow-id="flow.id" :disabled="details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision==='accepted'||details[flow.id]?.steps.some(step=>[4,5,6].includes(step.ordinal)&&step.active)"/></Column></td>
       <td class="max-w-220px"><RouterLink v-if="flow.library_package_id" :to="`/materials/${flow.library_package_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><RouterLink v-else-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
-      <td class="whitespace-nowrap">{{ flow.material_count??0 }} 份</td>
+      <td class="whitespace-nowrap"><v-btn variant="text" :disabled="!flow.material_count" @click="openMaterials(flow)">查看附件 · {{ flow.material_count??0 }} 份</v-btn></td>
       <td v-for="stage in stageColumns" :key="stage.ordinal" :class="stage.ordinal===6?'min-w-180px':'whitespace-nowrap'"><Column :gap="2"><Row wrap y="center" :gap="2"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><v-btn v-if="stage.ordinal===6&&scoreModels(flow).length" size="small" variant="text" color="primary" @click="showScoreDetail(flow)">查看评分</v-btn><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">详情</v-btn></Row><template v-if="stage.ordinal===6&&scoreModels(flow).length"><span v-for="(model,index) in scoreModels(flow)" :key="model.model_id??index" class="text-xs text-muted whitespace-nowrap">{{ modelScoreText(model) }}</span></template></Column></td>
-      <td><RevisionAdvice :workflow-id="flow.id" :disabled="details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision==='accepted'||details[flow.id]?.steps.some(step=>[4,5,6].includes(step.ordinal)&&step.active)"/></td><td class="whitespace-nowrap"><Row :gap="4"><v-menu><template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" size="small" variant="text" color="primary" :disabled="!actionsFor(flow).length||detailLoadingByWorkflow[flow.id]">步骤操作</v-btn></template><v-list density="compact"><v-list-item v-for="action in actionsFor(flow)" :key="action.ordinal" :title="action.label" :disabled="action.disabled||runningAction!==null" @click="runAction(flow,action)" /></v-list></v-menu><span v-if="runningAction?.startsWith(flow.id+':')" class="text-xs text-muted">提交中…</span><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-xs text-muted">读取中…</span></Row><span v-if="detailErrors[flow.id]" class="text-xs text-danger" :title="detailErrors[flow.id]">读取失败</span><span v-else-if="actionMessages[flow.id]" class="text-xs text-muted" :title="actionMessages[flow.id]">{{ actionMessages[flow.id] }}</span><span v-else-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]" class="text-xs text-muted" :title="nextAction(flow)">{{ currentState(flow) }}</span></td>
+      <td class="whitespace-nowrap"><Row :gap="4"><v-menu><template #activator="{ props: menuProps }"><v-btn v-bind="menuProps" size="small" variant="text" color="primary" :disabled="!actionsFor(flow).length||detailLoadingByWorkflow[flow.id]">步骤操作</v-btn></template><v-list density="compact"><v-list-item v-for="action in actionsFor(flow)" :key="action.ordinal" :title="action.label" :disabled="action.disabled||runningAction!==null" @click="runAction(flow,action)" /></v-list></v-menu><span v-if="runningAction?.startsWith(flow.id+':')" class="text-xs text-muted">提交中…</span><span v-if="detailLoadingByWorkflow[flow.id]&&!details[flow.id]&&!detailErrors[flow.id]" class="text-xs text-muted">读取中…</span></Row><span v-if="detailErrors[flow.id]" class="text-xs text-danger" :title="detailErrors[flow.id]">读取失败</span><span v-else-if="actionMessages[flow.id]" class="text-xs text-muted" :title="actionMessages[flow.id]">{{ actionMessages[flow.id] }}</span><span v-else-if="!actionsFor(flow).length&&!detailLoadingByWorkflow[flow.id]" class="text-xs text-muted" :title="nextAction(flow)">{{ currentState(flow) }}</span></td>
      </tr>
     </tbody>
    </v-table>
@@ -283,4 +298,12 @@ async function generateBatchAdvice(){
    <v-pagination v-model="page" :length="pageCount" :total-visible="5" :disabled="pageCount<=1" aria-label="题目记录分页" />
   </Row>
  </Column>
+  <v-dialog v-model="materialsOpen" max-width="1100" scrollable>
+   <Column class="surface-card p-20 max-h-[85vh] overflow-y-auto" :gap="12">
+    <Row x="between" y="center" :gap="12"><h2 class="section-title">题目附件 · {{ materialsDetail?.materials.length??0 }} 份</h2><v-btn @click="materialsOpen=false">关闭</v-btn></Row>
+    <p v-if="materialsBusy" class="text-muted" role="status">正在读取附件清单…</p>
+    <v-alert v-if="materialsError" type="error" role="alert">{{ materialsError }}</v-alert>
+    <MaterialRecordsTable v-if="materialsDetail" :key="materialsDetail.workflow.id" :workflow-id="materialsDetail.workflow.id" :materials="materialsDetail.materials" :steps="materialsDetail.steps" :prefer-redacted="materialsDetail.question_material_origin?.material_mode!=='original'" read-only/>
+   </Column>
+  </v-dialog>
 </template>

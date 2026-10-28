@@ -161,6 +161,15 @@ test('project Codex defaults feed steps while an explicit step config remains hi
  expect(steps.find(step=>step.ordinal===6)).toMatchObject({config:{model:'gpt-6-astra',reasoning_effort:'ultra'},config_source:'project'});
  expect(steps.find(step=>step.ordinal===9)).toMatchObject({config:{provider:'api',api:{model:expect.any(String)}},config_source:'system'});
 });
+test('answer step summary excludes stale single-model settings and preserves workflow policy',async()=>{
+ const stored={provider:'qwen',model:'qwen/qwen-plus',base_url:'https://old.invalid',max_tokens:1000,prompt:'本期作答提示',preserve_answer_model_snapshots:true,previous_answer_models:[{model_id:'old'}],workflow:{version:1}};
+ const before=JSON.stringify(stored);
+ const steps=await projectStepSummary({query:async()=>{throw new Error('只使用预读数据');}} as unknown as Pool,'project','library_v1',Promise.resolve({rows:[]} as any),Promise.resolve({model:'gpt-6-luna',reasoning_effort:'high',source:'system'} as any),{rows:[{ordinal:5,config:stored}]});
+ const config=steps.find(step=>step.ordinal===5)!.config;
+ expect(config).toMatchObject({prompt:'本期作答提示',preserve_answer_model_snapshots:true,previous_answer_models:[{model_id:'old'}],workflow:{version:1}});
+ for(const key of ['provider','model','base_url','max_tokens'])expect(config).not.toHaveProperty(key);
+ expect(JSON.stringify(stored)).toBe(before);
+});
 test('PDF model settings reject unverified model protocols',()=>{
  expect(()=>validateStepConfig(2,{model:'unknown-vision-model',reasoning_effort:'low'})).toThrow('模型');
 });

@@ -25,7 +25,9 @@ types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtrac
 
 解析按原块顺序保存正文、标题层级、列表、表格行列/合并关系、公式、图注和脚注；文字投影从同一结构生成。HTML 表格仅作为输入解析，不在前端执行。空块、无文字图片、`[NO TEXT]`、未知类型和无法转换的表格通过页级 issues 提示，不据此宣称识别完整，也不阻断部分结果入库。图像路径和图像载荷不进入下游文档结构。
 
-转换标识为 `mineru-open-api-first-structured-v3`。V1原始结果中的header/footer/page_number/aside_text按原文保留，不误报未知类型；无文字图片、占位符及真正未知类型仍报告issues。入队可复用附件/配置相同的成功尝试，活动尝试保持去重；执行器另按来源与供应商/转换配置选择历史PDF产物缓存，再检查文件/结构/投影，不能把缓存查询等同于只选成功尝试。无结构旧缓存不会被新结构任务复用，重新提取入队时使该题下游结果失效，保留历史。`extraction.api.failed` 与 `extraction.cli.fallback.started` 记录 provider 切换，不记录授权头、签名 URL 或材料正文。
+PDF转换标识为 `mineru-open-api-first-structured-v4`，DOCX为`mineru-docx-structured-v2`。V1原始结果中的header/footer/page_number/aside_text按原文保留，不误报未知类型；无文字图片、占位符及真正未知类型仍报告issues。入队可复用附件/配置相同的成功尝试，活动尝试保持去重；执行器另按来源与供应商/转换配置选择历史PDF产物缓存，再检查文件/结构/投影，不能把缓存查询等同于只选成功尝试。无结构旧缓存不会被新结构任务复用，重新提取入队时使该题下游结果失效，保留历史。`extraction.api.failed` 与 `extraction.cli.fallback.started` 记录 provider 切换，不记录授权头、签名 URL 或材料正文。
+
+HTML只在`html`字段、`type=html`的文字节点和表格HTML中转换：已配对的常用文字格式标签保留内部文字，`p/div`转段落边界、`br`转换行，实体单次解码一层。普通`text`字段、法规尖括号、未知标签及脚本/样式片段保留；不把全文当HTML。表格单元格保留未知尖括号文字；无法完整解析或存在无法归属的表外文字时保留完整原字段并报告`table_structure_unparsed`，不只保留已解析的部分。无效实体码点保留，不导致整份文档失败。以上是解析器的中间结果；材料发布前由共享`scan-noise`文本清理移除剩余的中文/未知/错配标签并解码多层实体，保留标签内正文、金额日期、法规名称和比较符号。此清理也由脱敏计划编译复用，不在DOCX生成器里补处理，不追溯改写旧提取结果或快照。
 
 每次 CLI 返回后，在 `STORAGE_DIR/.mineru-diagnostics/<diagnostic_id>/` 保存 `response.json`、`stderr.txt`、`metadata.json`（目录 0700，文件 0600）。元数据包含源 SHA-256、页数、转换版本、退出码和超时／取消状态；已知 MinerU 令牌会从输出中遮盖。失败发布不删除此目录。运行日志 `extraction.diagnostics_saved` 记录诊断编号，可按 workflow/attempt/call 定位；结构解析失败的步骤错误也包含编号。启动 CLI 前失败或诊断写盘失败可能没有完整证据。
 

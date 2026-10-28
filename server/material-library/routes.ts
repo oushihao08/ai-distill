@@ -51,7 +51,7 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
   if(!job)throw new HTTPException(400,{message:'请选择成功的提取任务'});
   return c.json(await readLibraryDocuments(pool,uuid(c.req.param('id')),uuid(job),file?uuid(file):undefined));
  });
- app.get(`${prefix}/redactions/:id/preview`,async c=>{c.header('Cache-Control','no-store');const file=c.req.query('file_id');return c.json(await readLibraryRedactionPreview(pool,uuid(c.req.param('id')),file?uuid(file):undefined));});
+ app.get(`${prefix}/redactions/:id/preview`,async c=>{c.header('Cache-Control','no-store');const file=c.req.query('file_id');return c.json(await readLibraryRedactionPreview(pool,uuid(c.req.param('id')),file?uuid(file):undefined,c.req.query('metadata_only')==='true'));});
  app.post(`${prefix}/redactions/:id/revalidate`,async c=>c.json(await revalidateAgentLibraryRedaction(pool,storageRoot,uuid(c.req.param('id')))));
  app.get(`${prefix}/project-options`,async c=>c.json({items:(await pool.query('SELECT id,name FROM ai_distill.projects WHERE deleted_at IS NULL ORDER BY name,id')).rows}));
  app.get(`${prefix}/packages`,async c=>{

@@ -50,6 +50,15 @@ const questionMaterialModeLabel=computed(()=>questionMaterialMode.value==='origi
 const visibleSteps=computed(()=>data.value?.steps.filter(step=>step.ordinal!==10&&(materialPackage.value?[1,9].includes(step.ordinal):derivedQuestion.value?![1,2,9].includes(step.ordinal):true))??[]);
 const authoredStep=computed(()=>visibleSteps.value.find(step=>step.ordinal===4));
 const activeTask=computed(()=>data.value?.attempts.some(a=>a.ordinal!==10&&['waiting','running'].includes(a.status)));
+const revisionDisabledReason=computed(()=>{
+ const steps=data.value?.steps??[];
+ if(steps.find(step=>step.ordinal===7)?.result?.decision==='accepted')return '当前题目已达标，无需生成返修建议。';
+ if(steps.some(step=>[4,5,6].includes(step.ordinal)&&step.active))return '出题、作答或评分已有活动任务，结束后可生成返修建议。';
+ if(steps.find(step=>step.ordinal===4)?.status!=='succeeded')return '请先完成出题。';
+ const answers=steps.find(step=>step.ordinal===5)?.result?.models,scores=steps.find(step=>step.ordinal===6)?.result?.models;
+ if(!Array.isArray(answers)||!Array.isArray(scores)||!scores.length)return '请先取得当前作答和评分记录。';
+ return '';
+});
 const hasSucceededAuthoring=computed(()=>data.value?.attempts.some(attempt=>attempt.ordinal===4&&attempt.status==='succeeded')??false);
 const visibleAttempts=computed(()=>[...(data.value?.attempts??[])].filter(attempt=>attempt.ordinal!==10).sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at)));
 const sortedAttempts=visibleAttempts;
@@ -152,7 +161,7 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
  <v-btn v-if="error&&!data" color="primary" :loading="loading" :disabled="loading" @click="refresh">重新读取</v-btn>
  <p v-if="loading && !data" class="text-muted">正在读取工作流…</p>
  <template v-if="data">
-  <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ materialPackage?'材料包':derivedQuestion?'派生题目':'题目' }}</v-chip><v-chip color="secondary">{{ currentStep ? `${currentStep.name} · ${currentStepLabel}` : materialPackage?'材料已处理':'全部完成' }}</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料 · 状态以最近一次刷新为准</p></Column><Row wrap :gap="8"><v-btn v-if="!derivedQuestion" color="error" variant="text" :disabled="archived || submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
+  <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ materialPackage?'材料包':derivedQuestion?'派生题目':'题目' }}</v-chip><v-chip color="secondary">{{ currentStep ? `${currentStep.name} · ${currentStepLabel}` : materialPackage?'材料已处理':'全部完成' }}</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料 · 状态以最近一次刷新为准</p></Column><Row wrap :gap="8"><RevisionAdvice v-if="!materialPackage" :workflow-id="data.workflow.id" variant="outlined" :disabled="!!revisionDisabledReason" :disabled-reason="revisionDisabledReason" /><v-btn v-if="!derivedQuestion" color="error" variant="text" :disabled="archived || submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
   <v-alert v-if="feishuReceipt" :type="feishuReceipt.verification?.status==='passed'?'success':feishuReceipt.verification?.status==='failed'?'error':'warning'">
    {{ feishuReceipt.verification?.status==='passed'?'飞书核对通过':feishuReceipt.verification?.status==='failed'?'飞书核对失败':'飞书核对未完成' }}
    <span v-if="feishuIssues"> · 差异项：{{ feishuIssues }}</span>
@@ -181,7 +190,7 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
         <Row v-if="step.ordinal===4 && step.status==='succeeded' && step.result" >
       <v-btn color="secondary" variant="outlined" @click="questionOpen=true">查看完整题目</v-btn>
      </Row>
-  <RevisionAdvice v-if="step.ordinal===4" :workflow-id="String(route.params.id)" :disabled="activeTask||stepStatus(7)==='succeeded'&&data.steps.find(item=>item.ordinal===7)?.result?.decision==='accepted'"/><v-btn v-if="step.ordinal===4" color="primary" variant="flat" :loading="submitting" :disabled="authorDisabled" @click="author">{{ hasSucceededAuthoring ? '重新生成题目' : '生成题目' }}</v-btn>
+  <v-btn v-if="step.ordinal===4" color="primary" variant="flat" :loading="submitting" :disabled="authorDisabled" @click="author">{{ hasSucceededAuthoring ? '重新生成题目' : '生成题目' }}</v-btn>
      <v-btn v-if="step.ordinal===5" color="primary" variant="flat" :loading="submitting" :disabled="answerDisabled" @click="answer">模型作答</v-btn>
      <v-btn v-if="step.ordinal===6" color="primary" variant="flat" :loading="submitting" :disabled="scoreDisabled" @click="score">独立评分</v-btn>
      <span v-if="step.ordinal===7 && !step.result" class="text-xs text-muted">独立评分完成后自动判定</span>

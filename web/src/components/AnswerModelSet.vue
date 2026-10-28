@@ -7,6 +7,7 @@
 import {api} from '../api/client';
 
 const props=defineProps<{projectId:string}>();
+const emit=defineEmits<{saved:[]}>();
 interface CatalogModel{id:string;name:string;provider:string;base_url:string;model:string;config?:{reasoning_effort?:string};enabled:boolean}
 interface SelectedModel{model_id:string;name:string;minimum_score:number|null;config:{provider:string;base_url?:string;model:string;reasoning_effort?:string}}
 interface AgentCatalog{model_options:{slug:string;supported_reasoning_levels:{effort:string}[]}[]}
@@ -28,7 +29,7 @@ async function register(){
  catch(cause){error.value=cause instanceof Error?cause.message:'模型登记失败';}finally{saving.value=false;}
 }
 async function save(){
- try{error.value='';message.value='';saving.value=true;const result=await api<{models:SelectedModel[]}>(`/projects/${props.projectId}/answer-models`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({models:selected.value.map(({model_id,minimum_score})=>({model_id,minimum_score}))})});selected.value=result.models;message.value='项目作答模型集合已保存';}
+ try{error.value='';message.value='';saving.value=true;const result=await api<{models:SelectedModel[]}>(`/projects/${props.projectId}/answer-models`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({models:selected.value.map(({model_id,minimum_score})=>({model_id,minimum_score}))})});selected.value=result.models;message.value='项目作答模型集合已保存';emit('saved');}
  catch(cause){error.value=cause instanceof Error?cause.message:'项目模型设置保存失败';}finally{saving.value=false;}
 }
 onMounted(refresh);

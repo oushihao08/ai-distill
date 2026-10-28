@@ -21,7 +21,7 @@ import {invalidateMaterialResults} from './materials/state';
 import type { Pool, PoolClient } from 'pg';
 import { STEP_REGISTRY,getWorkflowStepDefinitions } from '../shared/step-registry';
 import { SYSTEM_STEP_PROMPTS } from '../shared/step-prompts';
-import {resolveQwenConfig,QwenError} from './answer-models/qwen';
+import {QwenError} from './answer-models/qwen';
 import {resolveAnswerConfig} from './answer-models/dispatch';
 import {DomesticError} from './answer-models/domestic';
 import {answerCapabilityIssue} from './answer-models/input';
@@ -232,7 +232,11 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
  if(ordinal===4&&timeout!==undefined&&(!Number.isInteger(timeout)||Number(timeout)<60000||Number(timeout)>7200000))throw new HTTPException(400,{message:'出题超时须为 1 至 120 分钟的毫秒数'});
  return { provider, model, reasoning_effort: effort, prompt, ...(ordinal===4&&timeout!==undefined?{timeout_ms:timeout as number}:{}), ...extension };
 }
-function defaultAnswerConfig(){try{return resolveQwenConfig({});}catch{return {provider:'qwen'};}}
+/** 步骤5仅投影流程设置；实际模型唯一来源为本期模型集合，历史尝试仍读取其冻结配置。 */
+function answerStepSettings(stored:Record<string,any>={}){
+ const {provider,model,reasoning_effort,api,base_url,max_tokens,enable_thinking,provider_options,...settings}=stored;
+ return{...settings,prompt:typeof stored.prompt==='string'?stored.prompt:SYSTEM_STEP_PROMPTS[5]};
+}
 export async function projectStepSummary(pool: Pool, projectId: string, materialBackend:'legacy'|'library_v1'|Promise<'legacy'|'library_v1'>='legacy',preloadedRows?:ReturnType<typeof readProjectWorkflowStepRows>,preloadedCodexSettings?:ReturnType<typeof readProjectAgentSettings>,preloadedConfigs?:{rows:{ordinal:number;config:any}[]}|Promise<{rows:{ordinal:number;config:any}[]}>) {
  const [rows,configs,codexSettings,resolvedMaterialBackend]=await Promise.all([
   preloadedRows??readProjectWorkflowStepRows(pool,projectId),
@@ -267,7 +271,7 @@ export async function projectStepSummary(pool: Pool, projectId: string, material
   const isCodex=[4,6,9].includes(stage.ordinal);
   const explicit=Boolean(stored&&(stored.provider==='api'||typeof stored.model==='string'&&typeof stored.reasoning_effort==='string'));
   const defaults={model:codexSettings.model,reasoning_effort:codexSettings.reasoning_effort};
-  const config=stage.ordinal===9?mergeRedactionDefaults({...stored,prompt:typeof stored?.prompt==='string'?stored.prompt:SYSTEM_STEP_PROMPTS[9]},defaults):stage.ordinal===5?{...defaultAnswerConfig(),...stored,prompt:typeof stored?.prompt==='string'?stored.prompt:SYSTEM_STEP_PROMPTS[5]}:isCodex?{
+  const config=stage.ordinal===9?mergeRedactionDefaults({...stored,prompt:typeof stored?.prompt==='string'?stored.prompt:SYSTEM_STEP_PROMPTS[9]},defaults):stage.ordinal===5?answerStepSettings(stored):isCodex?{
    ...(stage.ordinal===6&&stored?.provider==='api'?{...stored,prompt:typeof stored.prompt==='string'?stored.prompt:SYSTEM_STEP_PROMPTS[6]}:{provider:'codex',...mergeCodexDefaults({prompt:SYSTEM_STEP_PROMPTS[stage.ordinal as 4|6],...(stored??{})},defaults)}),
   }:stored??{};
   const hasProjectPrompt=typeof stored?.prompt==='string';

@@ -19,7 +19,7 @@
 | `redaction-jobs.ts` | 旧步骤9只处理人工已脱敏声明，重验来源并原子发布；旧字段映射冻结任务明确失败，不再复用或调用模型。 |
 | `redaction.ts` | 仅保留`renderRedactedMaterials()`渲染同源正文/结构索引及历史协议标识，不包含模型执行。 |
 | `redacted-docx.ts` | 兼容导出公共`document-generation/docx.ts`的`buildDocx()`纯文字/结构渲染；默认连续排版并跳过纯空段/空页，只有显式pagination=source才保留扫描页硬分页，表格单元格采用紧凑段距；名称兼容，可接受已核验脱敏或明确冻结原文，不读取原件、数据库或图片。可选 `style: legal` 只供 Work 业务成稿使用宋体正文、黑色标题及行距，并保留逐行文书字段，独立首段使用标题样式；默认附件渲染不变。 |
-| `redacted-docx-export.ts` | `readCurrentRedactionForDocx()`核验所选模式结构，`exportCurrentMaterialDocx()`按冻结顺序合并为一份DOCX并生成/复用，`readCurrentMaterialDocx()`安全下载；`readOriginalFilesForDelivery()`仅在归档原文模式按冻结清单和SHA读取原件；`questionResultDirectory()`和`isLibraryDocxPath()`共用目录契约。 |
+| `redacted-docx-export.ts` | `readCurrentRedactionForDocx()`核验所选模式结构，`exportCurrentMaterialDocx()`按项目布局逐文书或合并生成/复用DOCX，`readCurrentMaterialDocx()`安全下载；`readOriginalFilesForDelivery()`仅在归档原文模式按冻结清单和SHA读取原件；`questionResultDirectory()`和`isLibraryDocxPath()`共用目录契约。 |
 
 `*.test.ts`验证范围分别看文件头与用例，未运行不能说通过。材料/缓存/续接测试覆盖旧解析；redaction队列测试覆盖旧任务拒绝及人工声明发布；DOCX测试覆盖结构字节与来源绑定。测试、真实供应商、GUI视觉和完整业务分别报告。
 
@@ -67,7 +67,7 @@ DOCX可声明declared_redacted，仍完整提取，声明内容原样进入正�
 
 材料DOCX接口不注册新步骤或attempt。有有效脱敏结果或冻结原文来源即可独立生成，不以出题、评分、达标、归档完成或这些步骤空闲为前置。`readCurrentRedactionForDocx()`复用同一来源读取器；版本、结构、文件归属及摘要校验仍保留。`allowPublicationInProgress`仅保留调用签名兼容，不是当前导出资格开关。
 
-当前材料导出一题一份“脱敏材料.docx”或“原文材料.docx”，按冻结的分册/原件顺序组合正文与结构；不重新OCR。脱敏模式禁止混入原文结构。旧无结构索引使用Markdown兼容渲染，不能声称保留不存在的结构。渲染支持标题、段落、列表、表格合并、脚注段落样式及分页；不创建真实Word脚注关系、不含图片、不承诺逐像素版式。
+材料导出默认按冻结分册/原件顺序逐份输出，以序号和分册名命名；项目注册合并布局时生成一份“脱敏材料.docx”或“原文材料.docx”。两者均不重新OCR。脱敏模式禁止混入原文结构。`combineMaterialSections()`组合显示副本；首个非空段落/标题与分册标题仅空白不同则复用，避免程序额外加一行相同标题；其他首段及正文中的重复标题保留。同名分册会显示“第N份”，有`duplicate_of`关联的显示“重复件”，原冻结标题和正文不改。旧无结构索引使用Markdown兼容渲染，不能声称保留不存在的结构。渲染支持标题、段落、列表、表格合并、脚注段落样式及分页；不创建真实Word脚注关系、不含图片、不承诺逐像素版式。
 
 生成/复用检查来源模式、正文/结构、manifest、渲染版本和DOCX摘要。下载检查当前来源索引、模式、material_id、attempt、受管路径与文件SHA；`readCurrentRedactedDocx`只是兼容别名，不强制切换来源模式。当前产物索引与磁盘历史文件分开；历史文件不作为当前下载入口。
 
@@ -75,7 +75,7 @@ DOCX可声明declared_redacted，仍完整提取，声明内容原样进入正�
 
 操作授权和敏感信息边界遵循根AGENTS.md；本说明为源码核对结果，不证明当前worker已加载、真实OCR/脱敏质量或完整业务验收。
 
-DOCX渲染版本为redacted-structure-docx-v3，版本参与缓存索引；连续排版不执行脱敏清理；公共渲染器只在显示副本隐藏独立“（此页无正文）”分页提示，对异常OCR表格网格保留非空文字顺序做单列显示降级，正常表格保留合并关系。来源记录不变。旧题的垃圾扫描标记如需处理，先显式生成清理副本或新脱敏版本；不能在导出时静默改写原文来源或历史冻结数据。
+DOCX渲染版本为redacted-structure-docx-v5，版本参与缓存索引；连续排版不执行脱敏清理；公共渲染器只在显示副本隐藏独立“（此页无正文）”分页提示，对异常OCR表格网格保留非空文字顺序做单列显示降级，正常表格保留合并关系。来源记录不变。旧题的垃圾扫描标记如需处理，先显式生成清理副本或新脱敏版本；不能在导出时静默改写原文来源或历史冻结数据。
 
 ## 显式材料上传预处理
 
@@ -100,3 +100,5 @@ DOCX渲染版本为redacted-structure-docx-v3，版本参与缓存索引；连�
 项目差异统一从[lifecycle](../lifecycle/README.md)注册；提取provider、来源模式和脱敏执行仍属通用配置。步骤事件支持按主项目key订阅，只有实际存在key订阅时才查身份，不更改历史材料/任务快照。
 
 本机明确新派发可在同一事务替代他机尚未开始的同范围待办；运行、结果未知和续作仍受保护，新派发失败则旧意图变更回滚。适用范围、共享状态兼容与验证边界见[执行队列的跨机准入](../execution-queue/README.md#他机未开始待办与本机明确派发)。
+
+材料DOCX布局由 `../lifecycle/material-docx.ts` 按主项目选择：默认 `separate`，按分册名称逐份输出且不额外插入正文标题；豆包高经济价值（兼容旧名豆包高经）注册 `combined`，合并时复用相同的首标题，缺少时补文书边界标题。来源模式与布局独立，不修改脱敏结果或冻结快照。`planMaterialDocxExports()` 是实际导出与本地验收共用的纯计划入口。

@@ -59,7 +59,7 @@ test('manual export writes one DOCX artifact without touching workflow state or 
  expect(result).toMatchObject({reused:false,sha256:hash(bytes)});expect(bytes.readUInt32LE(0)).toBe(0x04034b50);expect(again).toMatchObject({artifact_id:result.artifact_id,reused:true});
  expect(await readFile(sourceCopy)).toEqual(Buffer.from('original attachment'));
  expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toHaveLength(1);
- expect(f.manifestArtifacts).toHaveLength(1);expect(JSON.parse(f.manifestArtifacts[0]!.content).renderer_version).toBe('redacted-structure-docx-v3');
+ expect(f.manifestArtifacts).toHaveLength(1);expect(JSON.parse(f.manifestArtifacts[0]!.content).renderer_version).toBe('redacted-structure-docx-v5');
  expect(f.calls.some(call=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts)/.test(call.sql))).toBe(false);
 });
 
@@ -128,7 +128,7 @@ test('structured index drives DOCX rendering and manifest binds source structure
  const xml=spawnSync('python3',['-c',"import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read('word/document.xml').decode())",path],{encoding:'utf8'});
  expect(xml.status).toBe(0);expect(xml.stdout).toContain('w:val="Heading1"');expect(xml.stdout).toContain('附件1的脱敏正文');
  const manifest=JSON.parse(f.manifestArtifacts[0]!.content);expect(manifest.materials[0]).toMatchObject({material_id:materialId,source_sha256:hash(Buffer.from('original attachment')),docx_artifact_id:artifact.artifact_id,docx_sha256:artifact.sha256});
- expect(manifest.renderer_version).toBe('redacted-structure-docx-v3');
+ expect(manifest.renderer_version).toBe('redacted-structure-docx-v5');
 });
 
 test('corrupt structured index fails closed before copying or exporting materials',async()=>{
@@ -216,4 +216,52 @@ test('Feishu old library manifests verify frozen IDs and real bytes without requ
   rows=[frozen];await writeFile(join(root,'source.pdf'),'tampered');await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow('指纹');
   await rm(join(root,'source.pdf'));await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow('缺失');
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('combined DOCX reuses the first real title, distinguishes same-name copies and preserves every body',async()=>{
+ const {combineMaterialSections}=await import('./redacted-docx-export');
+ const {buildDocx}=await import('../document-generation/docx');
+ const sections=[{title:'民事判决书',document:{format:'redacted-structure-v1' as const,pages:[{page:1,blocks:[]},{page:2,blocks:[{id:'h',kind:'heading' as const,text:'民 事 判 决 书',level:1},{id:'p',kind:'paragraph' as const,text:'本金10000元；2026-10-27'}]}]}},{title:'民事判决书',duplicate_of:'first',document:{format:'redacted-structure-v1' as const,pages:[{page:1,blocks:[{id:'h',kind:'paragraph' as const,text:'民事判决书'},{id:'p',kind:'paragraph' as const,text:'本金10000元；2026-10-27'}]}]}}];
+ const original=JSON.stringify(sections),combined=combineMaterialSections(sections);
+ expect(JSON.stringify(sections)).toBe(original);
+ const bytes=await buildDocx(combined),out=spawnSync('python3',['-c',"import zipfile,io,sys,xml.etree.ElementTree as E; r=E.fromstring(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).read('word/document.xml')); print('\\n'.join(n.text or '' for n in r.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t')))"] ,{input:Buffer.from(bytes),encoding:'utf8'});
+ expect(out.status).toBe(0);
+ expect(out.stdout.trim().split('\n')).toEqual(['民事判决书（第1份）','本金10000元；2026-10-27','民事判决书（重复件，第2份）','本金10000元；2026-10-27']);
+});
+
+test('section labels never remove meaningful first paragraphs or repeated source headings',async()=>{
+ const {combineMaterialSections}=await import('./redacted-docx-export');
+ const document={format:'redacted-structure-v1' as const,pages:[{page:1,blocks:[{id:'p',kind:'paragraph' as const,text:'本案涉及10000元借款。'},{id:'h',kind:'heading' as const,text:'申请书',level:1},{id:'h2',kind:'heading' as const,text:'申请书',level:1}]}]};
+ const out=combineMaterialSections([{title:'申请书',document},{title:'说明',document}]);
+ expect(out.pages[0]!.blocks.map((block:any)=>block.text)).toEqual(['申请书','本案涉及10000元借款。','申请书','申请书']);
+ expect(combineMaterialSections([{title:'申请书',document}])).toEqual(document);
+ expect(projectPreparedDocuments([{id:'d1',title:'申请书',text:'甲'},{id:'d2',title:'申请书',text:'甲',duplicate_of:'d1'}])?.[1]?.duplicate_of).toBe('d1');
+});
+
+
+test('layout policy defaults to separate documents and combines only registered projects',async()=>{
+ const {materialDocxLayout}=await import('../lifecycle/material-docx');
+ const {planMaterialDocxExports}=await import('./redacted-docx-export');
+ const document:any={format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'title',kind:'heading',text:'民事起诉状'},{id:'body',kind:'paragraph',text:'本金10000元'}]}]};
+ const sections=[{id:'a',title:'民事起诉状',document},{id:'b',title:'民事起诉状',document:structuredClone(document)}],before=JSON.stringify(sections);
+ expect(materialDocxLayout({parent_name:'Work法律全场景'})).toBe('separate');
+ expect(materialDocxLayout({parent_name:'其他项目'})).toBe('separate');
+ expect(materialDocxLayout({parent_name:'豆包高经济价值'})).toBe('combined');
+ const separate=planMaterialDocxExports(sections,'separate','redacted');
+ expect(separate.map(d=>d.filename)).toEqual(['001-民事起诉状.docx','002-民事起诉状.docx']);
+ expect(separate[0]!.document.pages[0]!.blocks).toHaveLength(2);
+ const combined=planMaterialDocxExports(sections,'combined','redacted');
+ expect(combined).toHaveLength(1);expect(combined[0]!.filename).toBe('脱敏材料.docx');
+ expect(combined[0]!.document.pages.flatMap(p=>p.blocks).filter(b=>b.kind==='heading')).toHaveLength(2);
+ expect(JSON.stringify(sections)).toBe(before);
+});
+
+test('Work export uses separate DOCX artifacts and reuses each current artifact without changing workflow state',async()=>{
+ const f=await fixture({parentName:'Work法律全场景',reversedSources:true,structured:true});
+ const first=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
+ expect(first.artifacts).toHaveLength(2);
+ expect(first.artifacts.every(item=>/^\d{3}-.+\.docx$/.test(item.filename))).toBe(true);
+ const second=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
+ expect(second.reused).toBe(true);expect(second.artifacts.map(item=>item.artifact_id)).toEqual(first.artifacts.map(item=>item.artifact_id));
+ expect(f.calls.some(call=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts)/.test(call.sql))).toBe(false);
 });

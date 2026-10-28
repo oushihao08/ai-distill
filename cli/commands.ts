@@ -57,7 +57,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
   library files prepare --manifest JSON --out 新输出目录（本地OFD转PDF及PDF切割；不上传、不调用模型）
   library revision create --package UUID --version N --request-key UUID --manifest JSON
-  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID]
+  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级]
   library job cancel --job UUID
   project materials load --project UUID --package UUID (--redaction UUID | --revision UUID)
   project materials update --project UUID --link UUID --version N [--redaction UUID | --revision UUID] [--position N]
@@ -66,6 +66,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   question delete --project UUID --workflow UUID --confirm-title 精确题目名（软删除单题；有活动尝试时拒绝）
   workflow design update --workflow UUID [--direction 文本] [--scenario 文本] [--role 文本]（至少一项；空文本清空，不派发）
   workflow authoring restore --workflow UUID --attempt UUID（恢复已保存结果，不重新调用模型）
+  workflow material-docx generate --workflow UUID（按冻结材料与项目布局生成全部DOCX，不派发其他步骤）
   workflow archive withdraw --workflow UUID（撤回当前归档，保留历史）
   library redaction revalidate --redaction UUID（复核已发布Agent产物，追加校验记录）
   hook retry --hook UUID [--acknowledge-side-effects]（显式补执行；不自动确认副作用）
@@ -172,7 +173,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'library package update':['package','version','file'],'library package archive':['package','version'],'library package restore':['package','version'],
       'library files prepare':['manifest','out'],
       'library revision create':['package','version','request-key','manifest'],
-      'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project'],
+      'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project','agent-model','reasoning-effort'],
       'library job show':['job'],'library job cancel':['job'],
       'library template list':[],'library template show':['template'],
       'library redaction revalidate':['redaction'],
@@ -183,6 +184,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'question list':['project'],'question show':['workflow'],'question delete':['project','workflow','confirm-title'],'question create':['material-package','redaction-attempt','title','scenario','role','level','direction'],'workflow status':['project','ids','all'],
       'workflow design update':['workflow','direction','scenario','role'],
       'workflow authoring restore':['workflow','attempt'],'workflow archive withdraw':['workflow'],
+      'workflow material-docx generate':['workflow'],
       'workflow hooks show':['workflow'],'workflow delivery show':['workflow'],
       'hook retry':['hook','acknowledge-side-effects'],'attempt resume-hooks':['attempt','acknowledge-side-effects'],
       'material text':['workflow','material','redacted-only'],'rules list':['project'],'rules file':['project','path'],
@@ -303,6 +305,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         data=await patch(`/api/workflows/${workflow}/authoring-direction`,body);break;
       }
       case 'workflow authoring restore': data=await post(`/api/workflows/${uuid('workflow')}/authoring-results/${uuid('attempt')}/restore`);break;
+      case 'workflow material-docx generate': data=await post(`/api/workflows/${uuid('workflow')}/material-docx`);break;
       case 'workflow archive withdraw': data=await post(`/api/workflows/${uuid('workflow')}/withdraw-archive`);break;
       case 'library redaction revalidate': {
         data=object(await post(`/api/material-library/redactions/${uuid('redaction')}/revalidate`),'脱敏复核');
@@ -431,7 +434,10 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'library job start': {
         const kind=required('kind'),target=required('target');
         if(!['intake','extract','redact'].includes(kind)||!['local','server'].includes(target))throw new CliError('任务 kind 或 execution target 无效');
-        const body={kind,request_key:uuid('request-key'),execution_target:target,...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{})};
+        const hasAgentModel=flags.has('agent-model'),hasReasoningEffort=flags.has('reasoning-effort');
+        if(hasAgentModel!==hasReasoningEffort)throw new CliError('--agent-model 与 --reasoning-effort 必须同时提供');
+        if(hasAgentModel&&kind!=='redact')throw new CliError('Agent模型设置仅用于redact任务');
+        const body={kind,request_key:uuid('request-key'),execution_target:target,...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{}) ,...(hasAgentModel?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})};
         data=await post(`/api/material-library/revisions/${uuid('revision')}/jobs`,body);break;
       }
       case 'library job show': data=await get(`/api/material-library/jobs/${uuid('job')}`);break;

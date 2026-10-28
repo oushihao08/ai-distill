@@ -37,6 +37,7 @@ declare module 'vue' {
     MaterialUsePanel: typeof import('./components/MaterialUsePanel.vue')['default']
     ModelEvaluationSummary: typeof import('./components/ModelEvaluationSummary.vue')['default']
     PhasePreparation: typeof import('./components/PhasePreparation.vue')['default']
+    ProjectAnswerModelsSummary: typeof import('./components/ProjectAnswerModelsSummary.vue')['default']
     ProjectCodexSettings: typeof import('./components/ProjectCodexSettings.vue')['default']
     ProjectForm: typeof import('./components/ProjectForm.vue')['default']
     ProjectLibraryMaterials: typeof import('./components/ProjectLibraryMaterials.vue')['default']

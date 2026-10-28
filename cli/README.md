@@ -122,6 +122,7 @@ CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、�
 | `hook retry` | `--hook UUID [--acknowledge-side-effects]` | 显式同步补执行；非幂等副作用确认仅在指定旗标时发送 | `POST /api/hooks/:id/retry` |
 | `attempt resume-hooks` | `--attempt UUID [--acknowledge-side-effects]` | 兼容旧主尝试的钩子失败续跑，不代替新后置钩子补执行 | `POST /api/attempts/:id/resume-hooks` |
 | `workflow delivery show` | `--workflow UUID` | 只读归档状态、最近及逐目标飞书回执；查询成功不等于交付成功 | `GET /api/workflows/:id?view=status` |
+| `workflow material-docx generate` | `--workflow UUID` | 按题目冻结材料和项目布局生成/复用全部材料DOCX，返回完整`artifacts[]`；不派发作答、评分或归档 | `POST /api/workflows/:id/material-docx` |
 | `rules list/file` | `--project`；file另需 `--path` | 读取项目规则清单/规则文件，不修改规则 | `commands.ts` |
 | `models catalog/show` | show需 `--project` | 查看系统可选模型或项目模型及阈值 | `commands.ts` |
 | `material text` | `--workflow`、`--material`、`--redacted-only` | 只读取当前脱敏正文；不能省略显式脱敏旗标 | `commands.ts` |
@@ -285,7 +286,7 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/remote-materials.test
 
 ## 选择脱敏模板
 
-`library template list`及`library template show --template ID`读取提示词、workflow、digest；不要从旧笔记推断当前规则。`library job start --kind redact ... --template ID`按数据库模板选择实际流程；省略模板默认aliases/codex_plan，自动进入本机Agent消费池。Agent模型和推理强度沿用系统Agent设置并在入队冻结。Agent读取整包、维护私有固定虚构姓名表、保留法院名称并输出字段/结构块语义计划；程序计算偏移、校验并在现有事务保存。使用本次冻结执行预算，到限停止保留私有进度，不自动重试。显式mask或旧字段映射新任务会被拒绝；CLI本身不调用模型。
+`library template list`及`library template show --template ID`读取提示词、workflow、digest；不要从旧笔记推断当前规则。`library job start --kind redact ... --template ID`按数据库模板选择实际流程；省略模板默认aliases/codex_plan，自动进入本机Agent消费池。默认沿用系统Agent设置并在入队冻结；也可成对提供`--agent-model 模型 --reasoning-effort 等级`，仅覆盖并冻结本次脱敏任务，不修改系统默认。Agent读取整包、维护私有固定虚构姓名表、保留法院名称并输出字段/结构块语义计划；程序计算偏移、校验并在现有事务保存。使用本次冻结执行预算，到限停止保留私有进度，不自动重试。显式mask或旧字段映射新任务会被拒绝；CLI本身不调用模型。
 
 新计划在既有`codex-material-export-v1`上增加`template_id`和`template_digest`。单文件documents show返回structure及field_ranges，原页UTF-16编辑必须位于单个字段内，分册定位替换后正文且不切断表格/列表。export与import均校验模板摘要和结构；import保存新版本，不切换项目选版。无模板旧计划保留文本兼容，不能声称保留表格结构。
 

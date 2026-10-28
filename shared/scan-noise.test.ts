@@ -90,3 +90,21 @@ test('C-style codes need page-edge and repeated scanner evidence; ordinary codes
  const ordinary=[page(1,['C89','004','**','B712 210×285mm','图2.10','123456','2025-03-26 15:27:50'])];
  expect(cleanScanNoisePages(ordinary).edits).toHaveLength(0);
 });
+
+test('restores escaped mask stars in prose and cells while keeping code and formula escapes',()=>{
+ const masked=String.raw`622848\*\*\*\*\*\*\*\*8919`,code=String.raw`const pattern = /\*/; const key = 'a\_b';`,formula=String.raw`x\_i + a\*b`;
+ const pages:ScanNoisePage[]=[{file_id:'f',page:1,blocks:[{id:'p',kind:'paragraph',text:masked},{id:'t',kind:'table',rows:[{cells:[{text:masked},{text:'10000元；2026-10-27'}]}]},{id:'c',kind:'code',text:code},{id:'m',kind:'formula',text:formula}]}];
+ const before=JSON.stringify(pages),out=cleanScanNoisePages(pages);
+ expect(documentBlocksToText(out.pages[0]!.blocks)).toBe('622848********8919\n622848********8919\t10000元；2026-10-27\n'+code+'\n'+formula);
+ expect(cleanScanNoisePages(out.pages).edits).toHaveLength(0);expect(JSON.stringify(pages)).toBe(before);
+ for(const edit of out.edits)expect(documentBlocksToText(pages[0]!.blocks).slice(edit.start,edit.end)).toBe(edit.source_text);
+});
+
+test('prose escapes and path separators become readable while real code escapes remain intact',()=>{
+ const multi=String.raw`622848\\*\\*8919`,single=String.raw`622848\*\*8919`,other=String.raw`C:\case\files`+'；literal '+String.raw`\n \t`+'；<哈哈></哈哈>';
+ const input:ScanNoisePage[]=[page(1,[multi,single,other])];
+ input[0]!.blocks.push({id:'code',kind:'code',text:multi});
+ const out=cleanScanNoisePages(input);
+ expect(documentBlocksToText(out.pages[0]!.blocks)).toBe('622848**8919\n622848**8919\nC:/case/files；literal \n \t；\n'+multi);
+ expect(cleanScanNoisePages(out.pages).edits).toHaveLength(0);
+});

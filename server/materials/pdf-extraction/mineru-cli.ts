@@ -13,53 +13,79 @@ import { DOCUMENT_STRUCTURE_VERSION, documentBlocksToText, type DocumentBlock, t
 import type { PdfExtractionProvider, PdfExtractionResult } from './types';
 
 // Increment when conversion semantics change: old text-only caches are incomplete.
-export const MINERU_OCR_VERSION = 'mineru-open-api-first-structured-v3';
-export const MINERU_DOCX_VERSION = 'mineru-docx-structured-v1';
+export const MINERU_OCR_VERSION = 'mineru-open-api-first-structured-v4';
+export const MINERU_DOCX_VERSION = 'mineru-docx-structured-v2';
 interface MineruBlock { page_idx?: number; type?: string; [key: string]: unknown }
 interface ParsedPage { blocks: DocumentBlock[]; issues: Set<string> }
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
 function decodeHtml(value: string) {
- return value.replace(/&#x([\da-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
-  .replace(/&#(\d+);/g, (_, decimal: string) => String.fromCodePoint(Number(decimal)))
-  .replace(/&nbsp;/gi, '\u00a0').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
-  .replace(/&quot;/gi, '"').replace(/&apos;/gi, "'");
+ const named:Record<string,string>={nbsp:'\u00a0',amp:'&',lt:'<',gt:'>',quot:'"',apos:"'"};
+ // 一次匹配解码一层；无效码点原样保留，不让单个坏实体丢掉整份文档。
+ return value.replace(/&(#x[\da-f]+|#\d+|nbsp|amp|lt|gt|quot|apos);/gi,(raw,entity:string)=>{
+  if(entity[0]!=='#')return named[entity.toLowerCase()]!;
+  const point=entity[1]?.toLowerCase()==='x'?Number.parseInt(entity.slice(2),16):Number(entity.slice(1));
+  return point>0&&point<=0x10ffff&&!(point>=0xd800&&point<=0xdfff)?String.fromCodePoint(point):raw;
+ });
+}
+
+/** 仅用于明确HTML字段或表格单元格；已知排版标签转换，未知/未配对标签及其正文保留。 */
+function htmlText(value:string){
+ if(/<\s*\/?\s*(?:script|style)(?=[\s/>])/i.test(value))return value;
+ const inline=new Set(['b','strong','i','em','u','s','sub','sup','span']),block=new Set(['p','div','html','body']);
+ const stack:string[]=[];let output='',cursor=0,trailingBoundary=false;
+ const append=(text:string)=>{if(text){output+=decodeHtml(text);trailingBoundary=false;}};
+ const newline=()=>{if(output&&!output.endsWith('\n')){output+='\n';trailingBoundary=true;}};
+ for(const match of value.matchAll(/<\s*(\/?)\s*([a-z][a-z0-9]*)(?=[\s/>])((?:"[^"<>]*"|'[^'<>]*'|[^'"<>])*)>/gi)){
+  append(value.slice(cursor,match.index));cursor=match.index!+match[0].length;
+  const name=match[2]!.toLowerCase(),closing=Boolean(match[1]);
+  if(name==='br'&&!closing){output+='\n';trailingBoundary=false;continue;}
+  if(!inline.has(name)&&!block.has(name)){output+=match[0];trailingBoundary=false;continue;}
+  if(closing){if(stack.pop()!==name)return value;}
+  else if(!/\/\s*>$/.test(match[0]))stack.push(name);
+  if(block.has(name))newline();
+ }
+ append(value.slice(cursor));
+ if(stack.length)return value;
+ return trailingBoundary?output.slice(0,-1):output;
 }
 
 /** Extract only text-bearing keys; file paths, coordinates and image payload metadata never enter the document. */
-function textLeaves(value: unknown): string[] {
- if (typeof value === 'string') return value.length ? [value] : [];
- if (Array.isArray(value)) return value.flatMap(textLeaves);
+function textLeaves(value: unknown,mode:'text'|'html'|'raw'='text'): string[] {
+ if (typeof value === 'string') return value.length ? [mode==='html'?htmlText(value):value] : [];
+ if (Array.isArray(value)) return value.flatMap(item=>textLeaves(item,mode));
  if (!isRecord(value)) return [];
  const values: string[] = [];
- for (const key of ['content', 'text', 'latex', 'value']) if (Object.hasOwn(value, key)) values.push(...textLeaves(value[key]));
+ for (const key of ['content', 'text', 'latex', 'value', 'html']) if (Object.hasOwn(value, key)) values.push(...textLeaves(value[key],mode==='raw'?'raw':mode==='html'||value.type==='html'||key==='html'?'html':'text'));
  return values;
 }
 
 function parseTableHtml(html: string): DocumentRow[] {
  const rows: DocumentRow[] = [];
  let row: DocumentCell[] | undefined, cell: DocumentCell | undefined;
- const tokens = html.match(/<[^>]*>|[^<]+/g) ?? [];
+ const tokens = html.match(/<(?:"[^"<>]*"|'[^'<>]*'|[^'"<>])*>|[^<]+|</g) ?? [];
  for (const token of tokens) {
-  if (token[0] !== '<') { if (cell) cell.text += decodeHtml(token); continue; }
+  if (token[0] !== '<') { if (cell) cell.text += token;else if(token.trim())return [];continue; }
   const closing = /^<\s*\//.test(token), name = token.match(/^<\s*\/?\s*([a-z0-9]+)/i)?.[1]?.toLowerCase();
-  if (!name) continue;
+  if (!name) {if(cell)cell.text+=token;else if(token.trim())return [];continue;}
   if (name === 'tr') {
-   if (closing) { if (row?.length) rows.push({ cells: row }); row = undefined; }
-   else row = [];
+   if (closing) { if(!row||cell)return [];if (row.length) rows.push({ cells: row }); row = undefined; }
+   else {if(row)return [];row = [];}
   } else if (name === 'td' || name === 'th') {
-   if (closing) cell = undefined;
+   if (closing) {if(!cell)return [];cell.text=htmlText(cell.text);cell = undefined;}
    else if (row) {
+    if(cell)return [];
     const span = (attribute: string) => {
      const raw = token.match(new RegExp(`\\b${attribute}\\s*=\\s*["']?(\\d+)`, 'i'))?.[1];
      return raw ? Math.max(1, Number(raw)) : undefined;
     };
     cell = { text: '', ...(span('rowspan') ? { rowSpan: span('rowspan') } : {}), ...(span('colspan') ? { columnSpan: span('colspan') } : {}) };
     row.push(cell);
-   }
-  } else if (name === 'br' && cell) cell.text += '\n';
+   }else return [];
+  } else if(cell)cell.text+=token;
+  else if(!['table','thead','tbody','tfoot','colgroup','col'].includes(name))return [];
  }
- if (row?.length) rows.push({ cells: row });
+ if (row||cell)return [];
  return rows;
 }
 
@@ -72,7 +98,7 @@ function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): Docume
  const content = isRecord(block.content) ? block.content : {};
  const blocks: DocumentBlock[] = [];
  const addText = (kind: 'heading' | 'paragraph' | 'footnote' | 'caption' | 'formula' | 'code', value: unknown, level?: number) => {
-  const pieces = textLeaves(value);
+  const pieces = textLeaves(value,kind==='code'||kind==='formula'?'raw':'text');
   if (!pieces.length) return;
   blocks.push({ id: `b${ordinal}-${blocks.length + 1}`, kind, text: pieces.join(''), ...(kind === 'heading' && level ? { level } : {}) });
  };
@@ -81,7 +107,8 @@ function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): Docume
  for (const field of ['image_caption', 'equation_caption', 'figure_caption']) addCaption(field, 'caption');
 
  const tableValue = normalizedField(block, 'table_body', content) ?? normalizedField(block, 'html', content);
- const tableHtml = typeof tableValue === 'string' ? tableValue : textLeaves(tableValue).join('');
+ // 表格先读取原始HTML，再在单元格内转换一次，避免嵌套HTML节点导致实体重复解码。
+ const tableHtml = typeof tableValue === 'string' ? tableValue : textLeaves(tableValue,'raw').join('');
  if ((type === 'table' || type.includes('table')) && tableHtml) {
   const rows = parseTableHtml(tableHtml);
   if (rows.length) {
@@ -90,30 +117,31 @@ function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): Docume
   }
   else {
    // Preserve table text even when MinerU returns a non-HTML table representation.
-   addText('paragraph', tableValue);
+   addText('paragraph', tableHtml);
    page.issues.add('table_structure_unparsed');
   }
  }
 
  const listValue = normalizedField(block, 'list_items', content) ?? normalizedField(block, 'list_content', content);
  if (type === 'list' || type.includes('list')) {
-  const items = Array.isArray(listValue) ? listValue.flatMap(textLeaves) : textLeaves(listValue);
+  const items = textLeaves(listValue);
   if (items.length) blocks.push({ id: `b${ordinal}-${blocks.length + 1}`, kind: 'list', items });
  }
 
- const textValue = type === 'title' ? normalizedField(block, 'title_content', content) ?? normalizedField(block, 'text', content)
+ const textValue = (type === 'title' ? normalizedField(block, 'title_content', content) ?? normalizedField(block, 'text', content)
   : type === 'paragraph' ? normalizedField(block, 'paragraph_content', content) ?? normalizedField(block, 'text', content)
   : type.includes('footnote') ? normalizedField(block, `${type}_content`, content) ?? normalizedField(block, 'text', content)
   : type.includes('equation') ? normalizedField(block, 'latex', content) ?? normalizedField(block, 'text', content)
   : type.includes('code') || type.includes('algorithm') ? normalizedField(block, 'code_content', content) ?? normalizedField(block, 'text', content)
-  : normalizedField(block, 'text', content) ?? normalizedField(block, 'content', content);
+  : normalizedField(block, 'text', content) ?? normalizedField(block, 'content', content))
+   ?? (typeof normalizedField(block,'html',content)==='string'?{type:'html',text:normalizedField(block,'html',content)}:undefined);
  // A generated caption describes an image but does not prove that OCR transcribed text printed inside it.
  if (type === 'image' && !textLeaves(normalizedField(block, 'text', content) ?? content).length) page.issues.add('image_without_text');
  if (type === 'title' || Number.isSafeInteger(block.text_level)) addText('heading', textValue, Number.isSafeInteger(block.text_level) ? Number(block.text_level) : Number(content.level) || 1);
  else if (type.includes('footnote')) addText('footnote', textValue);
  else if (type.includes('equation')) addText('formula', textValue);
  else if (type.includes('code') || type.includes('algorithm')) addText('code', textValue);
- else if (type !== 'table' && !type.includes('table') && type !== 'list' && !type.includes('list') && textValue !== undefined) addText('paragraph', textValue);
+ else if (type !== 'table' && !type.includes('table') && type !== 'list' && !type.includes('list') && textValue !== undefined) addText('paragraph', type==='html'?{type:'html',content:textValue}:textValue);
 
  for (const field of ['image_footnote']) {
   const value = normalizedField(block, field, content);
@@ -127,7 +155,7 @@ function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): Docume
   else page.issues.add(type === 'image' ? 'image_without_text' : 'block_without_text');
  }
  // MinerU V1 原始结果含这些正文附属块；原文仍按段落保留，不误报未知类型。
- if (!['title', 'text', 'paragraph', 'header', 'footer', 'page_number', 'aside_text', 'table', 'list', 'page_footnote', 'footnote', 'image', 'equation', 'equation_isolated', 'code', 'algorithm'].some(name => type === name || (name === 'table' && type.includes(name)) || (name === 'list' && type.includes(name)))) page.issues.add('unsupported_block_type');
+ if (!['title', 'text', 'paragraph', 'html', 'header', 'footer', 'page_number', 'aside_text', 'table', 'list', 'page_footnote', 'footnote', 'image', 'equation', 'equation_isolated', 'code', 'algorithm'].some(name => type === name || (name === 'table' && type.includes(name)) || (name === 'list' && type.includes(name)))) page.issues.add('unsupported_block_type');
  if (blocks.some(item => documentBlocksToText([item]).includes('[NO TEXT]'))) page.issues.add('no_text_placeholder');
  return blocks;
 }

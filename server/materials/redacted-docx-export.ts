@@ -3,6 +3,7 @@
  * 主要入口：`exportCurrentMaterialDocx()` 按冻结模式归档；`readCurrentMaterialDocx()` 校验指纹后读取；`isLibraryDocxPath()` 供下载与重置共用路径契约。
  * 使用场景：由工作流 API 调用；不派发 worker 任务或写入步骤、尝试、发布与返修状态。
  */
+import {materialDocxLayout,type MaterialDocxLayout} from '../lifecycle/material-docx';
 import {resolveProjectPath} from '../paths';
 import {assertAuthoringMaterialBinding,assertOriginalManifest} from '../publishing/feishu-verification';
 
@@ -23,7 +24,7 @@ type Source={material_id:string;source_sha256:string;artifact_id:string;artifact
 type Original={id:string;original_name:string;storage_path:string;sha256:string;size_bytes:number|string};
 type FileChange={path:string;previous:Buffer|null};
 type IndexedDocument={document:RedactedDocumentStructure;structure_sha256:string};
-type ExportContext={workflow_id:string;project_id:string;project_name:string;parent_name:string|null;phase_name:string|null;title:string;source_key:string|null;attempt_id:string|null;redacted_sha256:string;markdown:string;materialMarkdown:Map<string,string>;materialDocuments:Map<string,IndexedDocument>;originals:Original[];material_origin?:import('@shared/material-library').QuestionMaterialOrigin;material_snapshot_digest?:string;material_mode?:'redacted'|'original';prepared_documents?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[]};
+type ExportContext={workflow_id:string;project_id:string;project_name:string;parent_name:string|null;phase_name:string|null;title:string;source_key:string|null;attempt_id:string|null;redacted_sha256:string;markdown:string;materialMarkdown:Map<string,string>;materialDocuments:Map<string,IndexedDocument>;originals:Original[];material_origin?:import('@shared/material-library').QuestionMaterialOrigin;material_snapshot_digest?:string;material_mode?:'redacted'|'original';prepared_documents?:{id:string;title:string;text:string;duplicate_of?:string|null;document?:RedactedDocumentStructure}[]};
 type ManifestMaterial={material_id:string;source_sha256:string;document_sha256:string;docx_artifact_id:string;docx_sha256:string};
 type DocxManifestV1={format:'redacted-docx-manifest-v1';attempt_id:string|null;redacted_sha256:string;renderer_version:string;materials:ManifestMaterial[]};
 type DocxManifestV2={format:'redacted-docx-manifest-v2';attempt_id:null;material_origin:import('@shared/material-library').QuestionMaterialOrigin;snapshot_digest:string;redacted_sha256:string;renderer_version:string;materials:ManifestMaterial[]};
@@ -216,8 +217,41 @@ export function projectPreparedDocuments(value:unknown):ExportContext['prepared_
   if(typeof doc?.id!=='string'||!doc.id.trim()||ids.has(doc.id)||typeof doc.title!=='string'||!doc.title.trim()||typeof doc.text!=='string')throw new HTTPException(409,{message:'冻结分册正文无效'});
   ids.add(doc.id);
   if(doc.document&&(doc.document.format!=='redacted-structure-v1'||!Array.isArray(doc.document.pages)||doc.document.pages.some((p:any)=>!Number.isSafeInteger(p.page)||!Array.isArray(p.blocks))||doc.document.pages.map((p:any)=>documentBlocksToText(p.blocks)).join('\n\n')!==doc.text))throw new HTTPException(409,{message:'冻结分册结构无效'});
-  return{id:doc.id,title:doc.title,text:doc.text,...(doc.document?{document:doc.document}:{})};
+  return{id:doc.id,title:doc.title,text:doc.text,...(typeof doc.duplicate_of==='string'?{duplicate_of:doc.duplicate_of}:{}),...(doc.document?{document:doc.document}:{})};
  }).filter(doc=>doc.text.trim().length>0);
+}
+
+/** 仅组合显示副本；复用文书首标题，保留同名正文与重复扫描，不改冻结结构。 */
+export function combineMaterialSections(sections:ReadonlyArray<{title:string;duplicate_of?:string|null;document:RedactedDocumentStructure}>):RedactedDocumentStructure{
+ const counts=new Map<string,number>(),indexes=new Map<string,number>();
+ for(const section of sections)counts.set(section.title.trim(),(counts.get(section.title.trim())??0)+1);
+ const pages:RedactedDocumentStructure['pages']=[];
+ const titleKey=(text:string)=>text.replace(/\s+/g,'');
+ for(const [sectionIndex,section] of sections.entries()){
+  const title=section.title.trim(),index=(indexes.get(title)??0)+1;indexes.set(title,index);
+  const displayTitle=(counts.get(title)??0)>1?`${title}（${section.duplicate_of?'重复件，':''}第${index}份）`:section.duplicate_of?`${title}（重复件）`:title;
+  let started=false;
+  for(const page of section.document.pages){
+   let blocks=page.blocks;
+   if(!started&&sections.length>1){
+    const first=blocks.findIndex(block=>documentBlocksToText([block]).trim());
+    if(first>=0){
+     started=true;const block=blocks[first]!;
+     if((block.kind==='heading'||block.kind==='paragraph')&&titleKey(block.text)===titleKey(title)){
+      blocks=blocks.map((item,i)=>i===first?{id:item.id,kind:'heading' as const,text:displayTitle,level:2}:item);
+     }else blocks=[...blocks.slice(0,first),{id:`section-${sectionIndex}`,kind:'heading' as const,text:displayTitle,level:2},...blocks.slice(first)];
+    }
+   }
+   pages.push({...page,page:pages.length+1,blocks});
+  }
+ }
+ return{format:'redacted-structure-v1',pages};
+}
+
+/** 项目布局选定后共用的纯导出计划；逐份直接使用正文，合并时才处理文书边界标题。 */
+export function planMaterialDocxExports(sections:ReadonlyArray<{id:string;title:string;duplicate_of?:string|null;document:RedactedDocumentStructure}>,layout:MaterialDocxLayout,mode:'redacted'|'original'){
+ if(layout==='combined')return[{id:'combined-material',title:mode==='original'?'原文材料':'脱敏材料',filename:mode==='original'?'原文材料.docx':'脱敏材料.docx',document:combineMaterialSections(sections)}];
+ return sections.map((section,index)=>({...section,filename:preparedDocxFilename(section,index)}));
 }
 
 async function contextForExport(db:Pool|PoolClient,workflowId:string):Promise<ExportContext>{
@@ -231,7 +265,7 @@ async function contextForExport(db:Pool|PoolClient,workflowId:string):Promise<Ex
  return{...workflow,project_name:workflow.project_name,parent_name:workflow.parent_name??workflow.project_name,phase_name:workflow.phase_name??null,title:workflow.title,...redaction,originals};
 }
 
-/** Archive one DOCX per current material using the source mode frozen on the question; never changes workflow steps. */
+/** 按项目布局导出逐文书或合并DOCX，使用题目冻结来源；不改变工作流步骤。 */
 export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,storageRoot:string,projectExportsRoot:string,expectedMode?:'redacted'|'original',options:{allowPublicationInProgress?:boolean;expectedAuthoringInput?:unknown}={}){
  const db=await pool.connect();let tx=false;const changes:FileChange[]=[];
  try{
@@ -276,21 +310,15 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
    const target=join(location.originalDir,`${material.id.slice(0,8)}_${name}`);if(!beneath(location.questionDir,target))throw new HTTPException(409,{message:'附件归档路径无效'});
    await installFile(target,bytes,material.sha256,changes);
   }
-  // 一题一份：合并已验证分册的结构，保留顺序与表格，不重写冻结材料。
-  const sections=context.prepared_documents?.length
-   ?context.prepared_documents.map(doc=>({title:doc.title,document:doc.document??preparedTextDocument(doc.text,doc.id)}))
-   :context.originals.map(material=>({title:material.original_name,document:context.materialDocuments.get(material.id)?.document??preparedTextDocument(context.materialMarkdown.get(material.id)!,material.id)}));
-  const pages:RedactedDocumentStructure['pages']=[];
-  for(const [sectionIndex,section] of sections.entries()){
-   for(const [pageIndex,page] of section.document.pages.entries())pages.push({...page,page:pages.length+1,blocks:[...(sections.length>1&&pageIndex===0?[{id:`section-${sectionIndex}`,kind:'heading' as const,text:section.title,level:2}]:[]),...page.blocks]});
-  }
-  const combined:RedactedDocumentStructure={format:'redacted-structure-v1',pages};
-  const exportItems=[{material:context.originals[0]!,prepared:{id:'combined-material',title:materialMode==='original'?'原文材料':'脱敏材料',text:context.markdown,document:combined},index:0}];
-  for(const {material,prepared,index} of exportItems){
-   const name=safeLabel(material.original_name,'附件');
-   const stem=name.replace(/\.[^.]+$/,''),filename=prepared?`${prepared.title}.docx`:`${stem}-${materialMode==='original'?'原文':'脱敏'}-${material.id.slice(0,8)}.docx`,docxPath=join(dirname(location.docxPath),filename),storagePath=location.storagePath.replace(/[^/]+$/,filename);
+  // 生命周期选择逐文书或合并交付；仅操作显示副本，不改冻结脱敏材料。
+  const sourceSections=context.prepared_documents?.length
+   ?context.prepared_documents.map(doc=>({id:doc.id,title:doc.title,duplicate_of:doc.duplicate_of??null,document:doc.document??preparedTextDocument(doc.text,doc.id)}))
+   :context.originals.map(material=>({id:material.id,title:material.original_name,duplicate_of:null,document:context.materialDocuments.get(material.id)?.document??preparedTextDocument(context.materialMarkdown.get(material.id)!,material.id)}));
+  const exportItems=planMaterialDocxExports(sourceSections,materialDocxLayout(context),materialMode).map(prepared=>({material:context.originals.find(item=>item.id===prepared.id)??context.originals[0]!,prepared}));
+  for(const {material,prepared} of exportItems){
+   const filename=prepared.filename,docxPath=join(dirname(location.docxPath),filename),storagePath=location.storagePath.replace(/[^/]+$/,filename);
    const current=prior.find(row=>row.material_id===material.id&&row.storage_path===storagePath);
-   const preparedStructure:RedactedDocumentStructure|undefined=prepared?(prepared.document??preparedTextDocument(prepared.text,prepared.id)):undefined;
+   const preparedStructure:RedactedDocumentStructure|undefined=prepared.document;
    const document=preparedStructure?{document:preparedStructure,structure_sha256:digest(JSON.stringify(preparedStructure))}:context.materialDocuments.get(material.id),document_sha256=document?.structure_sha256??digest(context.materialMarkdown.get(material.id)!);
    const priorSourceMatches=context.material_origin?.kind==='library_v1'
     ?priorManifest?.format==='material-docx-manifest-v3'&&priorManifest.snapshot_digest===context.material_snapshot_digest&&priorManifest.material_mode===materialMode&&canonicalJson(priorManifest.material_origin)===canonicalJson(context.material_origin)

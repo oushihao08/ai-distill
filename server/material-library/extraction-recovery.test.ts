@@ -7,6 +7,7 @@ import {executeExtraction,runClaimedJob,runNextLibraryJob} from './runner';
 import {ensurePages,hash,jobDirectory} from './execution-shared';
 import {readExtractionCheckpoint,writeExtractionCheckpoint} from './extraction-checkpoint';
 import {currentTaskSignal} from '../task-signal';
+import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
 
 const file={file_id:crypto.randomUUID(),source_sha256:hash('%PDF-fake'),format:'pdf'};
 const doc=ensurePages([{page:1,text:'正文',method:'text',structure:[{id:'b1',kind:'paragraph',text:'正文'}],issues:['image_without_text']}],file.source_sha256);
@@ -32,11 +33,14 @@ test('legacy checkpoints retain their full-config binding instead of guessing a 
  try{
   await writeExtractionCheckpoint(root,first,file,doc,'mineru-api');
   const path=join(jobDirectory(root,first.id),'extraction',file.file_id+'.json');
-  const identity=hash({version:1,package_id:first.package_id,revision_id:first.revision_id,manifest:first.input_snapshot.manifest_sha256,files:first.input_snapshot.files,config:first.config_digest,file,converter:'mineru-open-api-first-structured-v3'});
+  const identity=hash({version:1,package_id:first.package_id,revision_id:first.revision_id,manifest:first.input_snapshot.manifest_sha256,files:first.input_snapshot.files,config:first.config_digest,file,converter:MINERU_OCR_VERSION});
   await writeFile(path,JSON.stringify({identity,sha256:hash(doc),document:doc,provider:'mineru-api'}));
   const retry={...first,id:crypto.randomUUID(),previous_job_id:first.id};
   expect((await readExtractionCheckpoint(root,retry,file))?.document).toEqual(doc);
   expect(await readExtractionCheckpoint(root,{...retry,config_digest:'changed'},file)).toBeUndefined();
+  const oldIdentity=hash({version:1,package_id:first.package_id,revision_id:first.revision_id,manifest:first.input_snapshot.manifest_sha256,files:first.input_snapshot.files,config:first.config_digest,file,converter:'mineru-open-api-first-structured-v3'});
+  await writeFile(path,JSON.stringify({identity:oldIdentity,sha256:hash(doc),document:doc,provider:'mineru-api'}));
+  expect(await readExtractionCheckpoint(root,retry,file)).toBeUndefined();
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

@@ -95,3 +95,65 @@ test('does not treat an image caption as a substitute for OCR text inside the im
  expect(page.text).toBe('票据照片');
  expect(page.issues).toEqual(['image_without_text']);
 });
+
+test('only explicit HTML sources convert formatting; ordinary legal references and code stay literal',()=>{
+ const ordinary='<中华人民共和国民法典>；a < b；<b>标签示例</b> &amp;';
+ const [page]=parseMineruJson([
+  {type:'text',page_idx:0,text:ordinary},
+  {type:'paragraph',page_idx:0,html:'<p>本金<strong>10000元</strong><br/>2026-10-27</p><div>甲&amp;乙</div>'},
+  {type:'html',page_idx:0,text:'<span>确认&#x4E66;</span>'},
+  {type:'paragraph',page_idx:0,content:{paragraph_content:[{type:'html',content:'<b>嵌套格式</b>'}]}},
+  {type:'list',page_idx:0,list_items:['首项','<b>原文字面量</b> &amp;']},
+  {type:'code',page_idx:0,text:'<div>代码</div>'},
+  {type:'code',page_idx:0,html:'<b>代码字面量</b> &amp;'},
+  {type:'equation',page_idx:0,content:{latex:{type:'html',content:'a < b；&amp;'}}},
+ ],1);
+ expect(page!.text).toBe(ordinary+'\n本金10000元\n2026-10-27\n甲&乙\n确认书\n嵌套格式\n首项\n<b>原文字面量</b> &amp;\n<div>代码</div>\n<b>代码字面量</b> &amp;\na < b；&amp;');
+ expect(page!.issues??[]).not.toContain('unsupported_block_type');
+});
+
+test('HTML conversion preserves unknown, unbalanced and script/style fragments without guessing',()=>{
+ const samples=['<p><中华人民共和国民法典>与<custom>原文</custom></p>','<p>未闭合正文','<b><i>错配</b></i>','<script>const x="<b>字面量</b>";</script>','<style>.x { color:red }</style>'];
+ const [page]=parseMineruDocxJson(samples.map(html=>({type:'html',html})));
+ expect(page!.text).toBe(['<中华人民共和国民法典>与<custom>原文</custom>',...samples.slice(1)].join('\n'));
+});
+
+test('table HTML keeps legal brackets, comparisons, formatting and single-layer entity text',()=>{
+ const [page]=parseMineruJson([{type:'table',page_idx:0,table_body:'<table><tbody><tr><td rowspan="2"><p>本金<b>10000元</b></p><p>2026-10-27</p></td><td>&amp;lt; &#x110000; &#55296; &unknown;</td></tr><tr><td>&lt;中华人民共和国民法典&gt;与<中华人民共和国民法典>；a < b；<custom>文字</custom></td></tr></tbody></table>'}],1);
+ const table=page!.structure![0] as any;
+ expect(table.rows[0].cells[0]).toEqual({text:'本金10000元\n2026-10-27',rowSpan:2});
+ expect(table.rows[0].cells[1].text).toBe('&lt; &#x110000; &#55296; &unknown;');
+ expect(table.rows[1].cells[0].text).toBe('<中华人民共和国民法典>与<中华人民共和国民法典>；a < b；<custom>文字</custom>');
+});
+
+test('malformed tables and text outside cells fall back without losing any source text',()=>{
+ for(const html of ['<table><tr><td>10000元</td><td>未闭合','前置说明<table><tr><td>10000元</td></tr></table>','<table><caption>重要说明</caption><tr><td>10000元</td></tr></table>']){
+  const [page]=parseMineruJson([{type:'table',page_idx:0,table_body:html}],1);
+  expect(page!.text).toBe(html);expect(page!.issues).toContain('table_structure_unparsed');
+ }
+});
+
+test('nested HTML table bodies decode entities once and malformed nested tables retain raw text',()=>{
+ for(const table of ['<table><tr><td>&amp;lt; &amp;amp; 10000元</td></tr></table>','<table><tr><td>&amp;lt; 10000元']){
+  const [page]=parseMineruDocxJson([{type:'table',content:{table_body:[{type:'html',content:table}]}}]);
+  if(table.endsWith('</table>'))expect(page!.text).toBe('&lt; &amp; 10000元');
+  else {expect(page!.text).toBe(table);expect(page!.issues).toContain('table_structure_unparsed');}
+ }
+});
+
+test.each([
+ ['<哈哈></哈哈>','<哈哈></哈哈>'],
+ ['<哈哈>本金10000元</哈哈>','<哈哈>本金10000元</哈哈>'],
+ ['<p><哈哈>正文2026-10-27</哈哈></p>','<哈哈>正文2026-10-27</哈哈>'],
+ ['<custom data-x="1">甲&amp;乙</custom>','<custom data-x="1">甲&乙</custom>'],
+ ['<b>金额10000元</哈哈>','<b>金额10000元</哈哈>'],
+ ['<p>本金10000元<br','<p>本金10000元<br'],
+ ['&lt;哈哈&gt;正文&lt;/哈哈&gt;','<哈哈>正文</哈哈>'],
+ ['&amp;lt;哈哈&amp;gt;','&lt;哈哈&gt;'],
+ ['<中华人民共和国民法典>；1 < 2；3 > 2','<中华人民共和国民法典>；1 < 2；3 > 2'],
+])('adversarial HTML %s retains meaningful text and unknown markup', (input,expected)=>{
+ const ordinary=parseMineruDocxJson([{type:'text',text:input}])[0]!;
+ const html=parseMineruDocxJson([{type:'html',html:input}])[0]!;
+ const table=parseMineruDocxJson([{type:'table',table_body:`<table><tr><td>${input}</td></tr></table>`}])[0]!;
+ expect(ordinary.text).toBe(input);expect(html.text).toBe(expected);expect(table.text).toBe(expected);
+});

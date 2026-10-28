@@ -4,7 +4,7 @@
 
 | 文件 | 公开入口及职责 |
 | --- | --- |
-| `docx.ts` | `buildDocx(textOrStructure, options)`生成DOCX；`preparedTextDocument()`将制表符文本转成结构。默认连续排版；`pagination: source`显式保留源页分页。渲染版本参与材料导出缓存。 |
+| `docx.ts` | `buildDocx(textOrStructure, options)`生成DOCX；`preparedTextDocument()`将制表符文本转成结构。默认连续排版；`pagination: source`显式保留源页分页。渲染版本参与材料导出缓存；章节标题或版式改变时递增版本。 |
 | `table-layout.ts` | `planTableLayout()`设置确定列宽；异常超宽或越界OCR跨度按原行及单元格顺序保留非空文字，不猜测原表格几何，不改冻结数据。 |
 | `xlsx.ts` | `buildXlsx(sheets)`返回XLSX字节，`writeXlsx(path,sheets)`写文件；支持多表、列宽、换行、超长文字分列、数值/布尔及链接。 |
 

@@ -67,3 +67,16 @@ test('table cells use compact paragraph spacing without changing amounts or date
  const xml=docxParts(await buildRedactedDocx(doc)).get('word/document.xml')!;
  expect(xml).toContain('本金10000元');expect(xml).toContain('2025-03-26');expect(xml).toContain('w:after="0"');expect(xml).toContain('w:line="240"');
 });
+
+test('material cleanup removes unknown HTML before DOCX generation, preserving body and masked values',async()=>{
+ const {parseMineruDocxJson}=await import('./pdf-extraction/mineru-cli');
+ const {cleanScanNoisePages}=await import('../../shared/scan-noise');
+ const source=[{type:'html',html:'<p><哈哈>本金10000元</哈哈><br>日期2026-10-27</p>'},{type:'text',text:'<哈哈></哈哈>；依据<中华人民共和国民法典>'},{type:'text',text:String.raw`622848\\*\\*8919`},{type:'table',table_body:'<table><tr><td>&lt;哈哈&gt;附件&lt;/哈哈&gt;</td><td>10000元</td></tr></table>'}];
+ const original=JSON.stringify(source),pages=parseMineruDocxJson(source),cleaned=cleanScanNoisePages(pages.map(page=>({file_id:'synthetic',page:page.page,blocks:page.structure!})));
+ const xml=docxParts(await buildRedactedDocx({format:'redacted-structure-v1',pages:cleaned.pages.map(page=>({page:page.page,blocks:page.blocks}))})).get('word/document.xml')!;
+ expect(xml).toContain('本金10000元\n日期2026-10-27');
+ expect(xml).toContain('；依据《中华人民共和国民法典》');
+ expect(xml).toContain('622848**8919');expect(xml).toContain('附件');expect(xml).not.toContain('哈哈');
+ expect(xml).not.toContain('\\*');expect(xml).not.toContain('&lt;p&gt;');expect(xml).not.toContain('&lt;br&gt;');expect(xml).toContain('<w:tbl>');
+ expect(JSON.stringify(source)).toBe(original);
+});

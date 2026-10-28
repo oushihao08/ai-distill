@@ -70,6 +70,12 @@
 
 `MaterialRecordsTable` 对 DOCX 显示脱敏方式并提供确认弹窗；保存时提交当前附件 SHA-256，成功后刷新工作流。上传与材料编辑控件接受后端已有的 PDF、DOCX、TXT、MD 类型。
 
+`MaterialRecordsTable` 与 `LibraryFileReader` 在阅读界面隐藏 `image_without_text`，且不将其计入可见待核数量；其他问题仍显示，服务端原始检查记录保留。
+
+`ProjectLibraryMaterials` 的“查看全部脱敏附件”使用本期选定的脱敏版本，`LibraryMaterialPreview` 按该版本绑定的提取任务列出全部文件并逐份读取脱敏正文，不默认替换为最新版本。`ProjectQuestionRecords` 的附件数量是查看入口，按需读取该题的全部附件并复用只读 `MaterialRecordsTable`，材料库题按题目冻结来源查看，不跟随本期后续选版变化。
+
+上述入口不在列表阶段读取正文；题目附件清单复用`view=status`轻量详情，不加载答案和评分全文。文件正文仅在选中时读取，当前已显示文件不重复请求；关闭或切换目标取消未完成请求并释放当前弹窗内容。
+
 `LibraryPackageCreateDialog` 通过文件夹选择器导入PDF/DOCX/TXT/MD，用文件夹名称建包；上传失败保留包ID及同一上传请求标识供重试。`ProjectLibraryMaterials` 仅列出有可用成功脱敏结果的包，加载按钮要求明确选版，服务端同步校验。
 
 `LibraryJobHistory` 按任务ID读取安全进度和错误；支持取消排队/运行任务、对失败或取消任务显式重试。脱敏重试绑定原提取任务，不读取/显示任务输入全文或提示词；不自动轮询。
@@ -94,6 +100,8 @@
 
 `PhasePreparation.vue`只读核对本期规则/Skill、出题配置、作答模型、材料加载数量及匹配来源的可用数量，提供各自设置入口；不整体阻断，不派发任务，原文不要求脱敏。`ProjectForm.vue`首期显式共享Skill，后续期次回读共享路径；未知创建结果通过服务端只读回执查询（含目录规范化与显式出题参数核对）提供原期入口，不自动重建。
 
-`RevisionAdvice.vue`按workflowId手动读取/生成建议并展示最近历史及版本有效标记，在题目表、出题记录和详情复用；仅打开弹窗才读取正文。批量返修建议沿用筛选范围，容量满或回执未知后停止后续派发。当前已达标题目的建议生成按钮禁用，服务端仍复核。步骤状态投影显示本机、他机及待核实，不能将云端running视为本机占用。
+`RevisionAdvice.vue`按workflowId手动读取/生成建议并展示最近历史及版本有效标记；“触发返修建议”位于题目表的题名下方、出题记录和题目详情顶部，打开弹窗后才读取正文。不能生成时展示原因，查看历史入口不隐藏；生成建议不自动重新出题。批量返修建议沿用筛选范围，容量满或回执未知后停止后续派发。当前已达标题目的建议生成按钮禁用，服务端仍复核。步骤状态投影显示本机、他机及待核实，不能将云端running视为本机占用。
+
+`ProjectAnswerModelsSummary.vue`在项目作答步骤和步骤5设置中只读展示本期模型集合，与实际新作答选择共用`/projects/:id/answer-models`。模型集合保存后通过`AnswerModelSet.saved`事件刷新项目摘要；不读取旧步骤5的单模型字段，不改变历史任务冻结模型。读取失败显示错误和重试，未配置集合明确提示。
 
 `ProjectQuestionRecords.vue` 对已归档题目不提供普通执行菜单；批量执行显示 `already_archived` 跳过数量并继续其他题目。

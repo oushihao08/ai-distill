@@ -6,6 +6,7 @@
  */
 import {documentBlocksToText,type DocumentBlock} from './document-structure';
 import {documentFieldRanges} from './prepared-structure';
+import {materialMarkupEdits} from './material-markup';
 export interface ScanNoisePage {file_id:string;page:number;blocks:DocumentBlock[]}
 export interface ScanNoiseEdit {file_id:string;page:number;start:number;end:number;source_text:string;replacement_text:string}
 const placeholder=/\\?\[[ \t]*(?:NO[ _-]+TEXT(?:[ _-]+(?:DETECTED|FOUND)(?:[ _-]+IN[ _-]+IMAGE\.?)?)?|QR[ _-]*CODE|IMAGE|BAR[ _-]*CODE|UNREADABLE|无法识别|无文字)[ \t]*\\?\]/giu;
@@ -47,7 +48,7 @@ function blockFields(block:DocumentBlock){
  *
  * 与Agent语义清理的分工：
  * - Agent根据正文/位置判断scan_watermark、corner_stamp、ocr_placeholder等片段；不确定的噪声应保留。
- * - 本函数补清理已知占位符、扫描时间戳、具有扫描/跨页证据的角码，以及确定的百分比/下划线转义。
+ * - 本函数补清理已知占位符、扫描时间戳、具有扫描/跨页证据的角码，以及正文中的百分比/下划线/星号转义；代码和公式不执行格式还原。
  *   不尝试用正则穷举所有乱码、页眉页脚或替Agent判断任意正文；不能为省事泛删数字、日期或符号。
  * - 后续结构/覆盖校验针对编辑后的正文，只证明编辑与结构自洽，不能证明被删片段在业务上确实无意义，
  *   也不会恢复Agent已决定删除的内容；语义判断与机械校验不是互相替代的两次审查。
@@ -80,8 +81,10 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
   for(const field of documentFieldRanges([entry.block])){
    const text=entry.projection.slice(field.start,field.end);
    for(const range of noiseRanges(text))addProjection(entry,field.start+range.start,field.start+range.end);
+   for(const edit of materialMarkupEdits(text,{preserveEscapes:entry.block.kind==='code'||entry.block.kind==='formula'}))edits.push({...edit,file_id:entry.file_id,page:entry.page,start:entry.start+field.start+edit.start,end:entry.start+field.start+edit.end});
+   // 代码和公式里的反斜杠有语法意义，不按正文格式残留还原。
+   if(entry.block.kind==='code'||entry.block.kind==='formula')continue;
    for(const match of text.matchAll(/\$([+-]?\d+(?:\.\d+)?)\\%\$/g))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+field.start+match.index!,end:entry.start+field.start+match.index!+match[0].length,source_text:match[0],replacement_text:match[1]+'%'});
-   for(const match of text.matchAll(/\\_/g))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+field.start+match.index!,end:entry.start+field.start+match.index!+match[0].length,source_text:match[0],replacement_text:'_'});
   }
  }
  for(const {entry,match} of stamps)add(entry,match.index!,match.index!+match[0].length);

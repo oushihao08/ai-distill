@@ -12,10 +12,14 @@ import {documentBlocksToText} from '../materials/pdf';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
 const missing=()=>new HTTPException(404,{message:'材料预览不存在'});
-function checkedText(content:unknown,sha:unknown){
+function verifiedText(content:unknown,sha:unknown){
  if(typeof content!=='string'||typeof sha!=='string'||createHash('sha256').update(content).digest('hex')!==sha)throw conflict('材料预览摘要校验失败');
- if(Buffer.byteLength(content)>4*1024*1024)throw new HTTPException(413,{message:'正文超过预览大小限制，请通过成果导出查看'});
  return content;
+}
+function checkedText(content:unknown,sha:unknown){
+ const text=verifiedText(content,sha);
+ if(Buffer.byteLength(text)>4*1024*1024)throw new HTTPException(413,{message:'正文超过预览大小限制，请通过成果导出查看'});
+ return text;
 }
 
 export async function readLibraryOriginal(pool:Pool,root:string,fileId:string){
@@ -51,8 +55,8 @@ export async function readLibraryDocuments(pool:Pool,revisionId:string,jobId:str
  })};
 }
 
-export async function readLibraryRedactionPreview(pool:Pool,redactionId:string,fileId?:string){
- const row=(await pool.query(`SELECT r.id,r.package_id,r.revision_id,r.extraction_job_id,r.redaction_job_id,r.validation_report,r.output_digest,b.text_content,b.sha256,
+export async function readLibraryRedactionPreview(pool:Pool,redactionId:string,fileId?:string,metadataOnly=false){
+ const row=(await pool.query(`SELECT r.id,r.package_id,r.revision_id,r.extraction_job_id,r.redaction_job_id,r.validation_report,r.output_digest,${metadataOnly&&!fileId?'NULL AS text_content,NULL AS sha256':'b.text_content,b.sha256'},
   ${fileId?'i.text_content AS index_content,i.sha256 AS index_sha256':'NULL AS index_content,NULL AS index_sha256'}
   FROM ai_distill.library_redactions r JOIN ai_distill.library_packages p ON p.id=r.package_id AND p.deleted_at IS NULL
   JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id AND j.kind='redact' AND j.status='succeeded'
@@ -60,15 +64,18 @@ export async function readLibraryRedactionPreview(pool:Pool,redactionId:string,f
   JOIN ai_distill.library_blobs i ON i.id=r.index_blob_id AND i.storage_kind='database_text' WHERE r.id=$1`,[redactionId])).rows[0];
  if(!row)throw missing();
  const {text_content,sha256,index_content,index_sha256,...metadata}=row;
- const markdown=checkedText(text_content,sha256);
+ if(metadataOnly&&!fileId)return metadata;
+ const markdown=fileId?verifiedText(text_content,sha256):checkedText(text_content,sha256);
  if(!fileId)return{...metadata,markdown};
  let index:any;
- try{index=JSON.parse(checkedText(index_content,index_sha256));}catch(error){if(error instanceof HTTPException)throw error;throw conflict('脱敏结构索引无效');}
+ // 内部整包索引包含重复结构及分册数据，其大小不代表本次返回的单文件正文大小；仍严格核验摘要。
+ try{index=JSON.parse(verifiedText(index_content,index_sha256));}catch(error){if(error instanceof HTTPException)throw error;throw conflict('脱敏结构索引无效');}
  if(index.format!=='redacted-index-v2'||index.redacted_sha256!==sha256||!Array.isArray(index.materials))throw conflict('脱敏正文与结构索引不一致');
  const file=index.materials.find((item:any)=>item.material_id===fileId);
  if(!file||!Array.isArray(file.document?.pages))throw missing();
  if(createHash('sha256').update(JSON.stringify(file.document)).digest('hex')!==file.structure_sha256)throw conflict('脱敏文件结构摘要校验失败');
  const pages=file.document.pages.map((page:any)=>({page:page.page,text:documentBlocksToText(page.blocks),issues:page.issues??[]}));
  if(pages.map((page:any)=>page.text).join('\n\n')!==file.markdown)throw conflict('脱敏文件结构与正文不一致');
+ if(Buffer.byteLength(JSON.stringify(pages))>4*1024*1024)throw new HTTPException(413,{message:'单文件正文超过预览大小限制，请通过成果导出查看'});
  return{...metadata,file_id:fileId,pages};
 }

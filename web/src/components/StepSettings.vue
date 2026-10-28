@@ -4,6 +4,7 @@
 -->
 
 <script setup lang="ts">
+import ProjectAnswerModelsSummary from './ProjectAnswerModelsSummary.vue';
 import WorkflowPolicyEditor from './WorkflowPolicyEditor.vue';
 import type {WorkflowConfig} from '@shared/workflow-config';
 import { api } from '../api/client';
@@ -92,7 +93,7 @@ async function inheritDefaults(){
  <Row x="between" class="p-20 pb-12 shrink-0"><h2 class="section-title">{{ step.position }} · {{ step.name }}</h2><v-btn icon="$close" variant="text" aria-label="关闭步骤设置" :disabled="busy" @click="emit('close')" /></Row>
  <Column :gap="16" class="min-h-0 overflow-y-auto px-20 pb-16">
  <p class="text-sm text-muted">就绪 {{ step.ready }} · 排队 {{ step.queued }} · 运行 {{ step.running }} · 成功 {{ step.succeeded }} · 失败 {{ step.failed }}</p>
- <Column v-if="step.ordinal===5" :gap="8"><v-alert type="info">点击“模型作答”会为项目模型集合中的每个已选模型分别派发作答任务，随后逐份评分。每题只读取创建题目时冻结的材料版本，脱敏或未脱敏由题目快照决定；请在出题前为本期选择新题材料版本。请在项目的“作答模型”页选择并保存多个模型；这里无需选择单个模型。新建项目会复制当时的系统提示词，修改本项目提示词只影响后续作答。</v-alert><v-textarea v-model="prompt" label="模型作答步骤提示词" rows="8" required :disabled="busy" /><Row x="end"><v-btn color="primary" variant="flat" @click="emit('openModels')">配置作答模型</v-btn></Row></Column>
+ <Column v-if="step.ordinal===5" :gap="8"><ProjectAnswerModelsSummary :project-id="projectId" /><v-alert type="info">点击“模型作答”会为项目模型集合中的每个已选模型分别派发作答任务，随后逐份评分。每题只读取创建题目时冻结的材料版本，脱敏或未脱敏由题目快照决定；请在出题前为本期选择新题材料版本。请在项目的“作答模型”页选择并保存多个模型；这里无需选择单个模型。新建项目会复制当时的系统提示词，修改本项目提示词只影响后续作答。</v-alert><v-textarea v-model="prompt" label="模型作答步骤提示词" rows="8" required :disabled="busy" /><Row x="end"><v-btn color="primary" variant="flat" @click="emit('openModels')">配置作答模型</v-btn></Row></Column>
  <template v-else-if="editable">
   <Column v-if="step.ordinal===4" :gap="8" class="rounded border border-line-subtle p-12"><strong class="text-sm">系统固定通用出题规则</strong><pre class="max-h-[320px] overflow-auto whitespace-pre-wrap break-words text-xs">{{ AUTHORING_FIXED_PROMPT }}</pre></Column>
   <v-alert v-if="step.ordinal===4&&authoringProcessingMode==='mask'" type="warning">本期仍为历史遮挡设置，请明确选择Agent化名或原文；保存不会将旧结果改标为化名。</v-alert>

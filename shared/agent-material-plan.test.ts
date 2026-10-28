@@ -5,7 +5,8 @@ import {agentMaterialSource,compileAgentMaterialPlan,type AgentMaterialPlan,type
 import {createHash} from 'node:crypto';
 
 test('default Agent policy keeps business facts and natural aliases without an execution-file checklist',()=>{
- expect(ALIAS_REDACTION_PROMPT).toContain('日常的虚构名称');
+ expect(ALIAS_REDACTION_PROMPT).toContain('人名保留原姓（含复姓）');
+ expect(ALIAS_REDACTION_PROMPT).toContain('同音或近音');
  expect(ALIAS_REDACTION_PROMPT).toContain('法院、银行、邮政的名称保留');
  expect(ALIAS_REDACTION_PROMPT).not.toContain('人名使用人员甲');
  expect(ALIAS_REDACTION_PROMPT).toContain('组合文书');
@@ -205,4 +206,22 @@ test('a document may span files with source structure and complete coverage inta
  const out=compileAgentMaterialPlan(plan,files,identity);
  expect(out.prepared.documents[0]!.text).toBe('第一页\n\n第二页');expect(out.prepared.documents[0]!.document.pages).toHaveLength(2);
  expect(out.plan.documents[0]!.segments.map(s=>s.file_id)).toEqual(['file0','file1']);
+});
+
+test('escaped masks are normalized through exact plan compilation with complete document coverage',()=>{
+ const text='账户'+String.raw`622848\*\*\*\*8919`+'；本金10000元；2026-10-27';
+ const files:PreparationFile[]=[{file_id:'file',text_sha256:createHash('sha256').update(text).digest('hex'),pages:[{page:1,text,structure:[{id:'b',kind:'paragraph',text}]}]}];
+ const plan:AgentMaterialPlan={entities:[],edits:[],documents:[{id:'d',title:'账户材料',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
+ const out=compileAgentMaterialPlan(plan,files,identity);
+ expect(out.prepared.documents[0]!.text).toBe('账户622848****8919；本金10000元；2026-10-27');
+ expect(files[0]!.pages[0]!.text).toBe(text);
+});
+
+test('HTML cleanup uses local source spans and cannot restore original names or undo phone masking',()=>{
+ const text='<哈哈>张三电话13812345678，金额10000元</哈哈>';
+ const files:PreparationFile[]=[{file_id:'file',text_sha256:createHash('sha256').update(text).digest('hex'),pages:[{page:1,text,structure:[{id:'b',kind:'paragraph',text}]}]}];
+ const plan:AgentMaterialPlan={entities:[{id:'person',kind:'person',alias:'张正',variants:[{text:'张三',targets:[]}]}],edits:[{target_id:'f1p1b1f1',source_text:'13812345678',occurrence:0,kind:'phone',keep_prefix:''}],documents:[{id:'d',title:'材料',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
+ const out=compileAgentMaterialPlan(plan,files,identity);
+ expect(out.prepared.documents[0]!.text).toBe('张正电话138******78，金额10000元');
+ expect(out.prepared.documents[0]!.text).not.toContain('张三');expect(files[0]!.pages[0]!.text).toBe(text);
 });

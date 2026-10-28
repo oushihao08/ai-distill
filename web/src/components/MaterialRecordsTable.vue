@@ -30,6 +30,9 @@ const detailError = shallowRef('');
 const selectedMaterial = shallowRef<Material>();
 const detail = shallowRef<MaterialTextDetail>();
 const showingRedacted = shallowRef(false);
+const visiblePages = computed(() => (showingRedacted.value ? detail.value?.redacted_pages : detail.value?.pages)?.map(page => ({
+ ...page, issues: page.issues?.filter(issue => issue !== 'image_without_text'),
+})) ?? []);
 const detailTab = shallowRef<'text'|'pdf'>('text');
 const isPdf = computed(() => selectedMaterial.value?.original_name.toLowerCase().endsWith('.pdf') ?? false);
 const pdfPreviewUrl = shallowRef('');
@@ -201,7 +204,7 @@ async function viewFullText(material: Material) {
       <span class="text-xs text-muted">脱敏后全文</span>
       <pre class="surface-panel p-12 text-sm whitespace-pre-wrap break-words">{{ detail.redacted_text || '（脱敏文本为空）' }}</pre>
      </template>
-     <Column v-else v-for="page in (showingRedacted ? detail.redacted_pages ?? [] : detail.pages)" :key="page.page" class="border-t border-line-subtle pt-12" :gap="8">
+     <Column v-else v-for="page in visiblePages" :key="page.page" class="border-t border-line-subtle pt-12" :gap="8">
       <Row x="between" wrap :gap="8">
        <span class="text-sm font-medium">第 {{ page.page }} 页 · {{ page.method }}</span>
        <v-chip v-if="page.issues?.length" color="warning">{{ page.issues.length }} 项待核</v-chip>
