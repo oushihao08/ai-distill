@@ -4,6 +4,7 @@
  * 使用场景：材料库页面调用 `/api/material-library`，该路由不创建项目工作流或旧材料记录。
  */
 import type {Hono} from 'hono';
+import {registerPreparationRoutes} from './preparation';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {uuid} from '../validation';
@@ -28,6 +29,7 @@ function versionHeader(value:string|undefined){
 async function jsonBody(c:any){try{return await c.req.json();}catch{throw new HTTPException(400,{message:'请求必须是有效JSON'});}}
 
 export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:string){
+ registerPreparationRoutes(app,pool,storageRoot);
  const prefix='/api/material-library';
  app.get(`${prefix}/redaction-templates`,async c=>{const {processing_settings}=await readLibraryProcessingSettings(pool,storageRoot);return c.json({items:libraryRedactionTemplates(processing_settings).map(t=>resolveLibraryTemplate(processing_settings,t.id))});});
  app.get(`${prefix}/processing-defaults`,async c=>c.json(await buildDefaultProcessingSettings(pool)));

@@ -24,8 +24,8 @@ const redactionItems=computed(()=>revision.value?.redactions.map((item,index)=>(
 watch(()=>[revision.value?.id,file.value?.id],()=>{fileMode.value='source';});
 const extracted=computed(()=>revision.value?.jobs.some(item=>item.kind==='extract'&&item.status==='succeeded')??false);
 const usable=computed(()=>revision.value?.redactions.some(item=>item.usable_for_question===true||item.usable_for_question==='true')??false);
-const active=computed(()=>revision.value?.jobs.find(item=>['queued','running'].includes(item.status)));
-const names={intake:'入库',extract:'识别原文',redact:'脱敏'};
+const active=computed(()=>revision.value?.jobs.find(item=>item.kind!=='prepare'&&['queued','running'].includes(item.status)));
+const names={intake:'入库',extract:'识别原文',redact:'脱敏',prepare:'材料整理'};
 </script>
 <template><Column :gap="0" class="min-w-0">
  <Row wrap y="center" :gap="8" class="px-8 py-8 border-b border-line">

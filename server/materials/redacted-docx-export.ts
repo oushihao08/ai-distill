@@ -7,6 +7,7 @@ import {materialDocxLayout,type MaterialDocxLayout} from '../lifecycle/material-
 import {resolveProjectPath} from '../paths';
 import {assertAuthoringMaterialBinding,assertOriginalManifest} from '../publishing/feishu-verification';
 
+import {validateSelectedMaterialIndex} from '../../shared/material-preparation-result';
 import {canonicalJson} from '../../shared/workflow-config';
 import {createHash,randomUUID} from 'node:crypto';
 import {chmod,lstat,mkdir,readFile,realpath,rename,rm,writeFile} from 'node:fs/promises';
@@ -24,7 +25,7 @@ type Source={material_id:string;source_sha256:string;artifact_id:string;artifact
 type Original={id:string;original_name:string;storage_path:string;sha256:string;size_bytes:number|string};
 type FileChange={path:string;previous:Buffer|null};
 type IndexedDocument={document:RedactedDocumentStructure;structure_sha256:string};
-type ExportContext={workflow_id:string;project_id:string;project_name:string;parent_name:string|null;phase_name:string|null;title:string;source_key:string|null;attempt_id:string|null;redacted_sha256:string;markdown:string;materialMarkdown:Map<string,string>;materialDocuments:Map<string,IndexedDocument>;originals:Original[];material_origin?:import('@shared/material-library').QuestionMaterialOrigin;material_snapshot_digest?:string;material_mode?:'redacted'|'original';prepared_documents?:{id:string;title:string;text:string;duplicate_of?:string|null;document?:RedactedDocumentStructure}[]};
+type ExportContext={selected_materials?:boolean;workflow_id:string;project_id:string;project_name:string;parent_name:string|null;phase_name:string|null;title:string;source_key:string|null;attempt_id:string|null;redacted_sha256:string;markdown:string;materialMarkdown:Map<string,string>;materialDocuments:Map<string,IndexedDocument>;originals:Original[];material_origin?:import('@shared/material-library').QuestionMaterialOrigin;material_snapshot_digest?:string;material_mode?:'redacted'|'original';prepared_documents?:{id:string;title:string;text:string;duplicate_of?:string|null;document?:RedactedDocumentStructure}[]};
 type ManifestMaterial={material_id:string;source_sha256:string;document_sha256:string;docx_artifact_id:string;docx_sha256:string};
 type DocxManifestV1={format:'redacted-docx-manifest-v1';attempt_id:string|null;redacted_sha256:string;renderer_version:string;materials:ManifestMaterial[]};
 type DocxManifestV2={format:'redacted-docx-manifest-v2';attempt_id:null;material_origin:import('@shared/material-library').QuestionMaterialOrigin;snapshot_digest:string;redacted_sha256:string;renderer_version:string;materials:ManifestMaterial[]};
@@ -140,6 +141,12 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
   const source=await readQuestionMaterials(db,workflowId);
   if(source.origin.kind!=='library_v1')throw new HTTPException(409,{message:'材料库来源信息无效'});
   const record=(await db.query('SELECT snapshot_manifest,redaction_id FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0];
+  if(record?.snapshot_manifest?.version===3){
+   const indexArtifact=(await db.query('SELECT content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND attempt_id IS NULL',[workflowId,record.snapshot_manifest.material_index.artifact_id])).rows[0];
+   if(typeof indexArtifact?.content!=='string'||digest(indexArtifact.content)!==indexArtifact.sha256)throw new HTTPException(409,{message:'选用材料索引缺失'});
+   const index=JSON.parse(indexArtifact.content),prepared_documents=projectPreparedDocuments(validateSelectedMaterialIndex(index,source.attachments[0]!.content));
+   return{attempt_id:null,redacted_sha256:source.attachments[0]!.sha256,markdown:source.attachments[0]!.content,materialMarkdown:new Map<string,string>(),materialDocuments:new Map<string,IndexedDocument>(),material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:source.origin.material_mode,prepared_documents,selected_materials:true};
+  }
   if(source.origin.material_mode==='original'){
    const indexArtifact=(await db.query("SELECT id,content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND kind='source_index' AND attempt_id IS NULL",[workflowId,record?.snapshot_manifest?.material_index?.artifact_id])).rows[0];
    let index:any;try{if(typeof indexArtifact?.content!=='string'||digest(indexArtifact.content)!==indexArtifact.sha256)throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库原文结构索引缺失或损坏'});}
@@ -314,7 +321,7 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
   const sourceSections=context.prepared_documents?.length
    ?context.prepared_documents.map(doc=>({id:doc.id,title:doc.title,duplicate_of:doc.duplicate_of??null,document:doc.document??preparedTextDocument(doc.text,doc.id)}))
    :context.originals.map(material=>({id:material.id,title:material.original_name,duplicate_of:null,document:context.materialDocuments.get(material.id)?.document??preparedTextDocument(context.materialMarkdown.get(material.id)!,material.id)}));
-  const exportItems=planMaterialDocxExports(sourceSections,materialDocxLayout(context),materialMode).map(prepared=>({material:context.originals.find(item=>item.id===prepared.id)??context.originals[0]!,prepared}));
+  const exportItems=planMaterialDocxExports(sourceSections,context.selected_materials?'separate':materialDocxLayout(context),materialMode).map(prepared=>({material:context.originals.find(item=>item.id===prepared.id)??context.originals[0]!,prepared}));
   for(const {material,prepared} of exportItems){
    const filename=prepared.filename,docxPath=join(dirname(location.docxPath),filename),storagePath=location.storagePath.replace(/[^/]+$/,filename);
    const current=prior.find(row=>row.material_id===material.id&&row.storage_path===storagePath);

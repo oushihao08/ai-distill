@@ -20,6 +20,7 @@
 | `agent-redaction-artifacts.ts` | 私有输入、同源检查点、固定结果文件及本地校验工具准备 |
 | `agent-redaction-validator.ts` | 打包到任务内的只读校验CLI，供Agent在同次调用内修正错误；不写库 |
 | `redaction-review.ts` | 显式复核Agent已发布产物，将当前结论及历史追加到job.result_summary，不改不可变产物或任务成功历史 |
+| `preparation.ts` | 可跳过的材料整理任务：按冻结的提取/脱敏来源生成总摘要、逐份摘要和支持范围；对首轮未覆盖或无摘要材料按有限批次补摘要，完整正文始终保留给建题 |
 | `worker-once.ts` | 验收入口，只消费HTTP已创建的指定本机Agent材料job UUID，复用共享Agent槽位与正式事务，不领取其他任务 |
 | `prepared-import.ts` | 导入Codex已审阅的原文编辑/分册计划：校验完整提取来源、精确编辑、范围覆盖与请求幂等，在同一事务保存新任务及脱敏结果；不OCR、不调用模型、不改旧结果 |
 | `mineru-import.ts` | 导入MinerU桌面端content_list：核对完整版本原件摘要与PDF页数，复用结构转换，事务保存提取文档与来源摘要；不重跑OCR、不脱敏 |
@@ -64,7 +65,7 @@ PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API
 
 ## 页面与接口
 
-化名脱敏的`POST /revisions/:id/jobs`请求可显式提供`agent_settings:{model,reasoning_effort}`，仅覆盖该次任务并参与幂等摘要及配置冻结；省略时沿用系统Agent默认，绝不保存回系统或项目设置。只允许用于redact任务，模型真实可用性以本机Codex调用为准。模型改变会使原有同模型检查点失配，保留previous_job_id追溯，但重新审阅整包建立计划。
+化名脱敏的`POST /revisions/:id/jobs`请求可显式提供`agent_settings:{model,reasoning_effort}`，仅覆盖该次任务并参与幂等摘要及配置冻结；省略时读取共用处理设置中`redaction`的Agent模型和强度，所有项目使用同一默认，不读取项目Agent默认。仅历史共用配置仍为API格式、缺少Agent模型时回退系统Agent默认。单次覆盖不保存回共用、系统或项目设置。只允许用于redact任务，模型真实可用性以本机Codex调用为准。模型改变会使原有同模型检查点失配，保留previous_job_id追溯，但重新审阅整包建立计划。
 
 `POST /revisions/:id/mineru-extractions` 导入本机已入库PDF的MinerU桌面端提取结果，不重新OCR。JSON为`{request_key,files:[{file_id,source_sha256,page_count,content_list}]}`，必须完整覆盖版本所有文件；`content_list`使用带`page_idx`的`*_content_list.json`或逐页数组，不能传`layout.json`。程序复用MinerU结构转换器，验证原件摘要、大小、PDF真实页数和可处理正文，在同一事务保存成功extract任务和全部library_documents；保留OCR issues并标明`mineru-desktop`及`model_invoked:false`。相同请求键和内容返回原任务，内容改变需新键；活动任务期间拒绝导入。来源对应是用户提供的桌面结果与原件配对声明，摘要/页数校验不证明OCR逐字准确。导入后复用现有Codex化名、分册、建题和DOCX链路，不更改期次来源设置或旧题。
 
@@ -157,7 +158,7 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 ### 可选API执行后端
 
-`aliases/codex_plan`表示化名方法和计划协议，不等于固定模型后端。默认仍读取系统Agent设置；新建redact任务可显式传`api_settings: ModelApiConfig`，与`agent_settings`互斥，完整非敏感配置进入请求幂等摘要和冻结快照，使用现有API消费池。未指定时不使用通用API默认值替代Agent。不修改共用默认设置或历史结果。
+`aliases/codex_plan`表示化名方法和计划协议，不等于固定模型后端。默认读取共用脱敏Agent设置，优先级及历史回退见上文；新建redact任务可显式传`api_settings: ModelApiConfig`，与`agent_settings`互斥，完整非敏感配置进入请求幂等摘要和冻结快照，使用现有API消费池。未指定时不使用通用API默认值替代Agent。不修改共用默认设置或历史结果。
 
 `agent-redaction.ts`维护共用输入准备、预算、检查点身份、最终编译和私有产物。`api-redaction.ts`只适配模型调用：将同一source/schema/提示词和可用续作计划内联给`llm-api`；宿主执行同一compileAgentMaterialPlan，反馈校验错误供模型在剩余预算内修正。API没有本地shell/读文件能力，不把工具脚本作为可执行提示发给模型；供应商失败不自动重试，相同无效计划停止。API配置参与检查点指纹，不能混用Agent检查点。结果沿原redaction-runner事务发布，不新增一套脱敏处理链。
 
@@ -217,3 +218,13 @@ Agent自检、宿主发布及显式复核共用同一编译器。成功表示原
 全局入库、提取、脱敏保持通用处理，无项目上下文时不套用某个项目规则。建题事务取得原锁后调用`lifecycle/steps.ts`的materialQuestion策略；Work一包一题由`lifecycle/projects/work.ts`注册，其他项目默认无此限制。原singleQuestionPerPackage导出保留为策略兼容门面，不再自行判断项目名称。材料占用账、快照、版本及事务约束不迁入项目策略。
 
 本机明确新派发可在同一事务替代他机尚未开始的同范围待办；运行、结果未知和续作仍受保护，新派发失败则旧意图变更回滚。适用范围、共享状态兼容与验证边界见[执行队列的跨机准入](../execution-queue/README.md#他机未开始待办与本机明确派发)。
+
+## 材料整理与使用范围
+
+`preparation.ts`复用`library_jobs(kind=prepare)`及本机Agent槽位，一次读取成功提取或脱敏结构，保存材料包总摘要、每份材料摘要/类型/标签，以及多组由材料支持的方向、主体/立场、相容场景/时点、核心工作和多项交付。整理不作默认选择、不裁剪材料，也不增加步骤编号或前置审批；缺失、失败或摘要不完整时，原建题流程继续。prepare不参与提取/脱敏的revision互斥；仍共享现有Agent容量，默认不自动派发。
+
+HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`redaction_id`或`extraction_job_id`，可选`project_id`及`agent_settings`；`GET /api/material-library/packages/:id/preparations`列出最近结果，`GET /api/material-library/preparations/:id?include_content=true`读取完整文书。状态和取消沿用jobs接口。同请求键恢复原ID；同来源/项目/模型及规则的成功结果或本机在途整理复用；成功结果可只读复用，不认领他机在途任务。未提供的摘要留空并显示提示；无效局部划分保留未归类原文，不阻断建题；模型结果未知不自动重调。
+
+建题POST不接受候选或文书筛选参数。服务端按材料包、revision、脱敏/提取来源摘要及项目自动匹配成功整理；匹配后将总摘要、逐份摘要/标签和支持范围冻结到本题来源快照，完整正文和所有附件保持原样。出题Agent结合完整材料与项目Skill，决定本题实际方向、主体/立场、一个或多个场景和交付；作答、评分只读取原题目快照，不接收整理建议。当前期次的方向+场景由`question_material_scope_uses`原子登记，唯一约束防止并发重复；无法可靠解析的历史题不自动回填。启用需051和053；缺任一表时建题不注入整理结果。旧题不追溯改变。
+
+`preparation.test.ts`以SQL/Agent替身和临时文件验证摘要编译、材料完整性、作者输入和组合重复登记；不证明真实Agent分析质量或业务环境已经迁移。CLI语法见[CLI说明](../../cli/README.md#可选材料整理)。

@@ -10,7 +10,7 @@ const emit=defineEmits<{refresh:[]}>();
 const visible=shallowRef(false),busy=shallowRef(false),error=shallowRef('');
 const job=shallowRef<MaterialLibraryJob>();
 const retryKey=shallowRef('');
-const names={intake:'入库核验',extract:'文本提取',redact:'脱敏'};
+const names={intake:'入库核验',extract:'文本提取',redact:'脱敏',prepare:'材料整理'};
 const statuses:Record<string,string>={queued:'排队中',running:'执行中',succeeded:'成功',failed:'失败',cancelled:'已取消'};
 async function openJob(id:string){
  if(busy.value)return;visible.value=true;busy.value=true;error.value='';job.value=undefined;retryKey.value=crypto.randomUUID();
@@ -53,6 +53,6 @@ async function retry(){
    <p v-if="job.cancel_requested_at&&job.status==='running'" class="text-sm text-muted">取消请求已记录，等待执行器结束；点击刷新查看最终状态。</p>
   </template>
   <v-alert v-if="error" type="error" density="compact" role="alert">{{ error }}</v-alert>
-  <Row x="end" wrap :gap="8"><v-btn :disabled="busy" @click="visible=false">关闭</v-btn><v-btn v-if="job" :disabled="busy" @click="refreshJob">刷新状态</v-btn><v-btn v-if="job&&['queued','running'].includes(job.status)" color="error" :disabled="busy||disabled||!!job.cancel_requested_at" @click="cancel">取消任务</v-btn><v-btn v-if="job&&['failed','cancelled'].includes(job.status)" color="primary" :disabled="busy||disabled" @click="retry">重新执行</v-btn></Row>
+  <Row x="end" wrap :gap="8"><v-btn :disabled="busy" @click="visible=false">关闭</v-btn><v-btn v-if="job" :disabled="busy" @click="refreshJob">刷新状态</v-btn><v-btn v-if="job&&['queued','running'].includes(job.status)" color="error" :disabled="busy||disabled||!!job.cancel_requested_at" @click="cancel">取消任务</v-btn><v-btn v-if="job&&job.kind!=='prepare'&&['failed','cancelled'].includes(job.status)" color="primary" :disabled="busy||disabled" @click="retry">重新执行</v-btn></Row>
  </Column></v-dialog>
 </template>

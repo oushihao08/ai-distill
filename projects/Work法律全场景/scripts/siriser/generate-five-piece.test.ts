@@ -1,6 +1,6 @@
 /** 验证五件套投影、冻结检索表述与ZIP中文路径编码；不调用模型或数据库。 */
 import {test,expect} from 'bun:test';
-import {mkdtemp,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
+import {mkdtemp,mkdir,readdir,readFile,rm,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -34,8 +34,16 @@ test('Work新结构从公开题面到五件套分字段同源，原始Rubric与�
   expect(projected.deliverableReqs).toContain('意见.docx');expect(projected.background).not.toContain('合成独立条件');
   expect(JSON.parse(await readFile(join(result.directory,'rubric.json'),'utf8')).items).toEqual(input.question.rubric.map((r:any)=>({id:r.id,...r.metadata})));
   const metadata=JSON.parse(await readFile(join(result.directory,'metadata.json'),'utf8'));expect(metadata.hasScan).toBe(false);expect(metadata.scanFiles).toEqual([]);expect(metadata.taskDesc).not.toContain('内部生成记录');expect(metadata.dataSource).toContain('内部生成记录');
-  const state=JSON.parse(await readFile(join(root,'Siriser五件套.json'),'utf8'));expect(state.quality_warnings.length).toBeGreaterThan(0);expect(state.confirmation_renderer).toBe('siriser-confirmation-office-v8');expect(JSON.stringify(input)).toBe(original);
+  const state=JSON.parse(await readFile(join(root,'Siriser五件套.json'),'utf8'));expect(state.quality_warnings.length).toBeGreaterThan(0);expect(state.confirmation_renderer).toBe('siriser-confirmation-office-v9');expect(JSON.stringify(input)).toBe(original);
   const reused=await generator.generateSiriserConfirmation(root,input,{expertName:'测试',date:'20261025'});expect(reused.reused).toBe(true);expect(reused.sha256).toBe(result.sha256);
+  // 选用原文仍生成所选分册DOCX；不要求也不使用可能包含隐藏文书的整包原件。
+  const selected=structuredClone(input);selected.source_digest='e'.repeat(64);
+  selected.attachments=[{name:'附件1',text:'# 合同:../\n\n合成证据正文',material_mode:'original',selected_materials:true,prepared_documents:[{id:'doc',title:'合同:../',text:'合成证据正文',document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'p',kind:'paragraph',text:'合成证据正文'}]}]}}],original_files:[{name:'HIDDEN_完整卷宗.pdf',sha256:'unused',content_base64:'invalid-and-must-not-be-used'}]}];
+  const selectedResult=await generator.generateSiriserConfirmation(root,selected,{expertName:'测试',date:'20261025'});
+  const physical=await readdir(join(selectedResult.directory,'input_files'));expect(physical.length).toBe(1);expect(physical[0]).toEndWith('.docx');expect(physical.join()).not.toContain('HIDDEN');
+  const xml=Bun.spawn(['unzip','-p',join(selectedResult.directory,'input_files',physical[0]!), 'word/document.xml'],{stdout:'pipe',stderr:'pipe'});
+  const content=await new Response(xml.stdout).text();expect(await xml.exited).toBe(0);expect(content).toContain('合成证据正文');expect(content).not.toContain('HIDDEN');
+
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

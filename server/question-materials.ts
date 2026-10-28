@@ -4,6 +4,7 @@
  * 使用场景：出题、作答、评分、归档和导出共用；不执行 OCR、脱敏或文件写入。
  */
 import {createHash} from 'node:crypto';
+import {validateSelectedMaterialIndex} from '../shared/material-preparation-result';
 import {readFile,realpath,stat} from 'node:fs/promises';
 import {resolve,relative,sep,isAbsolute} from 'node:path';
 import type {Pool,PoolClient} from 'pg';
@@ -19,7 +20,7 @@ type Db=Pool|PoolClient;
 type MaterialArtifact={id:string;kind:string;attempt_id:string|null;sha256:string;content:string|null};
 type SnapshotArtifact=Omit<MaterialArtifact,'content'>&{content?:string|null;storage_path?:string;size_bytes?:number|string};
 export interface QuestionMaterialAttachment {id:string;sha256:string;content:string;source_names:string[];attempt_id:string|null}
-export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:QuestionMaterialAttachment[];digest:string}
+export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:QuestionMaterialAttachment[];digest:string;material_scope?:{preparation_id:string;result:import('../shared/material-preparation-result').MaterialPreparationResult}}
 
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const conflict=(message:string)=>new HTTPException(409,{message});
@@ -75,7 +76,7 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  const manifest=row.snapshot_manifest;
  const mode=row.material_mode==='original'?'original':'redacted';
  const markdownEntry=manifest?.material_markdown??manifest?.redacted_markdown,indexEntry=manifest?.material_index??manifest?.redacted_index;
- if(!manifest||typeof manifest!=='object'||Array.isArray(manifest)||manifest.version!==2||!manifest.origin||manifest.origin.kind!=='library_v1'||
+ if(!manifest||typeof manifest!=='object'||Array.isArray(manifest)||![2,3].includes(manifest.version)||!manifest.origin||manifest.origin.kind!=='library_v1'||
    manifest.origin.package_id!==row.package_id||manifest.origin.revision_id!==row.revision_id||manifest.origin.redaction_id!==(row.redaction_id??null)||
    (manifest.origin.material_mode??'redacted')!==mode||manifest.origin.source_digest!==row.source_digest||markdownEntry?.artifact_id!==row.markdown_artifact_id||indexEntry?.artifact_id!==row.index_artifact_id||
    !Array.isArray(manifest.files)||hash(canonicalJson(manifest))!==row.snapshot_digest){
@@ -103,7 +104,9 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  if(typeof markdown.content!=='string'||typeof index.content!=='string'||hash(markdown.content)!==markdown.sha256||hash(index.content)!==index.sha256)throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  let parsedIndex:any;
  try{parsedIndex=JSON.parse(index.content);}catch{throw conflict('library_v1 题目材料索引格式无效');}
- if(mode==='original'){
+ if(manifest.version===3){
+  try{const docs=validateSelectedMaterialIndex(parsedIndex,markdown.content,false);if(!manifest.selection?.preparation_id||JSON.stringify(docs.map((d:any)=>d.source_document_id))!==JSON.stringify(manifest.selection.document_ids))throw new Error('selection mismatch');}catch{throw conflict('选用材料快照缺失或损坏；不会恢复隐藏材料');}
+ }else if(mode==='original'){
   if(parsedIndex?.format!=='source-index-v1'||!Array.isArray(parsedIndex.materials)||parsedIndex.materials.length!==manifest.files.length||
     parsedIndex.materials.some((item:any,index:number)=>{
      const file=manifest.files[index],document=item?.document;
@@ -123,7 +126,9 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  }
  const origin:QuestionMaterialOrigin={kind:'library_v1',material_mode:mode,...(processingMode?{material_processing_mode:processingMode}:{}),package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id===null?null:String(row.redaction_id),snapshot_digest:String(row.snapshot_digest)};
  logEvent('material.snapshot.read',{level:'info',component:'question_materials',workflow_id:workflowId,state:missing.length?'database_fallback':'local_snapshot',material_count:artifacts.length,input_bytes:databaseBytes,duration_ms:Math.round(performance.now()-started)});
- return{origin,attachments:[{id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null}],digest:String(row.snapshot_digest)};
+ const scope=manifest.material_scope?.result?.format==='material-preparation-v2'&&typeof manifest.material_scope.preparation_id==='string'
+  ?{preparation_id:manifest.material_scope.preparation_id,result:manifest.material_scope.result as import('../shared/material-preparation-result').MaterialPreparationResult}:undefined;
+ return{origin,attachments:[{id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null}],digest:String(row.snapshot_digest),...(scope?{material_scope:scope}:{})};
 }
 
 export async function readQuestionMaterials(db:Db,workflowId:string,root=storageDirectory()):Promise<QuestionMaterials>{

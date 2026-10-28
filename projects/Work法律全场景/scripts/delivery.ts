@@ -3,6 +3,7 @@
  * 关键入口：`deliver()` 在“归档达标题目”时由服务端独立进程调用。
  * 使用边界：Siriser失败阻止归档；Harbor转换失败单独记pending，不阻断Siriser，不代表平台验收通过。
  */
+import {validateSelectedMaterialIndex} from '../../../shared/material-preparation-result';
 import type {RedactedDocumentStructure} from '../../../server/materials/redacted-docx';
 import {createHash,randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,readFile,rename,rm,writeFile} from 'node:fs/promises';
@@ -24,7 +25,7 @@ interface DeliveryInput{
  rubric_version:string;
  question:{task_name:unknown;task_type:unknown;header:unknown;question:unknown;attachment_ids:unknown;rubric:unknown;answer_approach:unknown;reference_answer:unknown;delivery_identity?:{task_id:string;org:string}}&Partial<WorkContent>;
  acceptance:unknown;
- attachments:{id:string;sha256:string;name:string;text:string;material_mode?:'redacted'|'original';documents?:RedactedDocumentStructure[];prepared_documents?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[];original_files?:{name:string;sha256:string;content_base64:string}[]}[];
+ attachments:{id:string;sha256:string;name:string;text:string;material_mode?:'redacted'|'original';selected_materials?:boolean;documents?:RedactedDocumentStructure[];prepared_documents?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[];original_files?:{name:string;sha256:string;content_base64:string}[]}[];
  simulation:{deliverable_type:'F1'|'F2'|'F3'|'F4'|'F5';deliverable_title:string;deliverable_markdown:string;harbor_files:{path:string;markdown:string;sheets:{name:string;columns:string[];rows:(string|number|boolean)[][]}[]}[];research_entries:{id:string;query:string;title:string;url:string;finding:string;version_or_date:string;used_in:string}[];unresolved:string[];generated_at:string;model:string;reasoning_effort:string;actual_search_queries:string[];actually_opened_urls:string[]};
 }
 
@@ -99,13 +100,26 @@ function parseInput(value:unknown):DeliveryInput{
 /** 兼容尚未重载的本地API：从题目冻结索引补齐所选来源结构，不访问数据库或原件。 */
 async function hydrateRedactedDocuments(input:DeliveryInput){
  if(input.question.content_contract!=='work_legal_v1'||input.attachments.every(item=>item.documents!==undefined))return;
+ const cache=new Map<string,any>();
  const read=async(path:string)=>{
+  if(cache.has(path))return cache.get(path);
   const response=await fetch(`http://127.0.0.1:3700/api/${path}`,{signal:AbortSignal.timeout(10000)});
   if(!response.ok)throw new Error('无法读取冻结脱敏结构');
-  return response.json();
+  const value=await response.json();cache.set(path,value);return value;
  };
  const workflow=await read(`workflows/${input.workflow_id}`);
  if(workflow.workflow?.id!==input.workflow_id||workflow.workflow?.project_id!==input.project_id||!Array.isArray(workflow.artifacts))throw new Error('脱敏结构工作流不一致');
+ // 可选文书选用快照：只使用已选完整文书，且复用下方既有索引读取缓存。
+ for(const attachment of input.attachments){
+  const kind=attachment.material_mode==='original'?'source_index':'redacted_index';
+  const row=workflow.artifacts.find((a:any)=>a.kind===kind&&a.attempt_id===null);
+  if(!row)continue;
+  const index=await read(`artifacts/${row.id}/download`);
+  if(index.format!=='selected-material-index-v1')continue;
+  const docs=validateSelectedMaterialIndex(index,attachment.text);
+  attachment.selected_materials=true;attachment.prepared_documents=docs;attachment.documents=docs.map(d=>d.document);
+ }
+ if(input.attachments.every(a=>a.documents!==undefined))return;
  const originalAttachments=input.attachments.filter(item=>item.material_mode==='original'&&item.documents===undefined);
  if(originalAttachments.length){
   if(originalAttachments.length!==1||!Array.isArray(workflow.materials))throw new Error('原文结构索引与冻结题目不匹配');

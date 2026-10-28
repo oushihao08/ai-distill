@@ -1,6 +1,6 @@
 /**
- * 文件职责：在已由 worker 槽位保护的执行通道中运行材料库入库、提取和脱敏任务。
- * 关键入口：`runNextLibraryJob()` 领取匹配任务；默认Agent按语义计划整包脱敏，旧字段映射仅用于历史冻结任务收尾。
+ * 文件职责：在已由 worker 槽位保护的执行通道中运行材料库入库、提取、脱敏及可选整理任务。
+ * 关键入口：`runNextLibraryJob()` 领取匹配任务；默认Agent按语义计划整包脱敏，可选prepare一次返回目录和场景建议。
  * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
@@ -20,6 +20,7 @@ import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,LIBR
 import {readLibraryBlob} from './storage';
 import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-shared';
 import {executeRedaction} from './redaction-runner';
+import {executePreparation} from './preparation';
 import {withTaskSignal} from '../task-signal';
 import {cleanupExtractionArtifacts,readExtractionCheckpoint,writeExtractionCheckpoint} from './extraction-checkpoint';
 
@@ -139,16 +140,17 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   logEvent('library_job.started',{level:'info',state:'running',provider:job.executor_kind==='api'?job.config_snapshot.settings?.redaction?.api?.provider:job.executor_kind==='agent'?'codex':undefined,material_count:job.input_snapshot.files?.length??0});
   if(local.signal.aborted)throw local.signal.reason;
   const lifecycleContext={stage:job.kind==='intake'?'intake':job.kind==='extract'?'extract':'redact',execution_id:job.id,project_id:job.input_snapshot?.project_id,signal:local.signal};
-  await emitLifecycle(pool,'before',lifecycleContext);
+  if(job.kind!=='prepare')await emitLifecycle(pool,'before',lifecycleContext);
   await withTaskSignal(local.signal,async()=>{
    if(job.kind==='intake')await executeIntake(pool,root,job,local.signal);
    else if(job.kind==='extract')await executeExtraction(pool,root,job,local.signal);
+   else if(job.kind==='prepare')await executePreparation(pool,root,job,local.signal);
    else await executeRedaction(pool,root,job,local.signal);
   });
-  await emitLifecycle(pool,'committed',lifecycleContext);
+  if(job.kind!=='prepare')await emitLifecycle(pool,'committed',lifecycleContext);
   logEvent('library_job.completed',{level:'info',state:'succeeded'});
  }catch(error){
-  await emitLifecycle(pool,local.signal.aborted?'cancelled':'failed',{stage:job.kind==='intake'?'intake':job.kind==='extract'?'extract':'redact',execution_id:job.id,project_id:job.input_snapshot?.project_id,signal:local.signal});
+  if(job.kind!=='prepare')await emitLifecycle(pool,local.signal.aborted?'cancelled':'failed',{stage:job.kind==='intake'?'intake':job.kind==='extract'?'extract':'redact',execution_id:job.id,project_id:job.input_snapshot?.project_id,signal:local.signal});
   deferLocalPublication(error);
   const classified=classifyLogError(error);
   const reason=local.signal.aborted?local.signal.reason:error;

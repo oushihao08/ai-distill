@@ -58,6 +58,9 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   library files prepare --manifest JSON --out 新输出目录（本地OFD转PDF及PDF切割；不上传、不调用模型）
   library revision create --package UUID --version N --request-key UUID --manifest JSON
   library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级]
+  library prepare start --revision UUID (--redaction UUID | --extraction-job UUID) --request-key UUID [--project UUID] [--agent-model 模型 --reasoning-effort 等级]
+  library prepare list --package UUID | library prepare show --preparation UUID [--content]
+  library job wait --job UUID [--timeout 1h]
   library job cancel --job UUID
   project materials load --project UUID --package UUID (--redaction UUID | --revision UUID)
   project materials update --project UUID --link UUID --version N [--redaction UUID | --revision UUID] [--position N]
@@ -110,7 +113,7 @@ function parse(args: string[]) {
     if (!value.startsWith('--')) { words.push(value); continue; }
     const key=value.slice(2);
     if (flags.has(key)) throw new CliError(`参数重复：--${key}`);
-    if (['all','redacted-only','json','help','full','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects'].includes(key)) flags.set(key,true);
+    if (['all','redacted-only','json','help','full','content','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects'].includes(key)) flags.set(key,true);
     else {
       const next=args[++i]; if(next===undefined||next.startsWith('--')) throw new CliError(`参数缺值：--${key}`);
       flags.set(key,next);
@@ -174,7 +177,8 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'library files prepare':['manifest','out'],
       'library revision create':['package','version','request-key','manifest'],
       'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project','agent-model','reasoning-effort'],
-      'library job show':['job'],'library job cancel':['job'],
+      'library job show':['job'],'library job cancel':['job'],'library job wait':['job','timeout'],
+      'library prepare start':['revision','redaction','extraction-job','request-key','project','agent-model','reasoning-effort'],'library prepare list':['package'],'library prepare show':['preparation','content'],
       'library template list':[],'library template show':['template'],
       'library redaction revalidate':['redaction'],
       'library documents show':['revision','extraction-job','file'],'library documents export':['plan','out'],'library documents import':['plan','request-key'],'library redaction show':['redaction','file'],
@@ -439,6 +443,24 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         if(hasAgentModel&&kind!=='redact')throw new CliError('Agent模型设置仅用于redact任务');
         const body={kind,request_key:uuid('request-key'),execution_target:target,...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{}) ,...(hasAgentModel?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})};
         data=await post(`/api/material-library/revisions/${uuid('revision')}/jobs`,body);break;
+      }
+      case 'library prepare start': {
+        if(flags.has('redaction')===flags.has('extraction-job'))throw new CliError('须且只能提供 --redaction 或 --extraction-job');
+        if(flags.has('agent-model')!==flags.has('reasoning-effort'))throw new CliError('Agent模型和强度须同时提供');
+        data=await post(`/api/material-library/revisions/${uuid('revision')}/prepare`,{request_key:uuid('request-key'),...(flags.has('redaction')?{redaction_id:uuid('redaction')}:{extraction_job_id:uuid('extraction-job')}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('agent-model')?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})});break;
+      }
+      case 'library prepare list': data=await get(`/api/material-library/packages/${uuid('package')}/preparations`);break;
+      case 'library prepare show': data=await get(`/api/material-library/preparations/${uuid('preparation')}${flags.has('content')?'?include_content=true':''}`);break;
+      case 'library job wait': {
+        const jobId=uuid('job'),deadline=performance.now()+duration(flags.has('timeout')?required('timeout'):'1h');
+        do {
+          data=await get(`/api/material-library/jobs/${jobId}`);
+          if(!['queued','running'].includes(data.status))return{outcome:data.status==='succeeded'?'complete':'partial',data};
+          if(performance.now()>=deadline)break;
+          await new Promise<void>(resolve=>{const done=()=>{clearTimeout(timer);signal?.removeEventListener('abort',done);resolve();};const timer=setTimeout(done,Math.min(1000,Math.max(0,deadline-performance.now())));signal?.addEventListener('abort',done,{once:true});if(signal?.aborted)done();});
+          if(signal?.aborted)break;
+        }while(performance.now()<deadline);
+        return{outcome:'waiting',data,note:'仅结束等待，后台材料任务不取消、不重派'};
       }
       case 'library job show': data=await get(`/api/material-library/jobs/${uuid('job')}`);break;
       case 'library job cancel': data=await post(`/api/material-library/jobs/${uuid('job')}/cancel`);break;

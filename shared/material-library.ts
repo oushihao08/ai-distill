@@ -5,7 +5,7 @@
 
 export type MaterialBackend = 'legacy' | 'library_v1';
 export type LibraryRevisionState = 'pending' | 'ready';
-export type LibraryJobKind = 'intake' | 'extract' | 'redact';
+export type LibraryJobKind = 'intake' | 'extract' | 'redact' | 'prepare';
 export type LibraryJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type LibraryExecutorKind = 'internal' | 'api' | 'agent';
 export type LibraryExecutionTarget = 'local' | 'server';

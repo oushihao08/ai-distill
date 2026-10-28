@@ -601,3 +601,26 @@ test('交付查询规范化UUID大小写，仍核对返回身份且只取轻量�
  expect((await runCommand(['workflow','delivery','show','--workflow',workflow.toUpperCase()],client)).data.workflow_id).toBe(workflow);
  expect(calls[0].url.searchParams.get('view')).toBe('status');
 });
+
+describe('材料整理与使用范围',()=>{
+ test('整理启动、查询和任务等待只调用现有HTTP，不自动推进出题',async()=>{
+  const f=fixture((url)=>url.pathname.endsWith('/prepare')?{id:attempt}:url.pathname.includes('/jobs/')?{id:attempt,status:'succeeded',result_summary:{preparation_id:attempt}}:{items:[]});
+  await runCommand(['library','prepare','start','--revision',question,'--redaction',second,'--request-key',attempt,'--project',project],f.client);
+  expect(JSON.parse(String(f.calls[0]!.init?.body))).toEqual({request_key:attempt,redaction_id:second,project_id:project});expect(f.calls[0]!.url.pathname).toBe(`/api/material-library/revisions/${question}/prepare`);
+  const r=await runCommand(['library','job','wait','--job',attempt],f.client);expect(r.outcome).toBe('complete');expect(f.calls).toHaveLength(2);
+ });
+ test('建题不接收人工候选或文书过滤参数，整理结果由服务端按来源自动冻结',async()=>{
+  const f=fixture(()=>({id:question}));const base=['project','materials','question','--project',project,'--link',second,'--redaction',attempt,'--version','1','--title','测试','--request-key',question];
+  await runCommand(base,f.client);expect(JSON.parse(String(f.calls[0]!.init?.body))).not.toHaveProperty('preparation_id');
+  await expect(runCommand([...base,'--candidate','C1'],f.client)).rejects.toThrow('未知参数');expect(f.calls).toHaveLength(1);
+ });
+ test('模型强度和来源参数错误在CLI提示，不写入任务',async()=>{
+  const f=fixture(()=>({}));await expect(runCommand(['library','prepare','start','--revision',question,'--request-key',attempt],f.client)).rejects.toThrow('只能');expect(f.calls).toHaveLength(0);
+ });
+});
+
+test('整理show的content开关不要求值，完整内容只按需GET',async()=>{
+ const f=fixture(()=>({documents:[{id:'doc-a',text:'完整正文'}]}));
+ const r=await runCommand(['library','prepare','show','--preparation',attempt,'--content'],f.client);
+ expect(f.calls).toHaveLength(1);expect(f.calls[0]!.url.searchParams.get('include_content')).toBe('true');expect((r.data as any).documents[0].text).toBe('完整正文');
+});

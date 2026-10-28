@@ -167,3 +167,7 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 维护时先核对源码与模块README；历史证据只说明当时范围。操作Skill不存当前题目、附件、评分报告或密钥。
 
 飞书通用远端操作见[toolSkills/feishu-operations](../toolSkills/feishu-operations/README.md)：表/字段/记录/视图/附件CLI，不是第二套队列。豆包归档/补传仍由原工作流入口触发，服务端调用此通用CLI。
+
+### 可选材料整理与使用范围
+
+材料库`preparation.ts`提供材料包总摘要、逐份材料摘要/标签和多个可支持范围组合；CLI `library prepare`见[CLI](../cli/README.md#可选材料整理)。建题按来源自动冻结结果给出题Agent参考，完整附件仍是事实依据；作者自行确定最终组合，作答和评分不读取整理建议。缺失或失败可跳过，不过滤材料、不阻断建题。

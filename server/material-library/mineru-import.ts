@@ -37,7 +37,7 @@ export async function importMineruExtraction(pool:Pool,root:string,revisionId:st
    await db.query('COMMIT');return{job_id:prior.id,...prior.result_summary,reused:true};
   }
   if(revision.state!=='ready')throw conflict('请先完成材料入库');
-  if((await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND status IN ('queued','running')",[revisionId])).rowCount)throw conflict('该版本已有活动处理任务，请先等待完成');
+  if((await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND kind<>'prepare' AND status IN ('queued','running')",[revisionId])).rowCount)throw conflict('该版本已有活动处理任务，请先等待完成');
   const files=(await db.query(`SELECT f.id,f.original_name,b.sha256,b.size_bytes,b.storage_target,b.storage_path FROM ai_distill.library_files f JOIN ai_distill.library_blobs b ON b.id=f.blob_id WHERE f.revision_id=$1 ORDER BY f.position`,[revisionId])).rows;
   if(files.length!==Number(revision.file_count)||files.length!==body.files.length||files.some(f=>!ids.has(f.id)))throw conflict('MinerU导入必须完整覆盖本版本所有文件');
   const prepared=[];

@@ -303,7 +303,7 @@ async function generateBatchAdvice(){
     <Row x="between" y="center" :gap="12"><h2 class="section-title">题目附件 · {{ materialsDetail?.materials.length??0 }} 份</h2><v-btn @click="materialsOpen=false">关闭</v-btn></Row>
     <p v-if="materialsBusy" class="text-muted" role="status">正在读取附件清单…</p>
     <v-alert v-if="materialsError" type="error" role="alert">{{ materialsError }}</v-alert>
-    <MaterialRecordsTable v-if="materialsDetail" :key="materialsDetail.workflow.id" :workflow-id="materialsDetail.workflow.id" :materials="materialsDetail.materials" :steps="materialsDetail.steps" :prefer-redacted="materialsDetail.question_material_origin?.material_mode!=='original'" read-only/>
+    <MaterialRecordsTable v-if="materialsDetail" :key="materialsDetail.workflow.id" :workflow-id="materialsDetail.workflow.id" :materials="materialsDetail.materials" :steps="materialsDetail.steps" :prefer-redacted="materialsDetail.question_material_origin?.kind!=='library_v1'||materialsDetail.question_material_origin.material_mode!=='original'" read-only/>
    </Column>
   </v-dialog>
 </template>

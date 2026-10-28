@@ -76,3 +76,5 @@ MaterialLibraryJob可附加execution，复用StepExecution表达归属和本机�
 `redaction-templates.ts`的可执行workflow仅有codex_plan；旧mask/field_mapping模板解析与模型执行已删除。material-library.ts保留mask字面量仅识别历史配置/快照，不能据此派发或恢复旧模型任务。
 
 Agent计划中的unresolved仅保存语义疑点，不因blocking标记或缺少身份映射拒绝技术发布。编译器不猜测姓名、号码、地址残留，不以化名风格、原文同词、机构关键词、金额/日期形态或电话字符白名单否决。主体ID、替换字符串、精确原文位置、编辑冲突、完整覆盖及结构投影仍校验；地址前缀必须属于原文，允许保留整个片段。文书可跨文件，来源身份不变。此处通过只证明计划可执行，不证明脱敏无遗漏。
+
+`material-preparation-result.ts`定义材料包摘要、逐份摘要/标签和多个可支持方向—场景—交付组合；建题冻结为作者上下文，不改材料正文或可见范围。最终选择由出题结果保存，同期方向+场景另有使用账。旧`selected-material-index-v1`仅为历史快照只读校验。服务端行为唯一说明见[材料库](../server/material-library/README.md#材料整理与使用范围)。

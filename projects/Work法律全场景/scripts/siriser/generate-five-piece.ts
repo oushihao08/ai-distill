@@ -37,7 +37,7 @@ interface Simulation {
 export interface PackageInput {
  title:string;workflow_id:string;source_digest:string;delivery_digest:string;question_version:string;rubric_version:string;
  question:{task_name?:unknown;task_type?:unknown;header?:unknown;question?:unknown;rubric?:unknown;task_metadata?:WorkContent['task_metadata'];content_contract?:string;input_files?:WorkContent['input_files'];deliverables?:WorkContent['deliverables'];reference_outputs?:WorkContent['reference_outputs'];research_records?:WorkContent['research_records'];task_requirements?:WorkContent['task_requirements']};
- attachments:{name:string;text:string;material_mode?:'redacted'|'original';documents?:RedactedDocumentStructure[];prepared_documents?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[];original_files?:{name:string;sha256:string;content_base64:string}[]}[];simulation:Simulation;
+ attachments:{name:string;text:string;material_mode?:'redacted'|'original';selected_materials?:boolean;documents?:RedactedDocumentStructure[];prepared_documents?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[];original_files?:{name:string;sha256:string;content_base64:string}[]}[];simulation:Simulation;
 }
 const sha=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 const safe=(value:unknown)=>typeof value==='string'?value.trim():'';
@@ -237,15 +237,16 @@ export async function generateSiriserFivePiece(parent:string,input:PackageInput,
 }
 
 /** 仅按已登记且SHA匹配的文书清单分册；未知材料保持原样，绝不按页数自动凑份数。 */
-async function sourceDocumentFiles(name:string,text:string,prepared?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[]){
+async function sourceDocumentFiles(name:string,text:string,prepared?:{id:string;title:string;text:string;document?:RedactedDocumentStructure}[],selected=false){
  if(prepared){
-  if(!prepared.length||prepared.map(doc=>doc.text).join('\n\n')!==text)throw new Error('冻结分册与附件正文不一致');
+  if(!prepared.length||(selected?prepared.map(doc=>`# ${doc.title}\n\n${doc.text}`).join('\n\n---\n\n'):prepared.map(doc=>doc.text).join('\n\n'))!==text)throw new Error('冻结分册与附件正文不一致');
   let offset=0;
   return prepared.map((doc,i)=>{
-   if(!doc.title.trim()||/[\\/<>:"|?*\u0000-\u001f]/.test(doc.title)||doc.title.length>100)throw new Error('冻结分册名称无效');
+   const title=selected?(doc.title.trim().replace(/[\\/<>:"|?*\u0000-\u001f]/g,'_').slice(0,100)||'文书'):doc.title;
+   if(!title.trim()||/[\\/<>:"|?*\u0000-\u001f]/.test(title)||title.length>100)throw new Error('冻结分册名称无效');
    const start=offset;offset+=doc.text.length+(i<prepared.length-1?2:0);
    const document=doc.document??preparedTextDocument(doc.text,doc.id);
-   return{name:`${name}-${String(i+1).padStart(3,'0')}-${doc.title}.docx`,text:doc.text,ranges:[{start,end:start+doc.text.length}],document};
+   return{name:`${name}-${String(i+1).padStart(3,'0')}-${title}.docx`,text:doc.text,ranges:[{start,end:start+doc.text.length}],document};
   });
  }
 
@@ -334,11 +335,11 @@ export async function generateSiriserConfirmation(parent:string,input:PackageInp
  const sceneCategory:Record<string,string>={LS02:'1.1 案件受理与策略',LS03:'1.1 案件受理与策略',LS04:'1.2 庭审与文书',LS05:'1.2 庭审与文书'};
  // 保持完整原题面，诉求拆分只提取已存在段落；不使用另一轮模型重写任务。
  const question=safe(q.question),legacy=legacyInstruction(question),structured=m.instruction;
- const projected=await Promise.all(q.input_files.map((file,index)=>sourceDocumentFiles(file.name,input.attachments[index]!.text,input.attachments[index]!.prepared_documents)));
- const originalInputFiles=input.attachments.flatMap(attachment=>attachment.material_mode==='original'?(attachment.original_files??[]):[]);
- if(input.attachments.some(attachment=>attachment.material_mode==='original'&&!attachment.original_files?.length))throw new Error('原文模式缺少已校验的原件字节');
+ const projected=await Promise.all(q.input_files.map((file,index)=>sourceDocumentFiles(file.name,input.attachments[index]!.text,input.attachments[index]!.prepared_documents,input.attachments[index]!.selected_materials)));
+ const originalInputFiles=input.attachments.flatMap(attachment=>attachment.material_mode==='original'&&!attachment.selected_materials?(attachment.original_files??[]):[]);
+ if(input.attachments.some(attachment=>attachment.material_mode==='original'&&!attachment.selected_materials&&!attachment.original_files?.length))throw new Error('原文模式缺少已校验的原件字节');
  if(originalInputFiles.length&&input.attachments.some(attachment=>attachment.material_mode!=='original'))throw new Error('原文与脱敏附件混合时不能合并物理输入文件');
- if(input.attachments.length>1&&input.attachments.some(attachment=>attachment.material_mode==='original'))throw new Error('多份逻辑附件的原件映射不明确，拒绝错配');
+ if(input.attachments.length>1&&input.attachments.some(attachment=>attachment.material_mode==='original'&&!attachment.selected_materials))throw new Error('多份逻辑附件的原件映射不明确，拒绝错配');
  const projectionNote=projected.some(files=>files.length>1)?'\n\n材料定位说明：合订附件按完整文书分册；文件名前缀“附件N”仍对应题面同一附件，各分册名称见附件文件清单，正文不添加原页定位或处理标记。未增加或删减原文。':'';
  const instruction={background:(structured?.background??question)+projectionNote,requests:structured?.requests??legacy.requests,deliverableReqs:q.deliverables.map(f=>`${f.path}（${f.required?'必交':'选交'}）：${f.description}`).join('\n'),baselineDate:structured?structured.baseline_date??'':legacy.baselineDate,hardConstraints:structured?.hard_constraints??legacy.hardConstraints,commissionerType:'professional',tone:'法律专业人士'};
  const metadata:Record<string,unknown>={title:safe(q.task_name)||input.title,domain:'法律',claimCode:code,taskType:safe(q.task_type).match(/^F[1-5]/)?.[0]??'',longevity:m.target_level,businessArea:sceneCategory[code]??m.domain_l2??'',summary:safe(q.task_name)||input.title,abilities:m.capabilities,dependsVl:m.vl_dependency,vlFiles:m.vl_dependency?(originalInputFiles.length?originalInputFiles.map(file=>file.name):projected.flat().map(f=>f.name)):[],taskDesc:m.level_basis.explanation,expertHours:m.level_basis.estimated_hours,dataSource:`${m.source_note}\n${m.generation_note}`,neededTools:m.tools,neededKnowledge:m.professional_knowledge};
@@ -379,7 +380,7 @@ export async function generateSiriserConfirmation(parent:string,input:PackageInp
   for(const [file,value] of [['instruction.json',instruction],['metadata.json',metadata],['rubric.json',rubric]] as const)await writeFile(join(folder,file),JSON.stringify(value,null,2)+'\n',{mode:0o600});
   for(const [index,files] of projected.entries()){
    const attachment=input.attachments[index]!;
-   if(attachment.material_mode==='original'){
+   if(attachment.material_mode==='original'&&!attachment.selected_materials){
     await writeOriginalInputFiles(join(folder,'input_files'),attachment.original_files??[]);
     continue;
    }

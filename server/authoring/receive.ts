@@ -15,6 +15,7 @@ export interface Draft {
  answer_approach:string;
  reference_answer:string;
  answer_requirements:{input_mode:'text'|'image';output_mode:'text'|'file';tools:string[]};
+ material_scope_selection?:import('../../shared/material-preparation-result').MaterialScopeSelection;
 }
 export interface ModelRubricItem {id:string;criterion:string;rule:string;metadata?:Record<string,unknown>}
 export interface DraftValidationOptions {project_key?:string|null;requireHarborMetadata?:boolean;contentContract?:'work_legal_v1'}

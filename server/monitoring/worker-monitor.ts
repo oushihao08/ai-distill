@@ -24,7 +24,7 @@ export interface ActiveWorkflowTask {
 }
 export type MaterialLibraryQueueStatus=
  |{status:'unavailable'}
- |{status:'known';totals:{queued:number;running:number;succeeded:number;failed:number;cancelled:number};items:{job_id:string;package_id:string;revision_id:string;package_name:string;kind:'intake'|'extract'|'redact';state:'queued'|'running';executor_kind:'internal'|'api'|'agent';execution_target:'local'|'server';progress:Record<string,string|number>;error_code:string|null;created_at:string|null;started_at:string|null}[]};
+ |{status:'known';totals:{queued:number;running:number;succeeded:number;failed:number;cancelled:number};items:{job_id:string;package_id:string;revision_id:string;package_name:string;kind:'intake'|'extract'|'redact'|'prepare';state:'queued'|'running';executor_kind:'internal'|'api'|'agent';execution_target:'local'|'server';progress:Record<string,string|number>;error_code:string|null;created_at:string|null;started_at:string|null}[]};
 /** 监控取得连接后每条只读SQL驱动读取限5秒；pg-pool在查询失败时销毁连接，不将仍在读的连接放回池。 */
 export const MONITOR_QUERY_TIMEOUT_MS=5000;
 function monitorQuery(pool:Pool,text:string,values?:unknown[]){const query:QueryConfig&{query_timeout:number}={text,query_timeout:MONITOR_QUERY_TIMEOUT_MS};return pool.query(query,values);}
@@ -46,7 +46,7 @@ export async function readActiveWorkflowTasks(pool:Pool,attemptIds?:string[]):Pr
 function safeLibraryProgress(value:unknown):Record<string,string|number>{
  if(!value||typeof value!=='object'||Array.isArray(value))return{};
  const source=value as Record<string,unknown>,progress:Record<string,string|number>={};
- if(typeof source.phase==='string'&&['intake','extract','redact'].includes(source.phase))progress.phase=source.phase;
+ if(typeof source.phase==='string'&&['intake','extract','redact','prepare'].includes(source.phase))progress.phase=source.phase;
  for(const key of ['completed_files','total_files','issue_count','verified_bytes','page_count','file_count'])if(typeof source[key]==='number'&&Number.isSafeInteger(source[key])&&source[key]>=0)progress[key]=source[key];
  return progress;
 }
@@ -77,7 +77,7 @@ export async function readMaterialLibraryQueue(pool:Pool,jobIds?:string[]):Promi
   const totals={queued:number(row.queued),running:number(row.running),succeeded:number(row.succeeded),failed:number(row.failed),cancelled:number(row.cancelled)};
   if(!Array.isArray(row.items))throw new Error('invalid library queue items');
   const items=row.items.map((item:any)=>{
-   if(!['intake','extract','redact'].includes(item.kind)||!['queued','running'].includes(item.status)||!['internal','api','agent'].includes(item.executor_kind)||!['local','server'].includes(item.execution_target))throw new Error('invalid library queue row');
+   if(!['intake','extract','redact','prepare'].includes(item.kind)||!['queued','running'].includes(item.status)||!['internal','api','agent'].includes(item.executor_kind)||!['local','server'].includes(item.execution_target))throw new Error('invalid library queue row');
    return{job_id:String(item.id),package_id:String(item.package_id),revision_id:String(item.revision_id),package_name:String(item.package_name),kind:item.kind,state:item.status,executor_kind:item.executor_kind,execution_target:item.execution_target,progress:safeLibraryProgress(item.progress),error_code:typeof item.error_code==='string'?item.error_code:null,created_at:safeTimestamp(item.created_at),started_at:safeTimestamp(item.started_at)};
   });
   return{status:'known',totals,items};

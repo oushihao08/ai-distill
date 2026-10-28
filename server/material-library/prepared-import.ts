@@ -30,7 +30,7 @@ export async function importPreparedLibraryMaterials(pool:Pool,revisionId:string
   if(prior){if(prior.input_digest!==digest||!prior.redaction_id)throw conflict('请求标识与已有任务不匹配');await db.query('COMMIT');return{job_id:prior.id,redaction_id:prior.redaction_id,reused:true};}
   const template=plan.template_id?resolveLibraryTemplate((await readLibraryProcessingSettings(db,storageRoot)).processing_settings,plan.template_id):undefined;
   if(template&&(template.workflow!=='codex_plan'||plan.template_digest!==template.digest))throw conflict('模板流程或摘要不匹配，请读取当前模板并重新审阅计划');
-  if((await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND status IN ('queued','running')",[revisionId])).rowCount)throw conflict('来源版本有活动任务');
+  if((await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND kind<>'prepare' AND status IN ('queued','running')",[revisionId])).rowCount)throw conflict('来源版本有活动任务');
   const extraction=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE id=$1 AND revision_id=$2 AND kind='extract' AND status='succeeded'",[plan.extraction_job_id,revisionId])).rows[0];if(!extraction)throw conflict('提取任务未成功或与来源版本不符');
   const rows=(await db.query(`SELECT d.file_id,d.source_sha256,d.text_sha256,b.text_content,b.sha256 FROM ai_distill.library_documents d
    JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id JOIN ai_distill.library_files f ON f.id=d.file_id AND f.revision_id=d.revision_id

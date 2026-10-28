@@ -27,12 +27,13 @@ import {hookAdditionText} from '../workflow-hooks';
 import {AUTHORING_FIXED_PROMPT,DEFAULT_STEP_PROMPTS} from '../../shared/step-prompts';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 import {readQuestionMaterials} from '../question-materials';
+import type {MaterialScopeContext} from '../../shared/material-preparation-result';
 import {renderPublicQuestionPackage,runAuthoring,FRESH_AUTHORING_CONTRACT,type AuthoringResult,type AuthoringRule} from './executor';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 const stableDesignContext=(context:NonNullable<FrozenInput['design_context']>)=>({...('scenario'in context?{scenario:context.scenario}:{}),...('role_perspective'in context?{role_perspective:context.role_perspective}:{}),...('target_level'in context?{target_level:context.target_level}:{}),...('question_tags'in context?{question_tags:context.question_tags}:{})});
 const workflowSql="SELECT w.*,p.name AS project_name,p.local_skill_path,p.material_root,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot,s1.status AS ingestion_status,s9.status AS redaction_status\n FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL\n LEFT JOIN ai_distill.steps s1 ON s1.workflow_id=w.id AND s1.ordinal=1 LEFT JOIN ai_distill.steps s9 ON s9.workflow_id=w.id AND s9.ordinal=9\n WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
-interface FrozenInput {revision_advice?:FrozenAdvice;content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;scoring_policy?:ScoringPolicy;system_authoring_prompt?:string;project_name?:string;authoring_contract?:string;title:string;authoring_direction?:string;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];digest:string}
+interface FrozenInput {revision_advice?:FrozenAdvice;content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;scoring_policy?:ScoringPolicy;system_authoring_prompt?:string;project_name?:string;authoring_contract?:string;title:string;authoring_direction?:string;material_scope?:MaterialScopeContext;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];digest:string}
 const materialIdentity=(input:Pick<FrozenInput,'redaction_attempt_id'|'material_origin'>)=>input.material_origin?.kind==='library_v1'?{material_origin:{kind:input.material_origin.kind,material_mode:input.material_origin.material_mode,...(input.material_origin.material_processing_mode?{material_processing_mode:input.material_origin.material_processing_mode}:{}),package_id:input.material_origin.package_id,revision_id:input.material_origin.revision_id,redaction_id:input.material_origin.redaction_id,snapshot_digest:input.material_origin.snapshot_digest}}:{redaction_attempt_id:input.material_origin?.kind==='legacy'?input.material_origin.redaction_attempt_id:input.redaction_attempt_id};
 const designContext=(workflow:any)=>{const context={...(workflow.scenario?{scenario:String(workflow.scenario)}:{}),...(workflow.role_perspective?{role_perspective:String(workflow.role_perspective)}:{}),...(workflow.target_level?{target_level:String(workflow.target_level)}:{}),...(Array.isArray(workflow.question_tags)&&workflow.question_tags.length?{question_tags:workflow.question_tags.map(String)}:{})};return Object.keys(context).length?context:undefined;};
 const sourceFiles=(workflow:any)=>Array.isArray(workflow.source_manifest)?workflow.source_manifest.filter((file:any)=>typeof file?.name==='string'&&typeof file?.path==='string').map((file:any)=>({name:file.name,path:file.path})):[];
@@ -55,6 +56,7 @@ export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.str
     rule_files: (input.rule_files ?? []).map(file => ({ path: file.path, sha256: file.sha256, size_bytes: file.size_bytes })),
     ...materialIdentity(input),
     materials: input.materials.map(item => ({ id: item.id, sha256: item.sha256 })),
+    ...(input.material_scope?{material_scope:JSON.parse(canonicalJson(input.material_scope))}:{}),
     ...(input.authoring_contract ? { authoring_contract: input.authoring_contract } : {}),
     ...(input.scoring_policy ? { scoring_policy: JSON.parse(canonicalJson(input.scoring_policy)) } : {}),
     ...(input.hooks ? { hooks: JSON.parse(canonicalJson(input.hooks)) } : {})
@@ -71,6 +73,7 @@ export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.str
     project_prompt: input.project_prompt ? { workspace_path: input.project_prompt.workspace_path, skill_path: input.project_prompt.skill_path, source_digest: input.project_prompt.source_digest, files: input.project_prompt.files.map(file => ({ path: file.path, sha256: file.sha256, size_bytes: file.size_bytes })) } : null,
     ...materialIdentity(input),
     materials: input.materials.map(item => ({ id: item.id, sha256: item.sha256 })),
+    ...(input.material_scope?{material_scope:JSON.parse(canonicalJson(input.material_scope))}:{}),
     ...(input.authoring_contract ? { authoring_contract: input.authoring_contract } : {}),
     ...(input.scoring_policy ? { scoring_policy: JSON.parse(canonicalJson(input.scoring_policy)) } : {}),
     ...(input.hooks ? { hooks: JSON.parse(canonicalJson(input.hooks)) } : {}) }));
@@ -82,7 +85,7 @@ async function basePrerequisites(db:PoolClient,id:string){
  if(workflow.material_backend==='library_v1'||workflow.has_library_snapshot){
   const source=await readQuestionMaterials(db,id);
   if(source.origin.kind!=='library_v1')throw new HTTPException(409,{message:'共享材料题目来源类型无效'});
-  return{workflow,redaction:null,origin:source.origin,loaded_materials:source,materials:source.attachments.map(({id,sha256})=>({id,sha256}))};
+  return{workflow,redaction:null,origin:source.origin,loaded_materials:source,material_scope:source.material_scope,materials:source.attachments.map(({id,sha256})=>({id,sha256}))};
  }
  if(workflow.ingestion_status!=='succeeded'||workflow.redaction_status!=='succeeded')throw new HTTPException(409,{message:'请先完成当前附件入库与脱敏'});
  const redaction=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=9 AND status='succeeded' ORDER BY attempt DESC LIMIT 1",[id])).rows[0];
@@ -104,6 +107,34 @@ async function legacyRules(db:PoolClient,id:string,workflow:any){
  return rules;
 }
 
+const scopeKey=(direction:string,scene:string)=>canonicalJson([direction.normalize('NFKC').trim().toLocaleLowerCase(),scene.normalize('NFKC').trim().toLocaleLowerCase()]);
+export async function saveMaterialScopeSelection(db:PoolClient,projectId:string,workflowId:string,attemptId:string,selection:any){
+ const exists=(await db.query("SELECT to_regclass('ai_distill.question_material_scope_uses') IS NOT NULL AS available")).rows[0]?.available===true;
+ if(!exists)throw new Error('材料方向场景记录表尚未启用，不能保存本题范围选择');
+ if(!selection||typeof selection.direction!=='string'||!selection.direction.trim()||!Array.isArray(selection.scenes)||!selection.scenes.length||!Array.isArray(selection.deliverables)||!selection.deliverables.length)throw new Error('出题结果缺少材料方向场景选择');
+ await db.query("SELECT pg_advisory_xact_lock(hashtext('material-scope:'||$1))",[projectId]);
+ await db.query('DELETE FROM ai_distill.question_material_scope_uses WHERE workflow_id=$1',[workflowId]);
+ const unique=new Map<string,string>();for(const scene of selection.scenes)if(typeof scene==='string'&&scene.trim())unique.set(scopeKey(selection.direction,scene),scene.trim());
+ for(const [key,scene] of unique){
+  const saved=await db.query(`INSERT INTO ai_distill.question_material_scope_uses(project_id,workflow_id,attempt_id,direction,scene,scope_key)
+   VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,scope_key) DO NOTHING RETURNING workflow_id`,[projectId,workflowId,attemptId,selection.direction.trim(),scene,hash(key)]);
+  if(!saved.rowCount)throw new Error('本期已有题目使用相同方向与场景，请检查本期已用组合后重新设计');
+ }
+}
+async function freezeMaterialScope(db:PoolClient,projectId:string,workflowId:string,prepared:any):Promise<MaterialScopeContext|undefined>{
+ if(!prepared||prepared.result?.format!=='material-preparation-v2')return undefined;
+ const used=new Map<string,{direction:string;scene:string}>();
+ const add=(direction:unknown,scene:unknown)=>{if(typeof direction!=='string'||!direction.trim()||typeof scene!=='string'||!scene.trim())return;const item={direction:direction.trim(),scene:scene.trim()};used.set(scopeKey(item.direction,item.scene),item);};
+ const exists=(await db.query("SELECT to_regclass('ai_distill.question_material_scope_uses') IS NOT NULL AS available")).rows[0]?.available===true;
+ if(!exists)return undefined;
+ const rows=(await db.query('SELECT direction,scene FROM ai_distill.question_material_scope_uses WHERE project_id=$1 ORDER BY created_at',[projectId])).rows;
+ for(const row of rows)add(row.direction,row.scene);
+ const history=(await db.query(`SELECT a.result->'material_scope_selection' AS selection FROM ai_distill.step_attempts a
+  JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.project_id=$1 AND w.id<>$2 AND w.deleted_at IS NULL AND a.ordinal=4 AND a.status='succeeded'`,[projectId,workflowId])).rows;
+ for(const row of history){const selection=row.selection;if(!selection||!Array.isArray(selection.scenes))continue;for(const scene of selection.scenes)add(selection.direction,scene);}
+ return{preparation_id:String(prepared.preparation_id),result:prepared.result,used_combinations:[...used.values()]};
+}
+
 /**
  * 校验当前有效Skill与题目冻结来源后，固定题目、附件清单和步骤配置并创建 ordinal 4 尝试。
  * 相同输入的活动任务会复用；出题成功后再次点击会新建尝试，并使后续结果失效。
@@ -120,7 +151,8 @@ export async function enqueueAuthoring(pool:Pool,id:string){
   const hooks=await freezeStageHooks(dirname(source.skill_path),config.workflow);
   const loggingConfig=config as {model?:string;reasoning_effort?:string};
   const advice=await frozenRevisionAdvice(db,id);
-  const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),question_id:questionId(source.workflow),source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials};
+  const materialScope=await freezeMaterialScope(db,source.workflow.project_id,id,'loaded_materials' in source?source.loaded_materials?.material_scope:undefined);
+  const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),question_id:questionId(source.workflow),source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials};
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};
   await supersedeForeignPending(db,{kind:'step',id,ordinal:4});
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND input->>'digest'=$2 AND config=$3::jsonb AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id,input.digest,JSON.stringify(config)])).rows[0];
@@ -143,14 +175,18 @@ async function currentBindings(db:PoolClient,job:any){
  const currentConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[job.project_id])).rows[0]?.config;
  if(currentConfig?.workflow?.content_contract!==job.input.content_contract)return false;
  const source:Awaited<ReturnType<typeof basePrerequisites>>&{project_prompt?:ProjectPromptSnapshot}=job.input?.rule_version_id?await basePrerequisites(db,job.workflow_id):await prerequisites(db,job.workflow_id);
+ if(job.input.material_scope){
+  const currentScope='loaded_materials' in source?source.loaded_materials?.material_scope:undefined;
+  if(!currentScope||currentScope.preparation_id!==job.input.material_scope.preparation_id||canonicalJson(currentScope.result)!==canonicalJson(job.input.material_scope.result))return false;
+ }else if('loaded_materials' in source&&source.loaded_materials?.material_scope)return false;
  let candidate:Omit<FrozenInput,'digest'>;
  if(job.input?.rule_version_id){
   const rules=await legacyRules(db,job.workflow_id,source.workflow);
   if(rules.id!==job.input.rule_attempt_id||rules.result?.source_digest!==job.input.rule_source_digest||rules.result?.snapshot_path!==job.input.rule_snapshot_path)return false;
-  candidate={...(job.input.project_name!==undefined?{project_name:source.workflow.project_name}:{}),...(job.input.system_authoring_prompt?{system_authoring_prompt:job.input.system_authoring_prompt}:{}),title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(job.input.question_id?{question_id:questionId(source.workflow),source_files:sourceFiles(source.workflow)}:{}),rule_version_id:rules.result.rule_version_id,rule_attempt_id:rules.id,rule_source_digest:rules.result.source_digest,rule_snapshot_path:rules.result.snapshot_path,rule_files:rules.result.files,...materialIdentity({material_origin:source.origin}),materials:source.materials};
+  candidate={...(job.input.project_name!==undefined?{project_name:source.workflow.project_name}:{}),...(job.input.system_authoring_prompt?{system_authoring_prompt:job.input.system_authoring_prompt}:{}),title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(job.input.material_scope?{material_scope:job.input.material_scope}:{}),...(job.input.question_id?{question_id:questionId(source.workflow),source_files:sourceFiles(source.workflow)}:{}),rule_version_id:rules.result.rule_version_id,rule_attempt_id:rules.id,rule_source_digest:rules.result.source_digest,rule_snapshot_path:rules.result.snapshot_path,rule_files:rules.result.files,...materialIdentity({material_origin:source.origin}),materials:source.materials};
  }else{
   if(!source.project_prompt)return false;
-  candidate={...(job.input.project_name!==undefined?{project_name:source.workflow.project_name}:{}),...(job.input.system_authoring_prompt?{system_authoring_prompt:job.input.system_authoring_prompt}:{}),title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(job.input.question_id?{question_id:questionId(source.workflow),source_files:sourceFiles(source.workflow)}:{}),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials};
+  candidate={...(job.input.project_name!==undefined?{project_name:source.workflow.project_name}:{}),...(job.input.system_authoring_prompt?{system_authoring_prompt:job.input.system_authoring_prompt}:{}),title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(job.input.material_scope?{material_scope:job.input.material_scope}:{}),...(job.input.question_id?{question_id:questionId(source.workflow),source_files:sourceFiles(source.workflow)}:{}),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials};
  }
  if(job.input.revision_advice&&!await validFrozenAdvice(db,job.workflow_id,job.input.revision_advice))return false;
  const valid=source.workflow.title===job.input.title&&inputDigest({...candidate,...(job.input.revision_advice?{revision_advice:job.input.revision_advice}:{}),...(job.input.content_contract?{content_contract:job.input.content_contract}:{}),...(job.input.hooks?{hooks:job.input.hooks}:{}),...(job.input.scoring_policy?{scoring_policy:job.input.scoring_policy}:{}),...(job.input.authoring_contract?{authoring_contract:job.input.authoring_contract}:{})})===job.input.digest;
@@ -329,6 +365,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     ...(job.input.scoring_policy ? {
                         scoring_policy: job.input.scoring_policy
                     } : {}),
+                    ...(job.input.material_scope?{material_scope:job.input.material_scope}:{}),
                     workspace_path: resolveProjectPath(job.input.project_prompt.workspace_path),
                     root: join(directory, 'private'),
                     project_name: job.input.project_name,
@@ -382,6 +419,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
             await tx.query('BEGIN');
             if (signal?.aborted || !(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' AND id=(SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$2 AND ordinal=4 ORDER BY attempt DESC LIMIT 1) FOR UPDATE", [job.id, job.workflow_id])).rowCount)
                 throw new Error('inactive');
+            if(job.input.material_scope)await saveMaterialScopeSelection(tx,job.project_id,job.workflow_id,job.id,draft.material_scope_selection);
             await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1", [job.id, JSON.stringify(storedResult), result.codex.session_id]);
             await tx.query("UPDATE ai_distill.steps SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=4", [job.workflow_id, JSON.stringify(storedResult)]);
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'authored_question', relative(resolve(root), packagePath), hash(publicPackage), publicPackage.length, publicPackage.toString('utf8')]);

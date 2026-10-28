@@ -107,7 +107,11 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   // 请求重放已在上方返回；此处只拒绝新建旧流程，不改写历史任务快照。
   if(template&&template.workflow!=='codex_plan')throw conflict('字段映射脱敏已退役，请选择Agent化名模板');
   if(template?.workflow==='codex_plan'){
-   settings.redaction=request.api_settings?{provider:'api',api:request.api_settings,prompt:template.redaction.prompt}:{...template.redaction,...(request.agent_settings??await readAgentDefaults(db))};
+   // 所有项目共用材料库的脱敏模型；仅旧API配置缺少Agent模型时回退通用默认。
+   const agentSettings=request.api_settings?undefined:request.agent_settings??(settings.redaction?.provider==='codex'
+    ?validateAgentModelSettings({model:settings.redaction.model,reasoning_effort:settings.redaction.reasoning_effort})
+    :await readAgentDefaults(db));
+   settings.redaction=request.api_settings?{provider:'api',api:request.api_settings,prompt:template.redaction.prompt}:{...template.redaction,...agentSettings};
   }
   const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:file.redaction_mode})),settings.redaction,request.execution_target);
   if(request.kind==='extract'&&executor==='api'&&!process.env.MINERU_KEY?.trim())throw conflict('文本提取服务尚未配置');
@@ -136,7 +140,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   if(request.kind==='extract'&&executor==='api'&&!['mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取供应商配置无效');
   const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id}:{})},configDigest=hash(configSnapshot),id=randomUUID();
   await supersedeForeignPending(db,{kind:'library',id:revisionId,jobKind:request.kind},request.execution_target);
-  const active=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND status IN ('queued','running') LIMIT 1",[revisionId])).rows[0];
+  const active=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND kind<>'prepare' AND status IN ('queued','running') LIMIT 1",[revisionId])).rows[0];
   if(active)throw conflict('该文件集合已有活动任务，请等待完成或取消后重试');
   const result=await db.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,previous_job_id,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
    VALUES($1,$2,$3,$4,'queued',$5,$6,$7,$8::jsonb,$9,$10::jsonb,$11,$12) RETURNING id,status,kind,executor_kind,execution_target,created_at`,[id,packageId,revisionId,request.kind,request.request_key,request.previous_job_id??null,inputDigest,JSON.stringify(inputSnapshot),configDigest,JSON.stringify(configSnapshot),executor,request.execution_target]);

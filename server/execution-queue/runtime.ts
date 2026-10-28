@@ -29,7 +29,7 @@ export function foreignUnstartedSql(alias:string,kind:ReplaceableKind,target:'lo
   :`${alias}.status='waiting' AND ${alias}.result IS NULL${kind==='advice'?'':` AND ${alias}.heartbeat_at IS NULL AND ${alias}.session_id IS NULL`}${kind==='step'?` AND ${alias}.execution_target='local' AND NOT EXISTS(SELECT 1 FROM ai_distill.artifacts queued_artifact WHERE queued_artifact.attempt_id=${alias}.id)`:''}`;
  return `(${state} AND ${alias}.finished_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.execution_dispatches queued_owner WHERE queued_owner.job_id=${alias}.id AND queued_owner.job_kind='${kind}' AND queued_owner.executor_id<>'${owner}'::uuid AND queued_owner.generation=0))`;
 }
-type PendingScope={kind:'step';id:string;ordinal:number}|{kind:'library';id:string;jobKind:'intake'|'extract'|'redact'}|{kind:'skill'|'advice';id:string};
+type PendingScope={kind:'step';id:string;ordinal:number}|{kind:'library';id:string;jobKind:'intake'|'extract'|'redact'|'prepare'}|{kind:'skill'|'advice';id:string};
 /** 仅在用户新派发的原业务事务中替代他机未开始意图。失败整体回滚；不转移旧ID、不重放运行/未知调用。 */
 export async function supersedeForeignPending(db:Pick<PoolClient,'query'>,scope:PendingScope,target:'local'|'server'='local'){
  if(!localQueueEnabled()||current.getStore()||target!=='local')return;

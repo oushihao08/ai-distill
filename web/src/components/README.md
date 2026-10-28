@@ -83,7 +83,7 @@
 - `LibraryPackageSettings`：只维护包名称、说明和标签，使用If-Match保存；模型和提示词由材料库共用设置维护。
 - `LibraryMaterialPreview`：保留旧弹窗兼容组件；材料库主入口已改用逐文件阅读区，不再并排铺开历史提取按钮。
 
-- `LibraryProcessingSettings`：打开时默认选择Agent整包代称模板；所有材料包共用的Agent化名提示词模板；模型沿用系统Agent设置，不再提供旧字段映射模型控件，保存时比较共用配置版本，系统默认只应用到草稿。脱敏提示词输入框固定八行高度，长内容在框内滚动且不可拖拽调整。
+- `LibraryProcessingSettings`：打开时默认选择Agent整包代称模板；所有材料包共用Agent化名提示词模板，展示共用脱敏设置的模型与强度，不再提供旧字段映射模型控件。保存时比较共用配置版本，系统默认只应用到草稿。脱敏提示词输入框固定八行高度，长内容在框内滚动且不可拖拽调整。
 - `LibraryPackageWorkspace`：默认选择Agent整包代称模板，仅列Agent化名模板，历史字段映射只读兼容；在紧凑工具栏中显示处理状态、操作、文件版本、文件选择及按需出现的脱敏版本选择；当前结果与历史任务分开，阅读区不预览原件，仍提供显式下载。
 - `LibraryFileReader`：原PDF/DOCX（本地PDF副本）/文本、识别原文、单文件脱敏文本及逐页对照；查看模式和脱敏版本由父级工具栏控制，对照锁定所选脱敏版本实际引用的提取任务，切换文件或版本会取消旧读取。
 - `LibraryUsageSummary`：材料详情展示主项目跨期使用状态与提交/返修事件、项目加载关系及题目归档/撤回时间线；不把当前状态重复标在每次历史操作上。
@@ -105,3 +105,5 @@
 `ProjectAnswerModelsSummary.vue`在项目作答步骤和步骤5设置中只读展示本期模型集合，与实际新作答选择共用`/projects/:id/answer-models`。模型集合保存后通过`AnswerModelSet.saved`事件刷新项目摘要；不读取旧步骤5的单模型字段，不改变历史任务冻结模型。读取失败显示错误和重试，未配置集合明确提示。
 
 `ProjectQuestionRecords.vue` 对已归档题目不提供普通执行菜单；批量执行显示 `already_archived` 跳过数量并继续其他题目。
+
+`LibraryPreparationPanel.vue`由材料库详情和期次建题弹窗挂载，展示包总摘要、逐份材料摘要/标签及多组支持范围。它不提供人工选候选/过滤文书；结果按来源在服务端自动冻结给出题Agent，完整材料保持可见。整理仍可跳过，独立busy/error不禁用建题。HTTP契约见[材料库](../../../server/material-library/README.md#材料整理与使用范围)。

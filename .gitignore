@@ -1,4 +1,5 @@
 # 忽略本地凭证、依赖、构建产物与运行时数据，避免进入版本管理。
+/projects/豆包高经济价值/第七期/questions/
 /projects/豆包高经济价值/第六期/questions/
 /projects/豆包高经济价值/第五期/questions/
 /projects/Work法律全场景/首批筹备/questions/

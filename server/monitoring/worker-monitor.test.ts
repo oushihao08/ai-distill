@@ -197,3 +197,10 @@ test('concurrent library monitors share schema and data reads and do not cache u
  const pending=Array.from({length:20},()=>readMaterialLibraryQueue(pool));await Bun.sleep(1);expect(reads).toBe(1);release();expect((await Promise.all(pending)).every(result=>result.status==='unavailable')).toBe(true);
  fail=false;expect((await readMaterialLibraryQueue(pool)).status).toBe('known');expect(reads).toBe(3);
 });
+
+test('可选整理任务不会使整份材料队列监控降级不可用',async()=>{
+ const item={id:'prepare-id',package_id:'p',revision_id:'r',package_name:'材料',kind:'prepare',status:'queued',executor_kind:'agent',execution_target:'local',progress:{phase:'prepare'},created_at:null,started_at:null};
+ const pool={query:async(input:string|{text:string})=>{const sql=typeof input==='string'?input:input.text;return sql.includes('to_regclass')?{rows:[{available:true}]}:{rows:[{queued:1,running:0,succeeded:0,failed:0,cancelled:0,items:[item]}]};}} as any;
+ const result=await readMaterialLibraryQueue(pool);expect(result.status).toBe('known');
+ if(result.status==='known')expect(result.items[0]?.kind).toBe('prepare');
+});

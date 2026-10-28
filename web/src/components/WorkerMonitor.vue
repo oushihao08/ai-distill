@@ -19,7 +19,7 @@ const activeTasks=computed(()=>data.value?.active_workflow_tasks.items??[]);
 const activeTasksStatus=computed(()=>data.value?.active_workflow_tasks.status??'loading');
 const libraryJobs=computed(()=>data.value?.material_library.status==='known'?data.value.material_library.items:[]);
 const libraryTotals=computed(()=>data.value?.material_library.status==='known'?data.value.material_library.totals:null);
-const libraryKindLabel={intake:'入库核验',extract:'文本提取',redact:'脱敏'};
+const libraryKindLabel={intake:'入库核验',extract:'文本提取',redact:'脱敏',prepare:'材料整理'};
 const libraryStateLabel={queued:'排队',running:'运行'};
 const localQueue=computed(()=>data.value?.local_execution_queue);
 const queueCounts=computed(()=>{const items=localQueue.value?.items??[];const count=(lane:string,state:string)=>items.filter(i=>i.lane===lane&&i.state===state).length;return{agentQueued:count('agent','queued'),agentRunning:count('agent','running'),apiQueued:count('api','queued'),apiRunning:count('api','running'),pending:items.filter(i=>['pending_registration','result_pending_commit'].includes(i.state)).length,review:items.filter(i=>i.state==='needs_review').length};});

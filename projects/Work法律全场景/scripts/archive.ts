@@ -64,14 +64,14 @@ export async function prepare(input:DeliveryInput,context:ProjectArchiveContext,
   const documents=structured&&structured.redacted_sha256===material.sha256?[...structured.materialDocuments.values()].map(item=>item.document):undefined;
   const prepared_documents=structured&&'prepared_documents'in structured?structured.prepared_documents:undefined;
   let original_files:DeliveryInput['attachments'][number]['original_files'];
-  if(materialMode==='original'){
+  if(materialMode==='original'&&!structured?.selected_materials){
    if(ids.length!==1)throw conflict('publication_original_attachment_mapping_unsupported','Work原文归档的多附件映射不明确');
    const manifest=(await pool.query('SELECT snapshot_manifest FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0]?.snapshot_manifest;
    const expected=Array.isArray(manifest?.files)?manifest.files.map((file:any)=>({material_id:String(file.material_id),original_name:String(file.original_name),sha256:String(file.source_sha256)})):[];
    try{const originals=await readOriginalFilesForDelivery(pool,workflowId,root,expected);original_files=originals.map(file=>({name:file.name,sha256:file.sha256,content_base64:Buffer.from(file.bytes).toString('base64')}));}
    catch{throw conflict('publication_original_source_invalid','Work原文材料与冻结文件清单不一致或无法读取');}
   }
-  return{id,sha256:material.sha256,name:`材料-${String(index+1).padStart(3,'0')}.md`,text:await readMaterial(root,material),material_mode:materialMode,...(documents?{documents}:{}),...(prepared_documents?{prepared_documents}:{}),...(original_files?{original_files}:{})};
+  return{id,sha256:material.sha256,name:`材料-${String(index+1).padStart(3,'0')}.md`,text:await readMaterial(root,material),material_mode:materialMode,...(structured?.selected_materials?{selected_materials:true}:{}),...(documents?{documents}:{}),...(prepared_documents?{prepared_documents}:{}),...(original_files?{original_files}:{})};
  }));
  context.signal?.throwIfAborted();
  const generate=()=>cachedExternalCall(`publication_simulation:${input.source_digest}:${input.delivery_digest}`,()=>(dependencies.prepareWork??getOrGenerateWorkSimulation)(pool,{project_id:input.project_id,workflow_id:workflowId,title:input.title,question_version:input.question_version,rubric_version:input.rubric_version,question:q,attachments:input.attachments.map(({name,text,material_mode})=>({name,text,material_mode:material_mode??'redacted'}))},root,hash(`${input.source_digest}:${input.delivery_digest}`),context.expectedLegacyAgentConfig));

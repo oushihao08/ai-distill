@@ -1,5 +1,5 @@
 /**
- * 文件职责：按期次来源模式，将选定脱敏结果或成功提取原文冻结为题目私有附件、结构和来源记录。
+ * 文件职责：按期次来源模式，将脱敏结果或成功提取原文及可选整理摘要冻结为题目附件、结构和来源记录。
  * 关键入口：`createLibraryQuestion()` 负责幂等建题、来源复制、锁序复核与步骤 4–8 创建；不创建旧材料步骤或 attempts。
  * 使用场景：项目加载材料后调用；生成目录只归本题所有，材料库更新不改写已创建题目。
  * 项目差异：材料包与题目数量策略在 lifecycle/projects 注册，本模块持有锁并执行通用建题事务。
@@ -15,6 +15,7 @@ import {assertMaterialUse} from './uses';
 import {canonicalJson} from '../../shared/workflow-config';
 import type {CreateLibraryQuestionRequest} from '../../shared/material-library';
 import {readLibraryBlob} from './storage';
+import {findMatchingPreparation} from './preparation';
 import {redactionJobCurrentValidationSql} from './processing-policy';
 import {assertLibraryExtractionUsable} from './jobs';
 import {resolveMaterialProcessingMode,materialProcessingSourceMode,redactionProcessingMode,type MaterialProcessingMode} from '../../shared/material-library';
@@ -57,11 +58,11 @@ export function validateLibraryQuestionInput(value:unknown,projectTags:unknown):
 
 export function libraryQuestionRequestDigest(value:{project_id:string;project_material_id:string;input:ValidLibraryQuestionInput}){
  const {project_id,project_material_id,input}=value;
- return hash(canonicalJson({version:2,project_id,project_material_id,redaction_id:input.redaction_id??null,revision_id:input.revision_id??null,title:input.title,scenario:input.scenario??null,role_perspective:input.role_perspective??null,target_level:input.target_level??null,authoring_direction:input.authoring_direction??null,question_tags:input.question_tags}));
+ return hash(canonicalJson({version:3,project_id,project_material_id,redaction_id:input.redaction_id??null,revision_id:input.revision_id??null,title:input.title,scenario:input.scenario??null,role_perspective:input.role_perspective??null,target_level:input.target_level??null,authoring_direction:input.authoring_direction??null,question_tags:input.question_tags}));
 }
 
-type SourceFile={id:string;original_name:string;position:number;redaction_mode:'model'|'declared_redacted';source_sha256:string;source_size_bytes:number;source_content_type:string;source_storage_path:string;source_storage_target:string;document_content:string;document_blob_sha256:string;document_sha256:string;document_issues:unknown;};
-type FrozenSource={processing_mode:MaterialProcessingMode;material_mode:'redacted'|'original';project_id:string;project_name:string;project_tags:string[];package_id:string;package_name:string;revision_id:string;redaction_id:string|null;source_digest:string;markdown:string;markdown_sha256:string;index:string;index_sha256:string;files:SourceFile[];};
+type SourceFile={source_document_id?:string;source_refs?:unknown;id:string;original_name:string;position:number;redaction_mode:'model'|'declared_redacted';source_sha256:string;source_size_bytes:number;source_content_type:string;source_storage_path:string;source_storage_target:string;document_content:string;document_blob_sha256:string;document_sha256:string;document_issues:unknown;};
+type FrozenSource={material_scope?:{preparation_id:string;result:import('../../shared/material-preparation-result').MaterialPreparationResult};processing_mode:MaterialProcessingMode;material_mode:'redacted'|'original';project_id:string;project_name:string;project_tags:string[];package_id:string;package_name:string;revision_id:string;redaction_id:string|null;source_digest:string;markdown:string;markdown_sha256:string;index:string;index_sha256:string;files:SourceFile[];};
 
 async function transaction<T>(pool:Pool,action:(db:PoolClient)=>Promise<T>,beforeCommit?:()=>void):Promise<T>{
  const db=await pool.connect();
@@ -158,6 +159,12 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
  return{processing_mode:processingMode,material_mode:'redacted',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:redaction.revision_id,redaction_id:redaction.id,source_digest:redaction.output_digest,markdown:redaction.markdown,markdown_sha256:redaction.markdown_sha256,index:redaction.redacted_index,index_sha256:redaction.index_sha256,files:rows};
 }
 
+/** 整理结果只作为作者参考冻结，不改变全文附件或材料可见范围；缺失时完整走原路径。 */
+export async function attachPreparationContext(db:Pick<PoolClient,'query'>,source:FrozenSource,projectId:string):Promise<FrozenSource>{
+ const prepared=await findMatchingPreparation(db,{package_id:source.package_id,revision_id:source.revision_id,redaction_id:source.redaction_id,source_digest:source.source_digest},projectId);
+ return prepared?{...source,material_scope:{preparation_id:prepared.id,result:prepared.result}}:source;
+}
+
 async function copyPrivateSource(root:string,questionId:string,source:FrozenSource){
  const directory=join(resolve(root),questionId),mapping=new Map<string,string>();
  await mkdir(directory,{recursive:true,mode:0o700});
@@ -201,7 +208,8 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
  const requestDigest=libraryQuestionRequestDigest({project_id:projectId,project_material_id:linkId,input});
  const prior=(await pool.query('SELECT workflow_id,request_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
  if(prior){if(prior.request_digest!==requestDigest)throw conflict('同一建题幂等标识对应了不同请求内容');return{id:prior.workflow_id,reused:true};}
- const first=await transaction(pool,async db=>lockAndReadSource(db,projectId,linkId,packageId,input));
+ const base=await transaction(pool,async db=>lockAndReadSource(db,projectId,linkId,packageId,input));
+ const first=await attachPreparationContext(pool,base,projectId);
  const questionId=randomUUID(),markdownArtifactId=randomUUID(),indexArtifactId=randomUUID();
  let copied:Awaited<ReturnType<typeof copyPrivateSource>>|undefined,commitAttempted=false;
  try{
@@ -209,11 +217,11 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
   const indexText=remapLibraryRedactedIndex(first,copied.mapping),indexSha=hash(indexText),indexPath=`${questionId}/${first.material_mode==='original'?'source':'redacted'}_index.json`,markdownPath=`${questionId}/${first.material_mode==='original'?'source':'redacted'}_markdown.md`;
   await writeFile(join(copied.directory,`${first.material_mode==='original'?'source':'redacted'}_markdown.md`),first.markdown,{mode:0o600,flag:'wx'});
   await writeFile(join(copied.directory,`${first.material_mode==='original'?'source':'redacted'}_index.json`),indexText,{mode:0o600,flag:'wx'});
-  const manifest={version:2,origin:{kind:'library_v1',material_processing_mode:first.processing_mode,material_mode:first.material_mode,package_id:packageId,package_name:first.package_name,revision_id:first.revision_id,redaction_id:first.redaction_id,source_digest:first.source_digest},files:copied.files.map(({file,materialId,sourceArtifactId,pagesArtifactId})=>({library_file_id:file.id,material_id:materialId,source_sha256:file.source_sha256,document_sha256:file.document_sha256,source_artifact_id:sourceArtifactId,pages_artifact_id:pagesArtifactId,position:file.position,original_name:file.original_name})),material_markdown:{artifact_id:markdownArtifactId,sha256:first.markdown_sha256,kind:first.material_mode==='original'?'source_markdown':'redacted_markdown'},material_index:{artifact_id:indexArtifactId,sha256:indexSha,kind:first.material_mode==='original'?'source_index':'redacted_index'}};
+  const manifest={version:2,origin:{kind:'library_v1',material_processing_mode:first.processing_mode,material_mode:first.material_mode,package_id:packageId,package_name:first.package_name,revision_id:first.revision_id,redaction_id:first.redaction_id,source_digest:first.source_digest},...(first.material_scope?{material_scope:first.material_scope}:{}),files:copied.files.map(({file,materialId,sourceArtifactId,pagesArtifactId})=>({library_file_id:file.id,...(file.source_document_id?{source_document_id:file.source_document_id,source_refs:file.source_refs}:{}),material_id:materialId,source_sha256:file.source_sha256,document_sha256:file.document_sha256,source_artifact_id:sourceArtifactId,pages_artifact_id:pagesArtifactId,position:file.position,original_name:file.original_name})),material_markdown:{artifact_id:markdownArtifactId,sha256:first.markdown_sha256,kind:first.material_mode==='original'?'source_markdown':'redacted_markdown'},material_index:{artifact_id:indexArtifactId,sha256:indexSha,kind:first.material_mode==='original'?'source_index':'redacted_index'}};
   const snapshotDigest=hash(canonicalJson(manifest)),sourceManifest=copied.files.map(({file})=>({name:file.original_name,path:markdownPath,size:Buffer.byteLength(first.markdown),sha256:first.markdown_sha256}));
   const result=await transaction(pool,async db=>{
    const current=await lockAndReadSource(db,projectId,linkId,packageId,input);
-   if(current.processing_mode!==first.processing_mode||current.source_digest!==first.source_digest||current.markdown_sha256!==first.markdown_sha256||current.index_sha256!==first.index_sha256)throw conflict('材料来源在复制期间发生变化，请重新建题');
+   if(current.processing_mode!==first.processing_mode||current.source_digest!==base.source_digest||current.markdown_sha256!==base.markdown_sha256||current.index_sha256!==base.index_sha256)throw conflict('材料来源在复制期间发生变化，请重新建题');
    const existing=(await db.query('SELECT workflow_id,request_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
    if(existing){if(existing.request_digest!==requestDigest)throw conflict('同一建题幂等标识对应了不同请求内容');return{id:existing.workflow_id,reused:true};}
    await db.query(`INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_manifest,workflow_kind,scenario,role_perspective,target_level,question_tags,authoring_direction)

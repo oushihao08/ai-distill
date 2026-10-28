@@ -49,3 +49,5 @@ local模式的任务计数直接读取所属SQLite queued/running，不再周期
 `readActiveWorkflowTasks()`与`readMaterialLibraryQueue()`只合并同一连接池、同一ID范围的在途读取，完成或失败即移除，不缓存上次成功/错误，也不合并不同本机范围。本机没有对应活动ID时直接返回空的本机投影，不查询PG；此时`known`仅表示本机集合为空，不表示PG健康，数据库连通性仍看health。
 
 本机材料库明细与count均限定传入的任务ID，HTTP返回的历史数量仍来自SQLite聚合；legacy未传ID范围时保持全局读取。监控每条SQL取得连接后的驱动读取时限为5秒，当前createPool获取连接仍限15秒；这不是整个HTTP请求5秒截止。查询失败由pg-pool释放并销毁连接，API保留unavailable，不把失败伪装成零任务。独立步骤与材料摘要仍并行读取，不更改业务连接池大小、心跳或取消检查间隔。
+
+材料队列识别可选`prepare`任务及其安全进度；它共享Agent容量，但不属于原有编号业务步骤。
