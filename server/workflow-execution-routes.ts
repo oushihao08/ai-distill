@@ -13,6 +13,7 @@ import {cancelStoppedExecutorAttempt,cancelWaitingScore,waitDuration,waitForAtte
 import {uuid} from './validation';
 import type {StepDispatchTask,WorkflowStepOrdinal} from './step-dispatch';
 import {validateAnswerScore} from './scoring/context';
+import {restoreAnswerScoreResults} from './answer-models/restore';
 import {restoreAuthoringResult} from './authoring/restore';
 import {storageDirectory} from './paths';
 import {QueueCapacityError} from './execution-queue/store';
@@ -34,6 +35,7 @@ interface WorkflowExecutionRepository {
 }
 
 export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageRoot=storageDirectory(),batchChunkSize=readBatchChunkSize(),repository,waitForAttempt:wait=waitForAttempt}:RouteDependencies){
+ app.post('/api/workflows/:id/answer-score-results/restore',async c=>{const body=await c.req.json().catch(()=>({}));return c.json(await restoreAnswerScoreResults(pool,uuid(c.req.param('id')),body.answer_only===true));});
  const data=repository??{
   projectExists:async(projectId:string)=>Boolean((await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[projectId])).rowCount),
   selectWorkflows:async(projectId:string,workflowIds?:string[])=>{

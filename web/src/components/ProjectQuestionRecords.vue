@@ -5,6 +5,7 @@
 
 <script setup lang="ts">
 import { api,ApiRequestError } from '../api/client';
+import {dispatchWorkflowBatch} from '../api/batch-dispatch';
 import { dateLabel } from '../utils/format';
 import { readAcceptanceResult, readAnswerStepResult, readScoreStepResult, statusLabels, type Attempt, type ProjectWorkflowStatus, type ScoreStepModelSummary, type Workflow, type WorkflowDetail } from '../types/api';
 import {workflowStepDisplay,acceptanceBatchSummary,batchStepIssue,type BatchStepResult,type WorkflowStatusView} from '../utils/workflow-status';
@@ -87,7 +88,10 @@ function nextAction(flow:Workflow){
 }
 let detailsRefresh:Promise<void>|null=null;
 let refreshRequestedAgain=false;
+let detailsDisposed=false;
+let detailsController:AbortController|undefined;
 function refreshDetails(){
+ if(detailsDisposed)return Promise.resolve();
  if(detailsRefresh){refreshRequestedAgain=true;return detailsRefresh;}
  if(!props.workflows.length){details.value={};detailErrors.value={};return Promise.resolve();}
  detailsRefresh=(async()=>{
@@ -95,13 +99,14 @@ function refreshDetails(){
    do{
     refreshRequestedAgain=false;
     const flows=[...props.workflows],projectId=props.projectId;
+    const controller=new AbortController();detailsController=controller;
     if(!flows.length){details.value={};detailErrors.value={};continue;}
     statusLoading.value=true;
     detailLoadingByWorkflow.value=Object.fromEntries(flows.map(flow=>[flow.id,true]));
     try{
      const loaded:Record<string,ProjectQuestionStatus>={},errors:Record<string,string>={};
      for(let offset=0;offset<flows.length;offset+=100){
-      Object.assign(loaded,await api<Record<string,ProjectQuestionStatus>>(`/projects/${projectId}/workflow-status?ids=${flows.slice(offset,offset+100).map(flow=>flow.id).join(',')}`));
+      Object.assign(loaded,await api<Record<string,ProjectQuestionStatus>>(`/projects/${projectId}/workflow-status?ids=${flows.slice(offset,offset+100).map(flow=>flow.id).join(',')}`,{signal:controller.signal}));
      }
      // 已部署的旧列表投影不含评分；仅对已执行评分的题目补读不含题面／答案正文的状态视图。
      const missingScores=flows.filter(flow=>{
@@ -111,23 +116,23 @@ function refreshDetails(){
      for(let offset=0;offset<missingScores.length;offset+=4){
       await Promise.all(missingScores.slice(offset,offset+4).map(async flow=>{
        try{
-        const full=await api<Pick<WorkflowDetail,'steps'|'attempts'>>(`/workflows/${flow.id}?view=status`);
+        const full=await api<Pick<WorkflowDetail,'steps'|'attempts'>>(`/workflows/${flow.id}?view=status`,{signal:controller.signal});
         const score=full.steps.find(step=>step.ordinal===6);
         if(score)loaded[flow.id]!.steps=loaded[flow.id]!.steps.map(step=>step.ordinal===6?{...step,result:score.result}:step);
        }catch(cause){errors[flow.id]=cause instanceof Error?cause.message:'读取评分明细失败';}
       }));
      }
-     details.value=loaded;detailErrors.value=errors;
-    }catch(cause){details.value={};detailErrors.value=Object.fromEntries(flows.map(flow=>[flow.id,cause instanceof Error?cause.message:'读取步骤状态失败']));}
+     if(!detailsDisposed&&!controller.signal.aborted&&projectId===props.projectId){details.value=loaded;detailErrors.value=errors;}
+    }catch(cause){if(!detailsDisposed&&!controller.signal.aborted){details.value={};detailErrors.value=Object.fromEntries(flows.map(flow=>[flow.id,cause instanceof Error?cause.message:'读取步骤状态失败']));}}
     finally{detailLoadingByWorkflow.value={};}
-   }while(refreshRequestedAgain);
+   }while(refreshRequestedAgain&&!detailsDisposed);
   }catch(cause){actionMessages.value={...actionMessages.value,refresh:cause instanceof Error?cause.message:'读取题目步骤状态失败'};}
   finally{detailsRefresh=null;statusLoading.value=false;}
  })();
  return detailsRefresh;
 }
 function syncDetailsFromProject(){
- if(props.workflowStatus){details.value=props.workflowStatus;detailErrors.value={};statusLoading.value=false;detailLoadingByWorkflow.value={};return;}
+ if(props.workflowStatus){refreshRequestedAgain=false;detailsController?.abort();details.value=props.workflowStatus;detailErrors.value={};statusLoading.value=false;detailLoadingByWorkflow.value={};return;}
  void refreshDetails();
 }
 interface RowAction {ordinal:number;path:string;label:string;disabled:boolean}
@@ -209,7 +214,9 @@ async function runBatch(ordinal:number){
  const selected=[...filteredWorkflows.value],name=stageColumns.value.find(stage=>stage.ordinal===ordinal)?.name??'步骤';
  try{
   batchOrdinal.value=ordinal;batchMessage.value='';batchIssues.value=[];
-  const result=await api<{results:BatchStepResult[]}>(`/projects/${props.projectId}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:selected.map(flow=>flow.id)})});
+  const result=await dispatchWorkflowBatch(props.projectId,ordinal,selected.map(flow=>flow.id),(receipts,total)=>{
+   batchMessage.value=`${name}正在派发：已取得 ${receipts.length}/${total} 道题回执。`;
+  });
   const counts:Record<string,number>={};for(const item of result.results)counts[item.status]=(counts[item.status]??0)+1;
   batchIssues.value=result.results.filter(item=>batchStepIssue(item)!==null).map(item=>({id:item.workflow_id,title:selected.find(flow=>flow.id===item.workflow_id)?.title??item.workflow_id,reason:batchStepIssue(item)!}));
   batchMessage.value=`${name}：匹配 ${selected.length} 道，排队 ${counts.queued??0}，${ordinal===7?acceptanceBatchSummary(result.results):`已完成 ${counts.succeeded??0}`}，已归档跳过 ${counts.already_archived??0}，已达标跳过 ${counts.already_accepted??0}，未就绪 ${counts.not_ready??0}，容量不足未派发 ${counts.capacity_exceeded??0}，失败 ${(counts.failed??0)+(counts.not_found??0)}。`;
@@ -218,6 +225,7 @@ async function runBatch(ordinal:number){
  finally{batchOrdinal.value=null;}
 }
 onMounted(syncDetailsFromProject);
+onBeforeUnmount(()=>{detailsDisposed=true;refreshRequestedAgain=false;detailsController?.abort();});
 watch([()=>props.workflows,()=>props.workflowStatus,()=>props.projectId],syncDetailsFromProject);
 watch([search,selectedTag,authorStatus,answerStatus,scoreStatus,acceptanceStatus],()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});

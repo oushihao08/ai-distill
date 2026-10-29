@@ -117,7 +117,7 @@ test('slow diagnostics distinguish SQL shapes and connection holds without recor
    pool.emit('acquire',client as any);await client.query('SELECT private_value FROM secret_fixture');pool.emit('release',undefined,client as any);
   });
   await logger.flush();const files=await readdir(join(root,'logs',new Date().toISOString().slice(0,10)));const rows=(await Promise.all(files.filter(f=>f.endsWith('.jsonl')).map(f=>readFile(join(root,'logs',new Date().toISOString().slice(0,10),f),'utf8')))).join('').trim().split('\n').map(l=>JSON.parse(l));
-  expect(rows).toContainEqual(expect.objectContaining({event:'db.connection.held',route:'/api/projects/:id',duration_ms:expect.any(Number)}));
+  expect(rows).toContainEqual(expect.objectContaining({event:'db.connection.held',route:'/api/projects/:id',duration_ms:expect.any(Number),query_count:1,db_elapsed_ms:expect.any(Number),non_db_elapsed_ms:expect.any(Number),max_query_ms:expect.any(Number)}));
   const query=rows.find(r=>r.event==='db.query.slow');expect(query.query_id).toMatch(/^[a-f0-9]{16}$/);expect(query.route).toBe('/api/projects/:id');expect(JSON.stringify(rows)).not.toContain('private_value');
  }finally{await logger.close();await pool.end();await rm(root,{recursive:true,force:true});}
 });

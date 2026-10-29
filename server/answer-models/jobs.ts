@@ -130,7 +130,7 @@ async function matchesModelSet(db:PoolClient,job:any){
  return digest===job.input.model_set_digest;
 }
 /** 聚合当前模型集合：全部终结且至少一个成功即可继续；不把局部失败误判为所有答案失效。 */
-async function refreshAnswerStep(db: PoolClient, job: any) {
+export async function refreshAnswerStep(db: PoolClient, job: any) {
     if (!Array.isArray(job.input.model_set) || !job.input.model_set.length) {
         const result = job.status === 'skipped' && job.result?.outcome === 'qualified_timeout_unscored' ? { ...job.result, models: [{ model_id: job.input.model_id ?? null, name: job.input.model_name ?? job.config.model, attempt_id: job.id, status: 'skipped', outcome: job.result.outcome, reason_code: job.result.reason_code, generation_activity: job.result.generation_activity }] } : job.result;
         const latest = await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,finished_at=CASE WHEN $2 IN ('succeeded','skipped','failed') THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=5 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)", [job.workflow_id, job.status === 'succeeded' ? 'succeeded' : job.status === 'skipped' ? 'skipped' : 'failed', JSON.stringify(result)]);

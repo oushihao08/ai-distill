@@ -14,6 +14,7 @@ import AcceptedQuestionList from '../components/AcceptedQuestionList.vue';
 import ProjectAnswerModelsSummary from '../components/ProjectAnswerModelsSummary.vue';
 import AnswerGenerationPolicySettings from '../components/AnswerGenerationPolicySettings.vue';
 import { api } from '../api/client';
+import {dispatchWorkflowBatch} from '../api/batch-dispatch';
 import {acceptanceBatchSummary,batchStepIssue,type BatchStepResult} from '../utils/workflow-status';
 import {resolveMaterialProcessingMode,materialProcessingSourceMode} from '@shared/material-library';
 import { useResource } from '../composables/useResource';
@@ -21,13 +22,26 @@ import { type ProjectDetail,type ProjectStage } from '../types/api';
 const answerModelsVersion=shallowRef(0);
 const route=useRoute();const router=useRouter();
 const {data,error,loading,refresh}=useResource<ProjectDetail>(`/projects/${route.params.id}`);
-watch(()=>data.value,()=>{answerModelsVersion.value++;});
+// 模型摘要由设置保存事件刷新，任务状态刷新不重复读取配置。
 usePageBreadcrumbs(()=>{const project=data.value?.project;return [{title:'出题项目',to:'/'},...(project?.project_group_id?[{title:project.parent_name||'主项目',to:`/project-groups/${project.project_group_id}`}]:[]),{title:project?.phase_name||project?.name||'期次工作区'}];});
 const editOpen=shallowRef(false);const tagsOpen=shallowRef(false);const deleteOpen=shallowRef(false);const modelSettingsOpen=shallowRef(false);const materialsSettingsOpen=shallowRef(false);
 const recordsStep=shallowRef<ProjectStage|null>(null);
 const settings=shallowRef<ProjectStage|null>(null);const busy=shallowRef<number|string|null>(null);const message=shallowRef('');
 const exportError=shallowRef('');const actionError=shallowRef('');
 const feedbackOrdinal=shallowRef<number|null>(null);
+// 活动任务只在可见页面中串行刷新；终态、卸载及操作中不叠加读取。
+let activityTimer:ReturnType<typeof setTimeout>|undefined;
+let activityDisposed=false;
+function scheduleActivityRefresh(){
+ clearTimeout(activityTimer);
+ if(activityDisposed||!data.value?.steps.some(step=>step.running>0||step.queued>0))return;
+ activityTimer=setTimeout(async()=>{
+  try{if(!document.hidden&&busy.value===null&&!loading.value)await refresh();}
+  finally{scheduleActivityRefresh();}
+ },10000);
+}
+watch(()=>data.value,scheduleActivityRefresh);
+onBeforeUnmount(()=>{activityDisposed=true;clearTimeout(activityTimer);});
 const loadedMaterialCount=shallowRef<number|null>(null);
 const usableMaterialCount=shallowRef<number|null>(null);
 function loadedMaterials(count:number,usable:number|null){loadedMaterialCount.value=count;usableMaterialCount.value=usable;}
@@ -78,7 +92,11 @@ async function runStep(step:ProjectStage,fromPackages=false){
     }catch(cause){batchFailures.value.push({workflow_id:pkg.id,title:pkg.title,reason:cause instanceof Error?cause.message:'建题失败'});}
    }
   }
-  const result=await api<{results:BatchStepResult[]}>(`/projects/${route.params.id}/steps/${step.ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(step.ordinal===4?{workflow_ids:fromPackages?createdIds:questionWorkflows.value.map(question=>question.id)}:{})});
+  const workflowIds=fromPackages?createdIds:([1,9].includes(step.ordinal)?materialPackages.value:questionWorkflows.value).map(flow=>flow.id);
+  const result=await dispatchWorkflowBatch(String(route.params.id),step.ordinal,workflowIds,(receipts,total)=>{
+   const queued=receipts.filter(item=>item.status==='queued').length;
+   message.value=`${step.name}正在派发：已取得 ${receipts.length}/${total} 道题回执，已入队 ${queued} 道。`;
+  });
   const queued=result.results.filter(item=>item.status==='queued').length;
   const completed=result.results.filter(item=>item.status==='succeeded').length;
   const acceptedSkipped=result.results.filter(item=>item.status==='already_accepted').length;
@@ -111,7 +129,7 @@ async function savedTags(){tagsOpen.value=false;await refresh();}
  <v-btn v-if="error&&!data" color="primary" :loading="loading" :disabled="loading" @click="refresh">重新读取</v-btn>
   <p v-if="loading&&!data" class="text-muted">正在读取项目…</p>
  <template v-if="data">
-  <Row x="between" wrap :gap="12"><Column :gap="6" class="min-w-0"><h1 class="text-2xl font-bold text-ink-heading break-words">{{ data.project.name }}</h1><p class="text-xs text-muted">第 {{ data.project.phase_no??'—' }} 期 · 题目、作答模型与评测结果属于本期</p><p v-if="data.project.description" class="text-sm text-muted">{{ data.project.description }}</p></Column><Row wrap :gap="8"><v-btn @click="modelSettingsOpen=true">本期作答模型</v-btn><v-btn @click="openMaterialsSettings">主项目资料与 skill</v-btn><v-btn :disabled="busy!==null" @click="editOpen=true">编辑本期配置</v-btn><v-btn :loading="loading" @click="refresh">刷新</v-btn><v-btn color="error" :disabled="busy!==null" @click="deleteOpen=true">删除本期</v-btn></Row></Row>
+  <Row x="between" wrap :gap="12"><Column :gap="6" class="min-w-0"><h1 class="text-2xl font-bold text-ink-heading break-words">{{ data.project.name }}</h1><p class="text-xs text-muted">第 {{ data.project.phase_no??'—' }} 期 · 题目、作答模型与评测结果属于本期</p><p v-if="data.project.description" class="text-sm text-muted">{{ data.project.description }}</p></Column><Row wrap :gap="8"><v-btn @click="modelSettingsOpen=true">本期作答模型</v-btn><v-btn @click="openMaterialsSettings">主项目资料与 skill</v-btn><v-btn :disabled="busy!==null" @click="editOpen=true">编辑本期配置</v-btn><v-btn :loading="loading" @click="answerModelsVersion++;refresh()">刷新</v-btn><v-btn color="error" :disabled="busy!==null" @click="deleteOpen=true">删除本期</v-btn></Row></Row>
   <Row class="surface-card p-12" x="between" wrap y="center" :gap="8"><Row wrap y="center" :gap="6"><span class="text-sm font-medium text-ink-heading">本期题目标签</span><v-chip v-for="tag in data.project.question_tags??[]" :key="tag" size="small" color="primary" variant="tonal">{{ tag }}</v-chip><span v-if="!data.project.question_tags?.length" class="text-sm text-muted">尚未创建</span></Row><v-btn size="small" variant="outlined" :disabled="busy!==null" @click="tagsOpen=true">{{ data.project.question_tags?.length?'管理标签':'创建标签' }}</v-btn></Row>
   <PhasePreparation :project-id="data.project.id" :authoring="data.steps.find(step=>step.ordinal===4)" :mode="questionProcessingMode" :material-count="loadedMaterialCount" :usable-count="usableMaterialCount" @rules="openMaterialsSettings" @authoring="openAuthoringSettings" @models="modelSettingsOpen=true" @materials="viewPhaseMaterials"/>
   <section class="surface-card p-16" aria-label="本期达标进度"><Row x="between" y="center" :gap="12"><Column :gap="4"><h2 class="text-sm font-semibold text-ink-heading">本期达标进度</h2><p class="text-xs text-muted">{{ qualifiedQuestionCount }} / {{ questionCount }} 道题已达标</p></Column><span class="text-lg font-semibold text-success">{{ qualifiedProgressPercent }}%</span></Row><v-progress-linear class="mt-10" color="success" :model-value="qualifiedProgressPercent" rounded aria-label="本期题目达标百分比" /><p class="mt-6 text-xs text-muted">按本期已加载题目计算；材料包不计入。</p></section>

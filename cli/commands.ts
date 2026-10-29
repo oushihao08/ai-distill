@@ -3,6 +3,8 @@
  * 关键入口：`runCommand()` 供 `cli/index.ts` 分派；`waitAttempts()` 只读恢复 attempt；项目业务判定由服务端返回。
  * 使用场景：Agent/维护者通过 CLI 读取并操作现有项目；旧目录/旧材料包接口继续兼容，不在本层连接数据库或运行模型。
  */
+import {planLibraryBatch,runLibraryBatch} from './library-batch';
+
 import {prepareLibraryFiles} from '../server/materials/prepare-library-files';
 import {readFile,writeFile} from 'node:fs/promises';
 import {basename,dirname,resolve} from 'node:path';
@@ -24,6 +26,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   remote answer run|start|status --workflow UUID --request-key UUID
 详细命令/远程边界/恢复方式：cli/README.md；Skill 工具地图：skill/MAP.md#cli-工具地图
 只读：
+  library batch plan --kind intake|extract|redact|prepare (--project-query 期次简称 | --project UUID | --q 关键词) [--redaction-state all|ready|not_ready] [--preparation-state all|ready|not_ready] [--extraction-state all|succeeded|failed|not_started|cancelled|running|queued] --out 新清单.json
   project list | project show --project UUID | project-group list | project-group phases --group UUID
   material-package list --project UUID | material-package versions --workflow 材料包UUID
   library package list [--q 关键词] [--page N] [--page-size N] [--ready-only] [--redaction-state all|ready|not_ready] [--archived-only] [--project UUID]
@@ -47,6 +50,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   monitor show | queue diagnose | step list
   batch show --file 清单路径
 显式写入：
+  library batch run --file 清单.json（逐包派发，容量不足或未知写入即停止；同清单可恢复）
   batch create --project UUID (--ids UUID,... | --all) --size 数量 --to STEP_KEY --out 清单路径
   batch skip --file 清单路径 --ids UUID,... --reason 原因（仅记录本轮跳过，不取消任务）
   project create --name 显示名称 [--material-backend legacy --material-root 仓库相对路径 | --material-backend library_v1 --workspace-path 仓库相对路径] [--parent-name 主项目 --phase-name 期数 --phase-no N] [--project-group UUID] [--skill-path 仓库相对路径] [--settings-file JSON]
@@ -173,10 +177,12 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'project materials update':['project','link','version','redaction','revision','position'],
       'project materials remove':['project','link','version'],'project materials restore':['project','link','version'],
       'project materials question':['project','link','version','redaction','revision','title','request-key','scenario','role','level','direction','tags'],
-      'library package list':['q','page','page-size','ready-only','redaction-state','archived-only','project'],'library package show':['package'],
+      'library package list':['q','page','page-size','ready-only','redaction-state','preparation-state','archived-only','project'],'library package show':['package'],
       'library package usage':['package'],'library package revisions':['package'],'library package create':['name','description','tags'],
       'library package update':['package','version','file'],'library package archive':['package','version'],'library package restore':['package','version'],
       'library files prepare':['manifest','out'],
+      'library batch plan':['kind','project','project-query','q','redaction-state','preparation-state','extraction-state','out'],
+      'library batch run':['file'],
       'library revision create':['package','version','request-key','manifest'],
       'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project','agent-model','reasoning-effort'],
       'library job show':['job'],'library job cancel':['job'],'library job wait':['job','timeout'],
@@ -420,8 +426,10 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
           ...(flags.has('tags')?{question_tags:required('tags').split(',').map(tag=>tag.trim()).filter(Boolean)}:{}),
         });break;
       }
+      case 'library batch plan': data=await planLibraryBatch(api,flags,required('out'),signal);break;
+      case 'library batch run': {data=await runLibraryBatch(api,required('file'),signal);return {outcome:data.items.some((item:any)=>item.state==='unknown'||item.state==='planned')?'partial':'complete',data};}
       case 'library package list': {
-        const query=queryString([['q',flags.has('q')?required('q'):undefined],['page',flags.has('page')?String(positiveInteger(required('page'),'页码')):undefined],['page_size',flags.has('page-size')?String(positiveInteger(required('page-size'),'每页数量')):undefined],['ready_only',flags.has('ready-only')?'true':undefined],['redaction_state',flags.has('redaction-state')?required('redaction-state'):undefined],['archived_only',flags.has('archived-only')?'true':undefined],['project_id',flags.has('project')?uuid('project'):undefined]]);
+        const query=queryString([['q',flags.has('q')?required('q'):undefined],['page',flags.has('page')?String(positiveInteger(required('page'),'页码')):undefined],['page_size',flags.has('page-size')?String(positiveInteger(required('page-size'),'每页数量')):undefined],['ready_only',flags.has('ready-only')?'true':undefined],['redaction_state',flags.has('redaction-state')?required('redaction-state'):undefined],['preparation_state',flags.has('preparation-state')?required('preparation-state'):undefined],['archived_only',flags.has('archived-only')?'true':undefined],['project_id',flags.has('project')?uuid('project'):undefined]]);
         data=await get(`/api/material-library/packages${query}`);break;
       }
       case 'library package show': data=await get(`/api/material-library/packages/${uuid('package')}`);break;

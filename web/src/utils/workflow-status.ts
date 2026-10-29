@@ -5,7 +5,7 @@
 import type {Attempt,Step} from '../types/api';
 import type {AcceptanceResult} from '@shared/workflow-results';
 
-export interface BatchStepResult {workflow_id:string;status:string;reused?:boolean;attempt_ids?:string[];reason?:string;decision?:AcceptanceResult['decision'];reasons?:string[]}
+export interface BatchStepResult {workflow_id:string;status:string;reused?:boolean;attempt_id?:string;attempt_ids?:string[];reason?:string;decision?:AcceptanceResult['decision'];reasons?:string[]}
 
 /** 执行成功与业务达标分开显示；旧 API 不返回结论时不推测达标。 */
 export function acceptanceBatchSummary(items:BatchStepResult[]):string{

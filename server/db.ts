@@ -74,7 +74,7 @@ export function createPool(env = process.env) {
   const requireBinding = url.searchParams.get('channel_binding') === 'require';
   for (const key of ['sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'channel_binding']) url.searchParams.delete(key);
   const pool = new Pool({ ...(localQueueEnabled()?{application_name:`ai-distill-executor:${localQueue(storageDirectory(env)).executorId}`}:{application_name:'ai-distill-legacy'}), connectionString: url.toString(), ssl: { rejectUnauthorized: true }, enableChannelBinding: requireBinding, max: 4, idleTimeoutMillis: 10000, connectionTimeoutMillis: 15000 });
-  const clients=new WeakSet<object>(),freshClients=new WeakSet<object>(),acquiredAt=new WeakMap<object,number>();let connectionUnavailable=false;
+  const clients=new WeakSet<object>(),freshClients=new WeakSet<object>(),acquiredAt=new WeakMap<object,number>(),queryStats=new WeakMap<object,{count:number;elapsed:number;max:number}>();let connectionUnavailable=false;
   pool.on('connect',(client:object)=>{freshClients.add(client);});
   const installClient=(client:any)=>{
     if(!client||typeof client!=='object'||clients.has(client))return;clients.add(client);
@@ -85,6 +85,7 @@ export function createPool(env = process.env) {
       const name=queryName(args[0]),started=performance.now(),callbackIndex=args.findIndex(arg=>typeof arg==='function');
       const finish=(error?:unknown)=>{
         const duration_ms=Math.round(performance.now()-started);
+        const stats=queryStats.get(client);if(stats){stats.count++;stats.elapsed+=duration_ms;stats.max=Math.max(stats.max,duration_ms);}
         if(error){const code=safeDbCode(error);logEvent('db.query.failed',{level:'error',query_name:name,query_id,duration_ms,...classifyLogError(error),...(code?{error_code:code}:{})});}
         else if(duration_ms>=1000)logEvent('db.query.slow',{level:'warn',query_name:name,query_id,duration_ms});
         const event=transactionEvent(name);
@@ -109,8 +110,8 @@ export function createPool(env = process.env) {
     try{return originalConnect(...args).then((client:any)=>{acquired(undefined,client);return client;},(error:unknown)=>{acquired(error);throw error;});}
     catch(error){acquired(error);throw error;}
   };
-  pool.on('release',(_error:unknown,client:object)=>{const started=acquiredAt.get(client);acquiredAt.delete(client);if(started!==undefined){const duration_ms=Math.round(performance.now()-started);if(duration_ms>=1000)logEvent('db.connection.held',{level:'warn',duration_ms,pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount});}});
-  pool.on('acquire',(client:any)=>{acquiredAt.set(client,performance.now());installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:freshClients.has(client)});connectionUnavailable=false;}});
+  pool.on('release',(_error:unknown,client:object)=>{const started=acquiredAt.get(client),stats=queryStats.get(client);acquiredAt.delete(client);queryStats.delete(client);if(started!==undefined){const duration_ms=Math.round(performance.now()-started);if(duration_ms>=1000)logEvent('db.connection.held',{level:'warn',duration_ms,query_count:stats?.count??0,db_elapsed_ms:stats?.elapsed??0,non_db_elapsed_ms:Math.max(0,duration_ms-(stats?.elapsed??0)),max_query_ms:stats?.max??0,pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount});}});
+  pool.on('acquire',(client:any)=>{acquiredAt.set(client,performance.now());queryStats.set(client,{count:0,elapsed:0,max:0});installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:freshClients.has(client)});connectionUnavailable=false;}});
   pool.on('error',(error:unknown)=>{connectionUnavailable=true;const code=safeDbCode(error);logEvent('db.pool.error',{level:'error',...classifyLogError(error),...(code?{error_code:code}:{})});console.error('数据库连接异常，请检查连接配置或网络；连接信息未输出。');});
   return pool;
 }

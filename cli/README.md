@@ -271,6 +271,7 @@ bun run ai-distill workflow design update --workflow <题目UUID> --direction <�
 | remote-materials.ts | 远程材料请求、同键恢复、状态查询、清单/哈希核对和 `.storage/` 管理副本同步 |
 | remote-materials.test.ts | 注入 HTTP 与临时目录验证远程材料请求、同键找回、下载摘要、路径边界和中断清理；不连接服务器 |
 | remote-answers.ts | 远程作答提交、start/run/status 和 request-key 恢复 |
+| library-batch.ts | 材料库全分页且条件筛选、期次模糊定位、固定清单及带原请求键的批量HTTP派发恢复 |
 | batches.ts | 本地批次清单创建、读取、固定分组及原子跳过记录，不保存业务状态 |
 | failed-export.ts | 读取当前未达标判定与精确绑定的产物，按固定目录导出题目、作答及评分 |
 | client.test.ts、commands.test.ts | 注入HTTP夹具验证本机API客户端、命令映射、等待与批量派发；不连接数据库、不调用模型 |
@@ -361,3 +362,14 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 - 导出可用`library prepare show --preparation UUID --content --json`保存完整JSON信封，比较时读取data中的结果；保留原preparation ID，再以新request-key和force重跑，不能覆盖旧快照冒充新结果。
 - 质量核对包括目录及结构保留、摘要忠实、单方组合的依据与信息时点相容、隐藏是否对应已有同类成果。组合数量、隐藏数量及warnings为零均不能单独判定质量；OCR及证据缺口查看notes。
 - CLI目前没有token统计命令；任务普通接口也不提供完整用量。获准读取私有执行元信息时，可汇总turn.completed.usage，分别列输入、缓存输入和输出；累计用量不是单次输入长度或实际费用。一次Agent调用可能包含多次模型请求。跨模型优先比较同一来源；不同包按文本字符量归一化只能作为估算。
+
+## 材料库搜索批次
+
+`library batch plan`只读取HTTP并创建新的本地范围清单；`library batch run`经现有单包HTTP接口派发入库、文本提取、脱敏或材料整理。不同条件为且关系：期次名称、关键词、脱敏状态、提取状态、整理状态必须同时满足。`--q`中的空格分隔词也必须全部匹配；项目简称使用按字序的模糊匹配，例如“豆包高经七期”。项目精确名称优先；歧义返回候选ID和名称，不自动选择。期次范围按材料包名称与已定位期次全名模糊对应；全局包无隐含项目归属，计划清单列出实际命中ID供核对。
+
+```sh
+bun run ai-distill library batch plan --kind prepare --project-query '豆包高经七期' --redaction-state ready --preparation-state not_ready --out /tmp/phase7-prepare.json
+bun run ai-distill library batch run --file /tmp/phase7-prepare.json
+```
+
+`--kind`支持`intake|extract|redact|prepare`；提取筛选用`--extraction-state succeeded|failed|not_started|cancelled|running|queued|all`。`library package list`也支持`--preparation-state all|ready|not_ready`。计划读取所有搜索分页后固定包/revision ID，不因派发改变筛选结果而漏包。运行时跳过已有成果、活动任务、版本ID改变和前置条件未满足的包；原文期次整理使用成功提取结果，aliases期次整理使用可用脱敏结果。任务按现有Agent/API池入队，服务端容量拒绝时停止，不改并发、不启动worker、不自动跨阶段推进。清单写前持有文件锁并保存request_key，写后保存完整回执与job ID；网络未知保留原请求键及body，恢复只重放原幂等请求。已提交项不重复派发；容量拒绝项保持planned，可再次执行同一run命令补位。命令的提交成功不代表后台处理成功。

@@ -357,3 +357,12 @@ test('legacy worker只核对历史摘要但不再派发自检，篡改摘要仍�
   }
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+// 重复派发不得为已活动的答案重新读取材料/题面，仍在原事务锁下拒绝。
+test('duplicate scoring admission rejects before expensive context preparation',async()=>{
+ const f=fake({reuse:true});
+ await expect(enqueueScore(f.pool,'workflow')).rejects.toThrow('此答案已有评分任务');
+ expect(f.calls.some(c=>c.sql.startsWith('SELECT w.rule_version_id'))).toBe(false);
+ expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
+ expect(f.calls.some(c=>c.sql==='ROLLBACK')).toBe(true);
+});

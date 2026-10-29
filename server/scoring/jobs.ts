@@ -68,9 +68,10 @@ export async function enqueueScore(pool:Pool,id:string){
   const hooks=skill?await freezeStageHooks(dirname(skill.path),config.workflow):undefined;
   await supersedeForeignPending(db,{kind:'step',id,ordinal:6});
   for(const answerId of answerIds){
+   // 工作流已加锁：先拒绝活动评分，避免重复点击仍读取完整材料并延长事务。
+   if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:context.project_name,content_contract:context.content_contract}),{context});buildAnonymousInput(context);
    const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider,context.scoring_policy?.contract,context.candidate_quote_check),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
-   if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
    queued.push(attempt);
@@ -87,11 +88,11 @@ interface ScoreRun {report:unknown;session_id:string;usage:unknown;duration_ms:n
 type Grader=(context:ScoreContext,options:any)=>Promise<ScoreRun>;
 async function stillCurrent(db:PoolClient,job:any){
  const w=(await db.query(workflowSql,[job.workflow_id])).rows[0];if(!w)return false;
- try{const current=await readScoreContext(db,job.workflow_id,job.input.context.binding.answer_attempt_id,!!job.input.context.project_rules,!!job.input.context.project_prompt);if(job.input.context.candidate_quote_check!==undefined){if(!projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:current.project_name,content_contract:current.content_contract}),{context:current,frozen:job.input.context}))return false;}if(job.input.context.step_prompt!==undefined)current.step_prompt=job.input.context.step_prompt;if(job.input.context.project_name===undefined){delete current.project_name;delete current.question_id;}return current.binding.answer_attempt_id===job.input.context.binding.answer_attempt_id;}
+ try{const current=await readScoreContext(db,job.workflow_id,job.input.context.binding.answer_attempt_id,!!job.input.context.project_rules,!!job.input.context.project_prompt);if(job.input.context.candidate_quote_check!==undefined){if(!projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:current.project_name,content_contract:current.content_contract}),{context:current,frozen:job.input.context}))return false;}if(job.input.context.step_prompt!==undefined)current.step_prompt=job.input.context.step_prompt;if(job.input.context.project_name===undefined){delete current.project_name;delete current.question_id;}return current.binding.answer_attempt_id===job.input.context.binding.answer_attempt_id&&scoreContextDigest(current)===job.input.digest;}
  catch(error){if(error instanceof HTTPException&&[404,409].includes(error.status))return false;throw error;}
 }
 /** 只汇总当前成功答案绑定的最新评分；执行成功与validation.valid分开，达标由decisions判断。 */
-async function refreshScoreStep(db: PoolClient, job: any) {
+export async function refreshScoreStep(db: PoolClient, job: any) {
     const answerStep = (await db.query("SELECT result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=5", [job.workflow_id])).rows[0];
     const answers = Array.isArray(answerStep?.result?.models) ? answerStep.result.models as any[] : null;
     if (!answers) {

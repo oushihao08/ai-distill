@@ -198,3 +198,5 @@ readActiveConcurrencyLimit的只读SQLite连接沿用槽位写连接的5秒busy_
 步骤5的项目摘要仅保留提示词和流程策略，不投影旧单模型provider/model连接字段；新作答模型以本期模型集合接口为准，历史尝试和保留模式仍按各自冻结集合读取。此投影清理不改写旧配置或业务结果。
 
 材料模型正文由shared/document-structure.ts的documentPagesToModelText统一生成：材料整理内联输入与question-materials.ts模型附件共用，后者供出题和作答使用，评分读取作答冻结正文。历史结构指纹投影与原件/DOCX结构保持独立。
+
+连接持有告警补充 `query_count`、`db_elapsed_ms`、`max_query_ms` 与 `non_db_elapsed_ms`：SQL调用累计耗时包含同连接的驱动等待；非SQL持有时间为持有总时长减累计值的下界估算（截零），不能当作数据库服务器执行/锁等待的精确分解。日志不记录SQL正文或参数。
