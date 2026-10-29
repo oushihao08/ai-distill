@@ -17,6 +17,7 @@
 | `score.test.ts` | 新评分指标与原始分、否决项之间的百分制转换边界 |
 | `step-registry.test.ts` | legacy、library_v1及旧材料包的可见步骤身份兼容 |
 | `workflow-results.test.ts` | 答案/评分摘要读取时的形状校验与非法字段拒绝 |
+| `agent-text-material-plan.test.ts` | 新ID文本字段归属、原ID复用、空行/合并单元格、跨文件隔离及非法返回ID边界；不调用模型/数据库 |
 
 `web/src/types/api.ts` 转出共享类型；后端材料接收、项目步骤汇总和执行器使用注册表。新增步骤应定义独立持久化身份，不重编号历史尝试。ordinal 2 仍用于旧目录流程的 PDF/DOCX 内部提取；3（旧规则绑定）和 10（旧独立审查）保留历史兼容；ordinal 4 为出题，七个可见步骤的位置为 1 至 7。
 

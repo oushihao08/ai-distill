@@ -4,7 +4,7 @@
  * 使用场景：出题与作答使用投影附件，评分核对来源身份，归档/导出按各自契约读取；不执行OCR、脱敏或文件写入。
  */
 import {createHash} from 'node:crypto';
-import {materializePreparation,preparationUnits,renderPreparationDocuments,validateSelectedMaterialIndex,visiblePreparationContext} from '../shared/material-preparation-result';
+import {visiblePreparedDocuments,preparationUnits,renderPreparationDocuments,validateSelectedMaterialIndex,visiblePreparationContext} from '../shared/material-preparation-result';
 import {readFile,realpath,stat} from 'node:fs/promises';
 import {resolve,relative,sep,isAbsolute} from 'node:path';
 import type {Pool,PoolClient} from 'pg';
@@ -135,8 +135,7 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
   const content=renderPreparationDocuments(docs);
   return{origin,attachments:[attachment],model_attachments:content.trim()?[{...attachment,content,sha256:hash(content)}]:[],digest:String(row.snapshot_digest)};
  }
- const preparedDocuments=materializePreparation(prepared.result,preparationUnits(parsedIndex));
- const visibleDocuments=preparedDocuments.filter(document=>document.visibility!=='hidden');
+ const visibleDocuments=visiblePreparedDocuments(prepared.result,preparationUnits(parsedIndex));
  const content=renderPreparationDocuments(visibleDocuments);
  const hasHidden=prepared.result.documents.some(document=>document.visibility==='hidden');
  const modelAttachment:QuestionMaterialAttachment={...attachment,sha256:hash(content),content,source_names:hasHidden?[]:attachment.source_names};

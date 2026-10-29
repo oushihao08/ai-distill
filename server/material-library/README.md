@@ -178,7 +178,7 @@ Agent完整语义计划交付到固定私有文件`output/material-plan.json`（
 
 编译器不再按标签/正则猜测姓名、号码及地址残留并否决发布。续作仅复制同源计划和进度，不再复制已停用的残留匹配反馈；旧私有记录保留原样。精确编辑、来源、结构和覆盖仍验证。
 
-既有`agent-redaction.test.ts`和`shared/agent-material-plan.test.ts`包含旧主体/编辑计划的回归基线，不能作为新ID文本契约已经验收的证据。真实业务与服务加载情况须单独核实。
+`agent-redaction.test.ts`和`api-redaction.test.ts`以注入执行器验证新ID文本输入、生成校验器、同源续作、API修正及正常发布事务；不调用真实模型或业务数据库。`shared/agent-text-material-plan.test.ts`覆盖重复/缺失原块ID、跨文件隔离、空表格行、合并单元格、长度变化和非法返回ID；`shared/agent-material-plan.test.ts`保留历史主体/编辑计划基线。真实模型语义质量与服务运行情况须单独核实。
 
 ### 已发布结果的程序复核
 

@@ -1,13 +1,15 @@
-/** 验证Agent整包执行的提示词转交、主体表私有保存、精确计划编译及硬超时；注入合成执行器，不调用真实模型/业务库。 */
+/** 验证Agent整包执行的提示词转交、ID文本私有保存、精确计划编译及硬超时；注入合成执行器，不调用真实模型/业务库。 */
 import {test,expect} from 'bun:test';
 import {mkdtemp,mkdir,readFile,writeFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {prepareAgentLibraryMaterials,validateAgentPlanFileDeclaration} from './agent-redaction';
+import {AGENT_TEXT_REDACTION_PROTOCOL} from '../../shared/agent-material-plan';
 import {readLibraryProcessingSettings,saveLibraryProcessingSettings} from './settings';
 
 const settings={version:1,extraction:{protocol:'v1',provider_config:{}},redaction:{provider:'codex',model:'fixture',reasoning_effort:'medium',prompt:'旧模板'},execution:{task_timeout_ms:1200000,request_timeout_ms:1000},policy:{preserve_dates:true,preserve_amounts:true}};
 function options(directory:string){return{directory,model:'fixture',reasoning_effort:'medium',revision_id:'11111111-1111-4111-8111-111111111111',extraction_job_id:'22222222-2222-4222-8222-222222222222',template:{id:'aliases',digest:'a'.repeat(64),redaction:{prompt:'本次数据库冻结提示词'}},files:[{file_id:'33333333-3333-4333-8333-333333333333',text_sha256:'h',pages:[{page:1,text:'赵安向北京市东城区人民法院申请100元',structure:[{id:'b',kind:'paragraph' as const,text:'赵安向北京市东城区人民法院申请100元'}]}]}]};}
+function textPlan(text:string,title='申请书',block='b'){return{texts:[{id:`f1p1/${block}#text`,text}],documents:[{id:'d',title,ranges:[{first_block_id:`f1p1/${block}`,last_block_id:`f1p1/${block}`}],duplicate_of:null}],unresolved:[] as any[]};}
 test('persisted template is reread on each request instead of cached markdown/default text',async()=>{
  const root=await mkdtemp(join(tmpdir(),'agent-settings-'));const pool={query:async()=>{throw new Error('已保存时不应读取默认模型');}} as any;
  try{saveLibraryProcessingSettings(root,0,settings);const first=await readLibraryProcessingSettings(pool,root);expect((first.processing_settings as any).redaction_templates[0].workflow).toBe('codex_plan');
@@ -15,11 +17,11 @@ test('persisted template is reread on each request instead of cached markdown/de
   expect((await readLibraryProcessingSettings(pool,root)).processing_settings).toMatchObject({redaction_templates:[{redaction:{prompt:'数据库更新后的模板'}}]});
  }finally{await rm(root,{recursive:true,force:true});}
 });
-test('one Agent call receives frozen template and stores a private reusable identity map',async()=>{
+test('one Agent call receives ID/text input and stores a private reusable text result',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'agent-preparation-'));let calls=0;
- try{const out=await prepareAgentLibraryMaterials({...options(directory),execute:async task=>{calls++;expect(task.prompt).toContain('本次数据库冻结提示词');expect(task.prompt).toContain('valid:false');expect(task.prompt).not.toContain('先将主体表写output/subject-map.json');expect(task.timeout_ms).toBeGreaterThan(600000);expect(task.schema?.properties).toHaveProperty('plan_file');await mkdir(join(directory,'output'),{recursive:true});await writeFile(join(directory,'output','material-plan.json'),JSON.stringify({entities:[{id:'p',kind:'person',alias:'周文远',variants:[{text:'赵安',targets:[]}]}],edits:[],documents:[{id:'d',title:'申请书',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]}));const validator=Bun.spawn([process.execPath,'validate-plan.mjs'],{cwd:directory,stdout:'pipe',stderr:'pipe'});expect(await validator.exited).toBe(0);expect(JSON.parse(await new Response(validator.stdout).text()).valid).toBe(true);return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:'fixture'} as any;}});
+ try{const out=await prepareAgentLibraryMaterials({...options(directory),execute:async task=>{calls++;expect(task.prompt).toContain('本次数据库冻结提示词');expect(task.prompt).toContain('valid:false');expect(task.prompt).not.toContain('先将主体表写output/subject-map.json');expect(task.timeout_ms).toBeGreaterThan(600000);expect(task.schema?.properties).toHaveProperty('plan_file');await mkdir(join(directory,'output'),{recursive:true});await writeFile(join(directory,'output','material-plan.json'),JSON.stringify(textPlan('周文远向北京市东城区人民法院申请100元')));const validator=Bun.spawn([process.execPath,'validate-plan.mjs'],{cwd:directory,stdout:'pipe',stderr:'pipe'});expect(await validator.exited).toBe(0);expect(JSON.parse(await new Response(validator.stdout).text()).valid).toBe(true);return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,diagnostic_path:'private',duration_ms:1,provider:'fixture',model:'fixture'} as any;}});
   expect(calls).toBe(1);expect(out.prepared.documents[0]!.text).toBe('周文远向北京市东城区人民法院申请100元');
-  const map=join(directory,'主体对应表.private.json');expect(JSON.parse(await readFile(map,'utf8')).entities[0].alias).toBe('周文远');expect((await stat(map)).mode&0o777).toBe(0o600);
+  const map=join(directory,'semantic-plan.private.json');expect(JSON.parse(await readFile(map,'utf8')).texts[0].text).toContain('周文远');expect((await stat(map)).mode&0o777).toBe(0o600);expect(JSON.parse(await readFile(join(directory,'source.json'),'utf8'))).toEqual({texts:[{id:'f1p1/b#text',text:options(directory).files[0]!.pages[0]!.text}]});
  }finally{await rm(directory,{recursive:true,force:true});}
 });
 test('host and generated validator both accept source text without residual vetoes',async()=>{
@@ -28,7 +30,7 @@ test('host and generated validator both accept source text without residual veto
  try{
   const out=await prepareAgentLibraryMaterials({...options(directory),files:[{...options(directory).files[0]!,pages:[{page:1,text:source,structure:[{id:'b',kind:'paragraph' as const,text:source}]}]}],execute:async()=>{
    await mkdir(join(directory,'output'),{recursive:true});
-   await writeFile(join(directory,'output','material-plan.json'),JSON.stringify({entities:[],edits:[],documents:[{id:'d',title:'申请书:副本',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[{target_id:'all',kind:'identity',blocking:true,reason:'保留语义疑点'}]}));
+   await writeFile(join(directory,'output','material-plan.json'),JSON.stringify({...textPlan(source,'申请书:副本'),unresolved:[{target_id:'all',kind:'identity',blocking:true,reason:'保留语义疑点'}]}));
    const validator=Bun.spawn([process.execPath,'validate-plan.mjs'],{cwd:directory,stdout:'pipe',stderr:'pipe'});
    expect(await validator.exited).toBe(0);expect(JSON.parse(await new Response(validator.stdout).text()).valid).toBe(true);
    return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,model:'fixture'} as any;
@@ -56,7 +58,7 @@ test('an invalid final plan-file declaration has a distinct diagnostic from a mi
 });
 test('an empty plan artifact still fails full source coverage',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'agent-empty-plan-'));
- try{await expect(prepareAgentLibraryMaterials({...options(directory),execute:async()=>{await mkdir(join(directory,'output'));await writeFile(join(directory,'output','material-plan.json'),JSON.stringify({entities:[],edits:[],documents:[],unresolved:[]}));return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,model:'fixture'} as any;}})).rejects.toMatchObject({reason_code:'agent_document_coverage_missing'});
+ try{await expect(prepareAgentLibraryMaterials({...options(directory),execute:async()=>{await mkdir(join(directory,'output'));await writeFile(join(directory,'output','material-plan.json'),JSON.stringify({texts:[],documents:[],unresolved:[]}));return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,model:'fixture'} as any;}})).rejects.toMatchObject({reason_code:'agent_text_coverage_missing'});
  }finally{await rm(directory,{recursive:true,force:true});}
 });
 test('revalidation withdraws unusable Agent results without rewriting source or execution history',async()=>{
@@ -77,15 +79,15 @@ test('revalidation withdraws unusable Agent results without rewriting source or 
 
 test('a continuation can reuse only the final plan without five separate progress artifacts',async()=>{
  const first=await mkdtemp(join(tmpdir(),'agent-single-plan-')),next=await mkdtemp(join(tmpdir(),'agent-single-plan-next-'));
- const plan={entities:[{id:'p',kind:'person',alias:'周文远',variants:[{text:'赵安',targets:[]}]}],edits:[],documents:[{id:'d',title:'申请书',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[]};
+ const plan=textPlan('周文远向北京市东城区人民法院申请100元');
  try{
   await prepareAgentLibraryMaterials({...options(first),execute:async()=>{await mkdir(join(first,'output'),{recursive:true});await writeFile(join(first,'output','material-plan.json'),JSON.stringify(plan));return{result:{plan_file:'output/material-plan.json'},model:'fixture'} as any;}});
   await writeFile(join(first,'output','validation-feedback.json'),JSON.stringify({reason_code:'agent_sensitive_value_remaining'}));
   const out=await prepareAgentLibraryMaterials({...options(next),previous_directory:first,execute:async task=>{
-   expect(task.prompt).toContain('只需将完整计划保存');
+   expect(task.prompt).toContain('将完整结果保存为output/material-plan.json');
    expect(await Bun.file(join(next,'resume','validation-feedback.json')).exists()).toBe(false);
    expect(await Bun.file(join(first,'output','validation-feedback.json')).exists()).toBe(true);
-   const saved=JSON.parse(await readFile(join(next,'resume','material-plan.json'),'utf8'));expect(saved.entities[0].alias).toBe('周文远');
+   const saved=JSON.parse(await readFile(join(next,'resume','material-plan.json'),'utf8'));expect(saved.texts[0].text).toContain('周文远');
    await mkdir(join(next,'output'),{recursive:true});await writeFile(join(next,'output','material-plan.json'),JSON.stringify(saved));return{result:{plan_file:'output/material-plan.json'},model:'fixture'} as any;
   }});
   expect(out.prepared.documents[0]!.text).toContain('周文远');
@@ -106,14 +108,14 @@ test('production redaction runner publishes the compiled Agent artifact through 
   if(sql.startsWith('INSERT INTO ai_distill.library_redactions'))report=JSON.parse(v[9]);
   return{rows:[],rowCount:1};
  };
- const job:any={id:'job',package_id:'package',revision_id:'revision',lease_token:'lease',input_digest:'input',deadline_at:new Date(Date.now()+1200000).toISOString(),input_snapshot:{extraction_job_id:'extract',files:[{file_id:'file',document_sha256:hash(document)}]},config_snapshot:{settings:{redaction:{provider:'codex',model:'fixture',reasoning_effort:'medium'},execution:{task_timeout_ms:1200000,request_timeout_ms:1000}},redaction_template:{id:'aliases',name:'合成模板',digest:'b'.repeat(64),workflow:'codex_plan',redaction:{prompt:'合成计划'}}}};
+ const job:any={id:'job',package_id:'package',revision_id:'revision',lease_token:'lease',input_digest:'input',deadline_at:new Date(Date.now()+1200000).toISOString(),input_snapshot:{extraction_job_id:'extract',files:[{file_id:'file',document_sha256:hash(document)}]},config_snapshot:{text_protocol:AGENT_TEXT_REDACTION_PROTOCOL,settings:{redaction:{provider:'codex',model:'fixture',reasoning_effort:'medium'},execution:{task_timeout_ms:1200000,request_timeout_ms:1000}},redaction_template:{id:'aliases',name:'合成模板',digest:'b'.repeat(64),workflow:'codex_plan',redaction:{prompt:'合成计划'}}}};
  const previous=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='legacy';
  try{
   await executeRedaction({query,connect:async()=>({query,release(){}})} as any,root,job,new AbortController().signal,async task=>{
-   await mkdir(join(task.directory,'output'),{recursive:true});await writeFile(join(task.directory,'output','material-plan.json'),JSON.stringify({entities:[],edits:[{target_id:'f1p1b1f1',source_text:'13800138000',occurrence:0,kind:'phone',keep_prefix:''}],documents:[{id:'d',title:'申请:副本',ranges:[{first_block_id:'f1p1b1',last_block_id:'f1p1b1'}],duplicate_of:null}],unresolved:[{target_id:'all',kind:'identity',blocking:true,reason:'合成疑点'}]}));
+   await mkdir(join(task.directory,'output'),{recursive:true});await writeFile(join(task.directory,'output','material-plan.json'),JSON.stringify({...textPlan(source.replace('13800138000','138******00'),'申请:副本','p'),unresolved:[{target_id:'all',kind:'identity',blocking:true,reason:'合成疑点'}]}));
    return{result:{plan_file:'output/material-plan.json'},session_id:'fixture',provider:'fixture',model:'fixture',usage:null,duration_ms:1} as any;
   });
-  expect(report).toMatchObject({usable_for_question:true,material_processing_mode:'aliases',content_validation_scope:'exact_edits_and_source_coverage'});
+  expect(report).toMatchObject({text_protocol:AGENT_TEXT_REDACTION_PROTOCOL,usable_for_question:true,material_processing_mode:'aliases',content_validation_scope:'exact_edits_and_source_coverage'});
   expect(blobs[0]).toBe(source.replace('13800138000','138******00'));expect(JSON.parse(blobs[1]!).prepared_documents[0].title).toBe('申请:副本');
   expect(calls).toContain('COMMIT');expect(calls.some(s=>s.includes("SET status='succeeded'"))).toBe(true);
  }finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}

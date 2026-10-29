@@ -108,3 +108,9 @@ test('prose escapes and path separators become readable while real code escapes 
  expect(documentBlocksToText(out.pages[0]!.blocks)).toBe('622848**8919\n622848**8919\nC:/case/files；literal \n \t；\n'+multi);
  expect(cleanScanNoisePages(out.pages).edits).toHaveLength(0);
 });
+
+test('a page-tail amount equal to the repeated scanner ID survives while confirmed stamps and C-codes are cleaned',()=>{
+ const pages=[1,2].map(page=>({file_id:'business-label',page,blocks:[{id:'stamp',kind:'paragraph' as const,text:`8836_2025-03-26 15:27:5${page}`},{id:'corner',kind:'paragraph' as const,text:`C${page}`},{id:'label',kind:'paragraph' as const,text:'付款金额：'},{id:'blank',kind:'paragraph' as const,text:''},{id:'value',kind:'paragraph' as const,text:'8836'}]}));
+ const before=JSON.stringify(pages),out=cleanScanNoisePages(pages);
+ expect(out.pages.map(p=>p.blocks.at(-1))).toEqual(pages.map(p=>p.blocks.at(-1)));expect(out.edits.some(e=>e.source_text==='8836')).toBe(false);expect(out.edits.some(e=>e.source_text.includes('15:27:'))).toBe(true);expect(JSON.stringify(pages)).toBe(before);
+});
