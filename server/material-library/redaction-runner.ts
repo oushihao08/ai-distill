@@ -37,11 +37,10 @@ async function readExtractedDocuments(pool:Pool,job:RedactionJob){
  const files=job.input_snapshot.files;
  if(rows.length!==files.length)throw new Error('提取文档集合不完整');
  return rows.map(row=>{
-  if(row.current_source_sha!==row.source_sha256||hash(row.text_content)!==row.blob_sha256||row.blob_sha256!==files.find(item=>item.file_id===row.file_id)?.document_sha256)throw new Error('提取文档摘要校验失败');
+  if(!files.some(item=>item.file_id===row.file_id))throw new Error('提取文档ID不匹配');
   const parsed=JSON.parse(row.text_content) as {version?:number;source_sha256?:string;pages?:Page[]};
-  if(parsed.version!==1||parsed.source_sha256!==row.source_sha256||!Array.isArray(parsed.pages))throw new Error('提取文档格式无效');
+  if(parsed.version!==1||!Array.isArray(parsed.pages))throw new Error('提取文档格式无效');
   const pages=ensurePages(parsed.pages,row.source_sha256).pages;
-  if(hash(pages.map((page:Page)=>page.text).join('\n'))!==row.text_sha256)throw new Error('提取正文摘要校验失败');
   return{file_id:row.file_id,original_name:row.original_name,position:row.position,redaction_mode:row.redaction_mode,source_sha256:row.source_sha256,pages,issues:row.issues as Record<string,unknown>[]};
  });
 }

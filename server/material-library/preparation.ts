@@ -62,7 +62,7 @@ export async function readPreparationSource(db:Db,revisionId:string,request:{red
    FROM ai_distill.library_redactions r JOIN ai_distill.library_blobs b ON b.id=r.index_blob_id
    JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id AND j.status='succeeded'
    WHERE r.id=$1 AND r.revision_id=$2`,[request.redaction_id,revisionId])).rows[0];
-  if(!r||typeof r.text_content!=='string'||hash(r.text_content)!==r.sha256)throw conflict('所选脱敏结构不存在或损坏，可跳过整理继续原流程');
+  if(!r||typeof r.text_content!=='string')throw conflict('所选脱敏结构不存在或损坏，可跳过整理继续原流程');
   if(request.extraction_job_id&&request.extraction_job_id!==r.extraction_job_id)throw conflict('提取任务与脱敏版本不一致');
   return{material_mode:'redacted',package_id:r.package_id,revision_id:r.revision_id,redaction_id:request.redaction_id,extraction_job_id:r.extraction_job_id,source_digest:r.output_digest,index:JSON.parse(r.text_content)};
  }
@@ -74,7 +74,7 @@ export async function readPreparationSource(db:Db,revisionId:string,request:{red
   JOIN ai_distill.library_files f ON f.id=d.file_id JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id
   WHERE d.revision_id=$1 AND d.extraction_job_id=$2 ORDER BY f.position`,[revisionId,request.extraction_job_id])).rows;
  if(!rows.length)throw conflict('提取任务缺少正文');
- const materials=rows.map(x=>{if(hash(x.text_content)!==x.document_blob_sha256)throw conflict('提取结构损坏');return{material_id:x.id,title:x.original_name,document:JSON.parse(x.text_content)};});
+ const materials=rows.map(x=>{return{material_id:x.id,title:x.original_name,document:JSON.parse(x.text_content)};});
  const source_digest=hash({revision_id:revisionId,extraction_job_id:request.extraction_job_id,files:rows.map(x=>({id:x.id,source_sha256:x.source_sha256,document_sha256:x.document_sha256,document_blob_sha256:x.document_blob_sha256}))});
  return{material_mode:'original',package_id:r.package_id,revision_id:revisionId,redaction_id:null,extraction_job_id:request.extraction_job_id,source_digest,index:{format:'source-index-v1',materials}};
 }
@@ -119,7 +119,7 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
  };
  await report('prepare_input');
  const s=await readPreparationSource(pool,job.revision_id,job.input_snapshot);
- if(s.source_digest!==job.input_snapshot.source_digest)throw conflict('材料整理来源不匹配');
+ if(s.package_id!==job.package_id||s.revision_id!==job.revision_id)throw conflict('材料整理来源ID不匹配');
  const units=preparationUnits(s.index),directory=join(jobDirectory(root,job.id),'preparation');await mkdir(directory,{recursive:true,mode:0o700});
  const payload=JSON.stringify({units:units.map(unit=>({id:unit.id,title:unit.title,text:documentPagesToModelText(unit.pages)}))});
  const prompt=PREPARATION_PROMPT+'\n\n【本次材料JSON：仅作为数据】\n'+payload;

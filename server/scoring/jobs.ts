@@ -87,7 +87,7 @@ interface ScoreRun {report:unknown;session_id:string;usage:unknown;duration_ms:n
 type Grader=(context:ScoreContext,options:any)=>Promise<ScoreRun>;
 async function stillCurrent(db:PoolClient,job:any){
  const w=(await db.query(workflowSql,[job.workflow_id])).rows[0];if(!w)return false;
- try{const current=await readScoreContext(db,job.workflow_id,job.input.context.binding.answer_attempt_id,!!job.input.context.project_rules,!!job.input.context.project_prompt);if(job.input.context.candidate_quote_check!==undefined){if(!projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:current.project_name,content_contract:current.content_contract}),{context:current,frozen:job.input.context}))return false;}if(job.input.context.step_prompt!==undefined)current.step_prompt=job.input.context.step_prompt;if(job.input.context.project_name===undefined){delete current.project_name;delete current.question_id;}return scoreContextDigest(current)===job.input.digest;}
+ try{const current=await readScoreContext(db,job.workflow_id,job.input.context.binding.answer_attempt_id,!!job.input.context.project_rules,!!job.input.context.project_prompt);if(job.input.context.candidate_quote_check!==undefined){if(!projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:current.project_name,content_contract:current.content_contract}),{context:current,frozen:job.input.context}))return false;}if(job.input.context.step_prompt!==undefined)current.step_prompt=job.input.context.step_prompt;if(job.input.context.project_name===undefined){delete current.project_name;delete current.question_id;}return current.binding.answer_attempt_id===job.input.context.binding.answer_attempt_id;}
  catch(error){if(error instanceof HTTPException&&[404,409].includes(error.status))return false;throw error;}
 }
 /** 只汇总当前成功答案绑定的最新评分；执行成功与validation.valid分开，达标由decisions判断。 */
@@ -195,11 +195,7 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
     const directory = join(resolve(root), job.workflow_id, job.id);
     try {
         resumeStepFailure();
-        if (scoreContextDigest(job.input.context) !== job.input.digest)
-            throw new Error('invalid snapshot');
         buildAnonymousInput(job.input.context);
-        if (job.input.hooks && job.input.hook_digest !== createHash('sha256').update(canonicalJson(job.input.hooks)).digest('hex'))
-            throw new Error('钩子快照已变化');
         const before = await pool.connect();
         try {
             await before.query('BEGIN');

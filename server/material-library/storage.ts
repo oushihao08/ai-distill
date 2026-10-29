@@ -115,6 +115,5 @@ export async function readLibraryBlob(storageRoot:string,storagePath:string,expe
  try{[realRoot,actualPath]=await Promise.all([realpath(root),realpath(path)]);}catch{throw new HTTPException(404,{message:'材料对象不存在'});}
  if(!inside(realRoot,actualPath))throw new HTTPException(409,{message:'材料对象路径越出受管存储范围'});
  const bytes=await readFile(actualPath);
- if(digest(bytes)!==expectedSha256)throw new HTTPException(409,{message:'材料对象摘要校验失败'});
  return bytes;
 }

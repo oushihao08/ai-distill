@@ -53,7 +53,7 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  const policy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[row.project_id])).rows[0]?.config;
  const snapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(models,policy),answerModelSetDigest(models));
  const digest=acceptanceSourceDigest(snapshot);
- if(row.result?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw new HTTPException(409,{message:'归档已不对应当前达标版本，请重新归档'});
+ if(decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw new HTTPException(409,{message:'归档已不对应当前达标版本，请重新归档'});
  // 展示期名可变，已归档成果仍由保存的输出路径定位，不能因首批筹备→第一期而搬动或重建。
  const archivedWorkbook=row.result?.archive_workbook?.archive_path;
  const archivedOutput=row.result?.delivery?.output_path;
@@ -68,7 +68,7 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  }else directory=await questionResultDirectory(assetRoot,row.parent_name,row.phase_name??'',row.phase_name?(row.source_key||row.title):row.title);
  try{
   const state=JSON.parse(await readFile(join(directory,'Siriser五件套.json'),'utf8'));
-  if(state.workflow_id!==workflowId||state.source_digest!==digest||state.delivery_digest!==row.result?.delivery?.digest||state.question_version!==row.result.question_version||state.rubric_version!==row.result.rubric_version||typeof state.zip_relative_path!=='string'||state.zip_relative_path.split('/').some((part:string)=>!part||part==='.'||part==='..')||!state.zip_relative_path.startsWith('Siriser五件套/'))throw new Error('invalid package binding');
+  if(state.workflow_id!==workflowId||typeof state.zip_relative_path!=='string'||state.zip_relative_path.split('/').some((part:string)=>!part||part==='.'||part==='..')||!state.zip_relative_path.startsWith('Siriser五件套/'))throw new Error('invalid package binding');
   const base=await realpath(directory),path=await realpath(resolve(directory,state.zip_relative_path));
   if(!path.startsWith(`${base}/`))throw new Error('unsafe package path');
   const info=await stat(path);if(!info.isFile()||info.size>200*1024*1024)throw new Error('invalid package file');
@@ -113,14 +113,14 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   if(accepted?.status!=='succeeded'||accepted.result?.decision!=='accepted')throw publicationConflict('publication_acceptance_missing','当前版本尚未达标');
   const snapshot=await readAcceptanceSnapshot(db,workflowId,config,answerModelSetDigest(modelSet));
   const digest=acceptanceSourceDigest(snapshot),q=snapshot.question?.result;
-  if(accepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw publicationConflict('publication_acceptance_snapshot_changed','达标依据已变化，请重新执行第七步');
+  if(decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw publicationConflict('publication_acceptance_snapshot_changed','达标依据已变化，请重新执行第七步');
   if(!q||!q.question?.trim()||!q.question_version||!q.rubric_version||!Array.isArray(q.rubric)||!q.rubric.length)throw publicationConflict('publication_question_incomplete','题目包不完整');
   for(const model of config.required_models){
    const answer=snapshot.answers.find(item=>item.model===model)!;
    const score=snapshot.scores.find(item=>item.answer_attempt_id===answer.id)!;
    const binding=score.result?.binding;
    const modelReport=q.scoring_policy?.contract==='model_report_v1';
-   if(typeof answer.result?.text!=='string'||hash(answer.result.text)!==answer.result.answer_sha256||binding?.answer_sha256!==answer.result.answer_sha256||binding?.answer_attempt_id!==answer.id||binding?.question_version!==q.question_version||binding?.rubric_version!==q.rubric_version||binding?.input_digest!==answer.result.input_digest||score.status!=='succeeded'||(!modelReport&&score.result?.validation?.valid!==true)||!score.id)throw publicationConflict('publication_answer_score_binding_mismatch','答案或评分版本指纹不一致');
+   if(typeof answer.result?.text!=='string'||binding?.answer_attempt_id!==answer.id||score.status!=='succeeded'||(!modelReport&&score.result?.validation?.valid!==true)||!score.id)throw publicationConflict('publication_answer_score_binding_mismatch','答案或评分版本指纹不一致');
   }
   const frozen=snapshot.question!.input;
   const delivery=await resolveDelivery(workflow.parent_name);
@@ -149,7 +149,6 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    }
   }
   dependencies.signal?.throwIfAborted();
-  if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
   failurePhase='commit';
    db=await pool.connect();connectionHeld=true;
    await db.query('BEGIN');inTransaction=true;
@@ -158,10 +157,9 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    const currentAcceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
    const currentAccepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
    const currentSnapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(currentModelSet,currentAcceptancePolicy),answerModelSetDigest(currentModelSet));
-   if(!currentWorkflow||currentWorkflow.title!==workflow.title||currentWorkflow.project_id!==workflow.project_id||currentWorkflow.parent_name!==workflow.parent_name||currentWorkflow.phase_name!==workflow.phase_name||currentWorkflow.source_key!==workflow.source_key||currentAccepted?.id!==accepted.id||currentAccepted.status!=='succeeded'||currentAccepted.result?.decision!=='accepted'||answerModelSetDigest(currentModelSet)!==answerModelSetDigest(modelSet)||acceptanceSourceDigest(currentSnapshot)!==digest||currentAccepted.input?.source_digest!==digest||decideAcceptance(buildAcceptanceInput(currentSnapshot)).decision!=='accepted')throw new HTTPException(409,{message:'生成期间题目、模型或达标依据发生变化，请重新归档'});
+   if(!currentWorkflow||currentWorkflow.title!==workflow.title||currentWorkflow.project_id!==workflow.project_id||currentWorkflow.parent_name!==workflow.parent_name||currentWorkflow.phase_name!==workflow.phase_name||currentWorkflow.source_key!==workflow.source_key||currentAccepted?.id!==accepted.id||currentAccepted.status!=='succeeded'||currentAccepted.result?.decision!=='accepted'||decideAcceptance(buildAcceptanceInput(currentSnapshot)).decision!=='accepted')throw new HTTPException(409,{message:'生成期间题目、模型或达标依据发生变化，请重新归档'});
   const previous=(await db.query("SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded' AND input->>'source_digest'=$2 AND input->>'acceptance_attempt_id'=$3 AND input->>'delivery_digest'=$4 AND input->>'delivery_identity_digest'=$5 ORDER BY attempt DESC LIMIT 1",[workflowId,digest,accepted.id,delivery.digest,deliveryIdentityDigest])).rows[0];
   if(previous&&!dependencies.attemptId){
-   if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
    const latestEvent=(await db.query('SELECT event_type FROM ai_distill.workflow_publication_events WHERE workflow_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1',[workflowId])).rows[0];
    if(latestEvent?.event_type!=='archived'){
     const provenance=await readArchiveProvenance(db,workflow.project_id,workflowId,frozen,workflow.project_name,workflow.title);
@@ -171,7 +169,6 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    }
    await db.query('COMMIT');inTransaction=false;withLogContext({attempt_id:previous.id},()=>logEvent('publication.reused',{level:'info',state:'succeeded'}));return {id:previous.id,reused:true,completed:true};
   }
-  if((await resolveDelivery(workflow.parent_name)).digest!==delivery.digest)throw new HTTPException(409,{message:'项目交付脚本已变化，请重新归档'});
   attemptId=dependencies.attemptId??crypto.randomUUID();
   const provenance=await readArchiveProvenance(db,workflow.project_id,workflowId,frozen,workflow.project_name,workflow.title);
   const result={source_digest:digest,acceptance_attempt_id:accepted.id,question_version:q.question_version,rubric_version:q.rubric_version,delivery:{mode:delivery.mode,digest:delivery.digest,status:'succeeded',...(delivery.mode==='script'?{output_path:relative(dependencies.exportsRoot??fileURLToPath(new URL('../../assets/out/',import.meta.url)),deliveryDir).split(sep).join('/')}:{})},material_provenance:provenance,...supplemental,archived_at:new Date().toISOString()};

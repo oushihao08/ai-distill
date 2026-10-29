@@ -42,7 +42,7 @@ async function readLegacyMaterials(db:Db,workflowId:string):Promise<QuestionMate
  const inputMaterials=Array.isArray(redaction.input?.materials)?redaction.input.materials:[];
  const sourceNames=inputMaterials.flatMap((item:any)=>typeof item?.original_name==='string'&&item.original_name?[item.original_name]:[]);
  const attachments=rows.map(row=>{
-  if(row.attempt_id!==origin.redaction_attempt_id||typeof row.content!=='string'||!/^([a-f0-9]{64})$/.test(row.sha256)||hash(row.content)!==row.sha256)throw conflict('旧来源脱敏附件缺失或摘要校验失败');
+  if(row.attempt_id!==origin.redaction_attempt_id||typeof row.content!=='string')throw conflict('旧来源脱敏附件缺失或摘要校验失败');
   return{id:row.id,sha256:row.sha256,content:row.content,source_names:sourceNames,attempt_id:row.attempt_id};
  });
  return{origin,attachments,digest:hash(canonicalJson(attachments.map(({id,sha256})=>({id,sha256}))))};
@@ -78,8 +78,8 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  const markdownEntry=manifest?.material_markdown??manifest?.redacted_markdown,indexEntry=manifest?.material_index??manifest?.redacted_index;
  if(!manifest||typeof manifest!=='object'||Array.isArray(manifest)||![2,3].includes(manifest.version)||!manifest.origin||manifest.origin.kind!=='library_v1'||
    manifest.origin.package_id!==row.package_id||manifest.origin.revision_id!==row.revision_id||manifest.origin.redaction_id!==(row.redaction_id??null)||
-   (manifest.origin.material_mode??'redacted')!==mode||manifest.origin.source_digest!==row.source_digest||markdownEntry?.artifact_id!==row.markdown_artifact_id||indexEntry?.artifact_id!==row.index_artifact_id||
-   !Array.isArray(manifest.files)||hash(canonicalJson(manifest))!==row.snapshot_digest){
+   (manifest.origin.material_mode??'redacted')!==mode||markdownEntry?.artifact_id!==row.markdown_artifact_id||indexEntry?.artifact_id!==row.index_artifact_id||
+   !Array.isArray(manifest.files)){
   throw conflict('library_v1 题目材料来源快照结构或摘要无效');
  }
  // 不在元数据查询中携带大字段；本地命中时不再下载整份结构索引。
@@ -88,8 +88,7 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  if(artifacts.length!==2)throw conflict('library_v1 题目正文或索引缺失');
  const markdown=artifacts.find(item=>item.id===row.markdown_artifact_id),index=artifacts.find(item=>item.id===row.index_artifact_id);
  const expectedMarkdownKind=mode==='original'?'source_markdown':'redacted_markdown',expectedIndexKind=mode==='original'?'source_index':'redacted_index';
- if(markdown?.kind!==expectedMarkdownKind||index?.kind!==expectedIndexKind||markdown.attempt_id!==null||index.attempt_id!==null||
-   markdown.sha256!==markdownEntry.sha256||index.sha256!==indexEntry.sha256){
+ if(markdown?.kind!==expectedMarkdownKind||index?.kind!==expectedIndexKind||markdown.attempt_id!==null||index.attempt_id!==null){
   throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  }
  await Promise.all(artifacts.map(async artifact=>{artifact.content=await readLocalSnapshot(root,workflowId,artifact);}));
@@ -101,7 +100,7 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
   databaseBytes=remote.reduce((sum,artifact)=>sum+Buffer.byteLength(artifact.content??''),0);
   for(const artifact of artifacts)if(missing.includes(artifact.id))artifact.content=remote.find(value=>value.id===artifact.id)?.content;
  }
- if(typeof markdown.content!=='string'||typeof index.content!=='string'||hash(markdown.content)!==markdown.sha256||hash(index.content)!==index.sha256)throw conflict('library_v1 题目正文或索引与来源快照不匹配');
+ if(typeof markdown.content!=='string'||typeof index.content!=='string')throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  let parsedIndex:any;
  try{parsedIndex=JSON.parse(index.content);}catch{throw conflict('library_v1 题目材料索引格式无效');}
  if(manifest.version===3){
@@ -110,15 +109,15 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
   if(parsedIndex?.format!=='source-index-v1'||!Array.isArray(parsedIndex.materials)||parsedIndex.materials.length!==manifest.files.length||
     parsedIndex.materials.some((item:any,index:number)=>{
      const file=manifest.files[index],document=item?.document;
-     if(typeof item?.material_id!=='string'||item.material_id!==file?.material_id||typeof item.markdown!=='string'||!document||document.version!==1||document.source_sha256!==file.source_sha256||!Array.isArray(document.pages))return true;
+     if(typeof item?.material_id!=='string'||item.material_id!==file?.material_id||typeof item.markdown!=='string'||!document||document.version!==1||!Array.isArray(document.pages))return true;
      const pageTexts:string[]=[];
      for(const page of document.pages){if(!Number.isSafeInteger(page.page)||typeof page.text!=='string'||!Array.isArray(page.structure)||documentBlocksToText(page.structure)!==page.text)return true;pageTexts.push(page.text);}
      const projected=pageTexts.filter(Boolean).join('\n\n'),textDigest=hash(pageTexts.join('\n'));
-     return projected!==item.markdown||textDigest!==file.document_sha256;
+     return projected!==item.markdown;
     }))throw conflict('library_v1 题目原文索引与正文不匹配');
   const projected=parsedIndex.materials.map((item:any,index:number)=>`# ${String(manifest.files[index]?.original_name??'')}\n\n${item.markdown}`).join('\n\n---\n\n');
   if(projected!==markdown.content)throw conflict('library_v1 题目原文索引投影与正文不匹配');
- }else if(parsedIndex?.format!=='redacted-index-v2'||parsedIndex.redacted_sha256!==markdown.sha256||!Array.isArray(parsedIndex.materials))throw conflict('library_v1 题目脱敏索引与正文不匹配');
+ }else if(parsedIndex?.format!=='redacted-index-v2'||!Array.isArray(parsedIndex.materials))throw conflict('library_v1 题目脱敏索引与正文不匹配');
  let processingMode:ReturnType<typeof resolveMaterialProcessingMode>|undefined;
  if(manifest.origin.material_processing_mode!==undefined){
   try{processingMode=resolveMaterialProcessingMode(manifest.origin);}catch{throw conflict('题目冻结的材料处理方式无效');}

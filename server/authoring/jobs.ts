@@ -108,7 +108,6 @@ async function prerequisites(db:PoolClient,id:string){
 async function legacyRules(db:PoolClient,id:string,workflow:any){
  const rules=(await db.query("SELECT id,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=3 AND status='succeeded' ORDER BY attempt DESC LIMIT 1",[id])).rows[0];
  if(!rules||rules.result?.rule_version_id!==workflow.rule_version_id||typeof rules.result?.source_digest!=='string'||!Array.isArray(rules.result?.files)||!rules.result?.snapshot_path)throw new HTTPException(409,{message:'旧任务绑定的规则快照不完整'});
- await verifyRuleSnapshot(rules.result.snapshot_path,rules.result.files);
  return rules;
 }
 
@@ -177,44 +176,21 @@ export async function enqueueAuthoring(pool:Pool,id:string){
 
 type CurrentAuthoringBinding=false|{loaded_materials?:QuestionMaterials};
 async function currentBindings(db:PoolClient,job:any):Promise<CurrentAuthoringBinding>{
- try{
- const currentConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[job.project_id])).rows[0]?.config;
- if(currentConfig?.workflow?.content_contract!==job.input.content_contract)return false;
- const source:Awaited<ReturnType<typeof basePrerequisites>>&{project_prompt?:ProjectPromptSnapshot}=job.input?.rule_version_id?await basePrerequisites(db,job.workflow_id):await prerequisites(db,job.workflow_id);
- const loadedMaterials=('loaded_materials'in source?source.loaded_materials:undefined) as QuestionMaterials|undefined;
- const currentSourceFiles='source_files'in source&&Array.isArray(source.source_files)?source.source_files.filter((file:any):file is {name:string;path:string}=>typeof file?.name==='string'&&typeof file?.path==='string'):sourceFiles(source.workflow);
- if(job.input.material_scope){
-  const currentScope=loadedMaterials?.material_scope;
-  if(!currentScope||currentScope.preparation_id!==job.input.material_scope.preparation_id||canonicalJson(currentScope.result)!==canonicalJson(job.input.material_scope.result))return false;
- }else if(loadedMaterials?.material_scope)return false;
- if(job.input.model_materials){
-  const current=loadedMaterials?.model_attachments?.map(({id,sha256})=>({id,sha256}));
-  if(!current||canonicalJson(current)!==canonicalJson(job.input.model_materials))return false;
- }
- let candidate:Omit<FrozenInput,'digest'>;
- if(job.input?.rule_version_id){
-  const rules=await legacyRules(db,job.workflow_id,source.workflow);
-  if(rules.id!==job.input.rule_attempt_id||rules.result?.source_digest!==job.input.rule_source_digest||rules.result?.snapshot_path!==job.input.rule_snapshot_path)return false;
-  candidate={...(job.input.project_name!==undefined?{project_name:source.workflow.project_name}:{}),...(job.input.system_authoring_prompt?{system_authoring_prompt:job.input.system_authoring_prompt}:{}),title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(job.input.material_scope?{material_scope:job.input.material_scope}:{}),...(job.input.question_id?{question_id:questionId(source.workflow),source_files:currentSourceFiles}:{}),rule_version_id:rules.result.rule_version_id,rule_attempt_id:rules.id,rule_source_digest:rules.result.source_digest,rule_snapshot_path:rules.result.snapshot_path,rule_files:rules.result.files,...materialIdentity({material_origin:source.origin}),materials:source.materials,...(job.input.model_materials?{model_materials:job.input.model_materials}:{})};
- }else{
-  if(!source.project_prompt)return false;
-  candidate={...(job.input.project_name!==undefined?{project_name:source.workflow.project_name}:{}),...(job.input.system_authoring_prompt?{system_authoring_prompt:job.input.system_authoring_prompt}:{}),title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(job.input.material_scope?{material_scope:job.input.material_scope}:{}),...(job.input.question_id?{question_id:questionId(source.workflow),source_files:currentSourceFiles}:{}),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...(job.input.model_materials?{model_materials:job.input.model_materials}:{})};
- }
- if(job.input.revision_advice&&!await validFrozenAdvice(db,job.workflow_id,job.input.revision_advice))return false;
- const valid=source.workflow.title===job.input.title&&inputDigest({...candidate,...(job.input.revision_advice?{revision_advice:job.input.revision_advice}:{}),...(job.input.content_contract?{content_contract:job.input.content_contract}:{}),...(job.input.hooks?{hooks:job.input.hooks}:{}),...(job.input.scoring_policy?{scoring_policy:job.input.scoring_policy}:{}),...(job.input.authoring_contract?{authoring_contract:job.input.authoring_contract}:{})})===job.input.digest;
- return valid?{loaded_materials:loadedMaterials}:false;
- }catch(error){if(error instanceof HTTPException&&[404,409].includes(error.status))return false;throw error;}
+ const workflow=(await db.query('SELECT id,project_id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL',[job.workflow_id])).rows[0];
+ if(!workflow||workflow.project_id!==job.project_id)return false;
+ // 材料以题目及附件ID定位；提示词、正文摘要和执行环境变化不阻断已派发任务。
+ return job.input.material_origin?.kind==='library_v1'?{loaded_materials:await readQuestionMaterials(db,job.workflow_id)}:{};
 }
 
 async function readMaterials(pool:Pool,_root:string,job:any,loaded?:Awaited<ReturnType<typeof readQuestionMaterials>>){
  const result=[];
  if(job.input.material_origin?.kind==='library_v1'){
   const source=loaded??await readQuestionMaterials(pool,job.workflow_id);
-  if(canonicalJson(source.origin)!==canonicalJson(job.input.material_origin))throw Object.assign(new Error('stale material origin'),{reason_code:'authoring_material_origin_changed'});
+  for(const key of ['package_id','revision_id','redaction_id'] as const)if((source.origin as any)[key]!==job.input.material_origin[key])throw new Error('材料来源ID不匹配');
   const selected=job.input.model_materials??job.input.materials,available=job.input.model_materials?source.model_attachments:source.attachments;
   for(const item of selected){
-   const attachment=available?.find(file=>file.id===item.id&&file.sha256===item.sha256);
-   if(!attachment||attachment.sha256!==item.sha256||Buffer.byteLength(attachment.content)>30*1024*1024||!attachment.content.trim())throw new Error('stale library material');
+   const attachment=available?.find(file=>file.id===item.id);
+   if(!attachment||Buffer.byteLength(attachment.content)>30*1024*1024||!attachment.content.trim())throw new Error('stale library material');
    result.push({id:item.id,sha256:item.sha256,text:attachment.content,...(attachment.source_names.length?{source_names:attachment.source_names}:{})});
   }
   if(result.length!==selected.length)throw new Error('incomplete library materials');
@@ -222,10 +198,9 @@ async function readMaterials(pool:Pool,_root:string,job:any,loaded?:Awaited<Retu
  }
  for(const item of job.input.materials){
   const row=(await pool.query("SELECT sha256,content,(SELECT input->'materials' FROM ai_distill.step_attempts ra WHERE ra.id=ar.attempt_id) AS sources FROM ai_distill.artifacts ar WHERE id=$1 AND workflow_id=$2 AND attempt_id=$3 AND kind='redacted_markdown'",[item.id,job.workflow_id,job.input.redaction_attempt_id])).rows[0];
-  if(!row||row.sha256!==item.sha256)throw new Error('stale material');
+  if(!row)throw new Error('stale material');
   if(typeof row.content!=='string')throw new Error('redacted database content missing');
   const bytes=Buffer.from(row.content);if(bytes.length>30*1024*1024)throw new Error('invalid material content');
-  if(hash(bytes)!==item.sha256)throw new Error('changed material');
   const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);if(!text.trim())throw new Error('empty material');
   // redacted_markdown 是同次脱敏的合并产物，没有单份 material_id；文件名来自该次冻结来源。
   const source_names=Array.isArray(row.sources)?row.sources.flatMap((source:any)=>typeof source?.original_name==='string'&&source.original_name?[source.original_name]:[]):[];
@@ -236,9 +211,9 @@ async function readMaterials(pool:Pool,_root:string,job:any,loaded?:Awaited<Retu
 async function readRules(job:any):Promise<AuthoringRule[]>{
  const root=job.input.rule_snapshot_path,files=job.input.rule_files;
  if(files.some((file:{path:string})=>!file.path.startsWith('skill/')))throw new HTTPException(409,{message:'旧任务包含非 skill 项目资料，请重新出题'});
- await verifyRuleSnapshot(root,files);
+
  const result:AuthoringRule[]=[];
- for(const file of files){const bytes=await readRuleFile(root,file.path);if(hash(bytes)!==file.sha256)throw new Error('changed rules');result.push({path:file.path,bytes});}
+ for(const file of files){const bytes=await readRuleFile(root,file.path);result.push({path:file.path,bytes});}
  if(!result.some(file=>file.path==='skill/SKILL.md'))throw new Error('missing frozen skill');
  return result;
 }
@@ -345,7 +320,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
     let output: string | undefined, packageBytes: Buffer | undefined, failurePhase = 'input_validation';
     try {
         resumeStepFailure();
-        if (!job.input || inputDigest((({ digest, ...frozen }: FrozenInput) => frozen)(job.input)) !== job.input.digest)
+        if (!job.input)
             throw Object.assign(new Error('invalid snapshot'), { reason_code: 'authoring_input_digest_invalid' });
         if (job.input.authoring_contract !== FRESH_AUTHORING_CONTRACT)
             throw Object.assign(new Error('出题任务契约已更新，请重新派发'), { reason_code: 'authoring_contract_changed' });

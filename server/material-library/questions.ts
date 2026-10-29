@@ -221,7 +221,7 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
   const snapshotDigest=hash(canonicalJson(manifest)),sourceManifest=copied.files.map(({file})=>({name:file.original_name,path:markdownPath,size:Buffer.byteLength(first.markdown),sha256:first.markdown_sha256}));
   const result=await transaction(pool,async db=>{
    const current=await lockAndReadSource(db,projectId,linkId,packageId,input);
-   if(current.processing_mode!==first.processing_mode||current.source_digest!==base.source_digest||current.markdown_sha256!==base.markdown_sha256||current.index_sha256!==base.index_sha256)throw conflict('材料来源在复制期间发生变化，请重新建题');
+   if(current.processing_mode!==first.processing_mode)throw conflict('材料来源在复制期间发生变化，请重新建题');
    const existing=(await db.query('SELECT workflow_id,request_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
    if(existing){if(existing.request_digest!==requestDigest)throw conflict('同一建题幂等标识对应了不同请求内容');return{id:existing.workflow_id,reused:true};}
    await db.query(`INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_manifest,workflow_kind,scenario,role_perspective,target_level,question_tags,authoring_direction)

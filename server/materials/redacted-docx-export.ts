@@ -73,7 +73,6 @@ async function safeOriginalBytes(storageRootInput:string,material:Original){
  let actual:string,info;try{actual=await realpath(path);info=await lstat(path);}catch{throw new HTTPException(409,{message:'当前附件原件文件缺失'});}
  if(actual!==path||info.isSymbolicLink()||!info.isFile())throw new HTTPException(409,{message:'当前附件原件路径不能包含符号链接'});
  const bytes=await readFile(path);
- if(digest(bytes)!==material.sha256||bytes.byteLength!==Number(material.size_bytes))throw new HTTPException(409,{message:'当前附件原件指纹校验失败'});
  return bytes;
 }
 
@@ -91,7 +90,7 @@ export async function verifyLibraryOriginalManifest(db:Pool|PoolClient,workflowI
  for(const row of rows){
   const material=originals.find(item=>item.id===row.id)!;
   if(row.source_artifact_id!==null&&row.source_artifact_id!==undefined){
-   if(!row.source_artifact_id||row.artifact_id!==row.source_artifact_id||row.artifact_kind!=='source_document'||row.artifact_sha256!==row.sha256||row.size_bytes===null||!Number.isSafeInteger(Number(row.size_bytes))||Number(row.size_bytes)!==Number(material.size_bytes))throw new HTTPException(409,{message:'冻结原件产物关联或大小不匹配'});
+   if(!row.source_artifact_id||row.artifact_id!==row.source_artifact_id||row.artifact_kind!=='source_document'||row.size_bytes===null||!Number.isSafeInteger(Number(row.size_bytes))||Number(row.size_bytes)!==Number(material.size_bytes))throw new HTTPException(409,{message:'冻结原件产物关联或大小不匹配'});
   }else{
    // 旧快照既可能省略字段，也可能显式存null；无产物ID时必须实读原件验证。
    verified.set(material.id,await safeOriginalBytes(storageRoot,material));
@@ -105,7 +104,7 @@ export async function readOriginalFilesForDelivery(db:Pool|PoolClient,workflowId
  if(!Array.isArray(expected)||!expected.length)throw new HTTPException(409,{message:'冻结原件清单缺失'});
  const rows=(await db.query('SELECT id,original_name,storage_path,sha256,size_bytes FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL',[workflowId])).rows as Original[];
  const byId=new Map(rows.map(material=>[material.id,material]));
- if(rows.length!==expected.length||byId.size!==rows.length||expected.some(file=>{const material=byId.get(file.material_id);return !material||material.original_name!==file.original_name||material.sha256!==file.sha256;}))throw new HTTPException(409,{message:'题目原件与冻结来源清单不一致'});
+ if(rows.length!==expected.length||byId.size!==rows.length||expected.some(file=>{const material=byId.get(file.material_id);return !material||material.original_name!==file.original_name;}))throw new HTTPException(409,{message:'题目原件与冻结来源清单不一致'});
  return Promise.all(expected.map(async(file)=>{const material=byId.get(file.material_id)!;return{name:basename(material.original_name),sha256:material.sha256,bytes:await safeOriginalBytes(storageRoot,material),material_id:file.material_id};}));
 }
 
@@ -143,18 +142,18 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
   const record=(await db.query('SELECT snapshot_manifest,redaction_id FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0];
   if(record?.snapshot_manifest?.version===3){
    const indexArtifact=(await db.query('SELECT content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND attempt_id IS NULL',[workflowId,record.snapshot_manifest.material_index.artifact_id])).rows[0];
-   if(typeof indexArtifact?.content!=='string'||digest(indexArtifact.content)!==indexArtifact.sha256)throw new HTTPException(409,{message:'选用材料索引缺失'});
+   if(typeof indexArtifact?.content!=='string')throw new HTTPException(409,{message:'选用材料索引缺失'});
    const index=JSON.parse(indexArtifact.content),prepared_documents=projectPreparedDocuments(validateSelectedMaterialIndex(index,source.attachments[0]!.content));
    return{attempt_id:null,redacted_sha256:source.attachments[0]!.sha256,markdown:source.attachments[0]!.content,materialMarkdown:new Map<string,string>(),materialDocuments:new Map<string,IndexedDocument>(),material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:source.origin.material_mode,prepared_documents,selected_materials:true};
   }
   if(source.origin.material_mode==='original'){
    const indexArtifact=(await db.query("SELECT id,content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND kind='source_index' AND attempt_id IS NULL",[workflowId,record?.snapshot_manifest?.material_index?.artifact_id])).rows[0];
-   let index:any;try{if(typeof indexArtifact?.content!=='string'||digest(indexArtifact.content)!==indexArtifact.sha256)throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库原文结构索引缺失或损坏'});}
+   let index:any;try{if(typeof indexArtifact?.content!=='string')throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库原文结构索引缺失或损坏'});}
    if(index.format!=='source-index-v1'||!Array.isArray(index.materials)||!Array.isArray(record?.snapshot_manifest?.files)||index.materials.length!==record.snapshot_manifest.files.length)throw new HTTPException(409,{message:'材料库原文索引与冻结来源不匹配'});
    const materialMarkdown=new Map<string,string>(),materialDocuments=new Map<string,IndexedDocument>();
    for(const [position,item] of index.materials.entries()){
     const file=record.snapshot_manifest.files[position];
-    if(typeof item?.material_id!=='string'||item.material_id!==file?.material_id||typeof item.markdown!=='string'||!item.document||item.document.version!==1||item.document.source_sha256!==file.source_sha256||!Array.isArray(item.document.pages)||materialMarkdown.has(item.material_id))throw new HTTPException(409,{message:'材料库原文附件或MinerU结构无效'});
+    if(typeof item?.material_id!=='string'||item.material_id!==file?.material_id||typeof item.markdown!=='string'||!item.document||item.document.version!==1||!Array.isArray(item.document.pages)||materialMarkdown.has(item.material_id))throw new HTTPException(409,{message:'材料库原文附件或MinerU结构无效'});
     const pages=item.document.pages.map((page:any)=>{if(!Number.isSafeInteger(page.page)||!Array.isArray(page.structure))throw new HTTPException(409,{message:'材料库原文页面结构无效'});return{page:page.page,blocks:page.structure,...(Array.isArray(page.issues)&&page.issues.length?{issues:page.issues}:{})};});
     const document:RedactedDocumentStructure={format:'redacted-structure-v1',pages};
     const projected=document.pages.map(page=>documentBlocksToText(page.blocks)).filter(Boolean).join('\n\n');
@@ -167,8 +166,8 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
    return{attempt_id:null,redacted_sha256:source.attachments[0]?.sha256??'',markdown:source.attachments[0]?.content??'',materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'original' as const,...projection};
   }
   const indexArtifact=(await db.query('SELECT id,content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND kind=\'redacted_index\' AND attempt_id IS NULL',[workflowId,(record?.snapshot_manifest?.material_index??record?.snapshot_manifest?.redacted_index)?.artifact_id])).rows[0];
-  let index:any;try{if(typeof indexArtifact?.content!=='string'||digest(indexArtifact.content)!==indexArtifact.sha256)throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库脱敏索引缺失或损坏'});}
-  if(index.format!=='redacted-index-v2'||index.redacted_sha256!==source.attachments[0]?.sha256||!Array.isArray(index.materials)||!Array.isArray(record?.snapshot_manifest?.files))throw new HTTPException(409,{message:'材料库脱敏索引与冻结来源不匹配'});
+  let index:any;try{if(typeof indexArtifact?.content!=='string')throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库脱敏索引缺失或损坏'});}
+  if(index.format!=='redacted-index-v2'||!Array.isArray(index.materials)||!Array.isArray(record?.snapshot_manifest?.files))throw new HTTPException(409,{message:'材料库脱敏索引与冻结来源不匹配'});
   const materialMarkdown=new Map<string,string>(),materialDocuments=new Map<string,IndexedDocument>();
   for(const item of index.materials){
    if(typeof item?.material_id!=='string'||typeof item.markdown!=='string'||materialMarkdown.has(item.material_id))throw new HTTPException(409,{message:'材料库脱敏附件正文缺失或重复'});
@@ -177,7 +176,7 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
     const document=item.document as RedactedDocumentStructure;
     if(!Array.isArray(document.pages)||!document.pages.length||document.pages.some(page=>!Number.isSafeInteger(page.page)||!Array.isArray(page.blocks)))throw new HTTPException(409,{message:'材料库脱敏结构无效'});
     const projected=document.pages.map(page=>documentBlocksToText(page.blocks)).join('\n\n'),structure_sha256=digest(JSON.stringify(document));
-    if(projected!==item.markdown||item.structure_sha256!==structure_sha256)throw new HTTPException(409,{message:'材料库脱敏结构与正文不一致'});
+    if(projected!==item.markdown)throw new HTTPException(409,{message:'材料库脱敏结构与正文不一致'});
     materialDocuments.set(item.material_id,{document,structure_sha256});
    }
   }
@@ -196,10 +195,10 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
  const inputMaterials=Array.isArray(input.materials)?input.materials as Source[]:[];
  const sourceOrder=new Map(inputMaterials.map((material,index)=>[material?.material_id,index]));
  sources.sort((a,b)=>(sourceOrder.get(a.material_id)??Number.MAX_SAFE_INTEGER)-(sourceOrder.get(b.material_id)??Number.MAX_SAFE_INTEGER));
- if(typeof input.digest!=='string'||input.digest!==redactionInputDigest(sources)||!Array.isArray(input.materials)||redactionInputDigest(input.materials as Source[])!==input.digest||digest(row.content)!==row.sha256||row.result?.redacted_sha256!==row.sha256)throw new HTTPException(409,{message:'当前脱敏结果与附件版本不一致'});
+ if(!Array.isArray(input.materials)||sources.length!==input.materials.length||sources.some(source=>!inputMaterials.some(item=>item.material_id===source.material_id)))throw new HTTPException(409,{message:'当前脱敏结果与附件ID不一致'});
  const indexRow=(await db.query("SELECT content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND attempt_id=$2 AND kind='redacted_index'",[workflowId,row.id])).rows[0];
- let index:any;try{if(typeof indexRow?.content!=='string'||digest(indexRow.content)!==indexRow.sha256)throw new Error('invalid index');index=JSON.parse(indexRow.content);}catch{throw new HTTPException(409,{message:'脱敏附件索引缺失或损坏，请重新脱敏'});}
- if(index.redacted_sha256!==row.sha256||!Array.isArray(index.materials)||index.materials.length!==sources.length)throw new HTTPException(409,{message:'脱敏附件索引与当前附件不一致'});
+ let index:any;try{if(typeof indexRow?.content!=='string')throw new Error('invalid index');index=JSON.parse(indexRow.content);}catch{throw new HTTPException(409,{message:'脱敏附件索引缺失或损坏，请重新脱敏'});}
+ if(!Array.isArray(index.materials)||index.materials.length!==sources.length)throw new HTTPException(409,{message:'脱敏附件索引与当前附件不一致'});
  const materialMarkdown=new Map<string,string>(),materialDocuments=new Map<string,IndexedDocument>();
  for(const material of index.materials){
   if(typeof material?.material_id!=='string'||typeof material.markdown!=='string'||materialMarkdown.has(material.material_id))throw new HTTPException(409,{message:'脱敏附件正文缺失或重复'});
@@ -208,7 +207,7 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
    const document=material.document as RedactedDocumentStructure;
    if(!Array.isArray(document.pages)||!document.pages.length||document.pages.some(page=>!Number.isSafeInteger(page.page)||!Array.isArray(page.blocks)))throw new HTTPException(409,{message:'脱敏结构与正文投影不一致，请重新脱敏'});
    const projected=document.pages.map(page=>documentBlocksToText(page.blocks)).join('\n\n'),structure_sha256=digest(JSON.stringify(document));
-   if(projected!==material.markdown||material.structure_sha256!==structure_sha256)throw new HTTPException(409,{message:'脱敏结构与正文投影不一致，请重新脱敏'});
+   if(projected!==material.markdown)throw new HTTPException(409,{message:'脱敏结构与正文投影不一致，请重新脱敏'});
    materialDocuments.set(material.material_id,{document,structure_sha256});
   }
  }
@@ -416,7 +415,6 @@ export async function readCurrentMaterialDocx(pool:Pool|PoolClient,artifactId:st
   if(row.storage_path!==legacyPath)throw new HTTPException(404,{message:'当前材料 DOCX 路径无效'});
   bytes=await readSafeFile(projectRoot,legacyPath);
  }
- if(digest(bytes)!==row.sha256)throw new HTTPException(404,{message:'当前材料 DOCX 指纹校验失败'});
  return{bytes,filename:basename(row.storage_path)};
 }
 

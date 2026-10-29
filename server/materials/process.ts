@@ -27,7 +27,6 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
   for(const material of materials){
    const sourcePath=join(resolve(root),material.storage_path);
    const sourceBytes=await Bun.file(sourcePath).arrayBuffer();
-   if(createHash('sha256').update(Buffer.from(sourceBytes)).digest('hex')!==material.sha256)throw new Error('原件指纹变化，停止发布处理结果');
    const format=material.storage_path.split('.').at(-1)?.toLowerCase()??'';
    let pages:Page[]|undefined,provider='glm-ocr',mode:'fresh'|'cached'='fresh',from_attempt_id:string|null=null,from_material_id:string|null=null,cache_error:'missing_or_invalid'|undefined;
    if(format!=='pdf'&&format!=='docx')throw new Error('仅PDF/DOCX进入结构化提取队列');
@@ -44,7 +43,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    }
    if(!pages){
     const result=await extractor.extract(sourcePath,currentTaskSignal());
-    if(result.sha256!==material.sha256||result.format!==format)throw new Error('结构化提取结果与原件不匹配');
+    if(result.format!==format)throw new Error('结构化提取结果与原件不匹配');
     pages=result.pages.map(page=>{
      const structured=page.structure?.length?page.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:page.text}];
      if(documentBlocksToText(structured)!==page.text)throw new Error('提取正文与结构化文字投影不一致');
@@ -57,7 +56,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    if(format==='pdf'&&ocrPagesToRecheck.length&&extractor.extractPages){
     const numbers=ocrPagesToRecheck.map(page=>page.page);
     const recheck=await extractor.extractPages(sourcePath,numbers,currentTaskSignal());
-    if(recheck.sha256!==material.sha256||recheck.format!==format||recheck.pages.length!==numbers.length||recheck.pages.some((page,index)=>page.page!==numbers[index]))throw new Error('OCR 复识别结果与原件页序不一致');
+    if(recheck.format!==format||recheck.pages.length!==numbers.length||recheck.pages.some((page,index)=>page.page!==numbers[index]))throw new Error('OCR 复识别结果与原件页序不一致');
     const recheckedByPage=new Map(recheck.pages.map(page=>[page.page,page])),wasCached=mode==='cached';
     const pageNumbersToRecheck=new Set(ocrPagesToRecheck.map(page=>page.page));
     pages=pages.map(page=>{

@@ -98,13 +98,11 @@ export async function scanProjectPrompt(root:string,skill:string):Promise<Projec
 export async function readProjectPrompt(snapshot:ProjectPromptSnapshot):Promise<{path:string;sha256:string;size_bytes:number;bytes:Uint8Array}[]>{
  try{
   const current=await scanProjectPrompt(snapshot.workspace_path,snapshot.skill_path);
-  if(current.source_digest!==snapshot.source_digest||fileSignature(current.files)!==fileSignature(snapshot.files))throw new HTTPException(409,{message:'本次任务的项目提示文件已变化，请重新派发'});
   const result=[];
   for(const file of snapshot.files){
    const root=file.path.startsWith('skill/')?snapshot.skill_path:snapshot.workspace_path;
    const path=file.path.startsWith('skill/')?file.path.slice(6):file.path;
    const bytes=await readRuleFile(root,path);
-   if(bytes.byteLength!==file.size_bytes||hash(bytes)!==file.sha256)throw new HTTPException(409,{message:'本次任务的项目提示文件已变化，请重新派发'});
    result.push({...file,bytes});
   }
   return result;

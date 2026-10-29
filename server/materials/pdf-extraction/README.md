@@ -60,3 +60,5 @@ PDF分片属于上层旧目录同步`../pdf-split.ts`，不是本模块自动给
 API 适配器下载结果 ZIP 时通过系统 `curl --noproxy '*'` 显式直连，不继承进程代理；继续执行 120 MiB 流大小限制、取消和原任务截止控制，运行环境需提供 curl；上传和轮询维持原有网络行为。CLI 子进程沿用受限环境，不传代理变量，并显式将 `cdn-mineru.openxlab.org.cn` 加入大小写 `NO_PROXY`。此规则针对已复现的本机代理访问 CDN 时 TLS/EOF 失败，不修改全局代理或材料处理配置。运行中的 worker 需重新加载代码后生效。
 
 诊断事件 `extraction.api.upload_completed` 记录上传HTTP状态、文件字节及PDF页数；`extraction.api.poll_observed` 在状态变化或每60秒记录查询HTTP状态、轮询次数、结果条目数、供应商状态及返回的页进度。任务batch ID仅存私有诊断metadata，不记录凭证、文件名或结果下载URL。
+
+失败诊断目录增加 `poll-latest.json`（每次查询覆盖：HTTP/业务码、安全关联ID、响应字段名、条目匹配情况、页进度、单次请求耗时）和 `failure-context.json`（最后请求是否悬挂、轮询次数、本地/父任务取消及超时预算）。不保存正文、文件名、签名URL或凭证。诊断日志修改只在新进程加载后生效，不能用旧进程任务声称验证。

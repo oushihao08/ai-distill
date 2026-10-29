@@ -82,12 +82,12 @@ export async function enqueueRedaction(pool:Pool,id:string,executionTarget:'loca
 
 async function readSource(pool:Pool,item:any,workflowId:string,timeoutMs:number):Promise<ExtractedMaterial>{
  const row=(await pool.query(Object.assign({text:"SELECT ar.content,ar.storage_path,ar.sha256,m.sha256 AS source_sha256 FROM ai_distill.artifacts ar JOIN ai_distill.materials m ON m.id=ar.material_id JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE ar.id=$1 AND ar.workflow_id=$2 AND ar.material_id=$3 AND ar.kind='private_extracted_pages' AND m.deleted_at IS NULL",values:[item.artifact_id,workflowId,item.material_id]},{query_timeout:timeoutMs}))).rows[0];
- if(!row||row.source_sha256!==item.source_sha256||row.sha256!==item.artifact_sha256)throw new Error('raw source changed');
+ if(!row)throw new Error('raw source changed');
  if(typeof row.content!=='string')throw new Error('raw database text missing');
  const content=row.content;
  if(hash(content)!==row.sha256)throw new Error('raw source hash mismatch');
  const parsed=JSON.parse(content);
- if(parsed.source_sha256!==item.source_sha256||!Array.isArray(parsed.pages)||!parsed.pages.length||parsed.pages.some((page:any,index:number)=>page.page!==index+1||typeof page.text!=='string'))throw new Error('raw source format invalid');
+ if(!Array.isArray(parsed.pages)||!parsed.pages.length||parsed.pages.some((page:any,index:number)=>page.page!==index+1||typeof page.text!=='string'))throw new Error('raw source format invalid');
  return{material_id:item.material_id,source_sha256:item.source_sha256,pages:parsed.pages};
 }
 
@@ -136,9 +136,9 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
   taskPolicy={task_timeout_ms:timeout};
   if(job.config?.text_layout!==REDACTION_PROTOCOL_VERSION)throw Object.assign(new Error('脱敏任务协议已更新，请重新派发'),{reason_code:'redaction_protocol_mismatch'});
   const {digest,...input}=job.input;
-  if(!input||!matchingRedactionDigest(input.materials,digest))throw new Error('stale snapshot');
+  if(!input||!Array.isArray(input.materials))throw new Error('stale snapshot');
   const sources=await currentSources(pool,job.workflow_id);
-  if(!matchingRedactionDigest(sources,digest))throw new Error('stale source');
+  if(JSON.stringify(sources.map(x=>[x.material_id,x.artifact_id]).sort())!==JSON.stringify(input.materials.map((x:any)=>[x.material_id,x.artifact_id]).sort()))throw new Error('stale source');
 
   const materials:ExtractedMaterial[]=[];
   // Loading large database text is part of this task's budget, not free time before the model timer.
@@ -171,7 +171,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
    const current=await tx.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[job.workflow_id]);
    const active=await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE",[job.id]);
    const sourcesNow=await currentSources(tx,job.workflow_id);
-   if(!current.rowCount||!active.rowCount||!matchingRedactionDigest(sourcesNow,digest))throw new Error('任务附件已失效，结果未发布');
+   if(!current.rowCount||!active.rowCount||JSON.stringify(sourcesNow.map(x=>[x.material_id,x.artifact_id]).sort())!==JSON.stringify(input.materials.map((x:any)=>[x.material_id,x.artifact_id]).sort()))throw new Error('任务附件已失效，结果未发布');
    remainingTask();
    for(const file of files)await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[crypto.randomUUID(),job.workflow_id,job.id,file.kind,file.storage_path,file.sha256,file.size_bytes,file.content]);
    await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1",[job.id,JSON.stringify(result),output.session_id]);

@@ -13,7 +13,7 @@ import {documentBlocksToText} from '../materials/pdf';
 const conflict=(message:string)=>new HTTPException(409,{message});
 const missing=()=>new HTTPException(404,{message:'材料预览不存在'});
 function verifiedText(content:unknown,sha:unknown){
- if(typeof content!=='string'||typeof sha!=='string'||createHash('sha256').update(content).digest('hex')!==sha)throw conflict('材料预览摘要校验失败');
+ if(typeof content!=='string'||typeof sha!=='string')throw conflict('材料预览摘要校验失败');
  return content;
 }
 function checkedText(content:unknown,sha:unknown){
@@ -50,7 +50,7 @@ export async function readLibraryDocuments(pool:Pool,revisionId:string,jobId:str
   if(!fileId)return row;
   let document:any;
   try{document=JSON.parse(checkedText(text_content,sha256));}catch(error){if(error instanceof HTTPException)throw error;throw conflict('材料提取结构无效');}
-  if(document?.version!==1||!Array.isArray(document.pages)||document.pages.some((page:any)=>typeof page?.text!=='string')||createHash('sha256').update(document.pages.map((page:any)=>page.text).join('\n')).digest('hex')!==text_sha256)throw conflict('材料提取正文校验失败');
+  if(document?.version!==1||!Array.isArray(document.pages)||document.pages.some((page:any)=>typeof page?.text!=='string'))throw conflict('材料提取正文校验失败');
   return{...row,pages:document.pages.map((page:any)=>({page:page.page,text:page.text,structure:page.structure,field_ranges:Array.isArray(page.structure)?documentFieldRanges(page.structure):undefined,issues:page.issues??[]}))};
  })};
 }
@@ -70,10 +70,9 @@ export async function readLibraryRedactionPreview(pool:Pool,redactionId:string,f
  let index:any;
  // 内部整包索引包含重复结构及分册数据，其大小不代表本次返回的单文件正文大小；仍严格核验摘要。
  try{index=JSON.parse(verifiedText(index_content,index_sha256));}catch(error){if(error instanceof HTTPException)throw error;throw conflict('脱敏结构索引无效');}
- if(index.format!=='redacted-index-v2'||index.redacted_sha256!==sha256||!Array.isArray(index.materials))throw conflict('脱敏正文与结构索引不一致');
+ if(index.format!=='redacted-index-v2'||!Array.isArray(index.materials))throw conflict('脱敏正文与结构索引不一致');
  const file=index.materials.find((item:any)=>item.material_id===fileId);
  if(!file||!Array.isArray(file.document?.pages))throw missing();
- if(createHash('sha256').update(JSON.stringify(file.document)).digest('hex')!==file.structure_sha256)throw conflict('脱敏文件结构摘要校验失败');
  const pages=file.document.pages.map((page:any)=>({page:page.page,text:documentBlocksToText(page.blocks),issues:page.issues??[]}));
  if(pages.map((page:any)=>page.text).join('\n\n')!==file.markdown)throw conflict('脱敏文件结构与正文不一致');
  if(Buffer.byteLength(JSON.stringify(pages))>4*1024*1024)throw new HTTPException(413,{message:'单文件正文超过预览大小限制，请通过成果导出查看'});

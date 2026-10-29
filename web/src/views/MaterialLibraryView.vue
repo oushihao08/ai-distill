@@ -118,6 +118,62 @@ async function runJob(revision:LibraryRevision,kind:'intake'|'extract'|'redact',
  catch(cause){actionError.value=cause instanceof Error?cause.message:'派发处理任务失败';}
  finally{busy.value=false;}
 }
+type BatchStage='intake'|'extract'|'redact'|'prepare';
+const batchStage=shallowRef<BatchStage>('extract'),batchRunning=shallowRef(false);
+const batchRows=shallowRef<{id:string;name:string;status:string;jobId?:string;reason:string}[]>([]);
+const batchStages=[{title:'入库',value:'intake'},{title:'文本提取',value:'extract'},{title:'脱敏',value:'redact'},{title:'材料整理',value:'prepare'}];
+async function runSearchBatch(){
+ if(busy.value||loading.value||packageState.value==='archived')return;
+ busy.value=true;batchRunning.value=true;batchRows.value=[];actionError.value='';actionMessage.value='';
+ const stage=batchStage.value,projectId=contextProjectId.value;
+ const query=new URLSearchParams({page_size:'100',q:String(search.value??'').trim(),redaction_state:redactionState.value,preparation_state:preparationState.value,archived_only:'false'});
+ projectIds.value.forEach(id=>query.append('project_id',id));
+ try{
+  // 派发前固定完整搜索集合；写入改变筛选结果时不再翻页，避免漏包或带入新包。
+  const matches=new Map<string,MaterialLibraryPackageSummary>();
+  for(let next=1;;next++){
+   query.set('page',String(next));const result=await api<{items:MaterialLibraryPackageSummary[];total_count:number}>(`/material-library/packages?${query}`);
+   result.items.forEach(item=>{if(!item.deleted_at)matches.set(item.id,item);});
+   if(next*100>=result.total_count)break;
+   if(!result.items.length)throw new Error('搜索结果分页发生变化，请刷新后重新派发');
+  }
+  batchRows.value=[...matches.values()].map(item=>({id:item.id,name:item.name,status:'待核对',reason:''}));
+  if(stage==='redact'&&contextProcessingMode.value==='original')throw new Error('当前期次使用原文，无需脱敏');
+  for(const row of batchRows.value){
+   try{
+    const item=matches.get(row.id)!;
+    const revision=(await api<{items:LibraryRevision[]}>(`/material-library/packages/${row.id}/revisions`)).items.find(value=>value.id===item.current_revision_id);
+    const skip=(reason:string)=>{row.status='跳过';row.reason=reason;};
+    if(!revision){skip('没有当前文件版本');continue;}
+    if(revision.jobs.some(job=>['queued','running'].includes(job.status))){skip('已有活动任务');continue;}
+    const extraction=revision.jobs.find(job=>job.kind==='extract'&&job.status==='succeeded');
+    const redaction=revision.redactions.find(value=>value.usable_for_question===true||value.usable_for_question==='true');
+    if(stage==='intake'&&revision.state==='ready'){skip('已入库');continue;}
+    if(stage!=='intake'&&revision.state!=='ready'){skip('尚未入库');continue;}
+    if(stage==='extract'&&extraction){skip('已提取成功');continue;}
+    if((stage==='redact'||stage==='prepare')&&!extraction){skip('尚未提取成功');continue;}
+    if(stage==='redact'&&redaction){skip('已有可用脱敏结果');continue;}
+    let receipt:{id:string;reused?:boolean};
+    if(stage==='prepare'){
+     const source=contextProcessingMode.value==='original'?undefined:redaction;
+     if(contextProcessingMode.value!=='original'&&!source){skip('尚无可用脱敏结果');continue;}
+     const preparationQuery=new URLSearchParams({revision_id:revision.id,redaction_id:source?.id??'',...(projectId?{project_id:projectId}:{})});
+     const existing=await api<{available:boolean;items:LibraryPreparationSummary[]}>(`/material-library/packages/${row.id}/preparations?${preparationQuery}`);
+     if(!existing.available){skip('材料整理尚未启用');continue;}
+     if(existing.items.some(value=>value.revision_id===revision.id&&value.redaction_id===(source?.id??null)&&(!projectId||!value.project_id||value.project_id===projectId))){skip('已有整理成果');continue;}
+     receipt=await apiPostIntent<{id:string;reused?:boolean}>(`/material-library/revisions/${revision.id}/prepare`,{...(source?{redaction_id:source.id}:{extraction_job_id:extraction!.id}),...(projectId?{project_id:projectId}:{})});
+    }else{
+     receipt=await apiPostIntent<{id:string;reused?:boolean}>(`/material-library/revisions/${revision.id}/jobs`,{kind:stage,execution_target:'local',...(projectId?{project_id:projectId}:{}),...(stage==='redact'?{extraction_job_id:extraction!.id,template_id:'aliases'}:{})});
+    }
+    row.status=receipt.reused?'已复用':'已派发';row.jobId=receipt.id;
+   }catch(cause){row.status='已停止';row.reason=cause instanceof Error?cause.message:'派发失败';actionError.value='批量派发已停止，请查看下方原因；已提交任务继续执行。';break;}
+   finally{batchRows.value=[...batchRows.value];}
+  }
+  const sent=batchRows.value.filter(row=>row.status==='已派发'||row.status==='已复用').length;
+  actionMessage.value=`本批搜索命中 ${batchRows.value.length} 个包，已提交/复用 ${sent} 个，跳过 ${batchRows.value.filter(row=>row.status==='跳过').length} 个，未派发 ${batchRows.value.filter(row=>row.status==='待核对').length} 个。`;
+ }catch(cause){actionError.value=cause instanceof Error?cause.message:'批量派发失败';}
+ finally{batchRunning.value=false;busy.value=false;await loadPackages();}
+}
 async function changePage(value:number){page.value=value;await loadPackages();}
 watch(contextProjectId,async id=>{contextProcessingMode.value=undefined;if(!id)return;try{contextProcessingMode.value=(await api<{material_processing_mode:MaterialProcessingMode}>(`/projects/${id}/material-processing`)).material_processing_mode;}catch(cause){actionError.value=cause instanceof Error?cause.message:'读取本期材料处理设置失败';}},{immediate:true});
 watch(detailDialog,value=>{if(value==='usage'&&selected.value&&!usage.value)void loadUsage(selected.value);});
@@ -137,6 +193,17 @@ onUnmounted(()=>{selectionRequest++;usageRequest++;listRequest++;if(searchTimer)
   <v-select v-model="packageState" label="材料包状态" :items="[{title:'使用中',value:'active'},{title:'已归档',value:'archived'}]" hide-details :disabled="busy" class="w-full sm:w-140" @update:model-value="selected=undefined"/>
   <v-btn variant="text" :disabled="busy||!hasFilters" @click="resetFilters">重置</v-btn>
  </Row>
+ <Column :gap="8" class="surface-card p-12">
+  <Row wrap y="center" :gap="12">
+   <span class="text-sm">对全部搜索结果批量派发（{{ total }} 个包）</span>
+   <v-select v-model="batchStage" :items="batchStages" label="处理阶段" hide-details :disabled="busy" class="w-full sm:w-180 sm:max-w-220"/>
+   <v-btn color="primary" :loading="batchRunning" :disabled="busy||loading||!total||packageState==='archived'" @click="runSearchBatch">批量派发</v-btn>
+  </Row>
+  <p class="text-xs text-muted">包含所有分页；跳过已完成、有活动任务和前置条件未满足的包。容量不足或请求异常时停止，不自动推进下一阶段。</p>
+  <Column v-if="batchRows.length" :gap="0" class="max-h-240 overflow-auto">
+   <table class="w-full text-sm"><thead><tr><th scope="col">材料包</th><th scope="col">派发状态</th><th scope="col">任务 / 原因</th></tr></thead><tbody><tr v-for="row in batchRows" :key="row.id"><td>{{ row.name }}</td><td>{{ row.status }}</td><td class="break-all">{{ row.reason||row.jobId||'—' }}</td></tr></tbody></table>
+  </Column>
+ </Column>
  <v-alert v-if="filterError||error" type="error">{{ filterError||error }}</v-alert>
  <Row stack-on-mobile y="stretch" :gap="12" class="min-w-0 lg:flex-1 min-h-0">
   <aside class="surface-card w-full lg:w-220 xl:w-240 shrink-0 overflow-hidden lg:h-full min-h-0" aria-label="材料包列表"><Column :gap="0" class="lg:h-full min-h-0">

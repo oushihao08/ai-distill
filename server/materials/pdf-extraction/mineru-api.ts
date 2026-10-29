@@ -227,6 +227,7 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/json' };
   const diagnosticId=crypto.randomUUID();
   const diagnosticDirectory=resolve(storageDirectory(this.env),'.mineru-diagnostics',diagnosticId);
+  let pollCount=0,lastPollLogAt=0,lastRequestStartedAt=0,lastRequestFinishedAt=0;
   let tempZipPath: string | undefined, completed=false,batchId:string|undefined,phase='request_upload_url',providerState:string|undefined,taskSubmitted=false;
   const recordPhase=async(nextPhase:string,state?:string)=>{
    phase=nextPhase;if(state!==undefined)providerState=state;
@@ -255,18 +256,26 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
 
    let zipUrl: string | undefined;
    const deadline = startedAt + API_TIMEOUT_MS;
-   let pollCount=0,lastPollLogAt=0;
    while (this.now() < deadline) {
     if (controller.signal.aborted) throw new Error(signal?.aborted ? 'PDF提取已取消' : 'MinerU API任务超过30分钟');
+    lastRequestStartedAt=this.now();
     const poll = await this.fetcher(`${API_ROOT}/extract-results/batch/${encodeURIComponent(batchId)}`, { ...fetchOptions, headers });
-    const data = responseData(await checkedJson(poll, '任务查询'));
+    const pollBody=await checkedJson(poll,'任务查询');
+    lastRequestFinishedAt=this.now();
+    const safeId=(v:unknown)=>typeof v==='string'&&/^[a-zA-Z0-9_-]{1,128}$/.test(v)?v:undefined;
+    const envelope=isRecord(pollBody)?pollBody:{};
+    // 私有快照覆盖保存最新响应摘要；不保存材料文件名、正文或签名URL。
+    const payload=isRecord(envelope.data)?envelope.data:{};
+    const resultRows=Array.isArray(payload.extract_result)?payload.extract_result:[];
+    await writeFile(resolve(diagnosticDirectory,'poll-latest.json'),JSON.stringify({observed_at:new Date().toISOString(),batch_id:batchId,http_status:poll.status,code:envelope.code,trace_id:safeId(envelope.trace_id),request_id:safeId(poll.headers.get('x-request-id')),request_ms:Math.max(0,lastRequestFinishedAt-lastRequestStartedAt),elapsed_ms:Math.max(0,this.now()-startedAt),poll_count:pollCount+1,response_keys:Object.keys(envelope),data_keys:Object.keys(payload),results:resultRows.filter(isRecord).map(row=>({state:row.state,data_id_matches:row.data_id===sha256,file_name_matches:row.file_name===basename(path),has_zip:typeof row.full_zip_url==='string',error_code:safeId(row.err_code),error_message_present:typeof row.err_msg==='string'&&row.err_msg.length>0,progress:isRecord(row.extract_progress)?{extracted_pages:row.extract_progress.extracted_pages,total_pages:row.extract_progress.total_pages}:undefined,result_keys:Object.keys(row)}))}),{mode:0o600});
+    const data = responseData(pollBody);
     const rows = Array.isArray(data.extract_result) ? data.extract_result : [];
     const item = rows.find(result => isRecord(result) && (result.data_id === sha256 || result.file_name === basename(path)));
     const state=isRecord(item)&&['waiting-file','pending','running','done','failed','converting'].includes(String(item.state))?String(item.state):'missing_result_item';
     pollCount++;
     if(state!==providerState||this.now()-lastPollLogAt>=60000){
      const progress=isRecord(item)&&isRecord(item.extract_progress)?item.extract_progress:{};
-     logEvent('extraction.api.poll_observed',{provider:this.id,diagnostic_id:diagnosticId,http_status:poll.status,state,attempt_count:pollCount,material_count:rows.length,page_count:pageCount,duration_ms:Math.max(0,this.now()-startedAt),...(Number.isFinite(progress.extracted_pages)?{actual_count:Number(progress.extracted_pages)}:{}),...(Number.isFinite(progress.total_pages)?{expected_count:Number(progress.total_pages)}:{})});
+     logEvent('extraction.api.poll_observed',{provider:this.id,diagnostic_id:diagnosticId,http_status:poll.status,elapsed_ms:Math.max(0,lastRequestFinishedAt-lastRequestStartedAt),state,attempt_count:pollCount,material_count:rows.length,page_count:pageCount,duration_ms:Math.max(0,this.now()-startedAt),...(Number.isFinite(progress.extracted_pages)?{actual_count:Number(progress.extracted_pages)}:{}),...(Number.isFinite(progress.total_pages)?{expected_count:Number(progress.total_pages)}:{})});
      lastPollLogAt=this.now();
     }
     if(state!==providerState)await recordPhase('poll_result',state);
@@ -307,6 +316,7 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    completed=true;
    return { pages, sha256, provider: this.id };
   } catch (error) {
+   try{await writeFile(resolve(diagnosticDirectory,'failure-context.json'),JSON.stringify({observed_at:new Date().toISOString(),phase,provider_state:providerState,batch_id:batchId,poll_count:pollCount,last_request_started_at:lastRequestStartedAt,last_request_finished_at:lastRequestFinishedAt,request_in_flight:lastRequestStartedAt>lastRequestFinishedAt,elapsed_ms:Math.max(0,this.now()-startedAt),timeout_ms:API_TIMEOUT_MS,local_aborted:controller.signal.aborted,parent_aborted:signal?.aborted??false,parent_reason:isRecord(signal?.reason)?signal.reason.reason_code:undefined,network_error_code:safeNetworkErrorCode(error)}),{mode:0o600});}catch{logEvent('extraction.diagnostics_save_failed',{level:'error',diagnostic_id:diagnosticId,reason_code:'diagnostics_write_failed'});}
    logEvent('extraction.api.failed', { level: 'error', provider: this.id, reason_code: safeFailureReason(error),failure_phase:phase,state:providerState,diagnostic_id:diagnosticId,...(isRecord(error)&&typeof error.failure_stage==='string'?{failure_stage:error.failure_stage}:{}),...(isRecord(error)&&typeof error.response_status==='number'?{response_status:error.response_status}:{}),...(isRecord(error)&&typeof error.network_error_code==='string'?{network_error_code:error.network_error_code}:{}),duration_ms:Math.max(0,this.now()-startedAt) });
    if(controller.signal.aborted&&!signal?.aborted)throw providerTimeoutError(phase,providerState,taskSubmitted);
    throw error;

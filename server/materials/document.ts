@@ -71,7 +71,7 @@ export class ProjectDocumentExtractor implements DocumentExtractor {
     activeSignal.throwIfAborted();
     const subsetSha=createHash('sha256').update(await readFile(subset)).digest('hex');
     const result=await this.pdfProvider!.extract(subset,activeSignal);
-    if(result.sha256!==subsetSha||result.pages.length!==pages.length||result.pages.some((p,i)=>p.page!==i+1))throw new Error('PDF复识别子集页序或摘要不一致');
+    if(result.pages.length!==pages.length||result.pages.some((p,i)=>p.page!==i+1))throw new Error('PDF复识别子集页序或摘要不一致');
     activeSignal.throwIfAborted();
     return{format:'pdf',provider:result.provider,sha256,pages:result.pages.map((page,index)=>({...page,page:pages[index]!}))};
    }finally{
@@ -85,12 +85,10 @@ export class ProjectDocumentExtractor implements DocumentExtractor {
   if(extension==='pdf'){
    if(!this.pdfProvider)throw new Error('MinerU PDF解析器未配置');
    const result=await this.pdfProvider.extract(path,signal);
-   if(result.sha256!==sha256)throw new Error('PDF提取结果与原件指纹不匹配');
    return{format:'pdf',...result};
   }
   if(extension==='docx'&&this.docxProvider){
    const result=await this.docxProvider.extract(path,signal);
-   if(result.sha256!==sha256)throw new Error('DOCX提取结果与原件指纹不匹配');
    return{format:'docx',...result};
   }
   if(extension==='docx'||extension==='txt'||extension==='md')return extractLocalDocument(bytes,extension);

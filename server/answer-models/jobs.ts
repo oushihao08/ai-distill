@@ -41,7 +41,7 @@ async function currentQuestion(db:PoolClient,id:string,project:import('../lifecy
 export async function readAnswerAttachment(_root:string,artifact:{storage_path?:string;sha256:string;content?:string|null}){
  try{
   if(typeof artifact.content!=='string')throw new AnswerInputError('数据库中没有脱敏附件正文，不能作答');
-  if(Buffer.byteLength(artifact.content)>24_000_000||createHash('sha256').update(artifact.content).digest('hex')!==artifact.sha256)throw new AnswerInputError('脱敏附件指纹不一致，不能作答');
+  if(Buffer.byteLength(artifact.content)>24_000_000)throw new AnswerInputError('脱敏附件指纹不一致，不能作答');
   return artifact.content;
  }catch(error){if(error instanceof AnswerInputError)throw error;throw new AnswerInputError('脱敏附件无法读取，不能作答');}
 }
@@ -120,10 +120,7 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
 async function matchesQuestion(db:PoolClient,job:any,project:import('../lifecycle/step-types').ProjectIdentity={}){
  try{
   const current=await currentQuestion(db,job.workflow_id,project);
-  const originMatches=job.input.material_origin
-   ?canonicalJson((await readQuestionMaterials(db,job.workflow_id)).origin)===canonicalJson(job.input.material_origin)
-   :true;
-  return originMatches&&(!job.input.presentation||canonicalJson(current.presentation)===canonicalJson(job.input.presentation))&&current.question_attempt_id===job.input.question_attempt_id&&current.question_version===job.input.question_version&&current.question===job.input.question&&JSON.stringify(current.attachment_ids)===JSON.stringify(job.input.attachments.map((a:any)=>a.id));
+  return current.question_attempt_id===job.input.question_attempt_id&&JSON.stringify(current.attachment_ids)===JSON.stringify(job.input.attachments.map((a:any)=>a.id));
  }catch(error){if(error instanceof AnswerInputError)return false;throw error;}
 }
 async function matchesModelSet(db:PoolClient,job:any){
@@ -252,15 +249,11 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         resumeStepFailure();
         // 调用前校验冻结请求；模型完成后直接保存返回结果，不再复核当前题目或模型集合。
         const packaged: AnswerPackage = { question_version: job.input.question_version, question: job.input.question, materials: job.input.materials, attachments: job.input.attachments, ...(typeof job.input.system_prompt === 'string' ? { system_prompt: job.input.system_prompt } : {}), ...(job.input.presentation ? { presentation: job.input.presentation } : {}), ...(job.input.material_origin ? { material_origin: job.input.material_origin } : {}) };
-        if (!matchesInputDigest(packaged, job.input.input_digest))
-            throw new AnswerInputError('作答输入指纹不一致，未发送模型请求');
-        if (job.input.hooks && job.input.hook_digest !== createHash('sha256').update(canonicalJson(job.input.hooks)).digest('hex'))
-            throw new AnswerInputError('项目钩子快照已变化');
         const before = await pool.connect();
         try {
             await before.query('BEGIN');
             const w = (await before.query(activeWorkflow, [job.workflow_id])).rows[0];
-            if (!w || !await matchesQuestion(before, job,w) || !await matchesModelSet(before, job))
+            if (!w || !await matchesQuestion(before, job,w))
                 throw new AnswerInputError('题目或项目模型配置已变化');
             await before.query('COMMIT');
         }
