@@ -14,3 +14,6 @@ export interface LibraryUsage {
  loaded_projects:{project_id:string;project_name:string;selected_revision_id:string|null;selected_redaction_id:string|null;created_at:string;removed_at:string|null}[];
  publication_events:PublicationEvent[];
 }
+
+/** 材料整理结果的版本与来源标识，用于当前版本状态展示；正文按需读取。 */
+export interface LibraryPreparationSummary {id:string;job_id:string;revision_id:string;redaction_id:string|null;project_id:string|null}

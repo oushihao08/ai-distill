@@ -1,10 +1,10 @@
 /**
  * 文件职责：按项目材料后端读取并校验题目冻结的材料来源。
- * 关键入口：`readQuestionMaterials()` 返回类型化来源和摘要已核对的脱敏或原文附件；library_v1 缺快照时拒绝旧步骤回退。
- * 使用场景：出题、作答、评分、归档和导出共用；不执行 OCR、脱敏或文件写入。
+ * 关键入口：`readQuestionMaterials()` 返回完整冻结附件及可选的可见文书模型投影；library_v1缺快照时拒绝旧步骤回退。
+ * 使用场景：出题与作答使用投影附件，评分核对来源身份，归档/导出按各自契约读取；不执行OCR、脱敏或文件写入。
  */
 import {createHash} from 'node:crypto';
-import {validateSelectedMaterialIndex} from '../shared/material-preparation-result';
+import {materializePreparation,preparationUnits,renderPreparationDocuments,validateSelectedMaterialIndex,visiblePreparationContext} from '../shared/material-preparation-result';
 import {readFile,realpath,stat} from 'node:fs/promises';
 import {resolve,relative,sep,isAbsolute} from 'node:path';
 import type {Pool,PoolClient} from 'pg';
@@ -20,7 +20,7 @@ type Db=Pool|PoolClient;
 type MaterialArtifact={id:string;kind:string;attempt_id:string|null;sha256:string;content:string|null};
 type SnapshotArtifact=Omit<MaterialArtifact,'content'>&{content?:string|null;storage_path?:string;size_bytes?:number|string};
 export interface QuestionMaterialAttachment {id:string;sha256:string;content:string;source_names:string[];attempt_id:string|null}
-export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:QuestionMaterialAttachment[];digest:string;material_scope?:{preparation_id:string;result:import('../shared/material-preparation-result').MaterialPreparationResult}}
+export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:QuestionMaterialAttachment[];digest:string;model_attachments?:QuestionMaterialAttachment[];model_source_names?:string[];material_scope?:{preparation_id:string;result:import('../shared/material-preparation-result').MaterialPreparationResult}}
 
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const conflict=(message:string)=>new HTTPException(409,{message});
@@ -126,9 +126,21 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  }
  const origin:QuestionMaterialOrigin={kind:'library_v1',material_mode:mode,...(processingMode?{material_processing_mode:processingMode}:{}),package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id===null?null:String(row.redaction_id),snapshot_digest:String(row.snapshot_digest)};
  logEvent('material.snapshot.read',{level:'info',component:'question_materials',workflow_id:workflowId,state:missing.length?'database_fallback':'local_snapshot',material_count:artifacts.length,input_bytes:databaseBytes,duration_ms:Math.round(performance.now()-started)});
- const scope=manifest.material_scope?.result?.format==='material-preparation-v2'&&typeof manifest.material_scope.preparation_id==='string'
-  ?{preparation_id:manifest.material_scope.preparation_id,result:manifest.material_scope.result as import('../shared/material-preparation-result').MaterialPreparationResult}:undefined;
- return{origin,attachments:[{id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null}],digest:String(row.snapshot_digest),...(scope?{material_scope:scope}:{})};
+ const attachment:QuestionMaterialAttachment={id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null};
+ const prepared=manifest.material_scope?.result?.format==='material-preparation-v2'&&typeof manifest.material_scope.preparation_id==='string'
+  ?{preparation_id:String(manifest.material_scope.preparation_id),result:manifest.material_scope.result as import('../shared/material-preparation-result').MaterialPreparationResult}:undefined;
+ if(!prepared){
+  const docs=preparationUnits(parsedIndex).map(unit=>({id:unit.id,title:unit.title,text:'',document:{format:'redacted-structure-v1' as const,pages:unit.pages},source_refs:unit.source_refs??[]}));
+  if(!docs.length)return{origin,attachments:[attachment],digest:String(row.snapshot_digest)};
+  const content=renderPreparationDocuments(docs);
+  return{origin,attachments:[attachment],model_attachments:content.trim()?[{...attachment,content,sha256:hash(content)}]:[],digest:String(row.snapshot_digest)};
+ }
+ const preparedDocuments=materializePreparation(prepared.result,preparationUnits(parsedIndex));
+ const visibleDocuments=preparedDocuments.filter(document=>document.visibility!=='hidden');
+ const content=renderPreparationDocuments(visibleDocuments);
+ const hasHidden=prepared.result.documents.some(document=>document.visibility==='hidden');
+ const modelAttachment:QuestionMaterialAttachment={...attachment,sha256:hash(content),content,source_names:hasHidden?[]:attachment.source_names};
+ return{origin,attachments:[attachment],model_attachments:[...(content.trim()?[modelAttachment]:[])],model_source_names:hasHidden?[]:attachment.source_names,digest:String(row.snapshot_digest),material_scope:{preparation_id:prepared.preparation_id,result:visiblePreparationContext(prepared.result)}};
 }
 
 export async function readQuestionMaterials(db:Db,workflowId:string,root=storageDirectory()):Promise<QuestionMaterials>{

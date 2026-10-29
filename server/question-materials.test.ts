@@ -4,6 +4,7 @@ import type {PoolClient} from 'pg';
 import {createHash} from 'node:crypto';
 import {canonicalJson} from '../shared/workflow-config';
 import {readQuestionMaterials} from './question-materials';
+import {buildAnswerInput} from './answer-models/input';
 
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 const workflowId='11111111-1111-4111-8111-111111111111';
@@ -62,6 +63,32 @@ test('reads a shared package snapshot in a legacy project without changing its p
  expect(result.origin.kind).toBe('library_v1');
  expect(result.attachments[0]?.content).toBe(markdown);
  expect(statements.some(sql=>sql.includes('ordinal=9'))).toBe(false);
+});
+
+test('整理快照保留人工全文但只投影可见正文给作答输入',async()=>{
+ const fullText='可见证据正文\n隐藏裁判结果正文';
+ const structuredIndex={format:'redacted-index-v2',redacted_sha256:digest(fullText),materials:[{material_id:'material-1',markdown:fullText,document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'b1',kind:'paragraph',text:'可见证据正文'},{id:'b2',kind:'paragraph',text:'隐藏裁判结果正文'}]}]}}]};
+ const preparation={format:'material-preparation-v2',package_summary:'可见证据摘要',documents:[
+  {id:'visible',title:'证据材料',block_ids:['u1p1b1'],summary:'支持交易判断',document_type:'证据',tags:[],notes:'',unit_kind:'document',visibility:'visible',visibility_reason:''},
+  {id:'hidden',title:'裁判文书',block_ids:['u1p1b2'],summary:'直接给出既成裁判结果',document_type:'判决',tags:[],notes:'',unit_kind:'document',visibility:'hidden',visibility_reason:'正文完整载明裁判结论'},
+ ],combinations:[],warnings:[],document_count:2,unassigned_group_count:0,unassigned_block_count:0};
+ const text=JSON.stringify(structuredIndex),textSha=digest(text),markdownSha=digest(fullText);
+ const snapshot={...manifest,files:[{material_id:'material-1',original_name:'材料.pdf'}],material_scope:{preparation_id:'prep-1',result:preparation},redacted_markdown:{artifact_id:'markdown-1',sha256:markdownSha},redacted_index:{artifact_id:'index-1',sha256:textSha}};
+ const {db}=mockDb(sql=>{
+  if(sql.includes('FROM ai_distill.workflows w')&&sql.includes('JOIN ai_distill.projects'))return{rows:[{material_backend:'library_v1'}],rowCount:1};
+  if(sql.includes('FROM ai_distill.question_library_sources'))return{rows:[{snapshot_manifest:snapshot,snapshot_digest:digest(canonicalJson(snapshot)),package_id:'p1',revision_id:'r1',redaction_id:'d1',source_digest:'a'.repeat(64),markdown_artifact_id:'markdown-1',index_artifact_id:'index-1'}],rowCount:1};
+  if(sql.includes('FROM ai_distill.artifacts')&&sql.includes('ANY'))return{rows:[
+   {id:'markdown-1',kind:'redacted_markdown',attempt_id:null,sha256:markdownSha,content:fullText},
+   {id:'index-1',kind:'redacted_index',attempt_id:null,sha256:textSha,content:text},
+  ],rowCount:2};
+  return undefined;
+ });
+ const source=await readQuestionMaterials(db,workflowId);
+ expect(source.attachments[0]!.content).toContain('隐藏裁判结果正文');
+ expect(source.model_attachments).toHaveLength(1);expect(source.model_attachments![0]!.content).toContain('可见证据正文');expect(source.model_attachments![0]!.content).not.toContain('隐藏裁判结果正文');
+ expect(source.material_scope?.result.documents.map(document=>document.title)).toEqual(['证据材料']);
+ const answer=buildAnswerInput({question_version:'v1',question:'依据附件分析',attachment_ids:['markdown-1'],material_origin:source.origin,answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}},source.model_attachments!.map(item=>({id:item.id,kind:'redacted_markdown',sha256:item.sha256,text:item.content})));
+ expect(answer.materials[0]!.text).toContain('可见证据正文');expect(answer.materials[0]!.text).not.toContain('隐藏裁判结果正文');
 });
 
 test('reads and validates the frozen original extraction for a library question',async()=>{
@@ -186,4 +213,18 @@ test('a snapshot symlink outside its workflow also falls back to database conten
   expect((await readQuestionMaterials(f.db,workflowId,f.root)).attachments[0].content).toBe(markdown);
   expect(f.contentReads).toEqual([['index-1']]);
  }finally{await f.cleanup();}
+});
+
+test('无整理的结构化附件也使用统一表格正文，完整附件与指纹保持原值',async()=>{
+ const body='原冻结正文';const bodyHash=digest(body);
+ const structured=JSON.stringify({format:'redacted-index-v2',redacted_sha256:bodyHash,materials:[{material_id:'m',title:'证据',document:{pages:[{page:2,blocks:[{id:'t',kind:'table',rows:[{cells:[{text:'当事人',rowSpan:2},{text:'款项',columnSpan:2}]},{cells:[{text:'100元'},{text:'200元'}]}]}]}]}}]});
+ const frozen={...manifest,redacted_markdown:{artifact_id:'markdown-1',sha256:bodyHash},redacted_index:{artifact_id:'index-1',sha256:digest(structured)}};
+ const {db}=mockDb(sql=>{
+  if(sql.includes('FROM ai_distill.workflows w')&&sql.includes('JOIN ai_distill.projects'))return{rows:[{material_backend:'library_v1'}]};
+  if(sql.includes('FROM ai_distill.question_library_sources'))return{rows:[{snapshot_manifest:frozen,snapshot_digest:digest(canonicalJson(frozen)),package_id:'p1',revision_id:'r1',redaction_id:'d1',source_digest:'a'.repeat(64),markdown_artifact_id:'markdown-1',index_artifact_id:'index-1'}]};
+  if(sql.includes('FROM ai_distill.artifacts')&&sql.includes('ANY'))return{rows:[{id:'markdown-1',kind:'redacted_markdown',attempt_id:null,sha256:bodyHash,content:body},{id:'index-1',kind:'redacted_index',attempt_id:null,sha256:digest(structured),content:structured}]};
+ });
+ const result=await readQuestionMaterials(db,workflowId);
+ expect(result.attachments[0]!.content).toBe(body);expect(result.attachments[0]!.sha256).toBe(bodyHash);
+ expect(result.model_attachments?.[0]?.content).toContain('<td rowspan="2">当事人</td>');expect(result.model_attachments?.[0]?.content).toContain('<td colspan="2">款项</td>');expect(result.model_attachments?.[0]?.content).toContain('【第 2 页】');
 });

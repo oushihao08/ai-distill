@@ -70,6 +70,18 @@ function answerDiagnostic(attempt:Attempt){
  if(attempt.ordinal===5&&attempt.status==='failed'&&attempt.error?.includes('未返回完整有效的内容'))return '历史记录未保存细分原因码';
  return null;
 }
+function materialScopeSelections(step:Step){
+ const value=step.result?.material_scope_selection;
+ if(!value||typeof value!=='object')return [];
+ const primary=value as Record<string,unknown>;
+ return [primary,...(Array.isArray(primary.additional_combinations)?primary.additional_combinations:[])].filter((item):item is Record<string,unknown>=>!!item&&typeof item==='object').map(selection=>({
+  direction:typeof selection.direction==='string'?selection.direction:'',
+  party:typeof selection.party==='string'?selection.party:'',
+  scenes:Array.isArray(selection.scenes)?selection.scenes.filter((item):item is string=>typeof item==='string'):[],
+  deliverables:Array.isArray(selection.deliverables)?selection.deliverables.filter((item):item is string=>typeof item==='string'):[],
+ }));
+}
+
 const materialOpen=shallowRef(false);const deleting=shallowRef<{id:string;original_name:string}|null>(null);
 const currentStep=computed(()=>visibleSteps.value.find(step=>!['succeeded','skipped'].includes(step.status)||(step.ordinal===7&&step.result?.decision==='repair')));
 const currentStepLabel=computed(()=>{
@@ -198,6 +210,14 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
     </template>
     <template #artifacts="{step}">
      <p v-if="step.ordinal===9 && redactionProgressLabel(step)" class="text-xs text-muted break-all">{{ redactionProgressLabel(step) }}</p>
+     <Column v-if="step.ordinal===4 && materialScopeSelections(step).length" class="mt-8 rounded border border-line-subtle p-8" :gap="4">
+      <strong class="text-xs">本题实际采用的材料范围</strong>
+      <Column v-for="(selection,index) in materialScopeSelections(step)" :key="index" :gap="4">
+      <p class="text-xs">方向：{{ selection.direction||'未记录' }} · 主体/立场：{{ selection.party||'未记录' }}</p>
+      <p class="text-xs">场景：{{ selection.scenes.join('、')||'未记录' }}</p>
+      <p class="text-xs">交付成果：{{ selection.deliverables.join('、')||'未记录' }}</p>
+      </Column>
+     </Column>
 
      <Row v-if="![4,5,6,9].includes(step.ordinal) && artifactsForStep(step).length" wrap :gap="8" class="mt-8">
       <v-btn v-for="artifact in artifactsForStep(step)" :key="artifact.id" :href="`/api/artifacts/${artifact.id}/download`" color="secondary" variant="tonal">{{artifactLabel(artifact.kind)}} · {{dateLabel(artifact.created_at)}}{{artifact.question_version ? ` · 题目版本 ${artifact.question_version}` : ''}}</v-btn>

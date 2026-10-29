@@ -152,14 +152,14 @@ test('library history projects a whole active group in one SELECT and skips term
  });}finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;await rm(root,{recursive:true,force:true});}
 });
 
-test('Agent claim uses the frozen budget above ten minutes without a second ceiling',async()=>{
+test.each(['redact','prepare'])('%s claim uses the frozen one-hour budget without a second ceiling',async kind=>{
  const previous=process.env.EXECUTION_QUEUE_MODE;let timeout=0;
  const client={query:async(sql:string,v:any[]=[])=>{
-  if(sql.startsWith('SELECT j.*,p.name'))return{rows:[{id:'job',kind:'redact',config_snapshot:{redaction_template:{workflow:'codex_plan'},settings:{execution:{task_timeout_ms:1200000}}}}]};
+  if(sql.startsWith('SELECT j.*,p.name'))return{rows:[{id:'job',kind,config_snapshot:{redaction_template:{workflow:'codex_plan'},settings:{execution:{task_timeout_ms:3600000}}}}]};
   if(sql.startsWith("UPDATE ai_distill.library_jobs SET status='running'")){timeout=v[2];return{rows:[{id:'job'}],rowCount:1};}
   return{rows:[],rowCount:0};
  },release(){}};
- try{process.env.EXECUTION_QUEUE_MODE='legacy';await claimLibraryJob({query:async()=>({rows:[{available:true}]}),connect:async()=>client} as any,'agent','local');expect(timeout).toBe(1200000);}
+ try{process.env.EXECUTION_QUEUE_MODE='legacy';await claimLibraryJob({query:async()=>({rows:[{available:true}]}),connect:async()=>client} as any,'agent','local');expect(timeout).toBe(3600000);}
  finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;}
 });
 

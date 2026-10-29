@@ -70,8 +70,10 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   if(workflow.material_backend==='library_v1'||workflow.has_library_snapshot){
    const source=await readQuestionMaterials(db,id);
    if(JSON.stringify(question.attachment_ids)!==JSON.stringify(source.attachments.map(item=>item.id)))throw new AnswerInputError('题目附件与共享材料包私有快照不一致');
+   const modelSources=source.model_attachments??source.attachments;
+   if(source.model_attachments&&!modelSources.length)throw new AnswerInputError('材料整理结果中没有可见文书，不能向作答模型发送隐藏材料');
    materialOrigin=source.origin;
-   sources=source.attachments.map(item=>({id:item.id,kind:source.origin.kind==='library_v1'&&source.origin.material_mode==='original'?'source_markdown':'redacted_markdown',sha256:item.sha256,text:item.content}));
+   sources=modelSources.map(item=>({id:item.id,kind:source.origin.kind==='library_v1'&&source.origin.material_mode==='original'?'source_markdown':'redacted_markdown',sha256:item.sha256,text:item.content}));
   }else{
    const artifacts=await db.query("SELECT ar.id,ar.kind,ar.sha256,ar.storage_path,ar.content FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 WHERE ar.workflow_id=$1 AND ar.id=ANY($2::uuid[]) AND ar.kind='redacted_markdown' AND a.ordinal=9 AND a.status='succeeded' AND s.status='succeeded'",[id,question.attachment_ids]);
    for(const artifact of artifacts.rows)sources.push({...artifact,text:await readAnswerAttachment(root,artifact)});

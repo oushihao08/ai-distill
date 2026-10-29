@@ -2,10 +2,10 @@
  * 职责：材料提取发布前及Agent计划编译中共用的确定性垃圾清理与格式还原。
  * 入口：findScanNoiseEdits生成精确编辑；cleanScanNoisePages将编辑应用到结构副本。
  * 工具边界：只使用内存中的结构、文字投影和正则，不调用Agent/OCR、网络、文件或数据库；发布和审计由调用方负责。
- * 设计边界与已知数字保护遗漏见findScanNoiseEdits注释；“保守清理”是职责目标，不代表所有语义或输入均已验证安全。
+ * 规则与业务标签保护边界见findScanNoiseEdits注释；技术校验不代表所有语义或输入均已验证安全。
  */
 import {documentBlocksToText,type DocumentBlock} from './document-structure';
-import {documentFieldRanges} from './prepared-structure';
+import {documentBlockFields,documentFieldRanges} from './prepared-structure';
 import {materialMarkupEdits} from './material-markup';
 export interface ScanNoisePage {file_id:string;page:number;blocks:DocumentBlock[]}
 export interface ScanNoiseEdit {file_id:string;page:number;start:number;end:number;source_text:string;replacement_text:string}
@@ -24,17 +24,6 @@ function noiseRanges(text:string):NoiseRange[]{
   if(/^\s*\d+[ \t]+\\?\[[ \t]*BAR[ _-]*CODE[ \t]*\\?\]\s*$/iu.test(line[0])||visible==='无法识别')ranges.push({start:line.index,end:line.index+line[0].length});
  }
  return ranges;
-}
-function blockFields(block:DocumentBlock){
- if(block.kind==='table'){
-  const fields:{text:string;set:(value:string)=>void}[]=[];
-  if(block.caption!==undefined)fields.push({text:block.caption,set:value=>{block.caption=value;}});
-  for(const row of block.rows)for(const cell of row.cells)fields.push({text:cell.text,set:value=>{cell.text=value;}});
-  for(let i=0;i<(block.footnotes?.length??0);i++)fields.push({text:block.footnotes![i]!,set:value=>{block.footnotes![i]=value;}});
-  return fields;
- }
- if(block.kind==='list')return block.items.map((text,index)=>({text,set:(value:string)=>{block.items[index]=value;}}));
- return [{text:block.text,set:(value:string)=>{block.text=value;}}];
 }
 /**
  * 共用规则入口：在冻结来源上识别确定扫描噪声，返回原页UTF-16坐标、原文和替换文本；本函数不修改pages。
@@ -61,9 +50,10 @@ function blockFields(block:DocumentBlock){
  * - 返回编辑包含删除和确定格式替换；调用方须沿同一来源应用/校验，不能当作已发布正文或零误删证明。
  */
 export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<ScanNoiseEdit,'file_id'|'page'|'start'|'end'>[]=[]):ScanNoiseEdit[]{
- const entries=pages.flatMap(page=>{let cursor=0;return page.blocks.map((block,index)=>{
-  const value=documentBlocksToText([block]),start=cursor;cursor+=value.length+1;
-  return {...page,block,index,projection:value,text:block.kind==='table'||block.kind==='list'?'':block.text,start};
+ const entries=pages.flatMap(page=>{let cursor=0,previousText='';return page.blocks.map((block,index)=>{
+  const value=documentBlocksToText([block]),start=cursor,previous_text=previousText;cursor+=value.length+1;
+  if(value.trim())previousText=value.trim();
+  return {...page,block,index,previous_text,projection:value,text:block.kind==='table'||block.kind==='list'?'':block.text,start};
  });});
  const stampPattern=/(?<![\p{L}\p{N}])(\d{4,9})(?:\\?[_＿]|[ \t])*(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(?![\p{L}\p{N}])/gu;
  const candidates=entries.flatMap(entry=>[...entry.text.matchAll(stampPattern)].filter(match=>!entry.text.slice(0,match.index).replace(/[\d\s/\\_.:!\-]/g,'')).map(match=>({entry,match})));
@@ -73,7 +63,11 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  const scannerIds=new Map<string,Set<string>>();
  for(const {entry,match} of stamps){const ids=scannerIds.get(entry.file_id)??new Set<string>();ids.add(match[1]!);scannerIds.set(entry.file_id,ids);}
  const edits:ScanNoiseEdit[]=[];
- const add=(entry:typeof entries[number],a=0,b=entry.text.length)=>{if(numberLine.test(entry.text.trim())&&sensitiveEdits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start<entry.start+b&&edit.end>entry.start+a))return;if(b>a&&!edits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start===entry.start+a&&edit.end===entry.start+b))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+a,end:entry.start+b,source_text:entry.text.slice(a,b),replacement_text:''});};
+ const followsBusinessLabel=(entry:typeof entries[number])=>{
+  const label=entry.previous_text;
+  return label.length<=32&&!/[\r\n]/.test(label)&&/(?:金额|本金|利息|费用|价款|余额|合计|总计|数量|面积|期限|天数|期数|编号|账号|案号|电话|邮编)[：:\s]*$/u.test(label);
+ };
+ const add=(entry:typeof entries[number],a=0,b=entry.text.length)=>{if(numberLine.test(entry.text.trim())&&followsBusinessLabel(entry))return;if(numberLine.test(entry.text.trim())&&sensitiveEdits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start<entry.start+b&&edit.end>entry.start+a))return;if(b>a&&!edits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start===entry.start+a&&edit.end===entry.start+b))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+a,end:entry.start+b,source_text:entry.text.slice(a,b),replacement_text:''});};
  const addProjection=(entry:typeof entries[number],a:number,b:number)=>{if(b>a&&!edits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start===entry.start+a&&edit.end===entry.start+b))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+a,end:entry.start+b,source_text:entry.projection.slice(a,b),replacement_text:''});};
  // AI返回后仅清理固定占位符与时间戳；普通数字保留，页角数字由下方跨页证据判断。
  for(const entry of entries){
@@ -97,11 +91,7 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  });
  const sequences=new Map<string,Set<number>>();
  for(const entry of margins){const value=numeric(entry.text);if(value===null||Math.abs(value-entry.page)>5)continue;const key=`${entry.file_id}:${value-entry.page}`,set=sequences.get(key)??new Set<number>();set.add(entry.page);sequences.set(key,set);}
- // 已知待核修复点：此分支未检查前一结构块的业务标签。
- // 静态触发场景：同文件两页有8836_日期时间扫描签名，某页最后两块为“付款金额”“8836”；
- // 最后一块既是业务金额，又等于scannerIds，仍会进入add删除。示例号码可替换，不是固定黑名单。
- // 这是确定规则的上下文保护遗漏，与允许Agent语义判断垃圾是两件事；目前未以运行回归或真实误删记录确认。
- // 修复时应验证业务标签/值与扫描证据冲突的边界，不能通过禁止全部角码清理或删除Agent三种kind来处理。
+ // 扫描号/跨页证据不能覆盖明确的业务标签；add在前一块为金额、数量等标签时保留独立数字。
  for(const entry of margins){const value=numeric(entry.text);if(scannerIds.get(entry.file_id)?.has(entry.text.trim())||value!==null&&(sequences.get(`${entry.file_id}:${value-entry.page}`)?.size??0)>=3)add(entry);}
  // C类角码仅在页边界且已有同文件重复扫描签名证据时清理，正文/表格里的同形业务值保留。
  for(const entry of entries)if(scannerIds.has(entry.file_id)&&(entry.index===0||entry.index===entry.blocks.length-1)&&/^(?:C{1,2}[. ]?\d+|\[[ \t]*C[ \t]*\]\d+)$/i.test(entry.text.trim()))add(entry);
@@ -131,20 +121,19 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  * 本函数不调用Agent，也不做敏感信息或业务语义验收；提取原始OCR/编辑审计由storeExtractedDocument保存。
  */
 export function cleanScanNoisePages(pages:ScanNoisePage[]){
- const edits=findScanNoiseEdits(pages);
+ const edits=findScanNoiseEdits(pages),byPage=new Map<string,ScanNoiseEdit[]>();
+ for(const edit of edits){const key=`${edit.file_id}:${edit.page}`,list=byPage.get(key)??[];list.push(edit);byPage.set(key,list);}
+ for(const list of byPage.values())list.sort((a,b)=>b.start-a.start);
  return {edits,pages:pages.map(page=>{
-  const blocks=structuredClone(page.blocks);let blockStart=0;
-  for(let blockIndex=0;blockIndex<blocks.length;blockIndex++){
-   const block=blocks[blockIndex]!,sourceBlock=page.blocks[blockIndex]!;
-   const projection=documentBlocksToText([sourceBlock]),ranges=documentFieldRanges([sourceBlock]).map(range=>({...range,start:range.start+blockStart,end:range.end+blockStart}));
-   blockStart+=projection.length+(blockIndex<blocks.length-1?1:0);
-   const fields=blockFields(block);
-   for(let fieldIndex=0;fieldIndex<fields.length;fieldIndex++){
-    const range=ranges.find(item=>item.block_id===block.id&&item.field_index===fieldIndex);if(!range)continue;
-    let text=fields[fieldIndex]!.text;
-    for(const edit of edits.filter(item=>item.file_id===page.file_id&&item.page===page.page&&item.start>=range.start&&item.end<=range.end).sort((a,b)=>b.start-a.start))text=text.slice(0,edit.start-range.start)+edit.replacement_text+text.slice(edit.end-range.start);
-    fields[fieldIndex]!.set(text);
+  const blocks=structuredClone(page.blocks),pageEdits=byPage.get(`${page.file_id}:${page.page}`)??[];let blockStart=0;
+  for(const block of blocks){
+   const length=documentBlocksToText([block]).length;
+   for(const field of documentBlockFields(block)){
+    const start=blockStart+field.start,end=blockStart+field.end;let text=field.text;
+    for(const edit of pageEdits)if(edit.start>=start&&edit.end<=end)text=text.slice(0,edit.start-start)+edit.replacement_text+text.slice(edit.end-start);
+    field.set(text);
    }
+   blockStart+=length+1;
   }
   return {...page,blocks};
  })};

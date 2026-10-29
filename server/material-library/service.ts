@@ -78,7 +78,7 @@ export async function createLibraryPackage(pool:Pool,value:unknown){
  return{id,name:input.name,lock_version:1};
 }
 
-export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:number;page_size?:number;ready_only?:boolean;project_ids?:string[];redaction_state?:string;archived_only?:boolean;usage_project_id?:string;source_mode?:'any'|'redacted'|'original'}={}){
+export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:number;page_size?:number;ready_only?:boolean;project_ids?:string[];redaction_state?:string;preparation_state?:string;archived_only?:boolean;usage_project_id?:string;source_mode?:'any'|'redacted'|'original'}={}){
  const page=options.page??1,pageSize=options.page_size??30;
  if(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)throw new HTTPException(400,{message:'材料包分页参数无效'});
  const q=options.q?.trim()??'';
@@ -89,6 +89,18 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
  const usageProjectId=options.usage_project_id?uuid(options.usage_project_id):undefined;
  const state=options.redaction_state??'all';
  if(!['all','ready','not_ready'].includes(state))throw new HTTPException(400,{message:'脱敏状态无效'});
+ const preparationState=options.preparation_state??'all';
+ if(!['all','ready','not_ready'].includes(preparationState))throw new HTTPException(400,{message:'整理状态无效'});
+ let preparationFilter='';
+ if(preparationState!=='all'){
+  const available=(await pool.query("SELECT to_regclass('ai_distill.library_preparations') IS NOT NULL AS available")).rows[0]?.available===true;
+  preparationFilter=available?`AND ${preparationState==='not_ready'?'NOT ':''}EXISTS(
+   SELECT 1 FROM ai_distill.library_preparations preparation
+   JOIN ai_distill.library_jobs preparation_job ON preparation_job.id=preparation.job_id AND preparation_job.status='succeeded'
+   WHERE preparation.package_id=p.id AND preparation.revision_id=r.id AND preparation.result->>'format'='material-preparation-v2'
+  )`:preparationState==='ready'?'AND false':'';
+ }
+
  const sourceMode=options.source_mode??'any';if(!['any','redacted','original'].includes(sourceMode))throw new HTTPException(400,{message:'材料来源模式无效'});
  const usageJoin=usageProjectId?`LEFT JOIN ai_distill.projects requested_phase ON requested_phase.id=$8::uuid AND requested_phase.deleted_at IS NULL
   LEFT JOIN ai_distill.project_material_uses material_use ON material_use.project_group_id=requested_phase.project_group_id AND material_use.package_id=p.id
@@ -120,6 +132,7 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
     AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=v.id AND d.extraction_job_id=e.id) = v.file_count) extracted
   ${usageJoin}
   WHERE (($7::boolean=false AND p.deleted_at IS NULL) OR ($7::boolean=true AND p.deleted_at IS NOT NULL))
+  ${preparationFilter}
   AND ($4::boolean=false OR available.count>0)
   AND ($5::text='all' OR ($5::text='ready' AND available.count>0) OR ($5::text='not_ready' AND available.count=0))
   AND (${sourceModeParam}='any' OR (${sourceModeParam}='redacted' AND available.count>0) OR (${sourceModeParam}='original' AND extracted.count>0))

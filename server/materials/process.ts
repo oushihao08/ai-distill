@@ -51,7 +51,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
      return{...page,structure:structured};
     });provider=result.provider;
    }
-   // 图片无文字、表格结构不支持等不一定可由再次OCR修复，保留issues，不据此重传整份PDF。
+   // 历史缓存或provider附带的非重试提示不靠整份PDF重传修复；仅复查明确可重试的空白/乱码页。
    const retryableIssues=new Set(['empty_page','truncated_response','ocr_page_error','unreadable']);
    const ocrPagesToRecheck=pages.filter(page=>page.method==='ocr'&&(!page.text.trim()||page.issues?.some(issue=>retryableIssues.has(issue))));
    if(format==='pdf'&&ocrPagesToRecheck.length&&extractor.extractPages){

@@ -93,7 +93,7 @@ function normalizedField(block: MineruBlock, name: string, content: Record<strin
  return Object.hasOwn(content, name) ? content[name] : block[name];
 }
 
-function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): DocumentBlock[] {
+function toBlocks(block: MineruBlock, ordinal: number): DocumentBlock[] {
  const type = typeof block.type === 'string' ? block.type.toLowerCase() : 'text';
  const content = isRecord(block.content) ? block.content : {};
  const blocks: DocumentBlock[] = [];
@@ -118,7 +118,6 @@ function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): Docume
   else {
    // Preserve table text even when MinerU returns a non-HTML table representation.
    addText('paragraph', tableHtml);
-   page.issues.add('table_structure_unparsed');
   }
  }
 
@@ -135,8 +134,6 @@ function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): Docume
   : type.includes('code') || type.includes('algorithm') ? normalizedField(block, 'code_content', content) ?? normalizedField(block, 'text', content)
   : normalizedField(block, 'text', content) ?? normalizedField(block, 'content', content))
    ?? (typeof normalizedField(block,'html',content)==='string'?{type:'html',text:normalizedField(block,'html',content)}:undefined);
- // A generated caption describes an image but does not prove that OCR transcribed text printed inside it.
- if (type === 'image' && !textLeaves(normalizedField(block, 'text', content) ?? content).length) page.issues.add('image_without_text');
  if (type === 'title' || Number.isSafeInteger(block.text_level)) addText('heading', textValue, Number.isSafeInteger(block.text_level) ? Number(block.text_level) : Number(content.level) || 1);
  else if (type.includes('footnote')) addText('footnote', textValue);
  else if (type.includes('equation')) addText('formula', textValue);
@@ -149,14 +146,10 @@ function toBlocks(block: MineruBlock, ordinal: number, page: ParsedPage): Docume
  }
 
  if (!blocks.length) {
-  // Unknown blocks may still contain source text; preserve safe text leaves and expose the unsupported shape.
+  // Unknown blocks may still contain source text; preserve safe text leaves when present.
   const fallback = textLeaves(block.content);
   if (fallback.length) addText('paragraph', fallback);
-  else page.issues.add(type === 'image' ? 'image_without_text' : 'block_without_text');
  }
- // MinerU V1 原始结果含这些正文附属块；原文仍按段落保留，不误报未知类型。
- if (!['title', 'text', 'paragraph', 'html', 'header', 'footer', 'page_number', 'aside_text', 'table', 'list', 'page_footnote', 'footnote', 'image', 'equation', 'equation_isolated', 'code', 'algorithm'].some(name => type === name || (name === 'table' && type.includes(name)) || (name === 'list' && type.includes(name)))) page.issues.add('unsupported_block_type');
- if (blocks.some(item => documentBlocksToText([item]).includes('[NO TEXT]'))) page.issues.add('no_text_placeholder');
  return blocks;
 }
 
@@ -171,7 +164,7 @@ export function parseMineruJson(value: unknown, pageCount: number): Page[] {
    const block = candidate as MineruBlock;
    const pageIndex = Number.isInteger(block.page_idx) ? Number(block.page_idx) : groups.length > 1 ? groupIndex : -1;
    if (pageIndex < 0 || pageIndex >= pageCount) throw new Error('MinerU JSON块缺少有效页码');
-   pages[pageIndex]!.blocks.push(...toBlocks(block, ordinal++, pages[pageIndex]!));
+   pages[pageIndex]!.blocks.push(...toBlocks(block, ordinal++));
   }
  }
  return pages.map(({ blocks, issues }, index) => {
@@ -184,18 +177,18 @@ export function parseMineruJson(value: unknown, pageCount: number): Page[] {
 /** DOCX has document order but no stable PDF page boundary. Keep one logical text page. */
 export function parseMineruDocxJson(value: unknown): Page[] {
  if (!Array.isArray(value)) throw new Error('MinerU DOCX JSON结构无效');
- const page: ParsedPage = { blocks: [], issues: new Set<string>() };
+ const page = { blocks: [] as DocumentBlock[] };
  const groups = value.length && value.every(Array.isArray) ? value as unknown[][] : [value];
  let ordinal = 0;
  for (const group of groups) for (const candidate of group) {
   if (!isRecord(candidate)) throw new Error('MinerU DOCX JSON块无效');
   const block = candidate as MineruBlock;
   if (typeof block.type === 'string' && block.type.toLowerCase() === 'image') continue;
-  page.blocks.push(...toBlocks(block, ordinal++, page));
+  page.blocks.push(...toBlocks(block, ordinal++));
  }
  const text = documentBlocksToText(page.blocks);
  if (!text.trim()) throw new Error('MinerU DOCX没有可提取文字');
- return [{ page: 1, text, structure: page.blocks, method: 'text', ...(page.issues.size ? { issues: [...page.issues] } : {}) }];
+ return [{ page: 1, text, structure: page.blocks, method: 'text' }];
 }
 
 export class MineruCliPdfExtractor implements PdfExtractionProvider {
@@ -217,7 +210,7 @@ export class MineruCliPdfExtractor implements PdfExtractionProvider {
   await mkdir(diagnosticDirectory, { recursive: true, mode: 0o700 });
   const executable = resolveRepositoryPath(this.env.MINERU_CLI_PATH ?? '.storage/tools/mineru-open-api');
   const child = Bun.spawn([executable, 'extract', path, '--model', 'vlm', '--ocr', '--language', 'ch', '-f', 'json', '--timeout', '1800'], {
-   env: { PATH: this.env.PATH ?? '/usr/bin:/bin', HOME: this.env.HOME ?? '', MINERU_TOKEN: token, NO_COLOR: '1' },
+   env: { PATH: this.env.PATH ?? '/usr/bin:/bin', HOME: this.env.HOME ?? '', MINERU_TOKEN: token, NO_COLOR: '1', NO_PROXY: 'cdn-mineru.openxlab.org.cn', no_proxy: 'cdn-mineru.openxlab.org.cn' },
    stdout: 'pipe', stderr: 'pipe',
   });
   const abort = () => child.kill();

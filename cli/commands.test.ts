@@ -624,3 +624,20 @@ test('整理show的content开关不要求值，完整内容只按需GET',async()
  const r=await runCommand(['library','prepare','show','--preparation',attempt,'--content'],f.client);
  expect(f.calls).toHaveLength(1);expect(f.calls[0]!.url.searchParams.get('include_content')).toBe('true');expect((r.data as any).documents[0].text).toBe('完整正文');
 });
+
+
+test('材料整理CLI冻结单次预算，显式续作只发送一次原job请求',async()=>{
+ const {client,calls}=fixture(()=>({id:second,reused:false}));
+ await runCommand(['library','prepare','start','--revision',question,'--redaction',attempt,'--request-key',project,'--execution-timeout','30m'],client);
+ expect(JSON.parse(String(calls[0]!.init?.body)).execution_timeout_ms).toBe(1800000);
+ await runCommand(['library','prepare','resume','--job',attempt,'--request-key',project,'--execution-timeout','1h'],client);
+ expect(calls[1]!.url.pathname).toBe(`/api/material-library/jobs/${attempt}/prepare-resume`);
+ expect(JSON.parse(String(calls[1]!.init?.body))).toEqual({request_key:project,execution_timeout_ms:3600000});expect(calls).toHaveLength(2);
+});
+
+test('材料整理CLI诊断只返回安全计数和停止原因，不输出摘要正文',async()=>{
+ const {client,calls}=fixture(url=>url.pathname.includes('/jobs/')?{id:attempt,kind:'prepare',status:'succeeded',result_summary:{preparation_id:attempt}}:{result:{package_summary:'私有正文',document_count:1,unassigned_group_count:0,unassigned_block_count:0,documents:[{summary:'私有摘要',visibility:'visible',notes:'私有备注'},{summary:'已有成果',visibility:'hidden'}],combinations:[{direction:'私有方向'}],warnings:['私有警告']}});
+ const out=await runCommand(['library','prepare','diagnose','--job',attempt],client);
+ expect(out.data).toMatchObject({document_count:1,entry_count:2,visible_count:1,hidden_count:1,summary_count:2,combination_count:1,warning_count:1});
+ expect(JSON.stringify(out)).not.toContain('私有');expect(calls.every(call=>!call.init?.method||call.init.method==='GET')).toBe(true);
+});

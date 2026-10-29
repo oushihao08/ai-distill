@@ -8,7 +8,7 @@ type Mode='source'|'redacted'|'compare';
 const props=defineProps<{file:LibraryFile;revision:LibraryRevision;mode:Mode;redactionId:string}>();
 const emit=defineEmits<{ 'update:mode':[value:Mode] }>();
 const mode=computed({get:()=>props.mode,set:(value:Mode)=>emit('update:mode',value)});
-interface Page {page:number;text:string;issues?:unknown[]}
+interface Page {page:number;text:string}
 const extractionId=shallowRef('');
 const source=shallowRef<Page[]>([]),redacted=shallowRef<Page[]>([]);
 const busy=shallowRef(false),error=shallowRef('');
@@ -19,7 +19,6 @@ const effectiveExtraction=computed(()=>mode.value==='compare'?selectedRedaction.
 const extractionItems=computed(()=>extractions.value.map((item,index)=>({title:`识别版本 ${extractions.value.length-index} · ${dateLabel(item.created_at)}`,value:item.id})));
 const extractionSelection=computed({get:()=>selectedExtraction.value??'',set:(id:string)=>{extractionId.value=id;}});
 const comparePages=computed(()=>source.value.map(page=>({source:page,redacted:redacted.value.find(item=>item.page===page.page)})));
-const issueCount=computed(()=>source.value.reduce((sum,page)=>sum+(page.issues?.filter(issue=>issue!=='image_without_text').length??0),0));
 const emptyMessage=computed(()=>mode.value==='source'?(effectiveExtraction.value?'':'此文件尚未识别原文，请先执行“识别原文”。'):!selectedRedaction.value?'此文件尚无成功的脱敏版本，请先完成脱敏。':'');
 let controller:AbortController|undefined;
 async function load(){
@@ -48,8 +47,7 @@ onUnmounted(()=>{controller?.abort();});
   <v-select v-if="mode==='source'&&extractions.length" v-model="extractionSelection" :items="extractionItems" label="识别版本" hide-details class="max-w-380 w-full"/>
  </Row>
  <v-alert v-if="error" type="error" class="ma-16" role="alert">{{ error }}</v-alert>
- <v-alert v-if="!busy&&issueCount" type="warning" class="ma-16">识别结果包含 {{ issueCount }} 项问题，请结合原件核对。</v-alert>
- <section :aria-busy="busy" aria-label="文件内容" class="min-w-0 h-[60vh] min-h-320 overflow-y-auto bg-surface-soft">
+ <section :aria-busy="busy" aria-label="文件内容" class="min-w-0 min-h-320 bg-surface-soft">
   <Column v-if="busy" x="center" y="center" :gap="12" class="h-full p-24"><v-progress-circular indeterminate color="primary" :size="28"/><p class="text-sm text-muted">正在读取文件内容…</p></Column>
   <Column v-else-if="!error&&emptyMessage" x="center" y="center" :gap="12" class="h-full p-24"><UiIcon name="file" class="text-muted"/><p class="text-sm text-muted text-center">{{ emptyMessage }}</p></Column>
   <Column v-else-if="mode==='compare'&&!error" :gap="16" class="p-12"><Row stack-on-mobile :gap="16" y="start"><strong class="text-sm flex-1">识别原文</strong><strong class="text-sm flex-1 text-success">脱敏文本</strong></Row><Row v-for="page in comparePages" :key="page.source.page" stack-on-mobile :gap="16" y="stretch"><article v-for="(side,index) in [page.source,page.redacted]" :key="index" class="min-w-0 flex-1 w-full bg-surface border border-line rounded-md p-12"><p class="text-xs text-muted mb-12">{{ index===0?'原文':'脱敏' }} · 第 {{ side?.page }} 页</p><pre class="text-sm leading-relaxed whitespace-pre-wrap break-words">{{ side?.text||'（本页无正文）' }}</pre></article></Row></Column>

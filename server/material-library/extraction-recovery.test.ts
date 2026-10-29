@@ -139,7 +139,7 @@ for(const reason of ['user_cancelled','lease_lost','deadline_exceeded','heartbea
  };
  try{
   await writeFile(join(root,item.storage_path),bytes);
-  await runClaimedJob({query} as any,root,{...first,kind:'intake',input_snapshot:{files:[item]}},new AbortController().signal,2);
+  await runClaimedJob({query} as any,root,{...first,lease_expires_at:new Date(Date.now()+25).toISOString(),kind:'intake',input_snapshot:{files:[item]}},new AbortController().signal,2);
   expect(saved[2]).toBe(reason==='user_cancelled'?'cancelled':'failed');expect(saved[3]).toBe(reason);
  }finally{await rm(root,{recursive:true,force:true});}
 });
@@ -181,4 +181,18 @@ test('known library failure survives settlement outage and resumes only original
   expect(JSON.parse(params[1]![5]).reason_code).toBe(JSON.parse(params[0]![5]).reason_code);
   expect(params[1]![1]).toBe(first.lease_token);expect(params[1]![2]).toBe('failed');
  }finally{q.close();await rm(root,{recursive:true,force:true});}
+});
+
+ test('transient heartbeat failure recovers within confirmed lease without cancelling work',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'library-heartbeat-recover-')),bytes=Buffer.from('正文'),first=job();let beats=0,committed=false;
+ const item={...file,format:'txt',source_sha256:hash(bytes),size_bytes:bytes.length,storage_path:'input.txt',original_name:'input.txt'};
+ const query=async(sql:string,values:any[]=[])=>{
+  if(sql.startsWith('SELECT f.id')){await Bun.sleep(35);expect(currentTaskSignal()?.aborted).toBe(false);return{rows:[{id:item.file_id,sha256:item.source_sha256,size_bytes:bytes.length,storage_path:item.storage_path}]};}
+  if(sql.startsWith('UPDATE ai_distill.library_jobs SET heartbeat')){beats++;if(beats===1)throw new Error('temporary DB failure');return{rows:[{id:first.id}],rowCount:1};}
+  if(sql.startsWith('SELECT id,revision_id'))return{rows:[{id:first.id,revision_id:first.revision_id}],rowCount:1};
+  if(sql.startsWith("UPDATE ai_distill.library_jobs SET status='succeeded'"))committed=true;
+  return{rows:[{id:first.id}],rowCount:1};
+ };
+ try{await writeFile(join(root,item.storage_path),bytes);await runClaimedJob({query,connect:async()=>({query,release(){}})} as any,root,{...first,lease_expires_at:new Date(Date.now()+25).toISOString(),kind:'intake',input_snapshot:{files:[item]}},new AbortController().signal,2);expect(beats).toBeGreaterThan(1);expect(committed).toBe(true);}
+ finally{await rm(root,{recursive:true,force:true});}
 });

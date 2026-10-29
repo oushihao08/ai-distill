@@ -3,9 +3,22 @@ import {test,expect} from 'bun:test';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {readMineruResultZip,runUnzip} from './mineru-api';
+import {MineruApiFirstPdfExtractor,readMineruResultZip,runUnzip} from './mineru-api';
 import {command} from '../pdf';
 import {withTaskSignal} from '../../task-signal';
+
+test('does not resubmit a timed-out MinerU task through the CLI, but keeps pre-submission fallback',async()=>{
+ let cliCalls=0;
+ const cli={id:'mineru-cli' as const,extract:async()=>{cliCalls++;return{pages:[],sha256:'cli',provider:'mineru-cli' as const};}};
+ const submittedApi={id:'mineru-api' as const,extract:async()=>{throw Object.assign(new Error('MinerU API任务超过30分钟'),{reason_code:'provider_timeout',failure_phase:'poll_result',provider_state:'pending',provider_task_submitted:true});}};
+ const submitted=new MineruApiFirstPdfExtractor(submittedApi,cli);
+ await expect(submitted.extract('unused.pdf')).rejects.toMatchObject({reason_code:'provider_timeout',provider_state:'pending'});
+ expect(cliCalls).toBe(0);
+
+ const transportApi={id:'mineru-api' as const,extract:async()=>{throw new TypeError('network unavailable');}};
+ const fallback=await new MineruApiFirstPdfExtractor(transportApi,cli).extract('unused.pdf');
+ expect(fallback.provider).toBe('mineru-cli');expect(cliCalls).toBe(1);
+});
 
 test('ZIP download preserves chunks at the limit and rejects empty results',async()=>{
  const body=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(new Uint8Array([1,2]));controller.enqueue(new Uint8Array([3,4]));controller.close();}});

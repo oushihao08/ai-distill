@@ -3,7 +3,7 @@ import {test,expect} from 'bun:test';
 import {mkdtemp,mkdir,readFile,writeFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {prepareAgentLibraryMaterials} from './agent-redaction';
+import {prepareAgentLibraryMaterials,validateAgentPlanFileDeclaration} from './agent-redaction';
 import {readLibraryProcessingSettings,saveLibraryProcessingSettings} from './settings';
 
 const settings={version:1,extraction:{protocol:'v1',provider_config:{}},redaction:{provider:'codex',model:'fixture',reasoning_effort:'medium',prompt:'旧模板'},execution:{task_timeout_ms:1200000,request_timeout_ms:1000},policy:{preserve_dates:true,preserve_amounts:true}};
@@ -47,6 +47,12 @@ test('completion message alone cannot publish without the complete plan artifact
  const directory=await mkdtemp(join(tmpdir(),'agent-artifact-'));
  try{await expect(prepareAgentLibraryMaterials({...options(directory),execute:async()=>({result:{plan_file:'output/material-plan.json'},session_id:'fixture',usage:null,model:'fixture'} as any)})).rejects.toMatchObject({reason_code:'agent_plan_file_missing'});
  }finally{await rm(directory,{recursive:true,force:true});}
+});
+test('an invalid final plan-file declaration has a distinct diagnostic from a missing artifact',async()=>{
+ let error:unknown;
+ try{validateAgentPlanFileDeclaration({plan_file:'output/other.json'});}catch(reason){error=reason;}
+ expect(error).toMatchObject({reason_code:'agent_plan_file_declaration_invalid'});
+ expect(()=>validateAgentPlanFileDeclaration({plan_file:'output/material-plan.json'})).not.toThrow();
 });
 test('an empty plan artifact still fails full source coverage',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'agent-empty-plan-'));

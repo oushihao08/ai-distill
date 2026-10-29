@@ -2,11 +2,11 @@
 props.revisions固定文件版本；busy限制写操作；run通知父页面派发真实任务，refresh用于刷新任务状态。 -->
 <script setup lang="ts">
 import type {MaterialProcessingMode} from '@shared/material-library';
-import type {LibraryRevision} from '../types/material-library';
+import type {LibraryRevision,LibraryPreparationSummary} from '../types/material-library';
 import {api} from '../api/client';
 import {dateLabel} from '../utils/format';
 import {defaultLibraryRedactionTemplateId} from '@shared/redaction-templates';
-const props=defineProps<{revisions:LibraryRevision[];busy:boolean;processingMode?:MaterialProcessingMode}>();
+const props=defineProps<{revisions:LibraryRevision[];busy:boolean;processingMode?:MaterialProcessingMode;projectId?:string;preparations:LibraryPreparationSummary[];preparationStatus:'loading'|'error'|'unavailable'|'ready'}>();
 const emit=defineEmits<{run:[revision:LibraryRevision,kind:'intake'|'extract'|'redact',templateId?:string];refresh:[]}>();
 const templates=shallowRef<{id:string;name:string;workflow:string}[]>([]),templateId=shallowRef(''),templateError=shallowRef('');
 const selectedTemplate=computed(()=>props.processingMode==='mask'?undefined:templates.value.find(t=>t.id===templateId.value));
@@ -26,12 +26,26 @@ const extracted=computed(()=>revision.value?.jobs.some(item=>item.kind==='extrac
 const usable=computed(()=>revision.value?.redactions.some(item=>item.usable_for_question===true||item.usable_for_question==='true')??false);
 const active=computed(()=>revision.value?.jobs.find(item=>item.kind!=='prepare'&&['queued','running'].includes(item.status)));
 const names={intake:'入库',extract:'识别原文',redact:'脱敏',prepare:'材料整理'};
+const preparationReady=computed(()=>props.preparations.some(item=>item.revision_id===revision.value?.id&&item.redaction_id===(props.processingMode==='original'?null:revision.value?.redactions.find(redaction=>redaction.usable_for_question===true||redaction.usable_for_question==='true')?.id??null)&&(!props.projectId||!item.project_id||item.project_id===props.projectId)));
+function stageStatus(kind:'extract'|'redact'|'prepare',complete:boolean){
+ const latest=revision.value?.jobs.filter(job=>job.kind===kind).sort((a,b)=>b.created_at.localeCompare(a.created_at))[0];
+ if(latest?.status==='queued')return{label:'排队中',color:'info'};
+ if(latest?.status==='running')return{label:'处理中',color:'primary'};
+ if(latest?.status==='failed')return{label:complete?'最近失败 · 有可用结果':'失败',color:'error'};
+ if(latest?.status==='cancelled')return{label:complete?'已取消 · 有可用结果':'已取消',color:'warning'};
+ return{label:complete?'已完成':'未完成',color:complete?'success':'secondary'};
+}
+const processingStatuses=computed(()=>[
+ {name:'原文提取',...stageStatus('extract',extracted.value)},
+ ...(props.processingMode==='original'?[{name:'脱敏',label:'无需脱敏',color:'secondary'}]:[{name:'脱敏',...stageStatus('redact',usable.value)}]),
+ {name:'材料整理',...(props.preparationStatus==='loading'?{label:'读取中',color:'secondary'}:props.preparationStatus==='error'?{label:'状态读取失败',color:'warning'}:props.preparationStatus==='unavailable'?{label:'未启用',color:'secondary'}:stageStatus('prepare',preparationReady.value))},
+]);
+
 </script>
 <template><Column :gap="0" class="min-w-0">
  <Row wrap y="center" :gap="8" class="px-8 py-8 border-b border-line">
   <span class="text-xs whitespace-nowrap" :class="revision?.state==='ready'?'text-success':'text-muted'">{{ revision?.state==='ready'?'已入库':'待入库' }}</span>
-  <span class="text-xs whitespace-nowrap" :class="extracted?'text-success':'text-muted'">{{ extracted?'原文已识别':'待识别原文' }}</span>
-  <span v-if="props.processingMode!=='original'" class="text-xs whitespace-nowrap" :class="usable?'text-success':'text-muted'">{{ usable?'已脱敏':'待完成脱敏' }}</span>
+  <v-chip v-for="stage in processingStatuses" :key="stage.name" size="small" variant="tonal" :color="stage.color">{{ stage.name }}：{{ stage.label }}</v-chip>
   <template v-if="revision">
    <v-btn v-if="revision.state==='pending'" :disabled="busy||!!active" @click="emit('run',revision,'intake')">入库</v-btn>
    <v-btn v-else :disabled="busy||!!active" @click="emit('run',revision,'extract')">{{ extracted?'重新识别':'识别原文' }}</v-btn>
@@ -45,7 +59,7 @@ const names={intake:'入库',extract:'识别原文',redact:'脱敏',prepare:'材
  </Row>
  <p v-if="props.processingMode" class="px-12 py-8 text-sm text-muted">本期设置：{{ props.processingMode==='original'?'不脱敏，后续使用提取原文':props.processingMode==='mask'?'历史遮挡模式已退役，请先修改本期设置':'Agent 主导化名脱敏' }}</p>
  <v-alert v-if="templateError" type="error" density="compact">{{ templateError }}</v-alert>
- <v-alert v-if="selectedTemplate?.workflow==='codex_plan'" type="info" density="compact">Agent按整包主体表统一化名、保留法院名称并划分文书。使用数据库中本次保存的模板；单次执行使用本次冻结预算，到限停止并保留进度。</v-alert>
+
  <Row v-if="active" x="between" wrap y="center" :gap="12" class="px-16 py-12 bg-primary-soft"><span class="text-sm">{{ names[active.kind] }}任务{{ active.status==='queued'?'排队中':'执行中' }}。</span><v-btn size="small" variant="text" @click="emit('refresh')">刷新状态</v-btn></Row>
  <LibraryFileReader v-if="file&&revision" :key="`${revision.id}-${file.id}`" v-model:mode="fileMode" :file="file" :revision="revision" :redaction-id="redactionSelection"/>
  <Column v-else x="center" y="center" :gap="12" class="p-32 min-h-320"><UiIcon name="file" class="text-muted"/><p class="text-sm text-muted">这个材料包还没有文件，请选择材料文件夹导入。</p></Column>

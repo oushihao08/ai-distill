@@ -34,7 +34,7 @@
 | `jobs.test.ts` | 提取队列的MinerU配置冻结、有限回退、尝试去重和来源绑定 |
 | `materials-cache.test.ts` | 缓存来源与摘要验证、OCR问题复查、脱敏指纹兼容及DOCX结构提取 |
 | `materials.test.ts` | 旧页级OCR/实体脱敏路径的页序、跨页替换和结果生成 |
-| `pdf-extraction/mineru-structure.test.ts` | MinerU PDF/DOCX不同结构版本的顺序、表格、图像文字和问题标记 |
+| `pdf-extraction/mineru-structure.test.ts` | MinerU PDF/DOCX不同结构版本的顺序、表格及图像/未知块文字保留 |
 | `redacted-docx.test.ts` | 由传入正文/结构生成DOCX、保留附件分页与表格，并拒绝空来源 |
 | `redacted-docx-export.test.ts` | DOCX导出的步骤资格、来源/摘要、路径隔离、回滚和产物索引绑定 |
 | `redaction-jobs.test.ts` | 旧脱敏队列锁、声明已脱敏附件、冻结输入、取消及原子发布 |
@@ -45,9 +45,9 @@
 
 旧目录按题目入库，旧材料包先处理material_package，再由`../material-package-questions.ts`建派生题。全局库由`../material-library/questions.ts`冻结脱敏或成功提取原文，默认脱敏；创建后期次设置变化不切换旧题来源，出题/作答/评分/归档均使用同一快照。派生题不再运行旧入库/脱敏。主项目永久使用账不归本模块管理。
 
-旧提取入队冻结PDF provider及转换版本，API默认优先，符合特定网络/服务/超时错误时才回退一次CLI；DOCX直接MinerU API，忽略图片、按原文序映射为单逻辑页。TXT/MD本地解析。两种MinerU方式需MINERU_KEY，当前队列不回退智谱。健康与问题提示保留，不能将issues直接等同于脱敏遗漏。
+旧提取入队冻结PDF provider及转换版本，API默认优先，符合特定网络/服务/超时错误时才回退一次CLI；DOCX直接MinerU API，忽略图片、按原文序映射为单逻辑页。TXT/MD本地解析。两种MinerU方式需MINERU_KEY，当前队列不回退智谱。空白页及provider明确的异常用于局部复查；新解析不再生成图片/占位/未知块/表格降级推断标记，历史缓存记录不回写。
 
-提取入队可复用同来源/配置的成功尝试，活动去重；执行时另选同来源/供应商配置的历史PDF产物，校验文件、SHA、结构文字投影，不等于只读取成功尝试缓存。损坏缓存可重新提取。只对OCR空白页或empty_page/truncated_response/ocr_page_error/unreadable问题做一次复查；image_without_text、未知块/表格结构提示不触发再次收费。复查通过pdfseparate/pdfunite在私有临时目录构造问题页子集，交给原provider，验证子集摘要、原件绑定及返回页数/页序后只替换指定页，正常缓存页保留复用及usage身份。缺少extractPages能力的注入提取器保留原文并添加ocr_recheck_unavailable，不降级为整份重传；结果仍有问题时保留issues，不阻断旧入库。全局库有自己的可用性判断，不套用旧队列状态。
+提取入队可复用同来源/配置的成功尝试，活动去重；执行时另选同来源/供应商配置的历史PDF产物，校验文件、SHA、结构文字投影，不等于只读取成功尝试缓存。损坏缓存可重新提取。只对OCR空白页或empty_page/truncated_response/ocr_page_error/unreadable问题做一次复查；新解析不再生成图片无文字、未知块和表格结构降级提示，历史缓存中的旧标记不会触发复查。复查通过pdfseparate/pdfunite在私有临时目录构造问题页子集，交给原provider，验证子集摘要、原件绑定及返回页数/页序后只替换指定页，正常缓存页保留复用及usage身份。缺少extractPages能力的注入提取器保留原文并添加ocr_recheck_unavailable，不降级为整份重传；结果仍有问题时保留issues，不阻断旧入库。全局库有自己的可用性判断，不套用旧队列状态。
 
 `redaction.ts`只保留正文/索引渲染及历史协议标识；不执行字段映射或模型脱敏。`processMaterials()`的旧签名参数仅兼容现有工具，不作为Vision实体识别或旧配置的执行开关。
 
@@ -101,4 +101,4 @@ DOCX渲染版本为redacted-structure-docx-v5，版本参与缓存索引；连�
 
 本机明确新派发可在同一事务替代他机尚未开始的同范围待办；运行、结果未知和续作仍受保护，新派发失败则旧意图变更回滚。适用范围、共享状态兼容与验证边界见[执行队列的跨机准入](../execution-queue/README.md#他机未开始待办与本机明确派发)。
 
-材料DOCX布局由 `../lifecycle/material-docx.ts` 按主项目选择：默认 `separate`，按分册名称逐份输出且不额外插入正文标题；豆包高经济价值（兼容旧名豆包高经）注册 `combined`，合并时复用相同的首标题，缺少时补文书边界标题。来源模式与布局独立，不修改脱敏结果或冻结快照。`planMaterialDocxExports()` 是实际导出与本地验收共用的纯计划入口。
+材料DOCX布局由 `../lifecycle/material-docx.ts` 按主项目选择：默认 `separate`，按分册名称逐份输出且不额外插入正文标题；豆包高经济价值（兼容旧名豆包高经）注册 `combined`，合并时复用相同的首标题，缺少时补文书边界标题。题目冻结快照含材料整理结果时，按其中的文书分组导出且只纳入可见文书；整理结果存在但没有可见文书时明确拒绝，不回退整包正文。来源模式与布局独立，不修改脱敏结果或冻结快照。`planMaterialDocxExports()` 是实际导出与本地验收共用的纯计划入口。

@@ -1,7 +1,7 @@
 <!-- 文件职责：说明 PDF 提取 provider 契约、MinerU API 优先流程及 CLI 回退实现。 -->
 # PDF provider 契约
 
-为 MinerU PDF 解析提供统一页级文本、来源指纹和 provider 身份；默认直连 MinerU v4 API，仅网络、5xx或超时失败时回退一次到本机 `mineru-open-api` CLI。
+为 MinerU PDF 解析提供统一页级文本、来源指纹和 provider 身份；默认直连 MinerU v4 API，仅网络、5xx或云端任务提交前的超时失败时回退一次到本机 `mineru-open-api` CLI。云端已接收文件并进入轮询后的超时不通过 CLI 重复提交。
 
 ## 文件职责
 
@@ -13,7 +13,7 @@
 
 ## 数据流与依赖
 
-types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtractor` 先调用 MinerU v4 API，经共享 `parseMineruJson()` 转成版本化文档结构及确定性文字投影；仅网络、5xx或超时失败且任务未取消时调用一次 CLI 适配器。设置 `PDF_EXTRACTION_PROVIDER=mineru-cli` 可显式强制 CLI。API 与 CLI 都需 `MINERU_KEY`，不支持 GLM provider 分流。
+types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtractor` 先调用 MinerU v4 API，经共享 `parseMineruJson()` 转成版本化文档结构及确定性文字投影；仅网络、5xx或云端任务提交前的超时失败且任务未取消时调用一次 CLI 适配器。文件上传成功并进入轮询后超时保留 `provider_timeout`，记录 `extraction.cli.fallback.skipped`，不向同一 MinerU 服务重复提交。设置 `PDF_EXTRACTION_PROVIDER=mineru-cli` 可显式强制 CLI。API 与 CLI 都需 `MINERU_KEY`，不支持 GLM provider 分流。
 
 ## 维护边界
 
@@ -23,11 +23,11 @@ types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtrac
 
 ## MinerU 转换与诊断
 
-解析按原块顺序保存正文、标题层级、列表、表格行列/合并关系、公式、图注和脚注；文字投影从同一结构生成。HTML 表格仅作为输入解析，不在前端执行。空块、无文字图片、`[NO TEXT]`、未知类型和无法转换的表格通过页级 issues 提示，不据此宣称识别完整，也不阻断部分结果入库。图像路径和图像载荷不进入下游文档结构。
+解析按原块顺序保存正文、标题层级、列表、表格行列/合并关系、公式、图注和脚注；文字投影从同一结构生成。HTML 表格仅作为输入解析，不在前端执行。新解析不为图片无文字、占位符、空结构块、未知块类型及表格降级生成推断式提示；空白页仍保留为可复查信号。图像路径和图像载荷不进入下游文档结构。
 
-PDF转换标识为 `mineru-open-api-first-structured-v4`，DOCX为`mineru-docx-structured-v2`。V1原始结果中的header/footer/page_number/aside_text按原文保留，不误报未知类型；无文字图片、占位符及真正未知类型仍报告issues。入队可复用附件/配置相同的成功尝试，活动尝试保持去重；执行器另按来源与供应商/转换配置选择历史PDF产物缓存，再检查文件/结构/投影，不能把缓存查询等同于只选成功尝试。无结构旧缓存不会被新结构任务复用，重新提取入队时使该题下游结果失效，保留历史。`extraction.api.failed` 与 `extraction.cli.fallback.started` 记录 provider 切换，不记录授权头、签名 URL 或材料正文。
+PDF转换标识为 `mineru-open-api-first-structured-v4`，DOCX为`mineru-docx-structured-v2`。MinerU页面附属文本仍按原文保留；新解析不为图片、占位符、未知类型及表格结构降级产出推断式issues，历史提取和缓存不回写。真实空白页及provider明确返回的处理异常仍保留给局部复查流程。入队可复用附件/配置相同的成功尝试，活动尝试保持去重；执行器另按来源与供应商/转换配置选择历史PDF产物缓存，再检查文件/结构/投影，不能把缓存查询等同于只选成功尝试。无结构旧缓存不会被新结构任务复用，重新提取入队时使该题下游结果失效，保留历史。`extraction.api.failed`、`extraction.cli.fallback.started` 与 `extraction.cli.fallback.skipped` 记录 provider 选择，不记录授权头、签名 URL 或正文。
 
-HTML只在`html`字段、`type=html`的文字节点和表格HTML中转换：已配对的常用文字格式标签保留内部文字，`p/div`转段落边界、`br`转换行，实体单次解码一层。普通`text`字段、法规尖括号、未知标签及脚本/样式片段保留；不把全文当HTML。表格单元格保留未知尖括号文字；无法完整解析或存在无法归属的表外文字时保留完整原字段并报告`table_structure_unparsed`，不只保留已解析的部分。无效实体码点保留，不导致整份文档失败。以上是解析器的中间结果；材料发布前由共享`scan-noise`文本清理移除剩余的中文/未知/错配标签并解码多层实体，保留标签内正文、金额日期、法规名称和比较符号。此清理也由脱敏计划编译复用，不在DOCX生成器里补处理，不追溯改写旧提取结果或快照。
+HTML只在`html`字段、`type=html`的文字节点和表格HTML中转换：已配对的常用文字格式标签保留内部文字，`p/div`转段落边界、`br`转换行，实体单次解码一层。普通`text`字段、法规尖括号、未知标签及脚本/样式片段保留；不把全文当HTML。表格单元格保留未知尖括号文字；无法完整解析或存在无法归属的表外文字时保留完整原字段，不只保留已解析的部分，也不生成问题标记。无效实体码点保留，不导致整份文档失败。以上是解析器的中间结果；材料发布前由共享`scan-noise`文本清理移除剩余的中文/未知/错配标签并解码多层实体，保留标签内正文、金额日期、法规名称和比较符号。此清理也由脱敏计划编译复用，不在DOCX生成器里补处理，不追溯改写旧提取结果或快照。
 
 每次 CLI 返回后，在 `STORAGE_DIR/.mineru-diagnostics/<diagnostic_id>/` 保存 `response.json`、`stderr.txt`、`metadata.json`（目录 0700，文件 0600）。元数据包含源 SHA-256、页数、转换版本、退出码和超时／取消状态；已知 MinerU 令牌会从输出中遮盖。失败发布不删除此目录。运行日志 `extraction.diagnostics_saved` 记录诊断编号，可按 workflow/attempt/call 定位；结构解析失败的步骤错误也包含编号。启动 CLI 前失败或诊断写盘失败可能没有完整证据。
 
@@ -45,12 +45,18 @@ API下载结果后暂存`result.zip`及`response.json`；成功返回会删除�
 
 API的上传/轮询/下载由30分钟AbortSignal与轮询截止控制；`runUnzip`子进程接入API同一取消/截止信号，读取时累计检查输出上限，超限回收本次子进程；没有额外放宽时限。CLI自身及本地外层均设置30分钟；PDF预检还依赖Poppler。文档中的时限不保证所有子进程总耗时严格封顶。
 
-API在申请上传地址前建立私有诊断目录，`metadata.json`只保存来源摘要、页数、输入格式、云端batch ID、当前阶段及供应商状态，不保存令牌、上传/下载签名地址或正文；成功删除目录，失败保留以便只读查询原批次。安全日志持久化上传/轮询/下载阶段与供应商状态变化，同一排队状态不重复写日志；失败使用`reason_code`、`failure_phase`及`diagnostic_id`。`mineru-diagnostics.test.ts`用HTTP替身验证这些证据与敏感内容隔离。
+API在申请上传地址前建立私有诊断目录，`metadata.json`只保存来源摘要、页数、输入格式、云端batch ID、当前阶段及供应商状态，不保存令牌、上传/下载签名地址或正文；成功删除目录，失败保留以便只读查询原批次。安全日志持久化上传/轮询/下载阶段与供应商状态变化，同一排队状态不重复写日志；失败使用`reason_code`、`failure_phase`及`diagnostic_id`。结果下载失败还记录安全的`failure_stage`、HTTP状态或标准网络错误码，以区分请求、HTTP响应和响应流读取；不记录错误消息、响应正文或签名地址。`mineru-diagnostics.test.ts`用HTTP替身验证这些证据与敏感内容隔离。
 
-API优先的回退资格按`permitsCliFallback()`分类（HTTP5xx、TypeError、指定超时/中止异常等），且外部取消时不回退；认证、无效JSON、结构解析或业务任务失败不靠CLI重传修复。DOCX直接API，不走PDF回退。
+API优先的回退资格按`permitsCliFallback()`分类（HTTP5xx、TypeError、云端任务提交前的指定超时/中止异常等），且外部取消时不回退；认证、无效JSON、结构解析或业务任务失败不靠CLI重传修复。文件上传成功后若轮询超时，API与CLI都使用同一MinerU服务，不重复上传并等待第二个超时。DOCX直接API，不走PDF回退。
 
 PDF分片属于上层旧目录同步`../pdf-split.ts`，不是本模块自动给所有上传拆片。其缓存键绑定输入和限制，但已有分片复用仅检查文件列表/大小，不逐个重新计算内容摘要或页数；后续材料入库仍独立校验所选文件。
 
 `mineru-cancellation.test.ts`在临时目录用FIFO、ZIP和自有子进程验证解压取消/流式大小边界及命令上下文取消；不调用真实MinerU。
 
 该文件同时用合成响应流验证ZIP下载的大小边界、空响应、读取异常及等待期间取消；`mineru-diagnostics.test.ts`用合成ZIP、HTTP替身及文件删除故障验证提取成功不受诊断清理失败影响。均不证明真实供应商、OCR准确率或业务入库已验收。
+
+### 结果下载代理规则
+
+API 适配器下载结果 ZIP 时通过系统 `curl --noproxy '*'` 显式直连，不继承进程代理；继续执行 120 MiB 流大小限制、取消和原任务截止控制，运行环境需提供 curl；上传和轮询维持原有网络行为。CLI 子进程沿用受限环境，不传代理变量，并显式将 `cdn-mineru.openxlab.org.cn` 加入大小写 `NO_PROXY`。此规则针对已复现的本机代理访问 CDN 时 TLS/EOF 失败，不修改全局代理或材料处理配置。运行中的 worker 需重新加载代码后生效。
+
+诊断事件 `extraction.api.upload_completed` 记录上传HTTP状态、文件字节及PDF页数；`extraction.api.poll_observed` 在状态变化或每60秒记录查询HTTP状态、轮询次数、结果条目数、供应商状态及返回的页进度。任务batch ID仅存私有诊断metadata，不记录凭证、文件名或结果下载URL。

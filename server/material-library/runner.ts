@@ -16,7 +16,7 @@ import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor}
 import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
-import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS} from './jobs';
+import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS,LIBRARY_JOB_LEASE_MS} from './jobs';
 import {readLibraryBlob} from './storage';
 import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-shared';
 import {executeRedaction} from './redaction-runner';
@@ -121,19 +121,31 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
  const deadline=agentPlan?new Date(job.deadline_at).getTime():Math.min(new Date(job.deadline_at).getTime(),Date.now()+(externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000));
  const deadlineTimer=setTimeout(()=>local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded')),Math.max(0,deadline-Date.now()));
  if(deadline<=Date.now())local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded'));
- let heartbeatRunning=false,settled=false;
+ // 仅在最后已确认的租约内容忍瞬时数据库故障；独立计时器也覆盖查询悬挂。
+ let heartbeatRunning=false,settled=false,heartbeatFailed=false;
+ let leaseTimer:ReturnType<typeof setTimeout>;
+ const armLease=(expires:number)=>{clearTimeout(leaseTimer);leaseTimer=setTimeout(()=>local.abort(stopReason('heartbeat_unavailable')),Math.max(0,expires-Date.now()));};
+ armLease(Number.isFinite(Date.parse(job.lease_expires_at))?Date.parse(job.lease_expires_at):Date.now()+LIBRARY_JOB_LEASE_MS);
  const heartbeat=setInterval(()=>{
   if(heartbeatRunning||settled)return;
   heartbeatRunning=true;
+  const sentAt=Date.now();
   void heartbeatLibraryJob(pool,job.id,job.lease_token).then(async active=>{
+   if(settled||local.signal.aborted)return;
+   if(active){
+    armLease(sentAt+LIBRARY_JOB_LEASE_MS);
+    if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info'});
+    heartbeatFailed=false;
+   }
    if(!active&&!settled){
     const state=await libraryStopReason(pool,job);
     if(!settled)local.abort(stopReason(state??'lease_lost'));
    }
   }).catch(error=>{
    if(settled)return;
-   logEvent('heartbeat.write_failed',{level:'error',...classifyLogError(error)});
-   local.abort(stopReason('heartbeat_unavailable'));
+   if(local.signal.aborted)return;
+   if(!heartbeatFailed)logEvent('heartbeat.write_failed',{level:'error',...classifyLogError(error)});
+   heartbeatFailed=true;
   }).finally(()=>{heartbeatRunning=false;});
  },heartbeatMs);
  try{
@@ -168,7 +180,7 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   if(!saved){logEvent('library_job.terminal_not_written',{level:'error',reason_code:code,state:'unknown'});return;}
   logEvent(cancelled?'library_job.cancelled':'library_job.failed',{level:cancelled?'info':'error',state:cancelled?'cancelled':'failed',error_kind:classified.error_kind,reason_code:code,retryable:classified.retryable});
   if(cancelled)console.info('材料库任务已取消或 worker 已停止');else console.error('材料库任务失败；未输出原文、提示词或凭证');
- }finally{settled=true;clearInterval(heartbeat);clearTimeout(deadlineTimer);signal.removeEventListener('abort',abort);restore();}
+ }finally{settled=true;clearInterval(heartbeat);clearTimeout(leaseTimer!);clearTimeout(deadlineTimer);signal.removeEventListener('abort',abort);restore();}
 }
 
 /** runWorkerPool 的并发循环先取得槽位，再调用本函数领取任务。 */

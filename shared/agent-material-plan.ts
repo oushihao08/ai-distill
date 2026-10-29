@@ -1,14 +1,16 @@
 /**
- * 职责：将Agent的主体表、字段语义编辑和结构块分册编译为精确计划，并合并确定性扫描清理。
- * 入口：compileAgentMaterialPlan同时供Agent本地validate-plan.mjs与Agent完成后的宿主发布前校验调用。
+ * 职责：将ID/文本脱敏结果回填原结构，并编译分册和确定性扫描清理；兼容历史主体/编辑计划。
+ * 入口：compileAgentTextMaterialPlan供新任务校验和发布；compileAgentMaterialPlan兼容历史计划重验。
  * 边界：Agent负责结合上下文的语义判断，本模块负责精确执行与机械校验；不运行模型、不访问存储。
  * 垃圾编辑是有意支持的能力，其职责与审查依据见AgentMaterialPlan.edits及编译分支；共用清理规则见scan-noise.ts。
  */
 import {findScanNoiseEdits} from './scan-noise';
 import {documentBlocksToText,type DocumentBlock} from './document-structure';
-import {documentFieldRanges,prepareStructuredMaterialData} from './prepared-structure';
+import {documentBlockFields,prepareStructuredMaterialData} from './prepared-structure';
 
 export type PreparationFile={file_id:string;text_sha256:string;pages:{page:number;text:string;structure:DocumentBlock[];issues?:string[]}[]};
+export const AGENT_TEXT_REDACTION_PROTOCOL='id-text-v2';
+/** 历史主体/编辑计划；新任务使用AgentTextMaterialPlan。 */
 export interface AgentMaterialPlan {
  entities:{id:string;kind:'person'|'organization';alias:string;variants:{text:string;targets:string[]}[]}[];
  /**
@@ -23,32 +25,54 @@ export interface AgentMaterialPlan {
  documents:{id:string;title:string;ranges:{first_block_id:string;last_block_id:string}[];duplicate_of:string|null}[];
  unresolved:{target_id:string;kind:'identity'|'boundary'|'extraction'|'noise';blocking:boolean;reason:string}[];
 }
+export type AgentTextMaterialPlan=Pick<AgentMaterialPlan,'documents'|'unresolved'>&{texts:{id:string;text:string}[]};
+export type AgentRedactionPlan=AgentMaterialPlan|AgentTextMaterialPlan;
 const object=(properties:Record<string,unknown>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
 const string={type:'string'},array=(items:unknown)=>({type:'array',items});
 export const AGENT_MATERIAL_PLAN_SCHEMA=object({
- entities:array(object({id:string,kind:{enum:['person','organization']},alias:string,variants:array(object({text:string,targets:array(string)}))})),
- edits:array(object({target_id:string,source_text:string,occurrence:{type:'integer',minimum:0},kind:{enum:['identifier','phone','credential','address','scan_watermark','corner_stamp','ocr_placeholder']},keep_prefix:string})),
+ texts:array(object({id:string,text:string})),
  documents:array(object({id:string,title:string,ranges:array(object({first_block_id:string,last_block_id:string})),duplicate_of:{type:['string','null']}})),
  unresolved:array(object({target_id:string,kind:{enum:['identity','boundary','extraction','noise']},blocking:{type:'boolean'},reason:string})),
 });
 function fail(code:string,validation_details?:Record<string,unknown>):never{throw Object.assign(new Error('Agent材料计划校验失败'),{reason_code:code,...(validation_details?{validation_details}:{})});}
-/** 输入仅一次展开正文；字段ID定位编辑，块ID定位分册，避免要求模型计算字符数。 */
-export function agentMaterialSource(files:PreparationFile[]){
+/** 新任务只接受ID/文本契约；不将旧计划或混合格式静默转换为成功结果。 */
+export function compileAgentTextMaterialPlan(input:unknown,files:PreparationFile[],identity:Parameters<typeof compileAgentMaterialPlan>[2]){
+ if(!input||typeof input!=='object'||Array.isArray(input))fail('agent_text_shape_invalid');
+ const value=input as Record<string,unknown>;
+ if(Object.keys(value).some(key=>!['texts','documents','unresolved'].includes(key))||!['texts','documents','unresolved'].every(key=>Array.isArray(value[key])))fail('agent_text_shape_invalid');
+ return compileAgentMaterialPlan(value as AgentTextMaterialPlan,files,identity,false);
+}
+/** 新任务沿用原块ID并补文件/页作用域与字段路径；旧位置ID仅用于历史重验。映射直接由当前块字段建立。 */
+export function agentMaterialSource(files:PreparationFile[],legacyIds=false){
  const fields=new Map<string,{file_id:string;page:number;text:string;start:number;end:number}>();
- const blocks:{id:string;file_id:string;page:number;start:number;end:number}[]=[];
- const source=files.map((file,fi)=>({file_id:file.file_id,pages:file.pages.map(page=>{
-  if(documentBlocksToText(page.structure)!==page.text)fail('agent_source_structure_invalid');
-  const ranges=documentFieldRanges(page.structure);let cursor=0;
-  return {page:page.page,issues:page.issues??[],blocks:page.structure.map((block,bi)=>{
-   const id=`f${fi+1}p${page.page}b${bi+1}`,start=cursor,text=documentBlocksToText([block]);cursor+=text.length+(bi<page.structure.length-1?1:0);
-   blocks.push({id,file_id:file.file_id,page:page.page,start,end:cursor});
-   const values=ranges.filter(r=>r.block_id===block.id).map(r=>{
-    const target_id=`${id}f${r.field_index+1}`,text=page.text.slice(r.start,r.end);
-    fields.set(target_id,{file_id:file.file_id,page:page.page,text,start:r.start,end:r.end});return {target_id,text};
-   });
-   return {id,kind:block.kind,...(block.kind==='table'?{row_cell_counts:block.rows.map(row=>row.cells.length)}:{}),fields:values};
+ const blocks:{id:string;file_id:string;page:number;start:number;end:number}[]=[],fileIds=new Set<string>();
+ const source=files.map((file,fi)=>{
+  if(fileIds.has(file.file_id))fail('agent_source_identity_invalid');fileIds.add(file.file_id);
+  const pageIds=new Set<number>();
+  return {file_id:file.file_id,pages:file.pages.map(page=>{
+   if(!Number.isSafeInteger(page.page)||page.page<1||pageIds.has(page.page))fail('agent_source_identity_invalid');pageIds.add(page.page);
+   const projections=page.structure.map(block=>documentBlocksToText([block]));
+   if(projections.join('\n')!==page.text)fail('agent_source_structure_invalid');
+   const idCounts=new Map<string,number>();
+   for(const block of page.structure)idCounts.set(block.id,(idCounts.get(block.id)??0)+1);
+   if(legacyIds&&[...idCounts.values()].some(count=>count>1))fail('agent_legacy_source_block_id_ambiguous');
+   let cursor=0;
+   return {page:page.page,issues:page.issues??[],blocks:page.structure.map((block,bi)=>{
+    // @位置只补缺失/重复的原块ID；编码有效原ID以隔离分隔符，不改原结构ID。
+    const blockKey=typeof block.id==='string'&&block.id.length&&idCounts.get(block.id)===1?encodeURIComponent(block.id):`@${bi+1}`;
+    const id=legacyIds?`f${fi+1}p${page.page}b${bi+1}`:`f${fi+1}p${page.page}/${blockKey}`,start=cursor;
+    cursor+=projections[bi]!.length+(bi<page.structure.length-1?1:0);
+    blocks.push({id,file_id:file.file_id,page:page.page,start,end:cursor});
+    const values=documentBlockFields(block).map((field,fieldIndex)=>{
+     const target_id=legacyIds?`${id}f${fieldIndex+1}`:`${id}#${field.path}`;
+     if(fields.has(target_id))fail('agent_source_field_id_duplicate');
+     fields.set(target_id,{file_id:file.file_id,page:page.page,text:field.text,start:start+field.start,end:start+field.end});
+     return {target_id,text:field.text};
+    });
+    return {id,kind:block.kind,...(block.kind==='table'?{row_cell_counts:block.rows.map(row=>row.cells.length)}:{}),fields:values};
+   })};
   })};
- })}));
+ });
  return {source,fields,blocks};
 }
 function locations(text:string,needle:string){const out:number[]=[];let i=0;while((i=text.indexOf(needle,i))>=0){out.push(i);i+=Math.max(1,needle.length);}return out;}
@@ -62,10 +86,34 @@ function maskPhone(text:string){
  return text.replace(/\d/g,c=>{const keep=count>=6&&(i<3||i>=count-2);i++;return keep?c:'*';});
 }
 /** 只编译Agent语义决定并校验精确编辑/完整覆盖/结构，不以语义猜测否决发布。 */
-export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:PreparationFile[],identity:{revision_id:string;extraction_job_id:string;template_id:string;template_digest:string}){
+export function compileAgentMaterialPlan(input:AgentRedactionPlan,files:PreparationFile[],identity:{revision_id:string;extraction_job_id:string;template_id:string;template_digest:string},legacyIds=true){
+ const textPlan=input&&'texts' in input?input:undefined;
+ if(textPlan&&!Array.isArray(textPlan.texts))fail('agent_text_shape_invalid');
+ const value:AgentMaterialPlan=textPlan?{...textPlan,entities:[],edits:[]}:input as AgentMaterialPlan;
  if(!value||!['entities','edits','documents','unresolved'].every(k=>Array.isArray((value as any)[k])))fail('agent_plan_shape_invalid');
- const {fields,blocks}=agentMaterialSource(files);
+ const {fields,blocks}=agentMaterialSource(files,legacyIds);
  const edits:any[]=[],entityIds=new Set<string>();
+ if(textPlan){
+  const seen=new Set<string>();
+  for(const item of textPlan.texts){
+   if(!item||typeof item.id!=='string'||typeof item.text!=='string'||Object.keys(item).some(key=>key!=='id'&&key!=='text'))fail('agent_text_shape_invalid');
+   if(seen.has(item.id)||!fields.has(item.id))fail('agent_text_id_invalid',{target_id:item.id});
+   seen.add(item.id);const field=fields.get(item.id)!;
+   if(!field.text&&item.text)fail('agent_text_empty_source_changed',{target_id:item.id});
+   // 文本比较只判断是否有修改；定位键始终是item.id。
+   if(item.text!==field.text){
+    // 仅写回实际变更的连续区间，避免把同字段内未变化的格式/垃圾片段也标成重叠编辑。
+    let start=0,suffix=0;
+    while(start<field.text.length&&start<item.text.length&&field.text[start]===item.text[start])start++;
+    while(suffix<field.text.length-start&&suffix<item.text.length-start&&field.text[field.text.length-1-suffix]===item.text[item.text.length-1-suffix])suffix++;
+    // 现有精确编辑契约不接受零长插入；纯插入时保留整字段替换，仍按ID定位。
+    if(start===field.text.length-suffix){start=0;suffix=0;}
+    edits.push({file_id:field.file_id,page:field.page,start:field.start+start,end:field.end-suffix,source_text:field.text.slice(start,field.text.length-suffix),replacement_text:item.text.slice(start,item.text.length-suffix)});
+   }
+  }
+  if(seen.size!==fields.size)fail('agent_text_coverage_missing',{expected_count:fields.size,actual_count:seen.size,missing_ids:[...fields.keys()].filter(id=>!seen.has(id)).slice(0,20)});
+ }
+
  for(const entity of value.entities){
   if(!entity.id||entityIds.has(entity.id)||typeof entity.alias!=='string'||!entity.alias.trim()||!Array.isArray(entity.variants)||!entity.variants.length)fail('agent_entity_alias_invalid');
   entityIds.add(entity.id);
@@ -82,12 +130,8 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
   const f=fields.get(edit.target_id);if(!f||!edit.source_text||!Number.isSafeInteger(edit.occurrence)||edit.occurrence<0)fail('agent_edit_target_invalid');
   const found=locations(f.text,edit.source_text),starts=edit.occurrence===0?found:[found[edit.occurrence-1]];
   if(!starts.length||starts.some(at=>at===undefined))fail('agent_edit_source_missing');
-  // 垃圾分支的设计约定：执行Agent按本次模板确认的删除，而非由程序再做一次全面语义识别。
-  // 扫描水印可合法包含数字/日期；不能机械套用编号遮盖的金额/日期禁改条件，否则会阻断正常清理。
-  // 审查时不能仅因三个垃圾kind会删除原文，就认定“Agent可以借清理垃圾删除业务正文”为P1缺陷：
-  // 人为构造违反模板的错误语义计划，只能证明接口接受该决定，不能证明当前设计或实际任务发生误删。
-  // 这不是安全豁免：仍需检查具体规则是否扩大范围、违反明确保留条件，或有可核实的实际误删证据。
-  // 下方合并的程序加固也不负责恢复Agent删掉的内容；机械覆盖通过不能冒充业务语义正确。
+  // 历史垃圾编辑按冻结模板的语义决定执行；扫描水印可含数字/日期，不套用编号遮盖约束。
+  // 精确位置与结构校验不代表删除在业务上正确，仍须独立验收。
   let replacement:string;
   if(edit.kind==='identifier'||edit.kind==='credential'){
    replacement=edit.kind==='credential'?'**':maskIdentifier(edit.source_text);
@@ -121,7 +165,17 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
  };
  const exact:any[]=[];
  for(const edit of edits){const prior=exact.at(-1);if(prior&&prior.file_id===edit.file_id&&prior.page===edit.page&&prior.end>edit.start){if(prior.entity_id&&prior.entity_id===edit.entity_id&&prior.end>=edit.end)continue;fail('agent_edit_overlap',{left:describeEdit(prior),right:describeEdit(edit)});}exact.push(edit);}
- const shift=(file:string,page:number,pos:number)=>pos+exact.filter(e=>e.file_id===file&&e.page===page&&e.end<=pos).reduce((n,e)=>n+e.replacement_text.length-(e.end-e.start),0);
+ const shifts=new Map<string,{end:number;delta:number}[]>();
+ for(const edit of exact){
+  const key=`${edit.file_id}:${edit.page}`,list=shifts.get(key)??[];
+  list.push({end:edit.end,delta:(list.at(-1)?.delta??0)+edit.replacement_text.length-(edit.end-edit.start)});shifts.set(key,list);
+ }
+ const shift=(file:string,page:number,pos:number)=>{
+  const list=shifts.get(`${file}:${page}`)??[];let lo=0,hi=list.length;
+  while(lo<hi){const mid=(lo+hi)>>>1;if(list[mid]!.end<=pos)lo=mid+1;else hi=mid;}
+  return pos+(lo?list[lo-1]!.delta:0);
+ };
+ const blockIndexes=new Map(blocks.map((block,index)=>[block.id,index]));
  const used=new Set<string>();
  const documentIds=new Set(value.documents.map(document=>document.id));
  const documents=value.documents.map(doc=>{
@@ -129,7 +183,7 @@ export function compileAgentMaterialPlan(value:AgentMaterialPlan,files:Preparati
   // 标题内容由Agent按本次模板生成，不在编译器中做主体原称匹配；输出文件名由prepareMaterialData独立净化。
   const segments:{file_id:string;page:number;start:number;end:number}[]=[];
   for(const range of doc.ranges){
-   const a=blocks.findIndex(b=>b.id===range.first_block_id),b=blocks.findIndex(b=>b.id===range.last_block_id);
+   const a=blockIndexes.get(range.first_block_id)??-1,b=blockIndexes.get(range.last_block_id)??-1;
    if(a<0||b<a)fail('agent_document_range_invalid');
    for(const block of blocks.slice(a,b+1)){
     if(used.has(block.id))fail('agent_document_overlap');used.add(block.id);

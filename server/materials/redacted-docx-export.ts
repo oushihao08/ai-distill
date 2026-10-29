@@ -7,7 +7,7 @@ import {materialDocxLayout,type MaterialDocxLayout} from '../lifecycle/material-
 import {resolveProjectPath} from '../paths';
 import {assertAuthoringMaterialBinding,assertOriginalManifest} from '../publishing/feishu-verification';
 
-import {validateSelectedMaterialIndex} from '../../shared/material-preparation-result';
+import {preparationUnits,validateSelectedMaterialIndex,visiblePreparedDocuments} from '../../shared/material-preparation-result';
 import {canonicalJson} from '../../shared/workflow-config';
 import {createHash,randomUUID} from 'node:crypto';
 import {chmod,lstat,mkdir,readFile,realpath,rename,rm,writeFile} from 'node:fs/promises';
@@ -25,7 +25,7 @@ type Source={material_id:string;source_sha256:string;artifact_id:string;artifact
 type Original={id:string;original_name:string;storage_path:string;sha256:string;size_bytes:number|string};
 type FileChange={path:string;previous:Buffer|null};
 type IndexedDocument={document:RedactedDocumentStructure;structure_sha256:string};
-type ExportContext={selected_materials?:boolean;workflow_id:string;project_id:string;project_name:string;parent_name:string|null;phase_name:string|null;title:string;source_key:string|null;attempt_id:string|null;redacted_sha256:string;markdown:string;materialMarkdown:Map<string,string>;materialDocuments:Map<string,IndexedDocument>;originals:Original[];material_origin?:import('@shared/material-library').QuestionMaterialOrigin;material_snapshot_digest?:string;material_mode?:'redacted'|'original';prepared_documents?:{id:string;title:string;text:string;duplicate_of?:string|null;document?:RedactedDocumentStructure}[]};
+type ExportContext={selected_materials?:boolean;preparation_applied?:boolean;workflow_id:string;project_id:string;project_name:string;parent_name:string|null;phase_name:string|null;title:string;source_key:string|null;attempt_id:string|null;redacted_sha256:string;markdown:string;materialMarkdown:Map<string,string>;materialDocuments:Map<string,IndexedDocument>;originals:Original[];material_origin?:import('@shared/material-library').QuestionMaterialOrigin;material_snapshot_digest?:string;material_mode?:'redacted'|'original';prepared_documents?:{id:string;title:string;text:string;duplicate_of?:string|null;document?:RedactedDocumentStructure}[]};
 type ManifestMaterial={material_id:string;source_sha256:string;document_sha256:string;docx_artifact_id:string;docx_sha256:string};
 type DocxManifestV1={format:'redacted-docx-manifest-v1';attempt_id:string|null;redacted_sha256:string;renderer_version:string;materials:ManifestMaterial[]};
 type DocxManifestV2={format:'redacted-docx-manifest-v2';attempt_id:null;material_origin:import('@shared/material-library').QuestionMaterialOrigin;snapshot_digest:string;redacted_sha256:string;renderer_version:string;materials:ManifestMaterial[]};
@@ -163,7 +163,8 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
    }
    const sources=record.snapshot_manifest.files.map((file:any)=>String(file.material_id));
    if(sources.some((id:string)=>!materialDocuments.has(id)))throw new HTTPException(409,{message:'材料库原文索引缺少附件结构'});
-   return{attempt_id:null,redacted_sha256:source.attachments[0]?.sha256??'',markdown:source.attachments[0]?.content??'',materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'original' as const};
+   const projection=preparationDocxProjection(record.snapshot_manifest,index);
+   return{attempt_id:null,redacted_sha256:source.attachments[0]?.sha256??'',markdown:source.attachments[0]?.content??'',materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'original' as const,...projection};
   }
   const indexArtifact=(await db.query('SELECT id,content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND kind=\'redacted_index\' AND attempt_id IS NULL',[workflowId,(record?.snapshot_manifest?.material_index??record?.snapshot_manifest?.redacted_index)?.artifact_id])).rows[0];
   let index:any;try{if(typeof indexArtifact?.content!=='string'||digest(indexArtifact.content)!==indexArtifact.sha256)throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库脱敏索引缺失或损坏'});}
@@ -182,8 +183,9 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
   }
   const sources=record.snapshot_manifest.files.map((file:any)=>({material_id:String(file.material_id),source_sha256:String(file.source_sha256)}));
   if(sources.length!==index.materials.length||sources.some((item:any)=>!materialMarkdown.has(item.material_id)||!materialDocuments.has(item.material_id)))throw new HTTPException(409,{message:'材料库脱敏索引缺少附件或文档结构'});
-  const prepared_documents=projectPreparedDocuments(index.prepared_documents);
-  return{attempt_id:null,redacted_sha256:source.attachments[0]!.sha256,markdown:source.attachments[0]!.content,materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'redacted' as const,prepared_documents};
+  const projection=preparationDocxProjection(record.snapshot_manifest,index);
+  const prepared_documents=projection.applied?projection.prepared_documents:projectPreparedDocuments(index.prepared_documents);
+  return{attempt_id:null,redacted_sha256:source.attachments[0]!.sha256,markdown:source.attachments[0]!.content,materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'redacted' as const,preparation_applied:projection.applied,prepared_documents};
  }
  const step=(await db.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=9',[workflowId])).rows[0];
  const row=(await db.query("SELECT a.id,a.status,a.input,a.result,ar.id AS artifact_id,ar.content,ar.sha256 FROM ai_distill.step_attempts a JOIN ai_distill.artifacts ar ON ar.workflow_id=a.workflow_id AND ar.attempt_id=a.id AND ar.kind='redacted_markdown' WHERE a.workflow_id=$1 AND a.ordinal=9 ORDER BY a.attempt DESC LIMIT 1",[workflowId])).rows[0];
@@ -226,6 +228,15 @@ export function projectPreparedDocuments(value:unknown):ExportContext['prepared_
   if(doc.document&&(doc.document.format!=='redacted-structure-v1'||!Array.isArray(doc.document.pages)||doc.document.pages.some((p:any)=>!Number.isSafeInteger(p.page)||!Array.isArray(p.blocks))||doc.document.pages.map((p:any)=>documentBlocksToText(p.blocks)).join('\n\n')!==doc.text))throw new HTTPException(409,{message:'冻结分册结构无效'});
   return{id:doc.id,title:doc.title,text:doc.text,...(typeof doc.duplicate_of==='string'?{duplicate_of:doc.duplicate_of}:{}),...(doc.document?{document:doc.document}:{})};
  }).filter(doc=>doc.text.trim().length>0);
+}
+
+/** 整理快照存在时，DOCX严格按其文书边界和可见状态导出，空列表也不回退全文。 */
+export function preparationDocxProjection(manifest:any,index:any){
+ const result=manifest?.material_scope?.result;
+ if(result?.format!=='material-preparation-v2')return{applied:false as const};
+ const docs=visiblePreparedDocuments(result,preparationUnits(index));
+ const prepared_documents=projectPreparedDocuments(docs.map(doc=>({id:doc.id,title:doc.title,text:doc.text,document:doc.document})))??[];
+ return{applied:true as const,prepared_documents};
 }
 
 /** 仅组合显示副本；复用文书首标题，保留同名正文与重复扫描，不改冻结结构。 */
@@ -318,9 +329,9 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
    await installFile(target,bytes,material.sha256,changes);
   }
   // 生命周期选择逐文书或合并交付；仅操作显示副本，不改冻结脱敏材料。
-  const sourceSections=context.prepared_documents?.length
-   ?context.prepared_documents.map(doc=>({id:doc.id,title:doc.title,duplicate_of:doc.duplicate_of??null,document:doc.document??preparedTextDocument(doc.text,doc.id)}))
-   :context.originals.map(material=>({id:material.id,title:material.original_name,duplicate_of:null,document:context.materialDocuments.get(material.id)?.document??preparedTextDocument(context.materialMarkdown.get(material.id)!,material.id)}));
+  const preparedSections=context.prepared_documents?.map(doc=>({id:doc.id,title:doc.title,duplicate_of:doc.duplicate_of??null,document:doc.document??preparedTextDocument(doc.text,doc.id)}));
+  if(context.preparation_applied&&!preparedSections?.length)throw new HTTPException(409,{message:'材料整理结果没有可见文书，不能生成DOCX'});
+  const sourceSections=preparedSections?.length?preparedSections:context.originals.map(material=>({id:material.id,title:material.original_name,duplicate_of:null,document:context.materialDocuments.get(material.id)?.document??preparedTextDocument(context.materialMarkdown.get(material.id)!,material.id)}));
   const exportItems=planMaterialDocxExports(sourceSections,context.selected_materials?'separate':materialDocxLayout(context),materialMode).map(prepared=>({material:context.originals.find(item=>item.id===prepared.id)??context.originals[0]!,prepared}));
   for(const {material,prepared} of exportItems){
    const filename=prepared.filename,docxPath=join(dirname(location.docxPath),filename),storagePath=location.storagePath.replace(/[^/]+$/,filename);

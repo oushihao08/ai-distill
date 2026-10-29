@@ -233,7 +233,7 @@ bun run ai-distill workflow design update --workflow <题目UUID> --direction <�
 
 `library documents import --plan 私有计划.json --request-key UUID` 将同一计划通过 HTTP 正式保存为新的库级脱敏结果，不重新上传或OCR。返回 `job_id`、`redaction_id`、摘要及计数后，再用 `library redaction show` 读回。相同键与相同计划复用同一结果，计划变化必须使用新请求；响应未知先以原键重试核对，不换键盲发。它不调用模型，Codex判断由前置Skill完成；不自动建题或推进。该结果的分册元数据随新题冻结，旧题不改写。
 
-除帮助文本外统一输出 JSON（显式 `--json` 便于 Agent 调用）。顶层 `outcome` 表示命令情况，`data` 保留 API 事实；派发含逐题 `dispatch`、分组 `batches`、精确选定范围和所有 `attempt_ids`。错误输出到 stderr，含 `kind`、可用的 HTTP 状态及 `request_id`；不转发非JSON响应正文、底层网络错误或凭证。
+除帮助文本外统一输出 JSON（显式 `--json` 便于 Agent 调用）。通常顶层 `outcome` 表示命令情况，`data` 保留 API 事实；`library job start` 成功时直接输出 API 原始 JSON 响应，不加 CLI 外层字段，退出码仍按 CLI 规则计算。派发类复合命令含逐题 `dispatch`、分组 `batches`、精确选定范围和所有 `attempt_ids`。错误输出到 stderr，含 `kind`、可用的 HTTP 状态及 `request_id`；不转发非JSON响应正文、底层网络错误或凭证。
 
 | 退出码 | 含义 |
 | --- | --- |
@@ -340,6 +340,14 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 ## 可选材料整理
 
-`library prepare start/list/show`调用材料库可选整理接口，`library job show/wait/cancel`沿用现有任务；确切参数以HELP为准。start必须明确提取任务或脱敏结果，可带项目上下文及本次Agent模型。只调用HTTP，不读取业务数据库、不自行调用模型。wait到期只停止等待，不取消或重派。
+`library prepare start/list/show/resume/diagnose`调用材料库可选整理接口，`library job show/wait/cancel`沿用现有任务；确切参数以HELP为准。start必须明确提取任务或脱敏结果，可带项目上下文及本次Agent模型。只调用HTTP，不读取业务数据库、不自行调用模型。wait到期只停止等待，不取消或重派。
 
-`project materials question`不接收整理结果、候选或文书筛选参数。建题时服务端按材料包、版本、来源摘要和项目匹配最近成功整理结果，并把它冻结进本题来源快照；未整理或整理失败时仍使用完整材料。出题Agent读取材料包总摘要、逐份摘要/标签、多组支持范围和本期已用方向+场景，最终决定并保存本题选择；作答与评分继续只读取完整题目快照。整理入口、迁移和数据边界见[材料库说明](../server/material-library/README.md#材料整理与使用范围)。
+`project materials question`不接收整理结果、候选或文书筛选参数。建题时服务端按材料包、版本、来源摘要和项目匹配最近成功整理结果，并把它冻结进本题来源快照；未整理或整理失败时仍使用完整材料。出题Agent读取可见材料包摘要、逐份摘要/标签、多组支持范围和本期已用方向+场景参考；自主选择一个或多个相容组合，主组合及`additional_combinations`保存在出题结果中，重复方向/场景不拦保存。作答、评分与材料DOCX使用冻结快照中的可见正文，不拼接隐藏的现成目标成果。整理入口、迁移和数据边界见[材料库说明](../server/material-library/README.md#材料整理与使用范围)。
+
+
+材料整理的执行预算与恢复：
+
+- `library prepare start ... --execution-timeout 30m`冻结单次预算，省略沿用服务端默认20分钟；单位ms/s/m/h，服务端范围1秒至24小时。它与`library job wait --timeout`的观察预算不同。
+- `library prepare resume --job UUID --request-key UUID [--execution-timeout 1h]`只显式恢复失败/取消的prepare，来源、项目、模型继承原任务，由服务端核对规则/引擎与检查点身份；不启动worker、不自动重发。新请求键对应新job，相同键恢复原回执。规则/引擎已变需明确新建整理，不使用旧结果冒充新规则。
+- `library prepare diagnose --job UUID --api http://127.0.0.1:3701 --json`只读状态、停止原因、文书/未归类/摘要/可见性/组合/技术警告数量，不输出具体材料内容。历史未知文书份数返回null。
+- 首次及补摘要共用目标成果隐藏标准；正常结构说明不计警告，OCR等实际疑点在逐份notes查看。新代码不回写旧整理结果或旧题快照。

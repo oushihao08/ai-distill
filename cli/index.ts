@@ -11,9 +11,14 @@ if(import.meta.main) {
   try {
     const args=process.argv.slice(2);
     const result=args[0]==='remote'&&args[1]==='answer'?await runRemoteAnswerCommand(args,controller.signal):args[0]==='remote'?await runRemoteMaterialCommand(args,controller.signal):await runCommand(args,undefined,controller.signal);
-    if(result.help&&!process.argv.includes('--json'))process.stdout.write(result.help);
-    else process.stdout.write(`${JSON.stringify(result,null,2)}\n`);
-    process.exitCode=controller.signal.aborted?130:result.outcome==='partial'?2:result.outcome==='waiting'?3:0;
+    const cliResult=result as {help?:string;data?:unknown;outcome?:string};
+    if(cliResult.help&&!process.argv.includes('--json'))process.stdout.write(cliResult.help);
+    else {
+      const apiPassthrough=args[0]==='library'&&args[1]==='job'&&args[2]==='start';
+      const output=apiPassthrough?cliResult.data:result;
+      process.stdout.write(`${JSON.stringify(output,null,2)}\n`);
+    }
+    process.exitCode=controller.signal.aborted?130:cliResult.outcome==='partial'?2:cliResult.outcome==='waiting'?3:0;
   } catch(error) {
     const detail=error instanceof CliError?{message:error.message,...error.detail}:{kind:'internal_error',message:'命令执行失败'};
     process.stderr.write(`${JSON.stringify({outcome:'error',error:detail})}\n`);

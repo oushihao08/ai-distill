@@ -10,6 +10,7 @@ import type {Pool} from 'pg';
 import {currentTaskSignal} from '../task-signal';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
+import {AGENT_TEXT_REDACTION_PROTOCOL} from '../../shared/agent-material-plan';
 import type {CreateLibraryJobRequest,LibraryExecutionTarget,LibraryExecutorKind,LibraryJobKind} from '../../shared/material-library';
 import {readLibraryProcessingSettings} from './settings';
 import {resolveLibraryTemplate} from './templates';
@@ -22,7 +23,7 @@ const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).di
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const LIBRARY_JOB_LEASE_MS=120_000;
 export const LIBRARY_JOB_HEARTBEAT_MS=15_000;
-// MinerU API may run for 30 minutes, then PDF extraction can use one 30-minute CLI fallback.
+// 整包外部提取预算上限；提交前失败可回退CLI，已提交任务超时不重复提交。
 export const LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS=65*60*1000;
 
 /** 检查文件/正文可处理性；OCR提示保留追溯，不能等同于脱敏丢失实质内容。 */
@@ -138,7 +139,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   const inputSnapshot={...intent,...(projectMode?{material_processing_mode:projectMode}:{}),manifest_sha256:revision.manifest_sha256,request_digest:requestDigest,files:fileSnapshot};
   const pdfProvider=process.env.PDF_EXTRACTION_PROVIDER||'mineru-api';
   if(request.kind==='extract'&&executor==='api'&&!['mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取供应商配置无效');
-  const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id}:{})},configDigest=hash(configSnapshot),id=randomUUID();
+  const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id,text_protocol:AGENT_TEXT_REDACTION_PROTOCOL}:{})},configDigest=hash(configSnapshot),id=randomUUID();
   await supersedeForeignPending(db,{kind:'library',id:revisionId,jobKind:request.kind},request.execution_target);
   const active=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND kind<>'prepare' AND status IN ('queued','running') LIMIT 1",[revisionId])).rows[0];
   if(active)throw conflict('该文件集合已有活动任务，请等待完成或取消后重试');
@@ -198,7 +199,7 @@ export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,tar
   const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:Record<string,unknown>)=>['pdf','docx'].includes(fileFormat(String(file.original_name??''))));
   const ceiling=externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000;
   const configuredTimeout=Number(job.config_snapshot?.settings?.execution?.task_timeout_ms)||1200000;
-  const timeout=Math.max(1,job.kind==='redact'?configuredTimeout:Math.min(ceiling,configuredTimeout)),leaseToken=randomUUID();
+  const timeout=Math.max(1,(job.kind==='redact'||job.kind==='prepare')?configuredTimeout:Math.min(ceiling,configuredTimeout)),leaseToken=randomUUID();
   const claimed=await db.query(`UPDATE ai_distill.library_jobs SET status='running',lease_token=$2,started_at=now(),deadline_at=CASE WHEN status='running' THEN deadline_at ELSE now()+($3::text||' milliseconds')::interval END,heartbeat_at=now(),lease_expires_at=now()+($4::text||' milliseconds')::interval,error_code=NULL,error_message=NULL
    WHERE id=$1 AND ${localQueueEnabled()?"status IN ('queued','running')":"status='queued'"} RETURNING *`,[job.id,leaseToken,timeout,LIBRARY_JOB_LEASE_MS]);
   if(!claimed.rowCount)throw conflict('材料任务已由其他 worker 领取');

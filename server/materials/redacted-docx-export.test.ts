@@ -12,7 +12,8 @@ import {spawnSync} from 'node:child_process';
 import type {Pool} from 'pg';
 import {STEP_REGISTRY} from '@shared/step-registry';
 import {redactionInputDigest} from './redaction-jobs';
-import {exportCurrentMaterialDocx,exportRedactedDocx,isLibraryDocxPath,projectPreparedDocuments} from './redacted-docx-export';
+import {exportCurrentMaterialDocx,exportRedactedDocx,isLibraryDocxPath,projectPreparedDocuments,preparationDocxProjection} from './redacted-docx-export';
+import {compilePreparation,preparationBlocks,preparationUnits} from '../../shared/material-preparation-result';
 
 const workflowId='11111111-1111-4111-8111-111111111111',attemptId='22222222-2222-4222-8222-222222222222',materialId='33333333-3333-4333-8333-333333333333';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
@@ -216,6 +217,26 @@ test('Feishu old library manifests verify frozen IDs and real bytes without requ
   rows=[frozen];await writeFile(join(root,'source.pdf'),'tampered');await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow('指纹');
   await rm(join(root,'source.pdf'));await expect(verifyLibraryOriginalManifest(pool,'workflow',[material],root)).rejects.toThrow('缺失');
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('DOCX projection exports only visible prepared documents and remains fail-closed when all are hidden',async()=>{
+ const index={format:'redacted-index-v2',materials:[{material_id:'material-1',markdown:'判决依据正文\n现成证据目录及逐项证明目的正文',document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'b1',kind:'paragraph',text:'判决依据正文'},{id:'b2',kind:'paragraph',text:'现成证据目录及逐项证明目的正文'}]}]}}]};
+ const units=preparationUnits(index),blocks=preparationBlocks(units);
+ const result=compilePreparation({package_summary:'材料包',documents:[
+  {id:'evidence',title:'民事判决书',block_ids:[blocks[0]!.id],summary:'交易证据',document_type:'判决',tags:[],notes:'',visibility:'visible',visibility_reason:''},
+  {id:'judgment',title:'证据目录及逐项证明目的说明',block_ids:[blocks[1]!.id],summary:'既成裁判结果',document_type:'证明目的说明',tags:[],notes:'',visibility:'hidden',visibility_reason:'已完成出题目标要求生成的证据目录和证明目的'},
+ ],combinations:[],warnings:[]},units);
+ const visible=preparationDocxProjection({material_scope:{result}},index);
+ expect(visible.applied).toBe(true);expect(visible.prepared_documents?.map(document=>document.title)).toEqual(['民事判决书']);
+ expect(visible.prepared_documents?.[0]?.text).toContain('判决依据正文');expect(visible.prepared_documents?.[0]?.text).not.toContain('现成证据目录及逐项证明目的正文');
+ const {buildDocx}=await import('../document-generation/docx');
+ const {combineMaterialSections}=await import('./redacted-docx-export');
+ const bytes=await buildDocx(combineMaterialSections(visible.prepared_documents!.map(document=>{expect(document.document).toBeDefined();return{...document,document:document.document!};})));
+ const out=spawnSync('python3',['-c',"import zipfile,io,sys,xml.etree.ElementTree as E; r=E.fromstring(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).read('word/document.xml')); print(''.join(r.itertext()))"],{input:Buffer.from(bytes),encoding:'utf8'});
+ expect(out.status).toBe(0);expect(out.stdout).toContain('判决依据正文');expect(out.stdout).not.toContain('现成证据目录及逐项证明目的正文');
+ const allHidden={...result,documents:result.documents.map(document=>({...document,visibility:'hidden' as const}))};
+ const hidden=preparationDocxProjection({material_scope:{result:allHidden}},index);
+ expect(hidden.applied).toBe(true);expect(hidden.prepared_documents).toEqual([]);
 });
 
 test('combined DOCX reuses the first real title, distinguishes same-name copies and preserves every body',async()=>{

@@ -3,7 +3,7 @@ import {mkdir,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {AgentTask,AgentResult} from '../agent';
 import {createModelApiClient,type ModelApiConfig,type ModelApiMessage} from '../llm-api';
-import {compileAgentMaterialPlan,AGENT_MATERIAL_PLAN_SCHEMA,type AgentMaterialPlan} from '../../shared/agent-material-plan';
+import {compileAgentTextMaterialPlan,AGENT_MATERIAL_PLAN_SCHEMA} from '../../shared/agent-material-plan';
 import {writePrivateJson} from './agent-redaction-artifacts';
 
 /** API没有本地shell；由宿主提供完整文件和执行等价校验。只对校验失败修正，不重试供应商失败。 */
@@ -23,7 +23,7 @@ export function apiMaterialExecutor(config:ModelApiConfig,client=createModelApiC
    const result=await client.complete({config,messages,response_format:{type:'json_schema',json_schema:{name:'material_plan',strict:true,schema:AGENT_MATERIAL_PLAN_SCHEMA}},timeout_ms:remaining,signal:task.signal,call_id:task.call_id});
    usage.push(result.usage);round++;
    await writePrivateJson(join(task.directory,`api-call-${round}.private.json`),{requested_model:result.requested_model,returned_model:result.model,provider:result.provider,request_id:result.request_id,completion_id:result.completion_id,usage:result.usage,duration_ms:result.duration_ms});
-   let plan:AgentMaterialPlan;
+   let plan:unknown;
    try{plan=JSON.parse(result.text);}
    catch(error){
     if(!(error instanceof SyntaxError))throw error;
@@ -31,7 +31,7 @@ export function apiMaterialExecutor(config:ModelApiConfig,client=createModelApiC
     lastInvalid=result.text;messages.push({role:'assistant',content:result.text},{role:'user',content:'校验结果：{"valid":false,"reason_code":"invalid_json"}。返回修正后的完整JSON计划。'});continue;
    }
    await writePrivateJson(join(task.directory,'output/material-plan.json'),plan);
-   try{compileAgentMaterialPlan(plan,context.files,context.identity);}
+   try{compileAgentTextMaterialPlan(plan,context.files,context.identity);}
    catch(error){
     if(lastInvalid===result.text)throw error;
     lastInvalid=result.text;

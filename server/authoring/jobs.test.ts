@@ -35,10 +35,11 @@ async function projectFixture(){
  const calls:{sql:string;values:any[]}[]=[];let saved:any;
  const library=()=>{
   const mode=state.library,sourceSha=hash('original'),text=state.text;
-  const item=mode==='original'?{material_id:'source-file',markdown:text,document:{version:1,source_sha256:sourceSha,pages:[{page:1,text,structure:[{id:'p',kind:'paragraph',text}]}]}}:{material_id:'source-file',markdown:text};
+  const item=mode==='original'?{material_id:'source-file',markdown:text,document:{version:1,source_sha256:sourceSha,pages:[{page:1,text,structure:[{id:'p',kind:'paragraph',text}]}]}}:state.preparation?{material_id:'source-file',markdown:text,document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'visible',kind:'paragraph',text:'可见证据正文'},{id:'hidden',kind:'paragraph',text:'隐藏裁判结果正文'}]}]}}:{material_id:'source-file',markdown:text};
   const markdown=mode==='original'?'# 附件.pdf\n\n'+text:text;
   const index=JSON.stringify({format:mode==='original'?'source-index-v1':'redacted-index-v2',redacted_sha256:hash(markdown),materials:[item]});
-  const manifest={version:2,origin:{kind:'library_v1',material_mode:mode,package_id:'pkg',revision_id:'rev',redaction_id:mode==='original'?null:'redact',source_digest:hash('source')},files:[{material_id:'source-file',original_name:'附件.pdf',source_sha256:sourceSha,document_sha256:hash(text)}],material_markdown:{artifact_id:'attachment',sha256:hash(markdown)},material_index:{artifact_id:'index',sha256:hash(index)}};
+  const preparation=state.preparation?{preparation_id:'prep',result:{format:'material-preparation-v2',package_summary:'可见材料摘要',documents:[{id:'visible-doc',title:'证据材料',block_ids:['u1p1b1'],summary:'交易证据',document_type:'证据',tags:[],notes:'',unit_kind:'document',visibility:'visible',visibility_reason:''},{id:'hidden-doc',title:'判决书',block_ids:['u1p1b2'],summary:'裁判结果',document_type:'判决',tags:[],notes:'',unit_kind:'document',visibility:'hidden',visibility_reason:'材料已载明既成结论'}],combinations:[{id:'visible-scope',direction:'证据分析',party:'原告',scenes:[{scene:'诉前准备',as_of:''}],core_work:'分析交易证据',deliverables:['证据目录'],document_ids:['visible-doc'],notes:''},{id:'hidden-scope',direction:'执行异议',party:'申请执行人',scenes:[{scene:'执行阶段',as_of:''}],core_work:'援引判决结果',deliverables:['执行申请'],document_ids:['hidden-doc'],notes:''}],warnings:[],document_count:2,unassigned_group_count:0,unassigned_block_count:0}}:undefined;
+  const manifest={version:2,origin:{kind:'library_v1',material_mode:mode,package_id:'pkg',revision_id:'rev',redaction_id:mode==='original'?null:'redact',source_digest:hash('source')},...(preparation?{material_scope:preparation}:{}),files:[{material_id:'source-file',original_name:'附件.pdf',source_sha256:sourceSha,document_sha256:hash(text)}],material_markdown:{artifact_id:'attachment',sha256:hash(markdown)},material_index:{artifact_id:'index',sha256:hash(index)}};
   return {row:{project_id:'project',package_id:'pkg',revision_id:'rev',redaction_id:manifest.origin.redaction_id,material_mode:mode,source_digest:hash('source'),snapshot_manifest:manifest,snapshot_digest:hash(canonicalJson(manifest)),markdown_artifact_id:'attachment',index_artifact_id:'index'},artifacts:[{id:'attachment',kind:mode==='original'?'source_markdown':'redacted_markdown',attempt_id:null,sha256:hash(markdown),content:markdown},{id:'index',kind:mode==='original'?'source_index':'redacted_index',attempt_id:null,sha256:hash(index),content:index}]};
  };
 
@@ -48,6 +49,10 @@ async function projectFixture(){
   if(sql==='SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE')return{rows:state.deleted?[]:[{id:values[0]}],rowCount:state.deleted?0:1};
   if(sql==='SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8')return{rows:state.archived?[{status:'succeeded'}]:[],rowCount:state.archived?1:0};
   if(state.library){
+   if(sql.includes("to_regclass('ai_distill.question_material_scope_uses')"))return{rows:[{available:true}],rowCount:1};
+   if(sql.startsWith('SELECT direction,scene FROM ai_distill.question_material_scope_uses'))return{rows:[],rowCount:0};
+   if(sql.includes("SELECT a.result->'material_scope_selection'"))return{rows:[],rowCount:0};
+   if(sql.startsWith('INSERT INTO ai_distill.question_material_scope_uses'))return{rows:[{workflow_id:values[1]}],rowCount:1};
    if(sql.startsWith('SELECT p.material_backend'))return{rows:[{material_backend:'library_v1',has_library_snapshot:true}],rowCount:1};
    if(sql.startsWith('SELECT project_id,package_id,revision_id'))return{rows:[library().row],rowCount:1};
    if(sql.startsWith('SELECT id,kind,attempt_id,sha256,storage_path,size_bytes FROM ai_distill.artifacts'))return{rows:library().artifacts,rowCount:2};
@@ -89,6 +94,20 @@ test('上传材料原文件名从数据库传入作者并用于公开题包表�
   await runNextAuthoring(f.pool,f.root,async options=>{expect(options.materials[0]?.source_names).toEqual(['上传判决.docx','附件二.txt']);return authored;});
   const artifact=f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'));
   expect(artifact?.values[7]).toContain('输入附件：\n上传判决.docx\n附件二.txt');
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+test('整理快照含隐藏文书时只把可见正文交给出题Agent并保存实际交付成果',async()=>{
+ const f=await projectFixture();let received:any;try{
+  f.state.library='redacted';f.state.preparation=true;f.state.text='可见证据正文\n隐藏裁判结果正文';
+  await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
+  const selection={direction:'证据分析',party:'原告',scenes:['诉前准备'],deliverables:['证据目录','争点清单'],additional_combinations:[{direction:'应诉准备',party:'原告',scenes:['庭审准备'],deliverables:['庭审提纲']}]};
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{received=options;return{...authored,draft:{...authored.draft,material_scope_selection:selection}} as any;});
+  expect(received.materials).toHaveLength(1);expect(received.materials[0].text).toContain('可见证据正文');expect(received.materials[0].text).not.toContain('隐藏裁判结果正文');
+  expect(received.material_scope.result.documents.map((document:any)=>document.title)).toEqual(['证据材料']);
+  const completed=f.calls.find(call=>call.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));
+  expect(JSON.parse(completed!.values[1]).material_scope_selection).toEqual(selection);
+  expect(f.calls.some(call=>call.sql.startsWith('INSERT INTO ai_distill.question_material_scope_uses'))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 

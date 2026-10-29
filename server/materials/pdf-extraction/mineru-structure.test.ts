@@ -6,7 +6,7 @@
 import {expect,test} from 'bun:test';
 import {parseMineruDocxJson,parseMineruJson} from './mineru-cli';
 
-test('known MinerU page furniture and aside text retain source text without false unknown-type issues',()=>{
+test('MinerU page furniture and unknown blocks retain text without advisory issue flags',()=>{
  const [page]=parseMineruJson([
   {type:'header',page_idx:0,text:'原文页眉'},
   {type:'text',page_idx:0,text:'正文'},
@@ -18,7 +18,7 @@ test('known MinerU page furniture and aside text retain source text without fals
  expect(page!.issues??[]).toEqual([]);
  const [unknown]=parseMineruJson([{type:'unexpected_source_shape',page_idx:0,text:'未知形状正文'}],1);
  expect(unknown!.text).toBe('未知形状正文');
- expect(unknown!.issues).toContain('unsupported_block_type');
+ expect(unknown!.issues??[]).toEqual([]);
 });
 
 test('DOCX keeps document order and structured text without requiring PDF page numbers',()=>{
@@ -90,10 +90,10 @@ test('decodes table cell text and spans while retaining OCR text attached to an 
  expect(page.text).not.toContain('private/path.png');expect(JSON.stringify(page.structure)).not.toContain('img_path');
 });
 
-test('does not treat an image caption as a substitute for OCR text inside the image',()=>{
+test('preserves image captions without adding inferred OCR warnings',()=>{
  const [page]=parseMineruJson([{type:'image',page_idx:0,img_path:'private/ticket.png',image_caption:'票据照片'}],1) as any[];
  expect(page.text).toBe('票据照片');
- expect(page.issues).toEqual(['image_without_text']);
+ expect(page.issues??[]).toEqual([]);
 });
 
 test('only explicit HTML sources convert formatting; ordinary legal references and code stay literal',()=>{
@@ -129,7 +129,7 @@ test('table HTML keeps legal brackets, comparisons, formatting and single-layer 
 test('malformed tables and text outside cells fall back without losing any source text',()=>{
  for(const html of ['<table><tr><td>10000元</td><td>未闭合','前置说明<table><tr><td>10000元</td></tr></table>','<table><caption>重要说明</caption><tr><td>10000元</td></tr></table>']){
   const [page]=parseMineruJson([{type:'table',page_idx:0,table_body:html}],1);
-  expect(page!.text).toBe(html);expect(page!.issues).toContain('table_structure_unparsed');
+  expect(page!.text).toBe(html);expect(page!.issues??[]).toEqual([]);
  }
 });
 
@@ -137,7 +137,7 @@ test('nested HTML table bodies decode entities once and malformed nested tables 
  for(const table of ['<table><tr><td>&amp;lt; &amp;amp; 10000元</td></tr></table>','<table><tr><td>&amp;lt; 10000元']){
   const [page]=parseMineruDocxJson([{type:'table',content:{table_body:[{type:'html',content:table}]}}]);
   if(table.endsWith('</table>'))expect(page!.text).toBe('&lt; &amp; 10000元');
-  else {expect(page!.text).toBe(table);expect(page!.issues).toContain('table_structure_unparsed');}
+  else {expect(page!.text).toBe(table);expect(page!.issues??[]).toEqual([]);}
  }
 });
 

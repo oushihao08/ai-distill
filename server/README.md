@@ -125,7 +125,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务意图、执行归属和
 
 首屏列表/状态使用服务端白名单和批量快照；正文、历史及材料版本按需读取。`GET /api/attempts/:id?view=status`不读取结果正文，CLI等待默认使用该视图；完整内容由show/full显式读取。普通文件下载不证明内容质量或平台成功。
 
-共用安全日志入口为 `logging.ts`，默认位于 `<STORAGE_DIR>/logs/<UTC日期>/`。请求通过 `X-Request-ID`、attempt/job/call ID关联。普通JSONL落盘错误、指定数据库慢查询/连接等待告警，以及精确白名单中的停止生命周期、材料取消和恢复降级事件；下述有限执行里程碑也持久化，其他成功/逐token等进度日志不落盘；不记录材料、题面、提示词、答案、SQL参数或凭证。Codex私有事件和业务报告不是普通日志。命令和限制见 [诊断脚本](../scripts/diagnostics/README.md)；健康和`/api/monitor`状态不能证明供应商仍在生成。
+共用安全日志入口为 `logging.ts`，默认位于 `<STORAGE_DIR>/logs/<UTC日期>/`。请求通过 `X-Request-ID`、attempt/job/call ID关联。普通JSONL落盘错误、指定数据库慢查询/连接等待告警，以及精确白名单中的停止生命周期、材料取消和恢复降级事件；下述有限执行里程碑也持久化，其他成功/逐token等进度日志不落盘；不记录材料、题面、提示词、答案、SQL参数或凭证。MinerU结果下载失败可记录下载子阶段、HTTP状态或经过格式白名单过滤的网络错误码，不记录原始错误消息、响应正文或签名地址。Codex私有事件和业务报告不是普通日志。命令和限制见 [诊断脚本](../scripts/diagnostics/README.md)；健康和`/api/monitor`状态不能证明供应商仍在生成。
 
 修改公共契约同时核对前端、CLI、路由、任务输入快照及历史兼容。文档中的配置/迁移/启动命令是参考，授权边界见 [AGENTS.md](../AGENTS.md)。本文件不声明某次数据库、真实模型或外部平台验收已完成；历史证据按其时间和范围单独阅读。
 
@@ -196,3 +196,5 @@ readActiveConcurrencyLimit的只读SQLite连接沿用槽位写连接的5秒busy_
 任务私有执行目录及运行时文件访问仍使用实际绝对路径；已有任务快照及摘要不批量重写。目录在另一台机器可定位不表示文件内容已经同步；材料/Skill须实际存在。新增持久化写入需用`projectPathReference()`，比较旧绑定用`comparableProjectPath()`，不能把相对配置直接传给依赖cwd的文件API。此说明不代表服务已重载或跨机业务验收。
 
 步骤5的项目摘要仅保留提示词和流程策略，不投影旧单模型provider/model连接字段；新作答模型以本期模型集合接口为准，历史尝试和保留模式仍按各自冻结集合读取。此投影清理不改写旧配置或业务结果。
+
+材料模型正文由shared/document-structure.ts的documentPagesToModelText统一生成：材料整理内联输入与question-materials.ts模型附件共用，后者供出题和作答使用，评分读取作答冻结正文。历史结构指纹投影与原件/DOCX结构保持独立。

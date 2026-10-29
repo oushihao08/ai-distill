@@ -3,7 +3,7 @@ import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {compileAgentMaterialPlan} from '../../shared/agent-material-plan';
+import {AGENT_TEXT_REDACTION_PROTOCOL,compileAgentMaterialPlan,compileAgentTextMaterialPlan} from '../../shared/agent-material-plan';
 import {jobDirectory} from './execution-shared';
 import {readAgentRedactionPlan} from './agent-redaction-artifacts';
 
@@ -15,7 +15,9 @@ export async function revalidateAgentLibraryRedaction(pool:Pool,root:string,id:s
  try{
   const directory=join(jobDirectory(root,row.redaction_job_id),'private');
   const context=JSON.parse(await readFile(join(directory,'validation-source.json'),'utf8'));
-  compileAgentMaterialPlan(await readAgentRedactionPlan(directory),context.files,context.identity);
+  const plan=await readAgentRedactionPlan(directory);
+  if(row.validation_report?.text_protocol===AGENT_TEXT_REDACTION_PROTOCOL||context.text_protocol===AGENT_TEXT_REDACTION_PROTOCOL)compileAgentTextMaterialPlan(plan,context.files,context.identity);
+  else compileAgentMaterialPlan(plan,context.files,context.identity);
   valid=true;
  }catch(error){reason_code=(error as any)?.reason_code??(error instanceof SyntaxError?'invalid_json':'agent_validation_evidence_missing');}
  const validation={valid,reason_code,checked_at:new Date().toISOString(),scope:'program_structure_privacy_resolution_and_source_coverage'};

@@ -21,7 +21,7 @@ export function ensurePages(pages:Page[],sourceSha:string){
  * 这里只做确定扫描垃圾/格式清理和结构投影校验，不运行Agent、不化名、不证明OCR或业务内容逐字准确。
  * 有编辑时另存原始OCR文本对象，正文对象的cleanup记录原始对象ID/摘要和原页精确编辑；无编辑不额外存副本。
  * 上传原件及其摘要不变；调用方在原事务中发布清理正文和匹配的text_sha256，不回写历史文档或题目快照。
- * 原始OCR与审计用于追溯，不会自动阻止误删；scan-noise.ts所述页尾业务数字保护遗漏也影响本入口。
+ * 原始OCR与审计用于追溯，不代替业务核验；页尾数字的扫描证据与业务标签保护共用scan-noise.ts规则。
  */
 export async function storeExtractedDocument(db:Pick<PoolClient,'query'>,input:ReturnType<typeof ensurePages>){
  const original=ensurePages(input.pages,input.source_sha256);

@@ -30,9 +30,7 @@ const detailError = shallowRef('');
 const selectedMaterial = shallowRef<Material>();
 const detail = shallowRef<MaterialTextDetail>();
 const showingRedacted = shallowRef(false);
-const visiblePages = computed(() => (showingRedacted.value ? detail.value?.redacted_pages : detail.value?.pages)?.map(page => ({
- ...page, issues: page.issues?.filter(issue => issue !== 'image_without_text'),
-})) ?? []);
+const visiblePages = computed(() => (showingRedacted.value ? detail.value?.redacted_pages : detail.value?.pages) ?? []);
 const detailTab = shallowRef<'text'|'pdf'>('text');
 const isPdf = computed(() => selectedMaterial.value?.original_name.toLowerCase().endsWith('.pdf') ?? false);
 const pdfPreviewUrl = shallowRef('');
@@ -207,10 +205,8 @@ async function viewFullText(material: Material) {
      <Column v-else v-for="page in visiblePages" :key="page.page" class="border-t border-line-subtle pt-12" :gap="8">
       <Row x="between" wrap :gap="8">
        <span class="text-sm font-medium">第 {{ page.page }} 页 · {{ page.method }}</span>
-       <v-chip v-if="page.issues?.length" color="warning">{{ page.issues.length }} 项待核</v-chip>
       </Row>
       <pre class="surface-panel p-12 text-sm whitespace-pre-wrap break-words">{{ page.text || '（本页未提取到文字）' }}</pre>
-      <span v-if="page.issues?.length" class="text-xs text-danger">{{ page.issues.join('、') }}</span>
      </Column>
      <span v-if="showingRedacted ? !detail.redacted_pages?.length && detail.redacted_text === undefined : !detail.pages.length" class="text-sm text-muted">已入库记录没有页级文本。</span>
     </Column>

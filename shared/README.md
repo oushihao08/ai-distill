@@ -40,11 +40,11 @@ workflow-config.ts 的可选 content_contract=work_legal_v1 供出题阶段显�
 
 结果读取函数只做关键形状检查，并保留传入对象的其他字段；它们不是敏感字段过滤器，也不证明模型数量、来源版本或业务达标。输入隔离和达标校验由后端执行器及判断模块负责。
 
-`redaction-templates.ts`维护模板身份、Agent化名流程和默认代称提示词；`document-structure.ts`是共用结构类型和唯一文字投影，旧server/materials/pdf继续兼容导出；`prepared-structure.ts`校验字段内修改、结构分册和投影覆盖，不运行模型或存储。
+`redaction-templates.ts`维护模板身份、Agent化名流程和默认代称提示词；`document-structure.ts`是共用结构类型和唯一文字投影，旧server/materials/pdf继续兼容导出；`prepared-structure.ts`通过`documentBlockFields()`唯一枚举段落、列表、表格单元格/表题/脚注的字段路径和精确坐标（含空行分隔符），供脱敏、格式清理和结构回填共用；校验字段内修改、结构分册和投影覆盖，不运行模型或存储。
 
 `material-preparation.ts`提供CLI/HTTP共用计划入口校验与文字编辑/覆盖校验；入口身份校验不能代替数据库里的来源/模板绑定，也不证明模型识别的主体及分册判断正确。
 
-`agent-material-plan.ts`定义Agent整包语义输出及编译器：生成稳定字段/块ID，展开已确认的固定主体映射，应用类型化遮盖，自动计算UTF-16和编辑后分册坐标；凭据`credential`全部替换为`**`，地址允许空`keep_prefix`全遮明确定位的地址片段。确定扫描垃圾和格式残留由共用清理函数处理，不以残留匹配否决发布，再调用原prepared-structure完整校验。`agent-material-plan.test.ts`仅用合成资料验证此契约。
+`agent-material-plan.ts`以`AGENT_TEXT_REDACTION_PROTOCOL=id-text-v2`定义材料库新脱敏契约：模型仅收发完整`{id,text}`字段列表，附带分册范围与疑点；`compileAgentTextMaterialPlan()`校验新格式和完整ID集合，按冻结字段映射回填原结构并复用精确计划/分册编译。新字段ID沿用带文件/页作用域的原块ID并追加字段路径；缺失/重复块ID仅在定位键中补冻结位置，不修改原结构ID或按文本匹配。`compileAgentMaterialPlan()`继续兼容历史entities/edits计划及v1位置ID重验；原块ID重复的歧义旧映射明确拒绝。确定扫描垃圾与格式残留仍走共用清理规则；ID/结构校验不代替脱敏语义验收。任务冻结、续作及发布说明见[材料库](../server/material-library/README.md#agent材料执行与验收)。
 
 
 
@@ -77,4 +77,8 @@ MaterialLibraryJob可附加execution，复用StepExecution表达归属和本机�
 
 Agent计划中的unresolved仅保存语义疑点，不因blocking标记或缺少身份映射拒绝技术发布。编译器不猜测姓名、号码、地址残留，不以化名风格、原文同词、机构关键词、金额/日期形态或电话字符白名单否决。主体ID、替换字符串、精确原文位置、编辑冲突、完整覆盖及结构投影仍校验；地址前缀必须属于原文，允许保留整个片段。文书可跨文件，来源身份不变。此处通过只证明计划可执行，不证明脱敏无遗漏。
 
-`material-preparation-result.ts`定义材料包摘要、逐份摘要/标签和多个可支持方向—场景—交付组合；建题冻结为作者上下文，不改材料正文或可见范围。最终选择由出题结果保存，同期方向+场景另有使用账。旧`selected-material-index-v1`仅为历史快照只读校验。服务端行为唯一说明见[材料库](../server/material-library/README.md#材料整理与使用范围)。
+`material-preparation-result.ts`定义真实文书、逐份摘要/可见标记、多个可支持方向—场景—交付组合及模型/DOCX可见正文投影；它含服务端SHA-256实现，不可从浏览器运行时导入。纯计数函数位于`material-preparation-counts.ts`，可由前端安全使用。建题冻结来源仍保留全文，人工预览不裁剪；含整理结果时出题、作答和DOCX只消费可见文书，评分复用作答时冻结的输入。最终选择的交付成果保存在出题尝试JSON结果；方向+场景参考索引冲突不拦出题；主组合及`additional_combinations`均由尝试JSON保留，旧单组合兼容。新任务由`compileFixedPreparation()`固定来源ID、标题、顺序及全部正文，Agent只返回描述和现有记录类别，不拆合材料；全空记录不计完整文书。旧块级编译器仅保留兼容。逐份描述补齐后再生成总摘要及候选组合，总摘要不维护处理计数，程序统一统计。旧记录缺文书类型时仅能报告整理条目数，不能推断真实份数。旧`selected-material-index-v1`仅为历史快照只读校验。服务端行为唯一说明见[材料库](../server/material-library/README.md#材料整理与使用范围)。
+
+单次材料整理协议由MATERIAL_PREPARATION_SINGLE_SCHEMA定义，仅允许元数据和候选组合，不返回正文边界或完整文书分类；compileFixedPreparation的inheritKindsOnly用于新任务继承来源类别。visiblePreparationContext保留基于可见材料生成的总摘要。
+
+模型正文统一入口为document-structure.ts的documentPagesToModelText：从blocks或structure生成带页码、标题、列表和HTML表格的正文，保留rowspan/colspan、表题与脚注，转义单元格文字；无结构的历史页保留text。材料整理直接内联该正文；question-materials.ts在出题及新作答的模型附件投影中共用该方法，评分继续读取作答冻结的同一正文。documentBlocksToText仍是旧稳定投影，用于摘要指纹、脱敏坐标和结构校验，不改变历史字节；原结构与DOCX排版不变。

@@ -5,7 +5,7 @@ import {mkdtemp,readFile,readdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {configureLogger} from '../../logging';
-import {MineruApiDocxExtractor} from './mineru-api';
+import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor} from './mineru-api';
 
 test('retains private batch identity and durable failure phase without logging unchanged polls or secrets',async()=>{
  const root=await mkdtemp(join(tmpdir(),'mineru-diagnostics-')),path=join(root,'input.docx');
@@ -59,4 +59,56 @@ test('successful extraction survives diagnostic cleanup failure without another 
   expect(calls).toBe(4);
   expect(await readdir(join(root,'.mineru-diagnostics'))).toHaveLength(1);
  }finally{cleanup?.mockRestore();await rm(root,{recursive:true,force:true});}
+});
+
+test('download failures distinguish request transport errors from missing result bodies without logging messages or signed URLs',async()=>{
+ for(const scenario of ['request','http','body'] as const){
+  const root=await mkdtemp(join(tmpdir(),`mineru-download-${scenario}-`)),path=join(root,'input.docx'),logger=configureLogger({root,service:'worker'});
+  let calls=0;
+  const fetcher=(async(_input:unknown,options:any)=>{
+   calls++;
+   if(options?.method==='POST')return Response.json({code:0,data:{batch_id:'private-batch',file_urls:['https://upload.example/file?signature=PRIVATE']} });
+   if(options?.method==='PUT')return new Response(null,{status:200});
+   if(calls===3)return Response.json({code:0,data:{extract_result:[{file_name:'input.docx',state:'done',full_zip_url:'https://private.example/result?signature=PRIVATE'}]}});
+   if(scenario==='request')throw Object.assign(new TypeError('PRIVATE transport message'),{cause:Object.assign(new Error('PRIVATE cause'),{code:'ECONNRESET'})});
+   if(scenario==='http')return new Response('PRIVATE response body',{status:502});
+   return new Response(null,{status:200});
+  }) as typeof fetch;
+  try{
+   await writeFile(path,'synthetic source');
+   await expect(new MineruApiDocxExtractor({MINERU_KEY:'PRIVATE_TOKEN',STORAGE_DIR:root},{fetcher}).extract(path)).rejects.toBeTruthy();
+   await logger.flush();
+   const logRoot=join(root,'logs',new Date().toISOString().slice(0,10));
+   const records=(await Promise.all((await readdir(logRoot)).map(file=>readFile(join(logRoot,file),'utf8')))).join('').trim().split('\n').map(line=>JSON.parse(line));
+   const failure=records.find(row=>row.event==='extraction.api.failed');
+   expect(failure).toMatchObject({failure_phase:'download_result',state:'done'});
+   if(scenario==='request')expect(failure).toMatchObject({reason_code:'download_request_failed',failure_stage:'download_request',network_error_code:'ECONNRESET'});
+   else if(scenario==='http')expect(failure).toMatchObject({reason_code:'download_http_error',failure_stage:'download_http_response',response_status:502});
+   else expect(failure).toMatchObject({reason_code:'download_body_missing',failure_stage:'response_body'});
+   const output=JSON.stringify(records);
+   for(const secret of ['PRIVATE','PRIVATE_TOKEN','PRIVATE transport message','PRIVATE cause','private-batch','private.example'])expect(output).not.toContain(secret);
+  }finally{await logger.close();await rm(root,{recursive:true,force:true});}
+ }
+});
+
+test('a timed-out submitted MinerU task preserves the pending phase and is not retried by CLI',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'mineru-submitted-timeout-')),path=join(root,'input.docx'),logger=configureLogger({root,service:'worker'});
+ let now=0,polls=0,cliCalls=0;
+ const fetcher=(async(_input:unknown,options:any)=>{
+  if(options?.method==='POST')return Response.json({code:0,data:{batch_id:'synthetic-batch',file_urls:['https://upload.example/file']}});
+  if(options?.method==='PUT')return new Response(null,{status:200});
+  polls++;return Response.json({code:0,data:{extract_result:[{file_name:'input.docx',state:'pending'}]}});
+ }) as typeof fetch;
+ try{
+  await writeFile(path,'synthetic source');
+  const api=new MineruApiDocxExtractor({MINERU_KEY:'synthetic',STORAGE_DIR:root},{fetcher,now:()=>now,sleep:async ms=>{now+=ms;}});
+  const extractor=new MineruApiFirstPdfExtractor(api,{id:'mineru-cli',extract:async()=>{cliCalls++;return{pages:[],sha256:'cli',provider:'mineru-cli'};}});
+  await expect(extractor.extract(path)).rejects.toMatchObject({reason_code:'provider_timeout',failure_phase:'poll_result',provider_state:'pending',provider_task_submitted:true});
+  expect(now).toBe(30*60*1000);expect(polls).toBeGreaterThan(0);expect(cliCalls).toBe(0);
+  await logger.flush();
+  const logRoot=join(root,'logs',new Date().toISOString().slice(0,10));
+  const records=(await Promise.all((await readdir(logRoot)).map(file=>readFile(join(logRoot,file),'utf8')))).join('').trim().split('\n').map(line=>JSON.parse(line));
+  expect(records.find(row=>row.event==='extraction.api.failed')).toMatchObject({failure_phase:'poll_result',state:'pending',reason_code:'timeout'});
+  expect(records.find(row=>row.event==='extraction.cli.fallback.skipped')).toMatchObject({reason_code:'provider_task_submitted_timeout',failure_phase:'poll_result',state:'pending'});
+ }finally{await logger.close();await rm(root,{recursive:true,force:true});}
 });
