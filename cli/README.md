@@ -347,7 +347,17 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 材料整理的执行预算与恢复：
 
-- `library prepare start ... --execution-timeout 30m`冻结单次预算，省略沿用服务端默认20分钟；单位ms/s/m/h，服务端范围1秒至24小时。它与`library job wait --timeout`的观察预算不同。
+- `library prepare start ... --execution-timeout 30m`冻结单次预算，省略沿用服务端默认30分钟；单位ms/s/m/h，服务端范围1秒至24小时。它与`library job wait --timeout`的观察预算不同。
 - `library prepare resume --job UUID --request-key UUID [--execution-timeout 1h]`只显式恢复失败/取消的prepare，来源、项目、模型继承原任务，由服务端核对规则/引擎与检查点身份；不启动worker、不自动重发。新请求键对应新job，相同键恢复原回执。规则/引擎已变需明确新建整理，不使用旧结果冒充新规则。
 - `library prepare diagnose --job UUID --api http://127.0.0.1:3701 --json`只读状态、停止原因、文书/未归类/摘要/可见性/组合/技术警告数量，不输出具体材料内容。历史未知文书份数返回null。
-- 首次及补摘要共用目标成果隐藏标准；正常结构说明不计警告，OCR等实际疑点在逐份notes查看。新代码不回写旧整理结果或旧题快照。
+- 单次整理使用目标成果隐藏标准；正常结构说明不计警告，OCR等实际疑点在逐份notes查看。新代码不回写旧整理结果或旧题快照。
+
+### 整理操作与核对
+
+- `library prepare start ... --force`：明确重新整理时创建新结果；省略时可复用同来源、项目、模型及规则的成功结果。相同请求键仍返回原回执，force不替代请求幂等，也不绕过活动任务复用。
+- `library prepare list --package UUID [--revision UUID] [--redaction UUID] [--project UUID]`：在服务端按来源及项目筛选后取最近结果，避免只查最近20条再本地筛选漏掉目标。项目筛选仍包含通用结果。
+- `library prepare diagnose --job UUID`：附带服务端progress、error_code；phase可为prepare_input、agent_analyzing、parse_result、publish_result。running/心跳只说明本地状态，不证明远端持续生成；历史progress可能为空。
+- 程序查数据库取得正文，经共用结构转文本方法内联给Agent；一次Agent调用返回完整JSON，程序绑定原目录并入库。不读取source.json或scene-rules.md，不自动补调、拆分或改写正文。默认模型来自系统Agent配置；成对传入`--agent-model gpt-6.1-sol --reasoning-effort medium`可仅指定本次任务，不能用示例推断当前默认。
+- 导出可用`library prepare show --preparation UUID --content --json`保存完整JSON信封，比较时读取data中的结果；保留原preparation ID，再以新request-key和force重跑，不能覆盖旧快照冒充新结果。
+- 质量核对包括目录及结构保留、摘要忠实、单方组合的依据与信息时点相容、隐藏是否对应已有同类成果。组合数量、隐藏数量及warnings为零均不能单独判定质量；OCR及证据缺口查看notes。
+- CLI目前没有token统计命令；任务普通接口也不提供完整用量。获准读取私有执行元信息时，可汇总turn.completed.usage，分别列输入、缓存输入和输出；累计用量不是单次输入长度或实际费用。一次Agent调用可能包含多次模型请求。跨模型优先比较同一来源；不同包按文本字符量归一化只能作为估算。

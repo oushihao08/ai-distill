@@ -58,10 +58,10 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   library files prepare --manifest JSON --out 新输出目录（本地OFD转PDF及PDF切割；不上传、不调用模型）
   library revision create --package UUID --version N --request-key UUID --manifest JSON
   library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级]
-  library prepare start --revision UUID (--redaction UUID | --extraction-job UUID) --request-key UUID [--project UUID] [--agent-model 模型 --reasoning-effort 等级] [--execution-timeout 30m]
+  library prepare start --revision UUID (--redaction UUID | --extraction-job UUID) --request-key UUID [--project UUID] [--agent-model 模型 --reasoning-effort 等级] [--execution-timeout 30m] [--force]
   library prepare resume --job UUID --request-key UUID [--execution-timeout 30m]（显式续作，不启动worker）
   library prepare diagnose --job UUID（只读计数与停止原因，不输出正文）
-  library prepare list --package UUID | library prepare show --preparation UUID [--content]
+  library prepare list --package UUID [--revision UUID] [--redaction UUID] [--project UUID] | library prepare show --preparation UUID [--content]
   library job wait --job UUID [--timeout 1h]
   library job cancel --job UUID
   project materials load --project UUID --package UUID (--redaction UUID | --revision UUID)
@@ -115,7 +115,7 @@ function parse(args: string[]) {
     if (!value.startsWith('--')) { words.push(value); continue; }
     const key=value.slice(2);
     if (flags.has(key)) throw new CliError(`参数重复：--${key}`);
-    if (['all','redacted-only','json','help','full','content','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects'].includes(key)) flags.set(key,true);
+    if (['force','all','redacted-only','json','help','full','content','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects'].includes(key)) flags.set(key,true);
     else {
       const next=args[++i]; if(next===undefined||next.startsWith('--')) throw new CliError(`参数缺值：--${key}`);
       flags.set(key,next);
@@ -180,7 +180,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'library revision create':['package','version','request-key','manifest'],
       'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project','agent-model','reasoning-effort'],
       'library job show':['job'],'library job cancel':['job'],'library job wait':['job','timeout'],
-      'library prepare start':['revision','redaction','extraction-job','request-key','project','agent-model','reasoning-effort','execution-timeout'],'library prepare resume':['job','request-key','execution-timeout'],'library prepare diagnose':['job'],'library prepare list':['package'],'library prepare show':['preparation','content'],
+      'library prepare start':['revision','redaction','extraction-job','request-key','project','agent-model','reasoning-effort','execution-timeout','force'],'library prepare resume':['job','request-key','execution-timeout'],'library prepare diagnose':['job'],'library prepare list':['package','revision','redaction','project'],'library prepare show':['preparation','content'],
       'library template list':[],'library template show':['template'],
       'library redaction revalidate':['redaction'],
       'library documents show':['revision','extraction-job','file'],'library documents export':['plan','out'],'library documents import':['plan','request-key'],'library redaction show':['redaction','file'],
@@ -449,20 +449,24 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'library prepare start': {
         if(flags.has('redaction')===flags.has('extraction-job'))throw new CliError('须且只能提供 --redaction 或 --extraction-job');
         if(flags.has('agent-model')!==flags.has('reasoning-effort'))throw new CliError('Agent模型和强度须同时提供');
-        data=await post(`/api/material-library/revisions/${uuid('revision')}/prepare`,{request_key:uuid('request-key'),...(flags.has('execution-timeout')?{execution_timeout_ms:duration(required('execution-timeout'),86400000)}:{}),...(flags.has('redaction')?{redaction_id:uuid('redaction')}:{extraction_job_id:uuid('extraction-job')}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('agent-model')?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})});break;
+        data=await post(`/api/material-library/revisions/${uuid('revision')}/prepare`,{request_key:uuid('request-key'),...(flags.has('force')?{force:true}:{}),...(flags.has('execution-timeout')?{execution_timeout_ms:duration(required('execution-timeout'),86400000)}:{}),...(flags.has('redaction')?{redaction_id:uuid('redaction')}:{extraction_job_id:uuid('extraction-job')}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('agent-model')?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})});break;
       }
       case 'library prepare resume': data=await post(`/api/material-library/jobs/${uuid('job')}/prepare-resume`,{request_key:uuid('request-key'),...(flags.has('execution-timeout')?{execution_timeout_ms:duration(required('execution-timeout'),86400000)}:{})});break;
       case 'library prepare diagnose': {
         const job=await get(`/api/material-library/jobs/${uuid('job')}`);
         if(job.kind!=='prepare')throw new CliError('指定任务不是材料整理任务');
-        data={job_id:job.id,status:job.status,started_at:job.started_at,finished_at:job.finished_at,stop_reason:job.result_summary?.execution_stop?.reason_code??null};
+        data={job_id:job.id,status:job.status,started_at:job.started_at,finished_at:job.finished_at,progress:job.progress??{},error_code:job.error_code??null,stop_reason:job.result_summary?.execution_stop?.reason_code??job.error_code??null};
         if(job.status==='succeeded'){
           const prepared=await get(`/api/material-library/preparations/${job.result_summary?.preparation_id??job.id}`),r=prepared.result??{},documents=Array.isArray(r.documents)?r.documents:[];
           data={...data,document_count:r.document_count??null,entry_count:documents.length,unassigned_group_count:r.unassigned_group_count??null,unassigned_block_count:r.unassigned_block_count??null,summary_count:documents.filter((d:any)=>typeof d.summary==='string'&&d.summary.trim()).length,visible_count:documents.filter((d:any)=>d.visibility!=='hidden').length,hidden_count:documents.filter((d:any)=>d.visibility==='hidden').length,combination_count:Array.isArray(r.combinations)?r.combinations.length:0,warning_count:Array.isArray(r.warnings)?r.warnings.length:0};
         }
         break;
       }
-      case 'library prepare list': data=await get(`/api/material-library/packages/${uuid('package')}/preparations`);break;
+      case 'library prepare list': {
+        const query=new URLSearchParams();
+        for(const key of ['revision','redaction','project'])if(flags.has(key))query.set(`${key}_id`,uuid(key));
+        data=await get(`/api/material-library/packages/${uuid('package')}/preparations${query.size?'?'+query.toString():''}`);break;
+      }
       case 'library prepare show': data=await get(`/api/material-library/preparations/${uuid('preparation')}${flags.has('content')?'?include_content=true':''}`);break;
       case 'library job wait': {
         const jobId=uuid('job'),deadline=performance.now()+duration(flags.has('timeout')?required('timeout'):'1h');

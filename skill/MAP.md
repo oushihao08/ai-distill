@@ -170,4 +170,6 @@ CLI 包装现有 API 与本机文件操作；没有自己的数据库、业务�
 
 ### 可选材料整理与使用范围
 
-材料库`preparation.ts`提供材料包总摘要、逐份材料摘要/标签和多个可支持范围组合；CLI `library prepare`见[CLI](../cli/README.md#可选材料整理)。建题按来源自动冻结结果给出题Agent参考，完整附件仍是事实依据；作者自行确定最终组合，作答和评分不读取整理建议。缺失或失败可跳过，不过滤材料、不阻断建题。
+材料库`preparation.ts`从数据库加载正文，经共用文本投影内联给Agent，一次调用提供材料包总摘要、逐份材料摘要/标签和多个可支持范围组合；CLI `library prepare`见[CLI](../cli/README.md#可选材料整理)。建题按来源自动冻结结果给出题Agent参考，完整附件仍是事实依据；作者自行确定最终组合，作答和评分不读取整理建议。缺失或失败可跳过，不过滤材料、不阻断建题。
+
+整理重跑与来源筛选：CLI `library prepare start --force`、`list --revision/--redaction/--project`对应现有prepare及preparations接口；`diagnose`只读进度、错误码及计数。完整参数与预算唯一说明见[CLI材料整理](../cli/README.md#可选材料整理)。
