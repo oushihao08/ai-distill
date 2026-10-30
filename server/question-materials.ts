@@ -1,11 +1,11 @@
 /**
  * 文件职责：按项目材料后端读取并校验题目冻结的材料来源。
  * 关键入口：`readQuestionMaterials()` 返回完整冻结附件及可选的可见文书模型投影；library_v1缺快照时拒绝旧步骤回退。
- * 使用场景：出题与作答使用投影附件，评分核对来源身份，归档/导出按各自契约读取；不执行OCR、脱敏或文件写入。
+ * 使用场景：出题与作答使用投影附件，评分核对来源身份，归档/导出按各自契约读取；不执行OCR或脱敏；数据库回读后可写本机受管快照缓存，不修改原件。
  */
 import {createHash} from 'node:crypto';
 import {visiblePreparedDocuments,preparationUnits,renderPreparationDocuments,validateSelectedMaterialIndex,visiblePreparationContext} from '../shared/material-preparation-result';
-import {readFile,realpath,stat} from 'node:fs/promises';
+import {readFile,realpath,stat,mkdir,lstat,writeFile,rename,rm} from 'node:fs/promises';
 import {resolve,relative,sep,isAbsolute} from 'node:path';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -68,6 +68,35 @@ async function readLocalSnapshot(root:string,workflowId:string,artifact:Snapshot
  }
 }
 
+/** 缓存独立于原快照路径，按本题、artifact身份和数据库摘要寻址；不回写业务表或跨题共享。 */
+function cachedSnapshot(workflowId:string,artifact:SnapshotArtifact):SnapshotArtifact{
+ return{...artifact,storage_path:`${workflowId}/.snapshot-cache/${hash(artifact.id)}-${artifact.sha256}`};
+}
+async function cacheSnapshot(root:string,workflowId:string,artifact:SnapshotArtifact){
+ if(typeof artifact.content!=='string'||!/^[0-9a-f-]{36}$/i.test(workflowId)||!/^[0-9a-f]{64}$/i.test(artifact.sha256)||
+  Buffer.byteLength(artifact.content)!==Number(artifact.size_bytes)||hash(artifact.content)!==artifact.sha256)return;
+ let temporary:string|undefined;
+ try{
+  await mkdir(root,{recursive:true,mode:0o700});
+  let directory=await realpath(root);
+  // 逐层确认目录再写入；拒绝符号链接，不沿数据库提供的原storage_path创建目录。
+  for(const part of [workflowId,'.snapshot-cache']){
+   directory=resolve(directory,part);
+   try{await mkdir(directory,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+   const info=await lstat(directory);if(!info.isDirectory()||info.isSymbolicLink())return;
+  }
+  const target=resolve(directory,`${hash(artifact.id)}-${artifact.sha256}`);
+  temporary=`${target}.${crypto.randomUUID()}.tmp`;
+  await writeFile(temporary,artifact.content,{flag:'wx',mode:0o600});
+  await rename(temporary,target);
+ }catch{
+  // 只作加速副本；磁盘不可写仍使用本次已读取的数据库正文。
+  logEvent('material.snapshot.cache_failed',{level:'warn',component:'question_materials',workflow_id:workflowId,reason_code:'snapshot_cache_write_failed'});
+ }finally{
+  if(temporary)try{await rm(temporary,{force:true});}catch{logEvent('material.snapshot.cache_cleanup_failed',{level:'warn',component:'question_materials',workflow_id:workflowId,reason_code:'snapshot_cache_cleanup_failed'});}
+ }
+}
+
 async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise<QuestionMaterials>{
  const started=performance.now();
  const row=(await db.query(`SELECT project_id,package_id,revision_id,redaction_id,material_mode,source_digest,snapshot_manifest,snapshot_digest,markdown_artifact_id,index_artifact_id
@@ -91,7 +120,7 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  if(markdown?.kind!==expectedMarkdownKind||index?.kind!==expectedIndexKind||markdown.attempt_id!==null||index.attempt_id!==null){
   throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  }
- await Promise.all(artifacts.map(async artifact=>{artifact.content=await readLocalSnapshot(root,workflowId,artifact);}));
+ await Promise.all(artifacts.map(async artifact=>{artifact.content=await readLocalSnapshot(root,workflowId,artifact)??await readLocalSnapshot(root,workflowId,cachedSnapshot(workflowId,artifact));}));
  const missing=artifacts.filter(artifact=>typeof artifact.content!=='string').map(artifact=>artifact.id);
  let databaseBytes=0;
  if(missing.length){
@@ -124,6 +153,8 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
   if(materialProcessingSourceMode(processingMode)!==mode)throw conflict('题目冻结的处理方式与正文来源不一致');
  }
  const origin:QuestionMaterialOrigin={kind:'library_v1',material_mode:mode,...(processingMode?{material_processing_mode:processingMode}:{}),package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id===null?null:String(row.redaction_id),snapshot_digest:String(row.snapshot_digest)};
+ // 结构检查通过后才安装副本；缓存摘要不匹配只跳过缓存，不改变数据库正文的业务准入。
+ await Promise.all(artifacts.filter(artifact=>missing.includes(artifact.id)).map(artifact=>cacheSnapshot(root,workflowId,artifact)));
  logEvent('material.snapshot.read',{level:'info',component:'question_materials',workflow_id:workflowId,state:missing.length?'database_fallback':'local_snapshot',material_count:artifacts.length,input_bytes:databaseBytes,duration_ms:Math.round(performance.now()-started)});
  const attachment:QuestionMaterialAttachment={id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null};
  const prepared=manifest.material_scope?.result?.format==='material-preparation-v2'&&typeof manifest.material_scope.preparation_id==='string'

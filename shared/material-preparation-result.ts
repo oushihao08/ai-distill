@@ -18,7 +18,9 @@ export interface PreparationSummaryTask {id:string;title:string;block_ids:string
 export interface PreparationScene {scene:string;as_of:string}
 export interface PreparationCombination {id:string;direction:string;party:string;scenes:PreparationScene[];core_work:string;deliverables:string[];document_ids:string[];notes:string}
 export interface MaterialPreparationResult {summary_scope?:'visible';format:'material-preparation-v2';package_summary:string;documents:PreparationDocument[];combinations:PreparationCombination[];warnings:string[];document_count?:number;unassigned_group_count?:number;unassigned_block_count?:number}
-export interface MaterialScopeSelection {direction:string;party:string;scenes:string[];deliverables:string[];additional_combinations?:Omit<MaterialScopeSelection,'additional_combinations'>[]}
+export interface MaterialScopeSelection {business_goal?:string;core_work?:string;deliverable_use?:string;direction:string;party:string;scenes:string[];deliverables:string[];additional_combinations?:Omit<MaterialScopeSelection,'additional_combinations'>[]}
+/** 同期当前成功题目的设计参考，不包含历史题面、答案或评分；缺失元数据不推断。 */
+export interface AuthoringBatchContext {captured_at:string;total:number;included:number;missing:number;truncated:boolean;selections:MaterialScopeSelection[]}
 export interface MaterialScopeContext {preparation_id:string;result:MaterialPreparationResult;used_combinations:{direction:string;scene:string}[]}
 export interface PreparedSelectionDocument {id:string;title:string;text:string;document:RedactedDocumentStructure;source_refs:unknown;unit_kind?:PreparationDocumentKind;visibility?:PreparationVisibility;visibility_reason?:string}
 const sha=(s:string)=>createHash('sha256').update(s).digest('hex');

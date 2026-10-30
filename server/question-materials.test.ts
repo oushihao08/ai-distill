@@ -175,12 +175,13 @@ test('same-size local corruption falls back without weakening SHA verification',
  }finally{await f.cleanup();}
 });
 
-test('a metadata SHA that disagrees with the frozen manifest cannot use a valid local copy',async()=>{
+test('changed metadata SHA misses the cache but does not reintroduce a business digest gate',async()=>{
  const f=await snapshotCacheFixture();
  try{
   f.metadata[1].sha256='f'.repeat(64);
-  await expect(readQuestionMaterials(f.db,workflowId,f.root)).rejects.toThrow('来源快照不匹配');
-  expect(f.contentReads).toEqual([]);
+  expect((await readQuestionMaterials(f.db,workflowId,f.root)).attachments[0].content).toBe(markdown);
+  await readQuestionMaterials(f.db,workflowId,f.root);
+  expect(f.contentReads).toEqual([['index-1'],['index-1']]);
  }finally{await f.cleanup();}
 });
 
@@ -193,15 +194,16 @@ test('paths outside the workflow directory are never accepted as a snapshot cach
  }finally{await f.cleanup();}
 });
 
-test('both missing snapshots retain database fallback and reject corrupt database text',async()=>{
+test('both missing snapshots retain database fallback and reject malformed database structure',async()=>{
  const f=await snapshotCacheFixture();const {rm}=await import('node:fs/promises');const {join}=await import('node:path');
  try{
   await rm(join(f.root,workflowId),{recursive:true});
   expect((await readQuestionMaterials(f.db,workflowId,f.root)).attachments[0].content).toBe(markdown);
   expect(f.contentReads).toEqual([['markdown-1','index-1']]);
+  await rm(join(f.root,workflowId),{recursive:true});
   const query=f.db.query.bind(f.db);
-  const broken={query:async(sql:string,values:any[])=>sql.startsWith('SELECT id,content FROM ai_distill.artifacts')?{rows:[{id:'markdown-1',content:'wrong'},{id:'index-1',content:index}]}:query(sql,values)} as unknown as PoolClient;
-  await expect(readQuestionMaterials(broken,workflowId,f.root)).rejects.toThrow('来源快照不匹配');
+  const broken={query:async(sql:string,values:any[])=>sql.startsWith('SELECT id,content FROM ai_distill.artifacts')?{rows:[{id:'markdown-1',content:'wrong'},{id:'index-1',content:'invalid-json'}]}:query(sql,values)} as unknown as PoolClient;
+  await expect(readQuestionMaterials(broken,workflowId,f.root)).rejects.toThrow('索引格式无效');
  }finally{await f.cleanup();}
 });
 
@@ -227,4 +229,52 @@ test('无整理的结构化附件也使用统一表格正文，完整附件与�
  const result=await readQuestionMaterials(db,workflowId);
  expect(result.attachments[0]!.content).toBe(body);expect(result.attachments[0]!.sha256).toBe(bodyHash);
  expect(result.model_attachments?.[0]?.content).toContain('<td rowspan="2">当事人</td>');expect(result.model_attachments?.[0]?.content).toContain('<td colspan="2">款项</td>');expect(result.model_attachments?.[0]?.content).toContain('【第 2 页】');
+});
+
+
+test('database fallback warms an isolated cache and subsequent reads transfer no bodies',async()=>{
+ const f=await snapshotCacheFixture();const {rm,readFile}=await import('node:fs/promises');const {join}=await import('node:path');
+ try{
+  await rm(join(f.root,workflowId),{recursive:true});
+  const first=await readQuestionMaterials(f.db,workflowId,f.root);
+  const second=await readQuestionMaterials(f.db,workflowId,f.root);
+  expect(second).toEqual(first);expect(f.contentReads).toEqual([['markdown-1','index-1']]);
+  expect(await Bun.file(join(f.root,f.metadata[0].storage_path)).exists()).toBe(false);
+  const cache=join(f.root,workflowId,'.snapshot-cache',`${digest('index-1')}-${indexSha}`);
+  expect(await readFile(cache,'utf8')).toBe(index);
+ }finally{await f.cleanup();}
+});
+
+test('cache installation failure does not fail material reads or overwrite source snapshots',async()=>{
+ const f=await snapshotCacheFixture();const {unlink,writeFile,readFile}=await import('node:fs/promises');const {join}=await import('node:path');
+ try{
+  await unlink(join(f.root,f.metadata[1].storage_path));
+  await writeFile(join(f.root,workflowId,'.snapshot-cache'),'blocked');
+  expect((await readQuestionMaterials(f.db,workflowId,f.root)).attachments[0].content).toBe(markdown);
+  await readQuestionMaterials(f.db,workflowId,f.root);
+  expect(f.contentReads).toEqual([['index-1'],['index-1']]);
+  expect(await readFile(join(f.root,f.metadata[0].storage_path),'utf8')).toBe(markdown);
+ }finally{await f.cleanup();}
+});
+
+test('cache directory symlink cannot redirect writes outside the workflow',async()=>{
+ const f=await snapshotCacheFixture();const {unlink,mkdir,symlink,readdir}=await import('node:fs/promises');const {join}=await import('node:path');
+ try{
+  await unlink(join(f.root,f.metadata[1].storage_path));
+  const outside=join(f.root,'outside');await mkdir(outside);
+  await symlink(outside,join(f.root,workflowId,'.snapshot-cache'),'dir');
+  expect((await readQuestionMaterials(f.db,workflowId,f.root)).attachments[0].content).toBe(markdown);
+  expect(await readdir(outside)).toEqual([]);
+ }finally{await f.cleanup();}
+});
+
+test('concurrent cache installs leave a complete verified file and no temporary files',async()=>{
+ const f=await snapshotCacheFixture();const {rm,readdir}=await import('node:fs/promises');const {join}=await import('node:path');
+ try{
+  await rm(join(f.root,workflowId),{recursive:true});
+  const values=await Promise.all([readQuestionMaterials(f.db,workflowId,f.root),readQuestionMaterials(f.db,workflowId,f.root)]);
+  expect(values[0]).toEqual(values[1]);
+  expect((await readdir(join(f.root,workflowId,'.snapshot-cache'))).some(name=>name.endsWith('.tmp'))).toBe(false);
+  const before=f.contentReads.length;await readQuestionMaterials(f.db,workflowId,f.root);expect(f.contentReads.length).toBe(before);
+ }finally{await f.cleanup();}
 });

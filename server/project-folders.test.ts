@@ -5,7 +5,7 @@ import { test, expect, afterEach } from 'bun:test';
 import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanProjectFolder, validateFolder, validateStepConfig, validateStepConfigForExecution, registerQuestionFolders,projectStepSummary,readProjectWorkflowStepRows,isWorkflowStepReady,splitIntoBatches,readBatchChunkSize } from './project-folders';
+import { scanProjectFolder, validateFolder, validateStepConfig, validateStepConfigForExecution, registerQuestionFolders,projectStepSummary,readProjectWorkflowStepRows,isWorkflowStepReady,workflowStepReadiness,splitIntoBatches,readBatchChunkSize } from './project-folders';
 
 test('ordinal 7 accepts a project-configured aggregation policy',()=>{
  expect(validateStepConfig(7,{aggregation:{mode:'mean_at_most',model_count:2,threshold:55}})).toEqual({aggregation:{mode:'mean_at_most',model_count:2,threshold:55}});
@@ -211,6 +211,37 @@ test('publishing is ready only after the acceptance step has an accepted decisio
  expect(isWorkflowStepReady(8,steps)).toBe(true);
 });
 
+test('repair advice only unlocks authoring, including failed and waiting downstream states',()=>{
+ const steps=new Map<number,any>([4,5,6,7].map(ordinal=>[ordinal,{ordinal,status:'succeeded',enabled:true,active:false,result:ordinal===7?{decision:'repair'}:undefined}]));
+ expect(workflowStepReadiness(4,steps)).toMatchObject({ready:false,reason:'未达标题目须先生成并完成返修建议，且建议文本有效'});
+ for(const advice of [false,true]){
+  steps.get(4)!.revision_advice_ready=advice;
+  expect(isWorkflowStepReady(4,steps)).toBe(advice);
+  for(const status of ['succeeded','waiting','failed','running']){
+   for(const ordinal of [5,6]){
+    steps.get(ordinal)!.status=status;
+    expect(workflowStepReadiness(ordinal,steps)).toMatchObject({ready:false,reason:'当前题目未达标，须先根据返修建议重新出题'});
+   }
+  }
+ }
+});
+
+test('new authoring resets repair and downstream eligibility follows new upstream completion',()=>{
+ const steps=new Map<number,any>([4,5,6,7].map(ordinal=>[ordinal,{ordinal,status:'waiting',enabled:true,active:false,result:null}]));
+ for(const state of ['waiting','running','failed']){
+  steps.get(4)!.status=state;
+  expect(isWorkflowStepReady(5,steps)).toBe(false);
+  expect(isWorkflowStepReady(6,steps)).toBe(false);
+ }
+ steps.get(4)!.status='succeeded';
+ expect(isWorkflowStepReady(5,steps)).toBe(true);
+ expect(isWorkflowStepReady(6,steps)).toBe(false);
+ steps.get(5)!.status='succeeded';
+ expect(isWorkflowStepReady(6,steps)).toBe(true);
+ steps.get(5)!.active=true;steps.get(5)!.status='running';
+ expect(isWorkflowStepReady(6,steps)).toBe(false);
+});
+
 test('project batch work is split into the configured chunk size without dropping workflows',()=>{
  expect(splitIntoBatches([1,2,3,4,5],2)).toEqual([[1,2],[3,4],[5]]);
  expect(splitIntoBatches([],2)).toEqual([]);
@@ -242,7 +273,7 @@ test('步骤状态聚合传输后还原原rows结构并保留筛选参数',async
  let received:any[]=[];
  const pool={query:async(sql:string,args:unknown[])=>{expect(sql).toContain('jsonb_agg(to_jsonb(state_rows))');received=args;return{rows:[{items:rows}],rowCount:1};}} as unknown as Pool;
  const result=await readProjectWorkflowStepRows(pool,'phase',['fixture']);
- expect(result.rows).toEqual(rows);expect(result.rowCount).toBe(1);expect(received).toEqual(['phase',['fixture']]);
+ expect(result.rows).toEqual([{...rows[0],executions:undefined,revision_advice_ready:false}]);expect(result.rowCount).toBe(1);expect(received).toEqual(['phase',['fixture']]);
  const empty=await readProjectWorkflowStepRows({query:async()=>({rows:[{items:[]}],rowCount:1})} as unknown as Pool,'empty');
  expect(empty.rows).toEqual([]);expect(empty.rowCount).toBe(0);
 });

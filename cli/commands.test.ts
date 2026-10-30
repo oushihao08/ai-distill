@@ -641,3 +641,17 @@ test('材料整理CLI诊断只返回安全计数和停止原因，不输出摘�
  expect(out.data).toMatchObject({document_count:1,entry_count:2,visible_count:1,hidden_count:1,summary_count:2,combination_count:1,warning_count:1});
  expect(JSON.stringify(out)).not.toContain('私有');expect(calls.every(call=>!call.init?.method||call.init.method==='GET')).toBe(true);
 });
+
+// Siriser与其他下载入口共用文件安全逻辑，交付语义保持独立。
+test('Siriser下载保留原接口和回执，不覆盖已有文件',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'cli-siriser-download-'));const paths:string[]=[];
+ const client=new ApiClient(undefined,async url=>{paths.push(new URL(url).pathname);return new Response('archive bytes');});
+ const out=join(root,'siriser.zip');
+ try{
+  const result=await runCommand(['siriser','download','--workflow',question,'--out',out],client);
+  expect(result).toEqual({outcome:'complete',data:{path:out,bytes:13,package:'siriser_five_piece',submission_performed:false}});
+  await expect(runCommand(['siriser','download','--workflow',question,'--out',out],client)).rejects.toThrow('无法写入');
+  expect(await readFile(out,'utf8')).toBe('archive bytes');
+  expect(paths).toEqual([`/api/workflows/${question}/siriser-zip`,`/api/workflows/${question}/siriser-zip`]);
+ }finally{await rm(root,{recursive:true,force:true});}
+});

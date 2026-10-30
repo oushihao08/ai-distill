@@ -1,8 +1,10 @@
 /**
  * 文件职责：为 CLI 提供受限的本机 HTTP 客户端、JSON/multipart 请求及二进制下载。
- * 关键入口：`json()`、`form()`、`download()` 分别供命令层读写 API、上传显式列出的材料文件和下载产物。
+ * 关键入口：`json()`、`form()` 负责JSON/表单请求；`download()`返回字节，`downloadTo()`供命令层安全落盘。
  * 边界：请求只允许本机 API；写请求不重试，网络结果未知时由调用者按原任务/幂等键查询恢复。
  */
+import {writeFile} from 'node:fs/promises';
+
 export class CliError extends Error {
   constructor(message: string, public detail: Record<string, unknown> = {kind:'usage_error'}) {
     super(message); this.name='CliError';
@@ -65,6 +67,14 @@ export class ApiClient {
   async form(path:string,method:string,body:FormData,signal?:AbortSignal,headers:Record<string,string>={}):Promise<any>{
     const response=await this.response(path,method,body,signal,headers);
     return this.readJsonResponse(response,method);
+  }
+
+  /** 下载并独占创建文件；保留网络错误，不覆盖已存在的本地文件。 */
+  async downloadTo(path:string,out:string,signal?:AbortSignal):Promise<{path:string;bytes:number}>{
+    const bytes=await this.download(path,signal);
+    try{await writeFile(out,bytes,{flag:'wx',mode:0o600});}
+    catch{throw new CliError('无法写入下载文件；目标须不存在且父目录已创建',{kind:'file_error'});}
+    return{path:out,bytes:bytes.length};
   }
 
   async download(path: string, signal?: AbortSignal): Promise<Uint8Array> {

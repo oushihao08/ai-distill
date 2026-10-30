@@ -7,12 +7,12 @@ import { HTTPException } from 'hono/http-exception';
 export const MAX_FILE = Number(process.env.PDF_MAX_SIZE_MB ?? 50) * 1024 * 1024;
 export const MAX_BATCH = 100 * 1024 * 1024;
 export const MAX_FOLDER_BATCH = 200 * 1024 * 1024;
-/** HTTP封装余量不计入业务文件总量；只有库级版本上传采用200MiB。 */
+/** HTTP封装余量不计入业务文件总量；库级导入和版本上传采用200MiB。 */
 export const MAX_UPLOAD_REQUEST_BYTES = MAX_FOLDER_BATCH + 1024 * 1024;
 export const MAX_DEFAULT_REQUEST_BYTES = MAX_BATCH + 1024 * 1024;
-/** 只放宽材料库版本multipart上传；其余请求沿用原预算。 */
+/** 只放宽材料库导入及版本multipart上传；其余请求沿用原预算。 */
 export function requestBodyLimit(path:string,method:string):number{
- return method==='POST'&&/^\/api\/material-library\/packages\/[^/]+\/revisions$/.test(path)?MAX_UPLOAD_REQUEST_BYTES:MAX_DEFAULT_REQUEST_BYTES;
+ return method==='POST'&&/^\/api\/material-library\/(?:imports|packages\/[^/]+\/revisions)$/.test(path)?MAX_UPLOAD_REQUEST_BYTES:MAX_DEFAULT_REQUEST_BYTES;
 }
 export function uuid(value: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new HTTPException(400, { message: '无效的记录ID' });

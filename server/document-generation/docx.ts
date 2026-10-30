@@ -9,7 +9,7 @@ import type {DocumentBlock} from '../../shared/document-structure';
 
 export interface DocumentStructure {format:'redacted-structure-v1';pages:{page:number;blocks:DocumentBlock[];issues?:string[]}[]}
 export type RedactedDocumentStructure=DocumentStructure;
-export const DOCX_RENDERER_VERSION='redacted-structure-docx-v5';
+export const DOCX_RENDERER_VERSION='redacted-structure-docx-v7';
 export const REDACTED_DOCX_RENDERER_VERSION=DOCX_RENDERER_VERSION;
 
 /** 已提取页文本的保真结构：保留换行和制表符列，不推断表头或恢复不存在的合并单元格。 */

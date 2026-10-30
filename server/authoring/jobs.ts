@@ -8,7 +8,7 @@ import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
 import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
-import {frozenRevisionAdvice,validFrozenAdvice,type FrozenAdvice} from '../revision-advice/jobs';
+import {frozenRevisionAdvice,validFrozenAdvice,assertRepairStepAllowed,type FrozenAdvice} from '../revision-advice/jobs';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {runExternalCall} from '../external-call';
@@ -27,13 +27,13 @@ import {hookAdditionText} from '../workflow-hooks';
 import {AUTHORING_FIXED_PROMPT,DEFAULT_STEP_PROMPTS} from '../../shared/step-prompts';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 import {readQuestionMaterials,type QuestionMaterials} from '../question-materials';
-import type {MaterialScopeContext} from '../../shared/material-preparation-result';
+import type {AuthoringBatchContext,MaterialScopeSelection,MaterialScopeContext} from '../../shared/material-preparation-result';
 import {renderPublicQuestionPackage,runAuthoring,FRESH_AUTHORING_CONTRACT,type AuthoringResult,type AuthoringRule} from './executor';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 const stableDesignContext=(context:NonNullable<FrozenInput['design_context']>)=>({...('scenario'in context?{scenario:context.scenario}:{}),...('role_perspective'in context?{role_perspective:context.role_perspective}:{}),...('target_level'in context?{target_level:context.target_level}:{}),...('question_tags'in context?{question_tags:context.question_tags}:{})});
 const workflowSql="SELECT w.*,p.name AS project_name,p.local_skill_path,p.material_root,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot,s1.status AS ingestion_status,s9.status AS redaction_status\n FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL\n LEFT JOIN ai_distill.steps s1 ON s1.workflow_id=w.id AND s1.ordinal=1 LEFT JOIN ai_distill.steps s9 ON s9.workflow_id=w.id AND s9.ordinal=9\n WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
-interface FrozenInput {revision_advice?:FrozenAdvice;content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;scoring_policy?:ScoringPolicy;system_authoring_prompt?:string;project_name?:string;authoring_contract?:string;title:string;authoring_direction?:string;material_scope?:MaterialScopeContext;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];model_materials?:{id:string;sha256:string}[];digest:string}
+interface FrozenInput {revision_advice?:FrozenAdvice;content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;scoring_policy?:ScoringPolicy;system_authoring_prompt?:string;project_name?:string;authoring_contract?:string;title:string;authoring_direction?:string;material_scope?:MaterialScopeContext;batch_context?:AuthoringBatchContext;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];model_materials?:{id:string;sha256:string}[];digest:string}
 const materialIdentity=(input:Pick<FrozenInput,'redaction_attempt_id'|'material_origin'>)=>input.material_origin?.kind==='library_v1'?{material_origin:{kind:input.material_origin.kind,material_mode:input.material_origin.material_mode,...(input.material_origin.material_processing_mode?{material_processing_mode:input.material_origin.material_processing_mode}:{}),package_id:input.material_origin.package_id,revision_id:input.material_origin.revision_id,redaction_id:input.material_origin.redaction_id,snapshot_digest:input.material_origin.snapshot_digest}}:{redaction_attempt_id:input.material_origin?.kind==='legacy'?input.material_origin.redaction_attempt_id:input.redaction_attempt_id};
 const designContext=(workflow:any)=>{const context={...(workflow.scenario?{scenario:String(workflow.scenario)}:{}),...(workflow.role_perspective?{role_perspective:String(workflow.role_perspective)}:{}),...(workflow.target_level?{target_level:String(workflow.target_level)}:{}),...(Array.isArray(workflow.question_tags)&&workflow.question_tags.length?{question_tags:workflow.question_tags.map(String)}:{})};return Object.keys(context).length?context:undefined;};
 const sourceFiles=(workflow:any):{name:string;path:string}[]=>Array.isArray(workflow.source_manifest)?workflow.source_manifest.filter((file:any)=>typeof file?.name==='string'&&typeof file?.path==='string').map((file:any)=>({name:file.name,path:file.path})):[];
@@ -58,6 +58,7 @@ export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.str
     materials: input.materials.map(item => ({ id: item.id, sha256: item.sha256 })),
     ...(input.model_materials?{model_materials:input.model_materials.map(item=>({id:item.id,sha256:item.sha256}))}:{}),
     ...(input.material_scope?{material_scope:JSON.parse(canonicalJson(input.material_scope))}:{}),
+    ...(input.batch_context?{batch_context:JSON.parse(canonicalJson({...input.batch_context,captured_at:undefined}))}:{}),
     ...(input.authoring_contract ? { authoring_contract: input.authoring_contract } : {}),
     ...(input.scoring_policy ? { scoring_policy: JSON.parse(canonicalJson(input.scoring_policy)) } : {}),
     ...(input.hooks ? { hooks: JSON.parse(canonicalJson(input.hooks)) } : {})
@@ -76,6 +77,7 @@ export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.str
     materials: input.materials.map(item => ({ id: item.id, sha256: item.sha256 })),
     ...(input.model_materials?{model_materials:input.model_materials.map(item=>({id:item.id,sha256:item.sha256}))}:{}),
     ...(input.material_scope?{material_scope:JSON.parse(canonicalJson(input.material_scope))}:{}),
+    ...(input.batch_context?{batch_context:JSON.parse(canonicalJson({...input.batch_context,captured_at:undefined}))}:{}),
     ...(input.authoring_contract ? { authoring_contract: input.authoring_contract } : {}),
     ...(input.scoring_policy ? { scoring_policy: JSON.parse(canonicalJson(input.scoring_policy)) } : {}),
     ...(input.hooks ? { hooks: JSON.parse(canonicalJson(input.hooks)) } : {}) }));
@@ -126,16 +128,32 @@ export async function saveMaterialScopeSelection(db:PoolClient,projectId:string,
    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,scope_key) DO NOTHING`,[projectId,workflowId,attemptId,choice.direction.trim(),scene,hash(key)]);
  }
 }
-async function freezeMaterialScope(db:PoolClient,projectId:string,workflowId:string,prepared:any):Promise<MaterialScopeContext|undefined>{
+/** 只读取当前步骤成功投影，历史重出结果不混入；白名单字段限制参考内容。 */
+export async function freezeAuthoringBatch(db:PoolClient,projectId:string,workflowId:string):Promise<AuthoringBatchContext>{
+ const rows=(await db.query(`SELECT s.result->'material_scope_selection' AS selection
+ FROM ai_distill.steps s JOIN ai_distill.workflows w ON w.id=s.workflow_id
+ WHERE w.project_id=$1 AND w.id<>$2 AND w.deleted_at IS NULL
+ AND s.ordinal=4 AND s.status='succeeded' ORDER BY w.id`,[projectId,workflowId])).rows;
+ const clean=(value:any):MaterialScopeSelection|undefined=>{
+  if(!value||typeof value!=='object'||Array.isArray(value))return;
+  const str=(v:unknown)=>typeof v==='string'?v.trim():'';
+  const list=(v:unknown)=>Array.isArray(v)?v.filter((x):x is string=>typeof x==='string').map(x=>x.trim()).filter(Boolean):[];
+  const item:MaterialScopeSelection={direction:str(value.direction),party:str(value.party),scenes:list(value.scenes),deliverables:list(value.deliverables)};
+  for(const key of ['business_goal','core_work','deliverable_use'] as const)if(str(value[key]))item[key]=str(value[key]);
+  if(!item.direction&&!item.party&&!item.scenes.length&&!item.deliverables.length&&!item.core_work&&!item.business_goal&&!item.deliverable_use)return;
+  return item;
+ };
+ const selections:MaterialScopeSelection[]=[];let missing=0;
+ for(const row of rows){const item=clean(row.selection);if(!item){missing++;continue;}
+  const extra=Array.isArray(row.selection.additional_combinations)?row.selection.additional_combinations.map(clean).filter(Boolean):[];
+  if(extra.length)item.additional_combinations=extra;selections.push(item);
+ }
+ return{captured_at:new Date().toISOString(),total:rows.length,included:selections.length,missing,truncated:false,selections};
+}
+function freezeMaterialScope(prepared:any,batch:AuthoringBatchContext):MaterialScopeContext|undefined{
  if(!prepared||prepared.result?.format!=='material-preparation-v2')return undefined;
  const used=new Map<string,{direction:string;scene:string}>();
- const add=(direction:unknown,scene:unknown)=>{if(typeof direction!=='string'||!direction.trim()||typeof scene!=='string'||!scene.trim())return;const item={direction:direction.trim(),scene:scene.trim()};used.set(scopeKey(item.direction,item.scene),item);};
- const exists=(await db.query("SELECT to_regclass('ai_distill.question_material_scope_uses') IS NOT NULL AS available")).rows[0]?.available===true;
- const rows=exists?(await db.query('SELECT direction,scene FROM ai_distill.question_material_scope_uses WHERE project_id=$1 ORDER BY created_at',[projectId])).rows:[];
- for(const row of rows)add(row.direction,row.scene);
- const history=(await db.query(`SELECT a.result->'material_scope_selection' AS selection FROM ai_distill.step_attempts a
-  JOIN ai_distill.workflows w ON w.id=a.workflow_id WHERE w.project_id=$1 AND w.id<>$2 AND w.deleted_at IS NULL AND a.ordinal=4 AND a.status='succeeded'`,[projectId,workflowId])).rows;
- for(const row of history){const primary=row.selection;for(const selection of [primary,...(Array.isArray(primary?.additional_combinations)?primary.additional_combinations:[])]){if(!selection||!Array.isArray(selection.scenes))continue;for(const scene of selection.scenes)add(selection.direction,scene);}}
+ for(const primary of batch.selections)for(const item of [primary,...(primary.additional_combinations??[])])for(const scene of item.scenes)if(item.direction)used.set(scopeKey(item.direction,scene),{direction:item.direction,scene});
  return{preparation_id:String(prepared.preparation_id),result:prepared.result,used_combinations:[...used.values()]};
 }
 
@@ -146,7 +164,7 @@ async function freezeMaterialScope(db:PoolClient,projectId:string,workflowId:str
 export async function enqueueAuthoring(pool:Pool,id:string){
  const db=await pool.connect();
  try{
-  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);const source=await prerequisites(db,id);
+  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);await assertRepairStepAllowed(db,id,4);const source=await prerequisites(db,id);
   const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[source.workflow.project_id])).rows[0]?.config;
   const config=validateStepConfigForExecution(4,mergeCodexDefaults(raw,await readProjectAgentDefaults(db,source.workflow.project_id)));
   const scoreConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[source.workflow.project_id])).rows[0]?.config;
@@ -155,8 +173,9 @@ export async function enqueueAuthoring(pool:Pool,id:string){
   const hooks=await freezeStageHooks(dirname(source.skill_path),config.workflow);
   const loggingConfig=config as {model?:string;reasoning_effort?:string};
   const advice=await frozenRevisionAdvice(db,id);
-  const materialScope=await freezeMaterialScope(db,source.workflow.project_id,id,'loaded_materials' in source?source.loaded_materials?.material_scope:undefined);
-  const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
+  const batchContext=await freezeAuthoringBatch(db,source.workflow.project_id,id);
+  const materialScope=freezeMaterialScope('loaded_materials' in source?source.loaded_materials?.material_scope:undefined,batchContext);
+  const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),batch_context:batchContext,question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};
   await supersedeForeignPending(db,{kind:'step',id,ordinal:4});
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND input->>'digest'=$2 AND config=$3::jsonb AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id,input.digest,JSON.stringify(config)])).rows[0];
@@ -354,6 +373,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                         scoring_policy: job.input.scoring_policy
                     } : {}),
                     ...(job.input.material_scope?{material_scope:job.input.material_scope}:{}),
+                    ...(job.input.batch_context?{batch_context:job.input.batch_context}:{}),
                     workspace_path: resolveProjectPath(job.input.project_prompt.workspace_path),
                     root: join(directory, 'private'),
                     project_name: job.input.project_name,

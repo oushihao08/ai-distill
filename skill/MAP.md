@@ -37,9 +37,9 @@ ai-distill/
 | 操作 | API／CLI | 对象与结果 |
 | --- | --- | --- |
 | 建立主项目/期次 | POST `/api/projects` 可带 `project_group_id`、`phase_no`、`phase_name`；CLI `project create`；组导航见 `/api/project-groups` | 每个 `projects.id` 仍是一份隔离期次工作流；主项目身份用于跨期材料使用规则 |
-| 管理全局材料包 | `/api/material-library/packages`；CLI `library package ...` | 材料库独立于项目，不因某项目删除而删除 |
+| 管理全局材料包 | `/api/material-library/packages`；CLI `library package ...` | 材料库独立于项目，不因某项目删除而删除；新建包用 `POST /imports` 原子提取入库，不再先建空包（旧 `POST /packages` 返回410） |
 | 超限PDF上传前处理 | 本地`prepareLibraryFiles()`；CLI `library files prepare`；见[预处理说明](../cli/README.md#ofd与超限pdf上传前准备) | 复用`server/materials/pdf-split.ts`，生成受管分片、上传清单和来源审计；不改原件、不写数据库；随后通过API上传同包新版本 |
-| 建立不可变文件版本并处理 | `POST /packages/:id/revisions`、`POST /revisions/:id/jobs`；CLI `library revision create`、`library job start/show/cancel` | 入库、提取、脱敏是独立任务；使用幂等请求键，不由 CLI 自行处理正文 |
+| 建立不可变文件版本并处理 | `POST /imports`；已有包更新用 `POST /packages/:id/revisions`；CLI `library import`、`library revision create`、`library job start/show/cancel` | 上传先创建独立提取任务；全部提取通过后才发布包/版本，失败不新增正式材料数据；保存任务ID和幂等请求键并查询结果，不由 CLI 自行处理正文 |
 | 加载本期材料 | `/api/projects/:id/material-candidates`、`/loaded-materials`；CLI `project material candidates`、`project materials load/update/remove/restore` | 仅加载全局库包的指定脱敏结果或已提取原文版本；修改关系使用 `If-Match` |
 | 建题与永久使用台账 | `POST /loaded-materials/:linkId/questions`、`/material-uses`；CLI `project materials question`、`project material use update` | 创建题目时冻结所选来源；同一主项目不同期不得重复使用材料，返修状态保留事件 |
 | 旧材料导入新库 | `/api/projects/:id/legacy-material-imports`；CLI `project legacy-materials list/import/activate` | 先 dry-run 预检；apply需确认来源摘要，激活后建立期次关系 |

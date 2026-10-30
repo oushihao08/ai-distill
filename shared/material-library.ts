@@ -86,8 +86,8 @@ export interface MaterialLibraryJob {
   redaction_template_id?:string|null;
   origin?: 'execution'|'legacy_import';
   id: string;
-  package_id: string;
-  revision_id: string;
+  package_id: string | null;
+  revision_id: string | null;
   kind: LibraryJobKind;
   status: LibraryJobStatus;
   executor_kind: LibraryExecutorKind;

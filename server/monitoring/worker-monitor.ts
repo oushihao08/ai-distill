@@ -1,6 +1,6 @@
 /**
  * 职责：worker 安全监控：采集任务与资源心跳、写入共享快照并据内存阈值控制新任务派发。
- * 关键方法与用途：`createWorkerMonitor()` 管理启停、心跳和资源采样；`readWorkerMonitor()` 读取净化后的快照；`readActiveWorkflowTasks()` 查询运行中的 API／Agent 项目、题目与步骤。
+ * 关键方法与用途：`createWorkerMonitor()` 管理启停、心跳和资源采样；`readWorkerMonitor()` 读取净化后的快照；`readActiveWorkflowTasks()` 与 `readActiveRevisionAdviceTasks()` 查询本机运行中的步骤和返修建议任务。
  * 使用场景：`worker.ts` 控制任务领取，`app.ts` 提供本地资源状态与步骤占用明细。
  */
 import type {Pool,QueryConfig} from 'pg';
@@ -41,6 +41,22 @@ export async function readActiveWorkflowTasks(pool:Pool,attemptIds?:string[]):Pr
  return shareMonitorRead(pool,`active:${ids?.join(',')??'*'}`,async()=>{
  const result=await monitorQuery(pool,"SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,s.name AS step_name,a.status AS state,a.started_at,CASE WHEN a.ordinal=5 AND a.config->>'provider'='codex' THEN 'agent' WHEN a.ordinal=5 THEN 'api' WHEN a.ordinal=6 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal IN (4,6) THEN 'agent' WHEN a.ordinal=9 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=9 AND a.config->>'provider'='codex' THEN 'agent' ELSE 'unknown' END AS channel FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=a.ordinal WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status='running' AND a.ordinal IN (4,5,6,8,9) AND ($1::uuid[] IS NULL OR a.id=ANY($1::uuid[])) ORDER BY a.started_at,a.id LIMIT 500",[ids??null]);
  return result.rows.map(row=>({attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:row.state,channel:row.channel,started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
+ });
+}
+/** 只投影本机队列中已运行的返修建议；建议任务不属于 step_attempts，须单独合入监控明细。 */
+export async function readActiveRevisionAdviceTasks(pool:Pool,attemptIds:string[]):Promise<ActiveWorkflowTask[]>{
+ if(!attemptIds.length)return[];
+ const ids=[...new Set(attemptIds)].sort();
+ return shareMonitorRead(pool,`active-advice:${ids.join(',')}`,async()=>{
+  const schema=await monitorQuery(pool,"SELECT to_regclass('ai_distill.revision_advice_attempts') IS NOT NULL AS available");
+  if(schema.rows[0]?.available!==true)return[];
+  const result=await monitorQuery(pool,`SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,
+   '返修建议'::text AS step_name,'running'::text AS state,a.started_at
+   FROM ai_distill.revision_advice_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id
+   JOIN ai_distill.projects p ON p.id=w.project_id
+   WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.status='running' AND a.id=ANY($1::uuid[])
+   ORDER BY a.started_at,a.id LIMIT 500`,[ids]);
+  return result.rows.map(row=>({attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:'running',channel:'agent',started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
  });
 }
 function safeLibraryProgress(value:unknown):Record<string,string|number>{

@@ -41,9 +41,9 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务意图、执行归属和
 | `logging.ts` | `createStructuredLogger()`、`logEvent()` 与上下文入口：安全字段投影、JSONL轮转保留、健康及致命错误记录 |
 | `validation.ts` | HTTP请求预算（普通101MiB、库级版本上传201MiB含1MiB封装余量；业务文件仍限100/200MiB）、UUID/文字/标签/source key及PDF/DOCX/TXT/MD类型和大小边界；不代替内容解析 |
 | `project-groups.ts` | `resolveProjectGroup()` / `registerProjectGroupRoutes()`：稳定主项目、期次导航、归档恢复；`updatePhaseIdentity()` 修改身份前后比较业务摘要 |
-| `project-folders.ts` | 旧目录扫描/登记；`workflowStepReadiness()` 共用前置条件；`projectStepSummary()` 汇总；阶段配置校验和批量分块 |
+| `project-folders.ts` | 旧目录扫描/登记；`workflowStepReadiness()` 共用前置条件，`repair`题目须有成功有效返修建议才放行步骤4，步骤5、6等待重新出题，实际入队在workflow行锁内复核；`projectStepSummary()` 汇总时保留该就绪依据；阶段配置校验和批量分块 |
 | `material-package-questions.ts` | 旧项目内材料包兼容：列成功脱敏版本并复制私有题目快照；不等同于全局材料库包 |
-| `question-materials.ts` | `readQuestionMaterials()`：校验共享材料题冻结的原文/脱敏来源；数据库先读身份/摘要元数据，优先复用 `STORAGE_DIR` 下本题同摘要文件，缺失/损坏/越界时仅回读缺少的正文；保留完整来源及内容核验。有限事件 `material.snapshot.read` 记录命中方式与回读正文/索引的UTF-8字节数（不含元数据和协议开销）。可选第三参数指定隔离存储根；旧题脱敏读取不变，新库缺快照不回退旧ordinal9 |
+| `question-materials.ts` | `readQuestionMaterials()`：校验共享材料题冻结的原文/脱敏来源；数据库先读身份/摘要元数据，优先复用 `STORAGE_DIR` 下本题同摘要文件，缺失/损坏/越界时仅回读缺少的正文。结构检查通过且正文匹配数据库缓存摘要/大小时，原子写入本题 `.snapshot-cache/`，供后续读取复用；缓存失败不阻断本次读取，不写原件或业务表，不把缓存摘要当业务准入。有限事件 `material.snapshot.read` 记录命中方式与回读正文/索引的UTF-8字节数（不含元数据和协议开销）。可选第三参数指定隔离存储根；旧题脱敏读取不变，新库缺快照不回退旧ordinal9 |
 | `intake.ts` | `receiveMaterials()`：旧上传/目录接收、原件及指纹、材料修改后下游失效；库级上传另由material-library管理 |
 | `intake-jobs.ts` | `enqueueIngestion()` / `enqueueIntake()` 与 `runNextIntake()`：持久目录接收及接续提取，按执行端领取 |
 | `system-step-prompts.ts` | 当前出题/作答/评分默认提示词与历史脱敏提示词兼容读取；出题专用model/effort独立保存，新期步骤4显式复制，既有期次与其他模型配置不回写 |
@@ -115,7 +115,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务意图、执行归属和
 - `server` 必须是server目标，处理服务器材料/人工声明和无本地钩子的API作答，不运行Agent和评分。
 - 可选 `WORKER_WORKFLOW_IDS` 接收逗号分隔的工作流 UUID；设置后，仅处理范围内工作流的出题、作答、评分及交付；local队列还允许显式返修建议。材料、脱敏、项目Skill和历史hook任务不进入该范围。未设置时保持上述默认行为。该范围只限制领取和中断恢复，不改变已冻结任务输入。
 
-新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发逐项优先读取 `.env`／进程环境中的 `AGENT_CONCURRENCY`、`LLM_API_CONCURRENCY`（1–32），未设置或空白才读取 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，均缺失时默认Agent2/API8；非法环境值直接报错，两项均配置时不读取持久设置。修改环境变量后须重启API和worker；页面保存的是回退设置，被环境变量覆盖的项不因保存而改变生效值；页面可设置Agent 1–6、API 1–8；范围以 `concurrency.ts` 的常量为准，环境兼容范围另见该文件，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
+新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发逐项优先读取 `.env`／进程环境中的 `AGENT_CONCURRENCY`、`LLM_API_CONCURRENCY`（1–32），未设置或空白才读取 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，均缺失时默认Agent2/API8；非法环境值直接报错，两项均配置时不读取持久设置。修改环境变量后须重启API和worker；页面保存的是回退设置，被环境变量覆盖的项不因保存而改变生效值；页面可设置Agent 1–8、API 1–12；范围以 `concurrency.ts` 的常量为准，环境兼容范围另见该文件，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
 
 `steps`是当前状态，`step_attempts`是尝试历史。`waiting`须结合活动尝试、就绪原因和worker归属判断；HTTP202只表示已接受或等待未终结。按原attempt/job/request key恢复，不因超时重新派发。单题与批量资格分别由入口及业务模块复核；批量一题失败不把其余结果改成失败。独立评分已完成但缺少明确可比较分数、且达标仍waiting时，可由用户显式重新评分；旧validation标记本身不是达标门槛。已有达标或归档结果仍受重复派发保护，不自动重试。
 
@@ -200,3 +200,9 @@ readActiveConcurrencyLimit的只读SQLite连接沿用槽位写连接的5秒busy_
 材料模型正文由shared/document-structure.ts的documentPagesToModelText统一生成：材料整理内联输入与question-materials.ts模型附件共用，后者供出题和作答使用，评分读取作答冻结正文。历史结构指纹投影与原件/DOCX结构保持独立。
 
 连接持有告警补充 `query_count`、`db_elapsed_ms`、`max_query_ms` 与 `non_db_elapsed_ms`：SQL调用累计耗时包含同连接的驱动等待；非SQL持有时间为持有总时长减累计值的下界估算（截零），不能当作数据库服务器执行/锁等待的精确分解。日志不记录SQL正文或参数。
+
+派发归档保护以 `FOR UPDATE NOWAIT` 获取工作流锁；并发更新已持锁时明确返回HTTP409“当前题目正在更新或派发，未创建新任务”，由调用方回读，不让派发请求在同一工作流锁上长时间排队。其他数据库错误继续透传为失败，不能把网络故障当繁忙。
+
+本机HTTP接受合法UUID格式的 `X-Operation-ID` 并回显，非法或缺省值生成新UUID；`X-Request-ID`始终由服务端生成。operation_id用于丢失响应后的原请求日志对账，不是幂等键，不改变派发资格或任务身份。
+
+本地写入来源保留3700/3800开发来源，同时接受请求URL自身的HTTP环回同源地址（127.0.0.1或localhost，端口须一致），支持自定义PORT及同源开发代理。其他端口来源、外部域名来源仍拒绝；不从X-Forwarded-*头推导信任。

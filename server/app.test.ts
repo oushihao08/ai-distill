@@ -14,9 +14,9 @@ import { createHash } from 'node:crypto';
 import{configureLogger}from'./logging';
 import {STEP_REGISTRY} from '../shared/step-registry';
 const directories: string[] = [];
-let previousMineruKey:string|undefined;
-beforeEach(()=>{previousMineruKey=process.env.MINERU_KEY;process.env.MINERU_KEY='fixture-only-no-network';});
-afterEach(async () => { if(previousMineruKey===undefined)delete process.env.MINERU_KEY;else process.env.MINERU_KEY=previousMineruKey;try { for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); } catch (error) { throw error; } });
+let previousMineruKey:string|undefined;let previousQueueMode:string|undefined;
+beforeEach(()=>{previousQueueMode=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='legacy';previousMineruKey=process.env.MINERU_KEY;process.env.MINERU_KEY='fixture-only-no-network';});
+afterEach(async () => { if(previousQueueMode===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previousQueueMode;if(previousMineruKey===undefined)delete process.env.MINERU_KEY;else process.env.MINERU_KEY=previousMineruKey;try { for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); } catch (error) { throw error; } });
 function fakePool(options: { failMaterial?: boolean; previous?: string; materialMode?:'question_folders'|'material_packages'; source?: { id: string; deleted_at?:string|null; materials: { original_name: string; sha256: string }[] } } = {}) {
  const calls: { sql: string; values?: unknown[] }[] = [];
  let workflow=options.previous??options.source?.id;const storedMaterials:any[]=[];
@@ -506,4 +506,38 @@ test('DOCX redaction declaration rejects stale fingerprints and non-DOCX without
   expect(response.status).toBe(material.original_name.endsWith('.pdf')?400:409);
   expect(calls.some(sql=>sql.startsWith('UPDATE ai_distill.step_attempts')||sql.startsWith('UPDATE ai_distill.steps')||sql.startsWith('UPDATE ai_distill.materials SET redaction_mode'))).toBe(false);
  }
+});
+
+
+test('operation correlation survives failed writes and rejects arbitrary header text',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'operation-correlation-'));directories.push(root);
+ const logger=configureLogger({root,service:'api'});
+ try{
+  const pool={query:async()=>{throw new Error('fixture database unavailable');}} as unknown as Pool;
+  const app=createApp(pool,root),id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  for(const supplied of [id,'private arbitrary text']){
+   const response=await app.request(`/api/projects/${projectId}/steps/6/run-batch`,{method:'POST',headers:{'X-Operation-ID':supplied,'Content-Type':'application/json'},body:'{}'});
+   expect(response.status).toBe(500);expect(response.headers.get('X-Request-ID')).toBeTruthy();
+   const actual=response.headers.get('X-Operation-ID');expect(actual).toMatch(/^[0-9a-f-]{36}$/i);expect(actual===supplied).toBe(supplied===id);
+  }
+  await logger.flush();const day=join(root,'logs',new Date().toISOString().slice(0,10));
+  const text=(await Promise.all((await readdir(day)).map(file=>readFile(join(day,file),'utf8')))).join('');
+  expect(text).toContain(id);expect(text).not.toContain('private arbitrary text');
+ }finally{await logger.close();}
+});
+
+
+test('custom local ports allow only their own loopback origin while retaining known development origins',async()=>{
+ const {app,calls}=await setup();
+ for(const [url,origin,status] of [
+  ['http://127.0.0.1:3811/api/projects/not-an-id/steps/6/run-batch','http://127.0.0.1:3811',400],
+  ['http://localhost:3711/api/projects/not-an-id/steps/6/run-batch','http://localhost:3711',400],
+  ['http://127.0.0.1:3711/api/projects/not-an-id/steps/6/run-batch','http://127.0.0.1:3811',403],
+  ['http://unrelated.example:3711/api/projects/not-an-id/steps/6/run-batch','http://unrelated.example:3711',403],
+  ['http://127.0.0.1:3711/api/projects/not-an-id/steps/6/run-batch','http://127.0.0.1:3800',400],
+ ] as const){
+  const response=await app.request(url,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:'{}'});
+  expect(response.status).toBe(status);
+ }
+ expect(calls).toHaveLength(0);
 });

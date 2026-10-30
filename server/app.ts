@@ -4,7 +4,7 @@
  * 使用场景：由 `index.ts` 创建本地服务实例；路由处理器调用各业务模块完成读写。
  */
 import {resolveProjectPath,projectPathReference,comparableProjectPath} from './paths';
-import {enqueueRevisionAdvice,listRevisionAdvice} from './revision-advice/jobs';
+import {currentRevisionAdviceReadiness,enqueueRevisionAdvice,listRevisionAdvice} from './revision-advice/jobs';
 import {executionAttemptProjection,projectStepExecutions} from './execution-queue/status';
 import {registerExecutionQueueRoutes} from './execution-queue/routes';
 import {localQueueEnabled,localQueue,withLocalQueueRoot} from './execution-queue/runtime';
@@ -15,7 +15,7 @@ import { Hono, type Context } from 'hono';
 import {runAgent} from './agent';
 import {AgentConcurrencyConfigurationError,getAgentConcurrencyGate,readConcurrencySettings,readSavedWorkerConcurrencySettings,saveWorkerConcurrencySettings,SAFE_WORKER_CONCURRENCY_LIMITS} from './concurrency';
 import {clearProjectAgentSettings,configureAgentCredentialHome,readAgentCredentialHome,readAgentModelCatalog,readAgentSettings,readProjectAgentSettings,saveAgentSettings,saveProjectAgentSettings} from './agent/config';
-import {readActiveWorkflowTasks,readMaterialLibraryQueue,readWorkerMonitor} from './monitoring/worker-monitor';
+import {readActiveRevisionAdviceTasks,readActiveWorkflowTasks,readMaterialLibraryQueue,readWorkerMonitor} from './monitoring/worker-monitor';
 import {DEFAULT_CODEX_SETTINGS} from './codex/system-config';
 import { HTTPException } from 'hono/http-exception';
 import { bodyLimit } from 'hono/body-limit';
@@ -119,9 +119,12 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  const requestErrorStatus=(error:unknown)=>error instanceof HTTPException?error.status:error&&typeof error==='object'&&'code'in error&&error.code==='23505'&&'constraint'in error&&['projects_local_skill_path','system_answer_models_provider_base_url_model_key'].includes(String(error.constraint))?409:500;
  app.use('*',async(c,next)=>{
   const request_id=randomUUID(),started=performance.now();
-  return withLogContext({request_id,operation_id:randomUUID(),method:c.req.method,route:c.req.matchedRoutes.at(-1)?.path},async()=>{
+  // 浏览器在写入前生成关联标识；即使响应丢失也可按原标识查日志，不是幂等或重试授权。
+  const requestedOperation=c.req.header('X-Operation-ID');
+  const operation_id=requestedOperation&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedOperation)?requestedOperation:randomUUID();
+  return withLogContext({request_id,operation_id,method:c.req.method,route:c.req.matchedRoutes.at(-1)?.path},async()=>{
    let failedStatus:number|undefined;
-   c.header('X-Request-ID',request_id);
+   c.header('X-Request-ID',request_id);c.header('X-Operation-ID',operation_id);
    const healthRequest=c.req.method==='GET'&&(c.req.path==='/api/health'||c.req.path==='/api/monitor');
    if(!healthRequest)logEvent('request.started',{level:'info',component:'http',method:c.req.method});
    try{
@@ -134,7 +137,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    }
    catch(error){failedStatus=requestErrorStatus(error);throw error;}
    finally{
-    c.header('X-Request-ID',request_id);
+    c.header('X-Request-ID',request_id);c.header('X-Operation-ID',operation_id);
     const status_code=failedStatus??c.res.status;
     if((!healthRequest||status_code>=400)&&status_code<500)logEvent('request.finished',{level:status_code>=400?'warn':'info',...requestFields(c),status_code,duration_ms:Math.round(performance.now()-started)});
    }
@@ -148,7 +151,9 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.use('/api/*', async (c, next) => {
    try {
      const origin = c.req.header('Origin');
-     if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && origin && !['http://127.0.0.1:3800', 'http://localhost:3800', 'http://127.0.0.1:3700', 'http://localhost:3700'].includes(origin)) throw new HTTPException(403, { message: '不允许此来源写入本地工作台' });
+     // PORT覆盖及开发代理仍可同源使用；不信任转发头，不开放任意环回跨端口来源。
+     const sameLocalOrigin=origin&&/^http:\/\/(?:127\.0\.0\.1|localhost):[0-9]+$/.test(origin)&&origin===new URL(c.req.url).origin;
+     if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && origin && !sameLocalOrigin && !['http://127.0.0.1:3800', 'http://localhost:3800', 'http://127.0.0.1:3700', 'http://localhost:3700'].includes(origin)) throw new HTTPException(403, { message: '不允许此来源写入本地工作台' });
      await next();
      c.header('Cache-Control', 'no-store');
    } catch (error) { throw error; }
@@ -236,9 +241,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.get('/api/monitor', async c => { try {
   const executionQueue=localQueueEnabled()?localQueue(storageRoot):null;
   const local_execution_queue=executionQueue?{executor_id:executionQueue.executorId,items:executionQueue.monitorJobs().map(({id,kind,lane,state,cancel_requested})=>({id,kind,lane,state,cancel_requested}))}:null;
+  const activeAdviceIds=local_execution_queue?.items.filter(job=>job.kind==='advice'&&job.state==='running').map(job=>job.id)??[];
   const [monitor,active_workflow_tasks,material_library,logging]=await Promise.all([
    readWorkerMonitor(storageRoot),
-   readActiveWorkflowTasks(pool,local_execution_queue?.items.filter(job=>job.kind==='step'&&job.state==='running').map(job=>job.id)).then(items=>({status:'known' as const,items})).catch(error=>{logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable' as const,items:[] as Awaited<ReturnType<typeof readActiveWorkflowTasks>>};}),
+   readActiveWorkflowTasks(pool,local_execution_queue?.items.filter(job=>job.kind==='step'&&job.state==='running').map(job=>job.id)).then(async items=>({status:'known' as const,items:[...items,...await readActiveRevisionAdviceTasks(pool,activeAdviceIds)]})).catch(error=>{logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable' as const,items:[] as Awaited<ReturnType<typeof readActiveWorkflowTasks>>};}),
    readMaterialLibraryQueue(pool,local_execution_queue?.items.filter(job=>job.kind==='library').map(job=>job.id)),
    loggerHealth(),
   ]);
@@ -728,7 +734,9 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      const hasPdf=materials.rows.some(material=>/\.(pdf|docx)$/i.test(String(material.original_name)));
      const extraction=steps.rows.find(step=>step.ordinal===2);
      const visibleSteps=steps.rows.filter(step=>![2,3,10].includes(step.ordinal)).map(step=>step.ordinal===1&&hasPdf&&extraction&&extraction.status!=='skipped'?{...step,status:extraction.status,result:extraction.result??step.result,error:extraction.error??step.error,started_at:extraction.started_at??step.started_at,finished_at:extraction.finished_at??step.finished_at}:step).map((step,index)=>({...step,display_position:index+1,position:index+1}));
-     const workflowStates=new Map<number,WorkflowStepState>(visibleSteps.map(step=>[step.ordinal,{ordinal:step.ordinal,status:step.status,result:step.result,enabled:Boolean(step.enabled),workflow_kind:workflowData.workflow_kind,source_workflow_id:workflowData.source_workflow_id,library_source:Boolean(questionMaterialOrigin.rows.length),active:attempts.rows.some(attempt=>attempt.ordinal===step.ordinal&&['waiting','running'].includes(attempt.status))||(step.ordinal===1&&hasPdf&&attempts.rows.some(attempt=>attempt.ordinal===2&&['waiting','running'].includes(attempt.status)))}]));
+     const needsRevisionAdvice=workflowData.workflow_kind==='question'&&visibleSteps.some(step=>step.ordinal===7&&step.status==='succeeded'&&step.result?.decision==='repair');
+     const revisionAdviceReady=needsRevisionAdvice?await currentRevisionAdviceReadiness(pool,[id]):new Map<string,boolean>();
+     const workflowStates=new Map<number,WorkflowStepState>(visibleSteps.map(step=>[step.ordinal,{ordinal:step.ordinal,status:step.status,result:step.result,enabled:Boolean(step.enabled),workflow_kind:workflowData.workflow_kind,source_workflow_id:workflowData.source_workflow_id,library_source:Boolean(questionMaterialOrigin.rows.length),revision_advice_ready:revisionAdviceReady.get(id)??false,active:attempts.rows.some(attempt=>attempt.ordinal===step.ordinal&&['waiting','running'].includes(attempt.status))||(step.ordinal===1&&hasPdf&&attempts.rows.some(attempt=>attempt.ordinal===2&&['waiting','running'].includes(attempt.status)))}]));
      const stepsWithReadiness=visibleSteps.map(step=>{const eligibility=workflowStepReadiness(step.ordinal,workflowStates);const {execution_attempts,...state}=step;return{...state,executions:projectStepExecutions(execution_attempts),ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};});
      const source=questionMaterialOrigin.rows[0];
      const materialOrigin=source?{kind:'library_v1',material_mode:source.material_mode==='original'?'original':'redacted',package_id:String(source.package_id),revision_id:String(source.revision_id),redaction_id:source.redaction_id===null?null:String(source.redaction_id),snapshot_digest:String(source.snapshot_digest)}:null;

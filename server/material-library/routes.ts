@@ -4,11 +4,12 @@
  * 使用场景：材料库页面调用 `/api/material-library`，该路由不创建项目工作流或旧材料记录。
  */
 import type {Hono} from 'hono';
+import {enqueueAtomicLibraryImport} from './atomic-import';
 import {registerPreparationRoutes} from './preparation';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {uuid} from '../validation';
-import {archiveLibraryPackage,buildDefaultProcessingSettings,createLibraryPackage,createLibraryRevision,readLibraryPackage,readLibraryPackageUsage,readLibraryPackages,readLibraryRevisions,restoreLibraryPackage,updateLibraryPackage} from './service';
+import {archiveLibraryPackage,buildDefaultProcessingSettings,readLibraryPackage,readLibraryPackageUsage,readLibraryPackages,readLibraryRevisions,restoreLibraryPackage,updateLibraryPackage} from './service';
 import type {LibraryFileInput} from './service';
 import {cancelLibraryJob,enqueueLibraryJob,readLibraryJob,projectLibraryJobExecutions} from './jobs';
 import {readLibraryDocuments,readLibraryOriginal,readLibraryRedactionPreview} from './preview';
@@ -60,7 +61,24 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
   const page=Number(c.req.query('page')??1),page_size=Number(c.req.query('page_size')??30);
   return c.json(await readLibraryPackages(pool,{q:c.req.query('q'),page,page_size,ready_only:c.req.query('ready_only')==='true',project_ids:c.req.queries('project_id'),redaction_state:c.req.query('redaction_state'),preparation_state:c.req.query('preparation_state'),archived_only:c.req.query('archived_only')==='true'}));
  });
- app.post(`${prefix}/packages`,async c=>c.json(await createLibraryPackage(pool,await jsonBody(c)),201));
+ app.post(`${prefix}/packages`,async()=>{throw new HTTPException(410,{message:'不再先建立空材料包，请使用 /api/material-library/imports 上传并提取，成功后自动入库'});});
+ app.get(`${prefix}/imports`,async c=>{
+  const jobs=(await pool.query(`SELECT id,status,package_id,revision_id,progress,error_code,error_message,created_at,finished_at,
+   input_snapshot#>>'{atomic_import,package_input,name}' AS name FROM ai_distill.library_jobs
+   WHERE input_snapshot ? 'atomic_import' ORDER BY created_at DESC,id DESC LIMIT 50`)).rows;
+  return c.json({items:await projectLibraryJobExecutions(pool,jobs)});
+ });
+ app.post(`${prefix}/imports`,async c=>{
+  let form:FormData;try{form=await c.req.formData();}catch{throw new HTTPException(400,{message:'导入须为multipart/form-data'});}
+  const key=form.get('request_key'),name=form.get('name');if(typeof key!=='string'||typeof name!=='string')throw new HTTPException(400,{message:'缺少导入名称或request_key'});
+  const uploads=form.getAll('files').filter((file):file is File=>file instanceof File);
+  if(!uploads.length||uploads.length>100)throw new HTTPException(400,{message:'请选择1至100份材料'});
+  let modes:unknown=[];const modeField=form.get('redaction_modes');
+  if(typeof modeField==='string'){try{modes=JSON.parse(modeField);}catch{throw new HTTPException(400,{message:'脱敏声明无效'});}}
+  if(!Array.isArray(modes)||(modes.length&&modes.length!==uploads.length)||modes.some(mode=>!['model','declared_redacted'].includes(mode)))throw new HTTPException(400,{message:'脱敏声明无效'});
+  const files=await Promise.all(uploads.map(async (file,index)=>({original_name:file.name,bytes:new Uint8Array(await file.arrayBuffer()),redaction_mode:(modes[index]??'model') as 'model'|'declared_redacted'})));
+  const result=await enqueueAtomicLibraryImport(pool,storageRoot,key,{name,tags:[]},files);return c.json(result,result.reused?200:202);
+ });
  app.get(`${prefix}/packages/:id`,async c=>c.json(await readLibraryPackage(pool,uuid(c.req.param('id')))));
  app.get(`${prefix}/packages/:id/usage`,async c=>c.json(await readLibraryPackageUsage(pool,uuid(c.req.param('id')))));
  app.patch(`${prefix}/packages/:id`,async c=>c.json(await updateLibraryPackage(pool,uuid(c.req.param('id')),versionHeader(c.req.header('If-Match')),await jsonBody(c))));
@@ -95,7 +113,8 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
   if(!uploads.length||uploads.length>100)throw new HTTPException(400,{message:'请选择1至100份材料'});
   if(modes.length&&modes.length!==uploads.length)throw new HTTPException(400,{message:'脱敏声明数量须与文件数一致'});
   const files:LibraryFileInput[]=await Promise.all(uploads.map(async(file,index)=>({original_name:file.name,bytes:new Uint8Array(await file.arrayBuffer()),redaction_mode:(modes[index]??'model') as LibraryFileInput['redaction_mode']})));
-  const result=await createLibraryRevision(pool,storageRoot,packageId,ifMatch,requestKey,files);
-  return c.json(result,result.reused?200:201);
+  const pkg=await readLibraryPackage(pool,packageId);
+  const result=await enqueueAtomicLibraryImport(pool,storageRoot,requestKey,{name:pkg.name,description:pkg.description,tags:pkg.tags},files,{package_id:packageId,lock_version:ifMatch});
+  return c.json(result,result.reused?200:202);
  });
 }

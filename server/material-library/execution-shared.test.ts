@@ -8,6 +8,16 @@ function storage(){
  return{db,contents};
 }
 
+test('英文整段入库前删除并保留原始OCR与精确坐标审计，中英混排与金额不变',async()=>{
+ const blocks:DocumentBlock[]=[{id:'ocr',kind:'paragraph',text:'The image provided is a QR code.\nNo textual content can be extracted.'},{id:'mixed',kind:'paragraph',text:'中文 English'},{id:'table',kind:'table',rows:[{cells:[{text:'English description.',rowSpan:2},{text:'10000'}]}]}];
+ const input=ensurePages([{page:1,text:documentBlocksToText(blocks),structure:blocks,method:'ocr'}],'source'),before=JSON.stringify(input),s=storage();
+ const out=await storeExtractedDocument(s.db,input),saved=JSON.parse(s.contents[1]!);
+ expect(s.contents[0]).toBe(before);expect(saved.cleanup.edits).toHaveLength(2);
+ for(const edit of saved.cleanup.edits)expect(input.pages[0]!.text.slice(edit.start,edit.end)).toBe(edit.source_text);
+ expect(out.document.pages[0]!.text).toBe('\n中文 English\n\t10000');expect(JSON.stringify(input)).toBe(before);
+ expect(out.document.pages[0]!.structure![2]).toMatchObject({rows:[{cells:[{text:'',rowSpan:2},{text:'10000'}]}]});
+});
+
 test('preserves raw OCR and exact cleanup edits before publishing cleaned text without changing source or tables',async()=>{
  const blocks:DocumentBlock[]=[{id:'p',kind:'paragraph',text:'[Image]\n57660 [Barcode]\n款项10000元，日期2025年3月26日。\n**'},{id:'t',kind:'table',rows:[{cells:[{text:'$50\\%$',rowSpan:2},{text:'123456'}]},{cells:[{text:'[证据1]'}]}]}];
  const input=ensurePages([{page:1,text:documentBlocksToText(blocks),structure:blocks,method:'ocr',issues:['image_without_text']}],'source'),before=JSON.stringify(input),s=storage();

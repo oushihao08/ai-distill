@@ -7,8 +7,12 @@ export class ApiRequestError extends Error{
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
  const deadline=AbortSignal.timeout(35000);
  const signal=init?.signal?AbortSignal.any([init.signal,deadline]):deadline;
+ const write=!['GET','HEAD','OPTIONS'].includes((init?.method??'GET').toUpperCase());
+ const operationId=write?crypto.randomUUID():undefined;
+ const headers=new Headers(init?.headers);if(operationId)headers.set('X-Operation-ID',operationId);
+ const failure=(message:string,unknown:boolean,status?:number,code?:string)=>new ApiRequestError(operationId?`${message}（操作标识：${operationId}）`:message,unknown,status,code);
  try {
-  const response = await fetch(`/api${path}`, {...init,signal});
+  const response = await fetch(`/api${path}`, {...init,headers,signal});
   const text = await response.text();
   let data: unknown;
   if (text.trim()) {
@@ -22,9 +26,9 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (data === undefined && response.status !== 204) throw new Error('工作台接口返回空响应，请检查后端服务');
   return data as T;
  } catch (error) {
-  if(deadline.aborted&&!init?.signal?.aborted)throw new ApiRequestError((init?.method??'GET').toUpperCase()==='GET'?'读取超过35秒，请刷新状态后重试':'请求等待超过35秒，后台操作可能仍在执行；请刷新状态确认，勿直接重复提交',(init?.method??'GET').toUpperCase()!=='GET');
-  if(error instanceof ApiRequestError)throw error;
-  throw new ApiRequestError(error instanceof Error?error.message:'无法连接工作台接口',(init?.method??'GET').toUpperCase()!=='GET');
+  if(deadline.aborted&&!init?.signal?.aborted)throw failure((init?.method??'GET').toUpperCase()==='GET'?'读取超过35秒，请刷新状态后重试':'请求等待超过35秒，后台操作可能仍在执行；请刷新状态确认，勿直接重复提交',(init?.method??'GET').toUpperCase()!=='GET');
+  if(error instanceof ApiRequestError)throw failure(error.message,error.outcome_unknown,error.status,error.code);
+  throw failure(error instanceof Error?error.message:'无法连接工作台接口',(init?.method??'GET').toUpperCase()!=='GET');
  }
 }
 

@@ -12,11 +12,27 @@ import {spawnSync} from 'node:child_process';
 import type {Pool} from 'pg';
 import {STEP_REGISTRY} from '@shared/step-registry';
 import {redactionInputDigest} from './redaction-jobs';
-import {exportCurrentMaterialDocx,exportRedactedDocx,isLibraryDocxPath,projectPreparedDocuments,preparationDocxProjection} from './redacted-docx-export';
+import {exportCurrentMaterialDocx,exportRedactedDocx,isLibraryDocxPath,projectPreparedDocuments,preparationDocxProjection,filterMaterialDocxSource} from './redacted-docx-export';
+import {REDACTED_DOCX_RENDERER_VERSION} from '../document-generation/docx';
 import {compilePreparation,preparationBlocks,preparationUnits} from '../../shared/material-preparation-result';
 
 const workflowId='11111111-1111-4111-8111-111111111111',attemptId='22222222-2222-4222-8222-222222222222',materialId='33333333-3333-4333-8333-333333333333';
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
+
+test('材料DOCX过滤整段英文且不修改冻结来源，中文、数字与表格继续渲染',async()=>{
+ const {buildDocx}=await import('../document-generation/docx');
+ const source:any={format:'redacted-structure-v1',pages:[{page:1,blocks:[
+  {id:'title',kind:'heading',level:1,text:'测试材料'},
+  {id:'ocr',kind:'paragraph',text:'The image provided is a QR code.'},
+  {id:'mixed',kind:'paragraph',text:'中文 English 保留'},
+  {id:'page-number',kind:'paragraph',text:'987654321'},
+  {id:'table',kind:'table',rows:[{cells:[{text:'ABC123'},{text:'10000'}]}]},
+ ]}]};
+ const before=JSON.stringify(source),bytes=await buildDocx(filterMaterialDocxSource(source));
+ const out=spawnSync('python3',['-c',"import zipfile,io,sys; print(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).read('word/document.xml').decode())"],{input:Buffer.from(bytes),encoding:'utf8'});
+ expect(out.status).toBe(0);expect(out.stdout).not.toContain('The image provided');expect(out.stdout).toContain('ABC123');
+ expect(out.stdout).not.toContain('987654321');expect(out.stdout).toContain('中文 English 保留');expect(out.stdout).toContain('10000');expect(out.stdout).toContain('w:tbl');expect(out.stdout).toContain('Heading1');expect(JSON.stringify(source)).toBe(before);
+});
 const roots:string[]=[];
 afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 
@@ -60,7 +76,7 @@ test('manual export writes one DOCX artifact without touching workflow state or 
  expect(result).toMatchObject({reused:false,sha256:hash(bytes)});expect(bytes.readUInt32LE(0)).toBe(0x04034b50);expect(again).toMatchObject({artifact_id:result.artifact_id,reused:true});
  expect(await readFile(sourceCopy)).toEqual(Buffer.from('original attachment'));
  expect(f.calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts')&&call.values?.[3]==='redacted_docx')).toHaveLength(1);
- expect(f.manifestArtifacts).toHaveLength(1);expect(JSON.parse(f.manifestArtifacts[0]!.content).renderer_version).toBe('redacted-structure-docx-v5');
+ expect(f.manifestArtifacts).toHaveLength(1);expect(JSON.parse(f.manifestArtifacts[0]!.content).renderer_version).toBe(REDACTED_DOCX_RENDERER_VERSION);
  expect(f.calls.some(call=>/^(INSERT|UPDATE|DELETE).*ai_distill\.(steps|step_attempts)/.test(call.sql))).toBe(false);
 });
 
@@ -129,7 +145,7 @@ test('structured index drives DOCX rendering and manifest binds source structure
  const xml=spawnSync('python3',['-c',"import zipfile,sys; print(zipfile.ZipFile(sys.argv[1]).read('word/document.xml').decode())",path],{encoding:'utf8'});
  expect(xml.status).toBe(0);expect(xml.stdout).toContain('w:val="Heading1"');expect(xml.stdout).toContain('附件1的脱敏正文');
  const manifest=JSON.parse(f.manifestArtifacts[0]!.content);expect(manifest.materials[0]).toMatchObject({material_id:materialId,source_sha256:hash(Buffer.from('original attachment')),docx_artifact_id:artifact.artifact_id,docx_sha256:artifact.sha256});
- expect(manifest.renderer_version).toBe('redacted-structure-docx-v5');
+ expect(manifest.renderer_version).toBe(REDACTED_DOCX_RENDERER_VERSION);
 });
 
 test('corrupt structured index fails closed before copying or exporting materials',async()=>{

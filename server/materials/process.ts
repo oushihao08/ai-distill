@@ -10,6 +10,7 @@ import { currentTaskSignal } from '../task-signal';
 import { DOCUMENT_STRUCTURE_VERSION, documentBlocksToText, type Page } from './pdf';
 import { ProjectDocumentExtractor,type DocumentExtractor } from './document';
 import type {VisionClient} from './vision';
+import {filterEnglishOnlyBlocks} from '../../shared/material-paragraph-filter';
 
 export interface ExtractionCache { storage_path: string; sha256: string; attempt_id: string; material_id: string; }
 export interface InputMaterial { id: string; storage_path: string; sha256: string; extraction_cache?: ExtractionCache; }
@@ -75,6 +76,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
     const pending=new Set(ocrPagesToRecheck.map(page=>page.page));
     pages=pages.map(page=>pending.has(page.page)?{...page,issues:[...new Set([...(page.issues??[]),'ocr_recheck_unavailable'])]}:page);
    }
+   pages=pages.map(page=>{const structure=filterEnglishOnlyBlocks(page.structure??[{id:`p${page.page}-b1`,kind:'paragraph',text:page.text}]);return{...page,structure,text:documentBlocksToText(structure)};});
    extracted.push({material_id:material.id,sha256:material.sha256,format,pages,provider,mode,from_attempt_id,from_material_id,...(cache_error?{cache_error}:{})});
   }
   const allPages=extracted.flatMap(material=>material.pages.map(page=>({...page,material_id:material.material_id,reused:material.mode==='cached'||page.reused===true})));

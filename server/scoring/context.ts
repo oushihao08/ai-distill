@@ -13,7 +13,7 @@ import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../sha
 import {dirname} from 'node:path';
 import {readQuestionMaterials} from '../question-materials';
 // Inputs come from persisted successful attempts, never from the submitted score report.
-export async function readScoreContext(db:PoolClient,workflowId:string,attemptId:string,legacyRules=false,legacyProjectPrompt=false):Promise<ScoreContext>{
+export async function readScoreContext(db:PoolClient,workflowId:string,attemptId:string,legacyRules=false,legacyProjectPrompt=false,materialCache?:Map<string,Awaited<ReturnType<typeof readQuestionMaterials>>>):Promise<ScoreContext>{
  try{
   const w=(await db.query("SELECT w.rule_version_id,w.title,w.source_key,p.name AS project_name,p.local_skill_path,p.material_root,p.workspace_path,p.parent_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w",[workflowId])).rows[0];
   if(!w)throw new HTTPException(404,{message:'工作流不存在'});
@@ -46,7 +46,12 @@ export async function readScoreContext(db:PoolClient,workflowId:string,attemptId
   if(!input||!result||!Array.isArray(input.materials)||!Array.isArray(input.attachments)||typeof result.text!=='string')throw new HTTPException(409,{message:'作答留存不完整'});
   // 作答提示词参与输入绑定，但不发送给评分模型；旧尝试没有该字段时保留旧摘要。
   const snapshot={question_version:input.question_version,question:input.question,materials:input.materials,attachments:input.attachments,...(typeof input.system_prompt==='string'?{system_prompt:input.system_prompt}:{}),...(input.presentation?{presentation:input.presentation}:{}),...(input.material_origin?{material_origin:input.material_origin}:{})};
-  const currentMaterials=input.material_origin?await readQuestionMaterials(db,workflowId):undefined;
+  // 仅由持有工作流锁的入队事务传入；worker与发布复核不传缓存。
+  let currentMaterials=input.material_origin?materialCache?.get(workflowId):undefined;
+  if(input.material_origin&&!currentMaterials){
+   currentMaterials=await readQuestionMaterials(db,workflowId);
+   materialCache?.set(workflowId,currentMaterials);
+  }
   const materialOriginMatches=input.material_origin
    ?canonicalJson(currentMaterials?.origin)===canonicalJson(input.material_origin)
    :true;

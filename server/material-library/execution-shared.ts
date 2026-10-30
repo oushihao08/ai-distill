@@ -25,7 +25,7 @@ export function ensurePages(pages:Page[],sourceSha:string){
  */
 export async function storeExtractedDocument(db:Pick<PoolClient,'query'>,input:ReturnType<typeof ensurePages>){
  const original=ensurePages(input.pages,input.source_sha256);
- const cleaned=cleanScanNoisePages(original.pages.map(p=>({file_id:input.source_sha256,page:p.page,blocks:p.structure!})));
+ const cleaned=cleanScanNoisePages(original.pages.map(p=>({file_id:input.source_sha256,page:p.page,blocks:p.structure!})),{englishOnlyParagraphs:true});
  const document=ensurePages(original.pages.map((page,index)=>({...page,structure:cleaned.pages[index]!.blocks,text:documentBlocksToText(cleaned.pages[index]!.blocks)})),input.source_sha256);
  let cleanup:undefined|{protocol:string;raw_document_blob_id:string;raw_document_sha256:string;edits:typeof cleaned.edits};
  if(cleaned.edits.length){

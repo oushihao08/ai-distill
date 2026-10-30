@@ -10,7 +10,8 @@ export async function dispatchWorkflowBatch(projectId:string,ordinal:number,work
    const receipt=await api<{results:BatchStepResult[]}>(`/projects/${projectId}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow_ids:ids.slice(offset,offset+2)})});
    results.push(...receipt.results);progress([...results],ids.length);
   }catch(cause){
-   throw new Error(`已收到 ${results.length}/${ids.length} 道题的派发回执；本批提交中断，后续未提交。${cause instanceof Error?cause.message:'请刷新任务状态核实'}${results.length?` 已收到任务ID：${results.flatMap(item=>item.attempt_ids??(item.attempt_id?[item.attempt_id]:[])).join('、')}`:''}`);
+   const attemptIds=results.flatMap(item=>item.attempt_ids??(item.attempt_id?[item.attempt_id]:[]));
+   throw new Error(`已收到 ${results.length}/${ids.length} 道题的派发回执；本批提交中断，后续未提交。本批待核实题目ID：${ids.slice(offset,offset+2).join('、')}。${cause instanceof Error?cause.message:'请刷新任务状态核实'}${attemptIds.length?` 已收到任务ID：${attemptIds.join('、')}`:''}`);
   }
  }
  return {results};

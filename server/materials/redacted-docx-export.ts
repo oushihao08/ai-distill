@@ -18,6 +18,15 @@ import {redactionInputDigest} from './redaction-jobs';
 import {REDACTED_DOCX_RENDERER_VERSION,buildDocx,preparedTextDocument,type RedactedDocumentStructure} from '../document-generation/docx';
 import {documentBlocksToText} from './pdf';
 import {readQuestionMaterials} from '../question-materials';
+import {filterEnglishOnlyBlocks,filterEnglishOnlyText} from '../../shared/material-paragraph-filter';
+import {isStandaloneNumberLine} from '../../shared/scan-noise';
+
+/** 材料导出专属投影，不修改冻结来源；标准成果等非材料DOCX不应用这条过滤规则。 */
+export function filterMaterialDocxSource(source:string|RedactedDocumentStructure):string|RedactedDocumentStructure{
+ return typeof source==='string'
+  ?filterEnglishOnlyText(source).split(/(\r\n|\r|\n)/).map(line=>isStandaloneNumberLine(line)?'':line).join('')
+  :{...source,pages:source.pages.map(page=>({...page,blocks:filterEnglishOnlyBlocks(page.blocks).filter(block=>block.kind==='table'||block.kind==='list'||!isStandaloneNumberLine(block.text))}))};
+}
 
 const digest=(bytes:string|Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const beneath=(root:string,path:string)=>{const rel=relative(root,path);return rel!==''&&!rel.startsWith(`..${sep}`)&&rel!=='..'&&!isAbsolute(rel);};
@@ -345,7 +354,7 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
    if(current?.attempt_id===context.attempt_id&&current.storage_path===storagePath&&manifestMatches){
     try{const existing=await readSafeFile(projectExportsRoot,storagePath);if(digest(existing)===current.sha256){artifacts.push({artifact_id:String(current.id),material_id:material.id,filename,sha256:current.sha256,reused:true});manifestMaterials.push({material_id:material.id,source_sha256:material.sha256,document_sha256,docx_artifact_id:String(current.id),docx_sha256:current.sha256});continue;}}catch(error){if(!(error instanceof HTTPException&&error.status===404))throw error;}
    }
-   const docx=await buildDocx(document?.document??context.materialMarkdown.get(material.id)!),sha256=digest(docx);
+   const docx=await buildDocx(filterMaterialDocxSource(document?.document??context.materialMarkdown.get(material.id)!)),sha256=digest(docx);
    await installFile(docxPath,docx,sha256,changes);
    const artifactId=current?String(current.id):randomUUID();
    if(current)await db.query('UPDATE ai_distill.artifacts SET attempt_id=$2,storage_path=$3,sha256=$4,size_bytes=$5,content=NULL,created_at=now() WHERE id=$1',[artifactId,context.attempt_id,storagePath,sha256,docx.byteLength]);

@@ -5,6 +5,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
+| `material-paragraph-filter.ts` | 材料入库与材料DOCX导出共用的整段英文过滤；仅清理至少两个英文单词、以英文句末标点结束且不含数字/中文的完整英文说明段；保留网址、邮箱、编号、单位和无句末标点的标题，表格逐单元格处理 |
 | `score.ts` | 后端达标与前端评分展示共用百分制换算；无效分数或满分返回空值 |
 | `workflow-config.ts` | 项目阶段扩展配置及旧钩子声明的结构校验（历史 async 兼容读取，新执行统一同步）；缺省不添加字段，不解释业务规则。钩子执行由 server/lifecycle 统一接入，启用所需表仍需按环境核实 |
 | `types.ts` | 项目材料模式、材料包／派生题目身份、材料、步骤、执行尝试与 API 返回类型，含跨项目成果库摘要 |
@@ -83,3 +84,7 @@ Agent计划中的unresolved仅保存语义疑点，不因blocking标记或缺少
 单次材料整理协议由MATERIAL_PREPARATION_SINGLE_SCHEMA定义，仅允许元数据和候选组合，不返回正文边界或完整文书分类；compileFixedPreparation的inheritKindsOnly用于新任务继承来源类别。visiblePreparationContext保留基于可见材料生成的总摘要。
 
 模型正文统一入口为document-structure.ts的documentPagesToModelText：从blocks或structure生成带页码、标题、列表和HTML表格的正文，保留rowspan/colspan、表题与脚注，转义单元格文字；无结构的历史页保留text。材料整理直接内联该正文；question-materials.ts在出题及新作答的模型附件投影中共用该方法，评分继续读取作答冻结的同一正文。documentBlocksToText仍是旧稳定投影，用于摘要指纹、脱敏坐标和结构校验，不改变历史字节；原结构与DOCX排版不变。
+
+`workflow-results.ts` 的答案模型摘要中，`minimum_score` 允许 `null`，与现有项目模型设置的未设置门槛值保持一致；它不在读取或聚合时转换为默认阈值。
+
+`AuthoringBatchContext`是独立于材料整理的同期期次设计参考；记录冻结时点、当前成功题目覆盖和缺失数量。`MaterialScopeSelection`兼容增加business_goal/core_work/deliverable_use内部元数据；旧结果可缺失。出题端仅投影白名单，不向作答或评分传递，不以摘要是否完整作为接收门槛。

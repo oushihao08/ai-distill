@@ -49,18 +49,16 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
    </Row>
   </Row>
   <v-alert v-if="props.exportError" type="error" density="compact" role="alert">{{ props.exportError }}</v-alert>
-  <p class="text-xs text-muted">Excel 每题一行，包含题目字段、输入附件地址、rubric、作答思路和标准答案，生成后由浏览器下载。</p>
   <p v-if="!visible.length" class="text-sm text-muted">{{ accepted.length?'没有符合筛选条件的达标题目':'暂无当前版本已达标题目。' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-900px">
-    <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">模型评分</th><th scope="col">判定</th><th scope="col">版本</th><th scope="col">成果状态</th><th scope="col">操作</th></tr></thead>
+    <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">模型评分</th><th scope="col">判定</th>><th scope="col">成果状态</th><th scope="col">操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visible" :key="flow.id">
       <td class="max-w-260px"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink></td>
       <td class="max-w-220px"><RouterLink v-if="flow.library_package_id" :to="`/materials/${flow.library_package_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><RouterLink v-else-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap"><button type="button" class="link-text cursor-pointer bg-transparent border-none p-0 text-sm" :title="scoreHint(flow)" @click="selected=flow">{{ scoreSummary(flow) }}</button></td>
       <td><v-chip :color="hasAnomaly(flow)?'error':'success'">{{ hasAnomaly(flow)?'需核对评分':'达标' }}</v-chip></td>
-      <td class="whitespace-nowrap text-muted" :title="'题目 '+(flow.current_question_version||'—')+' · 评分表 '+(flow.current_rubric_version||'—')">题 {{ flow.current_question_version||'—' }} · 表 {{ flow.current_rubric_version||'—' }}</td>
       <td class="whitespace-nowrap">{{ flow.publication_status==='succeeded'?'已归档':'待归档' }} · {{ flow.exported?'已导出':'未导出' }}</td>
       <td class="whitespace-nowrap"><Row :gap="4"><v-btn size="small" color="primary" variant="text" @click="selected=flow">查看内容</v-btn><v-btn v-if="flow.publication_status!=='succeeded'" size="small" color="primary" variant="text" :to="`/workflows/${flow.id}`">归档</v-btn></Row></td>
      </tr>

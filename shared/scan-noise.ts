@@ -7,6 +7,7 @@
 import {documentBlocksToText,type DocumentBlock} from './document-structure';
 import {documentBlockFields,documentFieldRanges} from './prepared-structure';
 import {materialMarkupEdits} from './material-markup';
+import {isEnglishOnlyParagraph} from './material-paragraph-filter';
 export interface ScanNoisePage {file_id:string;page:number;blocks:DocumentBlock[]}
 export interface ScanNoiseEdit {file_id:string;page:number;start:number;end:number;source_text:string;replacement_text:string}
 const placeholder=/\\?\[[ \t]*(?:NO[ _-]+TEXT(?:[ _-]+(?:DETECTED|FOUND)(?:[ _-]+IN[ _-]+IMAGE\.?)?)?|QR[ _-]*CODE|IMAGE|BAR[ _-]*CODE|UNREADABLE|无法识别|无文字)[ \t]*\\?\]/giu;
@@ -14,6 +15,8 @@ const date='(?:19|20)\\d{2}(?:[-/.]\\d{1,2}[-/.]\\d{1,2}|年\\d{1,2}月\\d{1,2}�
 const time='(?:[01]?\\d|2[0-3])[:：][0-5]\\d(?:[:：][0-5]\\d)?(?:\\.\\d{1,3})?';
 const watermark=new RegExp(`(?<![\\p{L}\\p{N}])(?:\\d{3,10}(?:\\\\?[_＿]|[ \\t.])+|(?:扫描时间|扫描日期|打印时间)[ \\t]*[:：]?[ \\t]*)${date}[ Tt]+${time}(?!\\d)`,'gu');
 const numberLine=/^(?:[0-9０-９]+|[-－—][ \t]*[0-9０-９]+[ \t]*[-－—])$/u;
+/** 共用独立数字行识别；入库仍结合扫描证据/业务标签，材料DOCX仅用于独立正文段落，不清空表格单元格。 */
+export function isStandaloneNumberLine(text:string):boolean{return numberLine.test(text.trim());}
 interface NoiseRange {start:number;end:number}
 function noiseRanges(text:string):NoiseRange[]{
  const ranges:NoiseRange[]=[];
@@ -49,7 +52,7 @@ function noiseRanges(text:string):NoiseRange[]{
  *   Agent通常不会编辑应保留的金额，因此“未命中sensitiveEdits”不等于数字可安全删除。
  * - 返回编辑包含删除和确定格式替换；调用方须沿同一来源应用/校验，不能当作已发布正文或零误删证明。
  */
-export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<ScanNoiseEdit,'file_id'|'page'|'start'|'end'>[]=[]):ScanNoiseEdit[]{
+export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<ScanNoiseEdit,'file_id'|'page'|'start'|'end'>[]=[],options:{englishOnlyParagraphs?:boolean}={}):ScanNoiseEdit[]{
  const entries=pages.flatMap(page=>{let cursor=0,previousText='';return page.blocks.map((block,index)=>{
   const value=documentBlocksToText([block]),start=cursor,previous_text=previousText;cursor+=value.length+1;
   if(value.trim())previousText=value.trim();
@@ -74,6 +77,8 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
   // 固定噪声只在单个结构字段内匹配，不能拼接相邻单元格/列表项的业务值。
   for(const field of documentFieldRanges([entry.block])){
    const text=entry.projection.slice(field.start,field.end);
+   // 入库显式启用；整字段删除优先于其他编辑，避免范围重叠。Agent计划默认规则不变。
+   if(options.englishOnlyParagraphs&&isEnglishOnlyParagraph(text)){addProjection(entry,field.start,field.end);continue;}
    for(const range of noiseRanges(text))addProjection(entry,field.start+range.start,field.start+range.end);
    for(const edit of materialMarkupEdits(text,{preserveEscapes:entry.block.kind==='code'||entry.block.kind==='formula'}))edits.push({...edit,file_id:entry.file_id,page:entry.page,start:entry.start+field.start+edit.start,end:entry.start+field.start+edit.end});
    // 代码和公式里的反斜杠有语法意义，不按正文格式残留还原。
@@ -120,8 +125,8 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  * 提取发布前使用本适配器；Agent编译器直接取findScanNoiseEdits的编辑合并计划，避免另改正文导致坐标失配。
  * 本函数不调用Agent，也不做敏感信息或业务语义验收；提取原始OCR/编辑审计由storeExtractedDocument保存。
  */
-export function cleanScanNoisePages(pages:ScanNoisePage[]){
- const edits=findScanNoiseEdits(pages),byPage=new Map<string,ScanNoiseEdit[]>();
+export function cleanScanNoisePages(pages:ScanNoisePage[],options:{englishOnlyParagraphs?:boolean}={}){
+ const edits=findScanNoiseEdits(pages,[],options),byPage=new Map<string,ScanNoiseEdit[]>();
  for(const edit of edits){const key=`${edit.file_id}:${edit.page}`,list=byPage.get(key)??[];list.push(edit);byPage.set(key,list);}
  for(const list of byPage.values())list.sort((a,b)=>b.start-a.start);
  return {edits,pages:pages.map(page=>{

@@ -40,9 +40,59 @@ async function currentSource(db:Database,id:string){
  return adviceSource(rows);
 }
 export async function adviceAvailable(db:Database){return Boolean((await db.query("SELECT to_regclass('ai_distill.revision_advice_attempts') IS NOT NULL AS available")).rows[0]?.available);}
+/** 返修建议只解锁重出题；旧轮次的作答和评分不能凭建议再次派发。 */
+export function repairStepIssue(ordinal:number,acceptance:{status:string;result?:any}|undefined,adviceReady=false):string|null{
+ if(![4,5,6].includes(ordinal)||acceptance?.status!=='succeeded'||acceptance.result?.decision!=='repair')return null;
+ if(ordinal!==4)return '当前题目未达标，须先根据返修建议重新出题';
+ return adviceReady?null:'未达标题目须先生成并完成返修建议，且建议文本有效';
+}
+/** 调用方已在事务中持有workflow行锁；拒绝发生在输入准备、队列登记和结果清除之前。 */
+export async function assertRepairStepAllowed(db:Database,id:string,ordinal:4|5|6){
+ const acceptance=(await db.query("SELECT status,jsonb_build_object('decision',result->>'decision') AS result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=7",[id])).rows[0];
+ if(acceptance?.status!=='succeeded'||acceptance.result?.decision!=='repair')return;
+ const adviceReady=ordinal===4?(await currentRevisionAdviceReadiness(db,[id])).get(id)===true:false;
+ const issue=repairStepIssue(ordinal,acceptance,adviceReady);
+ if(issue)throw new HTTPException(409,{message:issue});
+}
+/** 批量判断repair题是否有可带入新出题的返修建议；来源版本不同不使已成功建议失效。 */
+export async function currentRevisionAdviceReadiness(db:Database,workflowIds:string[]):Promise<Map<string,boolean>>{
+ const ids=[...new Set(workflowIds)];
+ const ready=new Map(ids.map(id=>[id,false]));
+ if(!ids.length||!await adviceAvailable(db))return ready;
+ const [sourceRows,activeRows]=await Promise.all([
+  db.query("SELECT workflow_id,ordinal,status,result FROM ai_distill.steps WHERE workflow_id=ANY($1::uuid[]) AND ordinal BETWEEN 4 AND 7 ORDER BY workflow_id,ordinal",[ids]),
+  db.query("SELECT DISTINCT workflow_id FROM ai_distill.step_attempts WHERE workflow_id=ANY($1::uuid[]) AND ordinal BETWEEN 4 AND 6 AND status IN ('waiting','running')",[ids]),
+ ]);
+ const grouped=new Map<string,{ordinal:number;status:string;result:any}[]>();
+ for(const row of sourceRows.rows){const id=String(row.workflow_id);const rows=grouped.get(id)??[];rows.push(row);grouped.set(id,rows);}
+ const active=new Set(activeRows.rows.map(row=>String(row.workflow_id)));
+ const repairIds=[...grouped].filter(([id,rows])=>!active.has(id)&&rows.find(row=>row.ordinal===7)?.result?.decision==='repair').map(([id])=>id);
+ if(!repairIds.length)return ready;
+ const successful=await db.query(`SELECT a.workflow_id,a.result,a.id
+  FROM ai_distill.revision_advice_attempts a
+  WHERE a.status='succeeded' AND a.workflow_id=ANY($1::uuid[])
+  ORDER BY a.started_at DESC,a.id DESC`,[repairIds]);
+ const valid=new Map<string,string>();
+ for(const row of successful.rows){
+  const workflowId=String(row.workflow_id);if(valid.has(workflowId))continue;
+  try{valid.set(workflowId,validateAdvice(row.result).text);}catch{continue;}
+ }
+ for(const [id,rows] of grouped){
+  if(active.has(id)||rows.find(row=>row.ordinal===7)?.result?.decision!=='repair')continue;
+  ready.set(id,valid.has(id));
+ }
+ return ready;
+}
 export async function listRevisionAdvice(db:Database,id:string){
  if(!await adviceAvailable(db))return{available:false,attempts:[]};
- const rows=(await db.query('SELECT id,status,source_digest,input->>\'authoring_version\' AS authoring_version,result,error,started_at,finished_at FROM ai_distill.revision_advice_attempts WHERE workflow_id=$1 ORDER BY started_at DESC,id DESC LIMIT 20',[id])).rows;
+ const rows=(await db.query(`WITH recent AS (
+   SELECT id,status,source_digest,input->>'authoring_version' AS authoring_version,result,error,started_at,finished_at
+   FROM ai_distill.revision_advice_attempts WHERE workflow_id=$1 ORDER BY started_at DESC,id DESC LIMIT 20
+  ), latest_success AS (
+   SELECT id,status,source_digest,input->>'authoring_version' AS authoring_version,result,error,started_at,finished_at
+   FROM ai_distill.revision_advice_attempts WHERE workflow_id=$1 AND status='succeeded' ORDER BY started_at DESC,id DESC LIMIT 1
+  )
+  SELECT * FROM recent UNION SELECT * FROM latest_success ORDER BY started_at DESC,id DESC`,[id])).rows;
  let currentDigest:string|undefined;try{currentDigest=digest(await currentSource(db,id));}catch(error){if(!(error instanceof HTTPException))throw error;}
  return{available:true,attempts:rows.map(row=>({...row,current:row.source_digest===currentDigest}))};
 }
@@ -50,11 +100,14 @@ export async function frozenRevisionAdvice(db:Database,id:string):Promise<Frozen
  if(!await adviceAvailable(db))return;
  const active=(await db.query("SELECT input->'revision_advice' AS advice FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id])).rows[0]?.advice;
  if(active&&await validFrozenAdvice(db,id,active))return active;
- const row=(await db.query("SELECT id,source_digest,input->>'authoring_version' AS authoring_version,result FROM ai_distill.revision_advice_attempts WHERE workflow_id=$1 AND status='succeeded' ORDER BY started_at DESC,id DESC LIMIT 1",[id])).rows[0];
- if(!row)return;
- let source;try{source=await currentSource(db,id);}catch(error){if(error instanceof HTTPException)return;throw error;}
- if(digest(source)!==row.source_digest)return;
- const text=validateAdvice(row.result).text,value={id:row.id,source_digest:row.source_digest,authoring_version:row.authoring_version,text};return{...value,digest:digest(value)};
+ const rows=(await db.query("SELECT id,source_digest,input->>'authoring_version' AS authoring_version,result FROM ai_distill.revision_advice_attempts WHERE workflow_id=$1 AND status='succeeded' ORDER BY started_at DESC,id DESC",[id])).rows;
+ if(!rows.length)return;
+ const decision=(await db.query("SELECT result->>'decision' AS decision FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=7",[id])).rows[0]?.decision;
+ if(decision!=='repair')return;
+ for(const row of rows){
+  let text:string;try{text=validateAdvice(row.result).text;}catch{continue;}
+  const value={id:row.id,source_digest:row.source_digest,authoring_version:row.authoring_version,text};return{...value,digest:digest(value)};
+ }
 }
 export async function validFrozenAdvice(db:Database,id:string,value:FrozenAdvice){
  const {digest:expected,...body}=value;if(digest(body)!==expected)return false;

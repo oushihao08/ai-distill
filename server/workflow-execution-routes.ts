@@ -124,7 +124,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
    const statesByWorkflow=new Map<string,Map<number,WorkflowStepState>>();
    for(const row of stateRows){
     if(!statesByWorkflow.has(row.workflow_id))statesByWorkflow.set(row.workflow_id,new Map());
-    statesByWorkflow.get(row.workflow_id)!.set(row.ordinal,{project_key:row.project_key,ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source)});
+    statesByWorkflow.get(row.workflow_id)!.set(row.ordinal,{project_key:row.project_key,ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source),revision_advice_ready:row.revision_advice_ready===true});
    }
    // 入队事务限制并行，避免整批请求占满连接池；不改变worker执行并发。
    const batchResults=[];

@@ -229,3 +229,20 @@ test('Work交付说明冻结附件映射名称，作者不依赖不存在的模�
   }})).rejects.toThrow('fixture-inspected');
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('无材料整理时独立提供批次参考，元数据不进入公开或完整题包正文',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'author-batch-'));
+ const batch={captured_at:'2026-10-30T00:00:00Z',total:1,included:1,missing:0,truncated:false,selections:[{direction:'诉讼',party:'被告',scenes:['举证'],deliverables:['意见']}]};
+ try{
+  const value={...draft,material_scope_selection:{direction:'内部方向标记',party:'内部主体标记',scenes:[],deliverables:[],core_work:'内部工作标记'}};
+  const result=await runAuthoring({...options(root,async(call:any)=>{
+   expect(await Bun.file(join(call.directory,'input/batch-context.json')).json()).toEqual(batch);
+   expect(await Bun.file(join(call.directory,'input/material-scope.json')).exists()).toBe(false);
+   expect(call.prompt).toContain('本期设计参考');
+   const delivery=await Bun.file(join(call.directory,'input/delivery.json')).json();expect(delivery.schema.properties.material_scope_selection.properties).toHaveProperty('core_work');
+   return{result:value,session_id:'fixture',usage:null,duration_ms:1};
+  }),batch_context:batch});
+  expect(result.draft.material_scope_selection).toEqual(value.material_scope_selection);
+  expect(result.package_text).not.toContain('内部方向标记');expect(renderPrivateQuestionPackage({question:'题'},result.draft)).not.toContain('内部工作标记');
+ }finally{await rm(root,{recursive:true,force:true});}
+});

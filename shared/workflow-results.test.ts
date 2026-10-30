@@ -1,5 +1,6 @@
 /** 验证当前答案、评分和达标汇总的读取边界及历史缺字段处理。 */
 import {expect,test} from 'bun:test';
+import type {AnswerStepModelSummary} from './workflow-results';
 
 const modulePromise=import('./workflow-results').catch(()=>undefined);
 test('新评分摘要保留模型指标并拒绝非法新字段',async()=>{
@@ -12,6 +13,8 @@ test('新评分摘要保留模型指标并拒绝非法新字段',async()=>{
 test('reads current answer summaries and rejects incomplete model rows',async()=>{
  const module=await modulePromise;
  expect(typeof module?.readAnswerStepResult).toBe('function');
+ const historical:AnswerStepModelSummary={model_id:'legacy',status:'succeeded',minimum_score:null};
+ expect(module!.readAnswerStepResult({models:[historical]})?.models[0]?.minimum_score).toBeNull();
  expect(module!.readAnswerStepResult({models:[{model_id:'m1',name:'模型一',attempt_id:'a1',status:'succeeded'}]})?.models[0]?.status).toBe('succeeded');
  expect(module!.readAnswerStepResult({models:[{model_id:'m1',status:'skipped',outcome:'qualified_timeout_unscored',generation_activity:{event_count:4}},{model_id:'m2',status:'failed'}]})?.models).toHaveLength(2);
  expect(module!.readAnswerStepResult({models:[{status:'succeeded'}]})?.models[0]).toMatchObject({status:'succeeded'});

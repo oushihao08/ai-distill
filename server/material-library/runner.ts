@@ -5,7 +5,7 @@
  */
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {deferLocalPublication,readLibraryFailure,saveLibraryFailure} from '../execution-queue/runtime';
-import {mkdir,writeFile,readFile} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -16,8 +16,9 @@ import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor}
 import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
-import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS,LIBRARY_JOB_LEASE_MS} from './jobs';
-import {readLibraryBlob} from './storage';
+import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS,LIBRARY_JOB_LEASE_MS,assertLibraryExtractionUsable} from './jobs';
+import {readLibraryBlob,cleanupRolledBackLibraryBlobs} from './storage';
+import {publishAtomicLibraryImport} from './atomic-import';
 import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-shared';
 import {executeRedaction} from './redaction-runner';
 import {executePreparation} from './preparation';
@@ -90,9 +91,12 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
   results.push({item,document,issues});
   if(!await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'extract',completed_files:index+1,total_files:files.length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)}))throw stopReason(await libraryStopReason(pool,job)??'lease_lost');
  }
+ if(job.input_snapshot.atomic_import)assertLibraryExtractionUsable(results.map(result=>({issues:result.issues,pages:result.document.pages,page_count:result.document.pages.length})));
  const summaries=await finishLibraryJob(pool,job.id,job.lease_token,{file_count:results.length,page_count:results.reduce((sum,result)=>sum+result.document.pages.length,0),issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)},async db=>{
+  await publishAtomicLibraryImport(db,root,job);
   for(const result of results){
    const {blob,document}=await storeExtractedDocument(db,result.document);
+   if(job.input_snapshot.atomic_import)assertLibraryExtractionUsable([{issues:result.issues,pages:document.pages,page_count:document.pages.length}]);
    await db.query(`INSERT INTO ai_distill.library_documents(id,revision_id,file_id,extraction_job_id,document_blob_id,source_sha256,text_sha256,page_count,issues)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[crypto.randomUUID(),job.revision_id,result.item.file_id,job.id,blob.id,result.item.source_sha256,hash(document.pages.map(page=>page.text).join('\n')),document.pages.length,JSON.stringify(result.issues)]);
   }
@@ -179,6 +183,12 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   const saved=await failLibraryJob(pool,job.id,failure.lease_token,failure.code,failure.message,failure.status);
   if(!saved){logEvent('library_job.terminal_not_written',{level:'error',reason_code:code,state:'unknown'});return;}
   logEvent(cancelled?'library_job.cancelled':'library_job.failed',{level:cancelled?'info':'error',state:cancelled?'cancelled':'failed',error_kind:classified.error_kind,reason_code:code,retryable:classified.retryable});
+  if(job.input_snapshot.atomic_import){
+   try{
+    if(job.atomic_installed?.length){const cleanup=await pool.connect();try{await cleanupRolledBackLibraryBlobs(cleanup,root,job.atomic_installed);}finally{cleanup.release();}}
+    await rm(jobDirectory(root,job.id),{recursive:true,force:true});
+   }catch(cleanupError){logEvent('library_import.cleanup_failed',{level:'warn',...classifyLogError(cleanupError)});}
+  }
   if(cancelled)console.info('材料库任务已取消或 worker 已停止');else console.error('材料库任务失败；未输出原文、提示词或凭证');
  }finally{settled=true;clearInterval(heartbeat);clearTimeout(leaseTimer!);clearTimeout(deadlineTimer);signal.removeEventListener('abort',abort);restore();}
 }

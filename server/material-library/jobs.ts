@@ -192,8 +192,8 @@ export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,tar
   await db.query('BEGIN');
   const values=onlyJobId?[executor,target,onlyJobId]:[executor,target];
   await db.query("UPDATE ai_distill.library_jobs SET status='failed',error_code='worker_interrupted',error_message='执行进程租约过期，可创建新尝试',finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE executor_kind=$1 AND execution_target=$2 AND status='running' AND lease_expires_at<now()"+localClaimSql('library_jobs',true)+(onlyJobId?' AND id=$3::uuid':''),values);
-  const job=(await db.query(`SELECT j.*,p.name AS package_name FROM ai_distill.library_jobs j JOIN ai_distill.library_packages p ON p.id=j.package_id
-   WHERE j.executor_kind=$1 AND j.execution_target=$2 AND ${localQueueEnabled()?"j.status IN ('queued','running')":"j.status='queued'"} ${localClaimSql('j')} AND p.deleted_at IS NULL ${onlyJobId?'AND j.id=$3::uuid':''}
+  const job=(await db.query(`SELECT j.*,p.name AS package_name FROM ai_distill.library_jobs j LEFT JOIN ai_distill.library_packages p ON p.id=j.package_id
+   WHERE j.executor_kind=$1 AND j.execution_target=$2 AND ${localQueueEnabled()?"j.status IN ('queued','running')":"j.status='queued'"} ${localClaimSql('j')} AND ((j.package_id IS NOT NULL AND p.id IS NOT NULL AND p.deleted_at IS NULL) OR (j.package_id IS NULL AND j.input_snapshot ? 'atomic_import')) ${onlyJobId?'AND j.id=$3::uuid':''}
    ORDER BY j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1`,values)).rows[0];
   if(!job){await db.query('COMMIT');forgetLocalRegistrations(db);return null;}
   const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:Record<string,unknown>)=>['pdf','docx'].includes(fileFormat(String(file.original_name??''))));

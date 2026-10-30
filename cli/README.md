@@ -373,3 +373,9 @@ bun run ai-distill library batch run --file /tmp/phase7-prepare.json
 ```
 
 `--kind`支持`intake|extract|redact|prepare`；提取筛选用`--extraction-state succeeded|failed|not_started|cancelled|running|queued|all`。`library package list`也支持`--preparation-state all|ready|not_ready`。计划读取所有搜索分页后固定包/revision ID，不因派发改变筛选结果而漏包。运行时跳过已有成果、活动任务、版本ID改变和前置条件未满足的包；原文期次整理使用成功提取结果，aliases期次整理使用可用脱敏结果。任务按现有Agent/API池入队，服务端容量拒绝时停止，不改并发、不启动worker、不自动跨阶段推进。清单写前持有文件锁并保存request_key，写后保存完整回执与job ID；网络未知保留原请求键及body，恢复只重放原幂等请求。已提交项不重复派发；容量拒绝项保持planned，可再次执行同一run命令补位。命令的提交成功不代表后台处理成功。
+
+原子提取入库更新：旧的先创建空package再上传revision流程已停止，POST /material-library/packages返回410。新客户端须通过multipart POST /api/material-library/imports(name,request_key,files)取得独立任务ID并查询/jobs/:id，只有succeeded后的package_id/revision_id是正式材料记录；本CLI旧package create命令不再可用于建立空包。不要通过直写数据库绕过。054迁移和新版API/worker部署前不可用。
+
+新导入命令：`library import --name 名称 --request-key UUID --manifest JSON`，清单沿用`files:[{path,redaction_mode?}]`；返回API独立任务回执，`data`不转换为材料包成功结果。`library imports list`查最近任务；原`library revision create`现在也是异步导入任务，须先用返回ID执行`library job wait`，成功后读取package_id/revision_id，不得把初次返回ID当revision。
+
+命令的参数白名单与匹配顺序由 `commands.ts` 模块内统一维护；下载入口共用 `ApiClient.downloadTo()`，保留独占创建、0600权限和HTTP错误不落盘的边界。

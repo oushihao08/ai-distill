@@ -34,9 +34,9 @@ test.each([false,true])('scoring context identifies the project and supports leg
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-function failedAggregateContext(options:{presentation?:any;author_overrides?:any;summary?:readonly {attempt_id:string;status:string;answer_sha256:string}[];question_attempt_id?:string;result_input_digest?:string;scoring_policy?:any;rubric?:any[];system_prompt?:string;tampered_prompt?:string}={}){
- const answerInput={question_version:'q1',question:'题目',question_attempt_id:options.question_attempt_id??'author',materials:[{name:'附件1',text:'材料'}],attachments:[{id:'attachment',sha256:hash('材料')}],...(options.system_prompt!==undefined?{system_prompt:options.system_prompt}:{}),...(options.presentation?{presentation:options.presentation}:{}),input_digest:''};
- answerInput.input_digest=inputDigest({question_version:answerInput.question_version,question:answerInput.question,materials:answerInput.materials,attachments:answerInput.attachments,...(options.system_prompt!==undefined?{system_prompt:options.system_prompt}:{}),...(options.presentation?{presentation:options.presentation}:{})});
+function failedAggregateContext(options:{material_origin?:any;presentation?:any;author_overrides?:any;summary?:readonly {attempt_id:string;status:string;answer_sha256:string}[];question_attempt_id?:string;result_input_digest?:string;scoring_policy?:any;rubric?:any[];system_prompt?:string;tampered_prompt?:string}={}){
+ const answerInput={question_version:'q1',question:'题目',question_attempt_id:options.question_attempt_id??'author',materials:[{name:'附件1',text:'材料'}],attachments:[{id:'attachment',sha256:hash('材料')}],...(options.system_prompt!==undefined?{system_prompt:options.system_prompt}:{}),...(options.presentation?{presentation:options.presentation}:{}),...(options.material_origin?{material_origin:options.material_origin}:{}),input_digest:''};
+ answerInput.input_digest=inputDigest({question_version:answerInput.question_version,question:answerInput.question,materials:answerInput.materials,attachments:answerInput.attachments,...(options.system_prompt!==undefined?{system_prompt:options.system_prompt}:{}),...(options.presentation?{presentation:options.presentation}:{}),...(options.material_origin?{material_origin:options.material_origin}:{})});
  if(options.tampered_prompt!==undefined)answerInput.system_prompt=options.tampered_prompt;
  const answerResult={text:'答案',input_digest:options.result_input_digest??answerInput.input_digest,answer_sha256:hash('答案')};
  const authorResult={question_version:'q1',question:'题目',attachment_ids:['attachment'],answer_requirements:{input_mode:'text',output_mode:'text',tools:[]},rubric_version:'r1',rubric:options.rubric??[{id:'fact',criterion:'依据材料',max_score:1}],answer_approach:'核对材料',reference_answer:'依据材料作答',...(options.scoring_policy?{scoring_policy:options.scoring_policy}:{}),...options.author_overrides};
@@ -112,4 +112,21 @@ test('校准评分只要求标答，不要求作答思路',async()=>{
  await expect(readScoreContext(failedAggregateContext({scoring_policy,rubric,author_overrides:{answer_approach:undefined,reference_answer:' '}}).db,'workflow','answer')).rejects.toThrow('缺少标准答案');
  const context=await readScoreContext(failedAggregateContext({scoring_policy,rubric,author_overrides:{answer_approach:undefined}}).db,'workflow','answer');
  expect(context.reference_answer).toBe('依据材料作答');
+});
+
+test('scoring admission material reuse is confined to the supplied locked transaction',async()=>{
+ const origin={kind:'legacy',redaction_attempt_id:'11111111-1111-4111-8111-111111111111'};
+ const fixture=failedAggregateContext({material_origin:origin});let materialReads=0;
+ const db={query:async(sql:string,...args:any[])=>{
+  if(sql.startsWith('SELECT p.material_backend')){materialReads++;return{rows:[{material_backend:'legacy'}]};}
+  if(sql.startsWith('SELECT a.id,a.input FROM'))return{rows:[{id:origin.redaction_attempt_id,input:{materials:[]}}]};
+  if(sql.startsWith('SELECT id,kind,attempt_id,sha256,content'))return{rows:[{id:'attachment',kind:'redacted_markdown',attempt_id:origin.redaction_attempt_id,sha256:hash('材料'),content:'材料'}]};
+  return (fixture.db.query as any)(sql,...args);
+ }} as unknown as PoolClient;
+ const cache=new Map();
+ const first=await readScoreContext(db,'workflow','answer',false,false,cache);
+ const second=await readScoreContext(db,'workflow','answer',false,false,cache);
+ expect(second.binding).toEqual(first.binding);expect(materialReads).toBe(1);
+ await readScoreContext(db,'workflow','answer');expect(materialReads).toBe(2);
+ await readScoreContext(db,'other-workflow','answer',false,false,cache);expect(materialReads).toBe(3);
 });

@@ -6,6 +6,7 @@
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
+import {assertRepairStepAllowed} from '../revision-advice/jobs';
 import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {readWorkflowModelSet} from './workflow-models';
 import {canonicalJson,validateWorkflowConfig} from '../../shared/workflow-config';
@@ -61,6 +62,7 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
    const existing=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND execution_target='server' AND input->>'remote_request_key'=$2 ORDER BY attempt",[id,remoteRequestKey])).rows;
    if(existing.length){await db.query('COMMIT');forgetLocalRegistrations(db);return{ id:existing[0].id,ids:existing.map((row:any)=>row.id),reused:true };}
   }
+  await assertRepairStepAllowed(db,id,5);
   await supersedeForeignPending(db,{kind:'step',id,ordinal:5},executionTarget);
   const activeTarget=(await db.query("SELECT DISTINCT execution_target FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND status IN ('waiting','running')",[id])).rows;
   if(activeTarget.some((row:any)=>row.execution_target!==executionTarget))throw new HTTPException(409,{message:'当前作答任务由另一执行位置处理'});
@@ -129,25 +131,37 @@ async function matchesModelSet(db:PoolClient,job:any){
  const digest=answerModelSetDigest(current);
  return digest===job.input.model_set_digest;
 }
+/** 聚合查询只读取这些白名单字段；旧结果允许缺失或为null。 */
+type AnswerAggregationRow={
+ id:string;status:import('../../shared/types').StepStatus;
+ input:{model_id?:string|null}|null;
+ result:{text?:string|null;answer_sha256?:string|null;outcome?:string;reason_code?:string;generation_activity?:unknown}|null;
+};
+type AnswerAggregationJob={
+ id:string;workflow_id:string;status:import('../../shared/types').StepStatus;
+ input:{model_set?:RegisteredAnswerModel[]|null;model_id?:string|null;model_name?:string;model_set_digest?:string;question_attempt_id?:string;input_digest?:string};
+ config:{model?:string};
+ result?:(Record<string,unknown>&{outcome?:string;reason_code?:string;generation_activity?:unknown})|null;
+};
 /** 聚合当前模型集合：全部终结且至少一个成功即可继续；不把局部失败误判为所有答案失效。 */
-export async function refreshAnswerStep(db: PoolClient, job: any) {
+export async function refreshAnswerStep(db: PoolClient, job: AnswerAggregationJob) {
     if (!Array.isArray(job.input.model_set) || !job.input.model_set.length) {
         const result = job.status === 'skipped' && job.result?.outcome === 'qualified_timeout_unscored' ? { ...job.result, models: [{ model_id: job.input.model_id ?? null, name: job.input.model_name ?? job.config.model, attempt_id: job.id, status: 'skipped', outcome: job.result.outcome, reason_code: job.result.reason_code, generation_activity: job.result.generation_activity }] } : job.result;
         const latest = await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,finished_at=CASE WHEN $2 IN ('succeeded','skipped','failed') THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=5 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)", [job.workflow_id, job.status === 'succeeded' ? 'succeeded' : job.status === 'skipped' ? 'skipped' : 'failed', JSON.stringify(result)]);
         return latest.rowCount;
     }
     // 只传回同一输入下各模型最新尝试；完整当前答案仍供详情展示。
-    const rows = await db.query("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input->>'model_id') id,jsonb_build_object('model_id',input->'model_id') AS input,jsonb_build_object('text',result->'text','answer_sha256',result->'answer_sha256','outcome',result->'outcome','reason_code',result->'reason_code','generation_activity',result->'generation_activity') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND input->>'model_set_digest'=$2 AND input->>'question_attempt_id'=$3 AND input->>'input_digest'=$4 ORDER BY input->>'model_id',attempt DESC) latest", [job.workflow_id, job.input.model_set_digest, job.input.question_attempt_id, job.input.input_digest]);
-    const latest = new Map<string, any>();
+    const rows = await db.query<AnswerAggregationRow>("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input->>'model_id') id,jsonb_build_object('model_id',input->'model_id') AS input,jsonb_build_object('text',result->'text','answer_sha256',result->'answer_sha256','outcome',result->'outcome','reason_code',result->'reason_code','generation_activity',result->'generation_activity') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND input->>'model_set_digest'=$2 AND input->>'question_attempt_id'=$3 AND input->>'input_digest'=$4 ORDER BY input->>'model_id',attempt DESC) latest", [job.workflow_id, job.input.model_set_digest, job.input.question_attempt_id, job.input.input_digest]);
+    const latest = new Map<string, AnswerAggregationRow>();
     for (const row of rows.rows) {
         const id = row.input?.model_id;
         if (typeof id === 'string' && id && !latest.has(id))
             latest.set(id, row);
     }
-    const models: AnswerStepModelSummary[] = job.input.model_set.map((model: any) => { const row = latest.get(model.model_id); return { model_id: model.model_id, name: model.name, minimum_score: model.minimum_score, attempt_id: row?.id ?? null, status: row?.status ?? 'waiting', answer_sha256: row?.result?.answer_sha256 ?? null, answer: row?.status === 'succeeded' ? row.result.text : null, ...(row?.result?.outcome === 'qualified_timeout_unscored' ? { outcome: row.result.outcome, reason_code: row.result.reason_code, generation_activity: row.result.generation_activity } : {}) }; });
-    const settled = models.every((model: any) => ['succeeded', 'failed', 'skipped'].includes(model.status));
-    const active = models.some((model: any) => model.status === 'running');
-    const status = settled ? (models.every((model: any) => model.status === 'succeeded') ? 'succeeded' : models.every((model: any) => model.status === 'skipped') ? 'skipped' : 'failed') : active ? 'running' : 'waiting';
+    const models: AnswerStepModelSummary[] = job.input.model_set.map((model: RegisteredAnswerModel) => { const row = latest.get(model.model_id); return { model_id: model.model_id, name: model.name, minimum_score: model.minimum_score, attempt_id: row?.id ?? null, status: row?.status ?? 'waiting', answer_sha256: row?.result?.answer_sha256 ?? null, answer: row?.status === 'succeeded' ? row.result!.text : null, ...(row?.result?.outcome === 'qualified_timeout_unscored' ? { outcome: row.result.outcome, reason_code: row.result.reason_code, generation_activity: row.result.generation_activity } : {}) }; });
+    const settled = models.every((model) => ['succeeded', 'failed', 'skipped'].includes(model.status));
+    const active = models.some((model) => model.status === 'running');
+    const status = settled ? (models.every((model) => model.status === 'succeeded') ? 'succeeded' : models.every((model) => model.status === 'skipped') ? 'skipped' : 'failed') : active ? 'running' : 'waiting';
     const result: AnswerStepResult = { model_set_digest: job.input.model_set_digest, models };
     return (await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=NULL,finished_at=CASE WHEN $2 IN ('succeeded','skipped','failed') THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=5 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)", [job.workflow_id, status, JSON.stringify(result)])).rowCount;
 }

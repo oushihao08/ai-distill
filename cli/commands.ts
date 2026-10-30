@@ -6,7 +6,7 @@
 import {planLibraryBatch,runLibraryBatch} from './library-batch';
 
 import {prepareLibraryFiles} from '../server/materials/prepare-library-files';
-import {readFile,writeFile} from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
 import {basename,dirname,resolve} from 'node:path';
 import {getStepDefinition, STEP_REGISTRY} from '../shared/step-registry';
 import {readAcceptanceResult} from '../shared/workflow-results';
@@ -57,7 +57,9 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
     默认 library_v1、期号1、Agent化名；需要 --workspace-path，首期明确 --skill-path；旧目录须显式 --material-backend legacy。
   project phase-update --project UUID --phase-no N --phase-name 期名 --expected-name 当前完整名称
   project-group rename|archive|restore --group UUID [--name 主项目名称]
-  library package create --name 名称 [--description 说明] [--tags a,b]
+  library import --name 名称 --request-key UUID --manifest JSON（成功提取后才入库）
+  library imports list
+  library package create（已停止先建空包，使用 library import）
   library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
   library files prepare --manifest JSON --out 新输出目录（本地OFD转PDF及PDF切割；不上传、不调用模型）
   library revision create --package UUID --version N --request-key UUID --manifest JSON
@@ -158,12 +160,7 @@ async function syncProjectFolder(post:(path:string,body?:unknown)=>Promise<any>,
   return post(`/api/projects/${projectId}/sync-folder`);
 }
 
-/** 返回命令信封；data 保留服务端结果，business 仅展示服务端达标结论，不自行算分。 */
-export async function runCommand(args: string[], client?: ApiClient, signal?: AbortSignal): Promise<any> {
-  try {
-    const {words,flags}=parse(args);
-    if(flags.has('help')||!args.length) return {outcome:'complete',help:HELP};
-    const allowed: Record<string,string[]>= {
+const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'project list':[], 'project show':['project'], 'project create':['name','parent-name','phase-name','phase-no','project-group','description','material-root','workspace-path','skill-path','settings-file','material-mode','material-backend'],
       'project phase-update':['project','phase-no','phase-name','expected-name'],
       'project material-mode':['project','clear-existing'],
@@ -180,7 +177,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'library package list':['q','page','page-size','ready-only','redaction-state','preparation-state','archived-only','project'],'library package show':['package'],
       'library package usage':['package'],'library package revisions':['package'],'library package create':['name','description','tags'],
       'library package update':['package','version','file'],'library package archive':['package','version'],'library package restore':['package','version'],
-      'library files prepare':['manifest','out'],
+      'library files prepare':['manifest','out'],'library import':['name','manifest','request-key'],'library imports list':[],
       'library batch plan':['kind','project','project-query','q','redaction-state','preparation-state','extraction-state','out'],
       'library batch run':['file'],
       'library revision create':['package','version','request-key','manifest'],
@@ -213,10 +210,17 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       'artifact download':['artifact','out'],'monitor show':[],
       'batch create':['project','ids','all','size','to','out'],'batch show':['file'],'batch skip':['file','ids','reason'],
     };
-    const command=Object.keys(allowed).sort((a,b)=>b.split(' ').length-a.split(' ').length).find(key=>words.slice(0,key.split(' ').length).join(' ')===key)??'';
+const COMMAND_KEYS=Object.keys(COMMAND_FLAGS).sort((a,b)=>b.split(' ').length-a.split(' ').length);
+
+/** 返回命令信封；data 保留服务端结果，business 仅展示服务端达标结论，不自行算分。 */
+export async function runCommand(args: string[], client?: ApiClient, signal?: AbortSignal): Promise<any> {
+  try {
+    const {words,flags}=parse(args);
+    if(flags.has('help')||!args.length) return {outcome:'complete',help:HELP};
+    const command=COMMAND_KEYS.find(key=>words.slice(0,key.split(' ').length).join(' ')===key)??'';
     const expectedWords=command==='step dispatch'?3:command.split(' ').length;
-    if(!allowed[command]||words.length!==expectedWords) throw new CliError('命令无效，请查看 --help');
-    for(const key of flags.keys()) if(![...allowed[command],'json','api'].includes(key)) throw new CliError(`未知参数：--${key}`);
+    if(!COMMAND_FLAGS[command]||words.length!==expectedWords) throw new CliError('命令无效，请查看 --help');
+    for(const key of flags.keys()) if(![...COMMAND_FLAGS[command],'json','api'].includes(key)) throw new CliError(`未知参数：--${key}`);
     const required=(key:string)=>{const value=flags.get(key);if(typeof value!=='string'||!value.trim())throw new CliError(`缺少 --${key}`);return value;};
     const uuid=(key:string)=>id(required(key),key);
     const api=client??new ApiClient(flags.has('api')?required('api'):process.env.AI_DISTILL_API_URL);
@@ -232,7 +236,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       try{source=await readFile(path,'utf8');}catch{throw new CliError(`${label}文件无法读取`,{kind:'file_error'});}
       try{return object(JSON.parse(source),label);}catch(error){if(error instanceof CliError)throw error;throw new CliError(`${label}文件不是有效JSON`,{kind:'file_error'});}
     };
-    const createLibraryRevision=async(packageId:string)=>{
+    const createLibraryRevision=async(packageId?:string)=>{
       const manifestPath=required('manifest');
       const manifest=await readJsonFile(manifestPath,'材料清单');
       if(!Array.isArray(manifest.files)||manifest.files.length<1||manifest.files.length>100)throw new CliError('材料清单须包含1至100个文件');
@@ -249,6 +253,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         form.append('files',new Blob([uploadBytes.buffer]),basename(filePath));modes.push(mode);
       }
       form.set('redaction_modes',JSON.stringify(modes));
+      if(!packageId){form.set('name',required('name'));return api.form('/api/material-library/imports','POST',form,signal);}
       return api.form(`/api/material-library/packages/${packageId}/revisions`,'POST',form,signal,versionHeader(required('version')));
     };
     const applySettings=async(projectId:string,settings:any)=>{
@@ -442,6 +447,8 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'library package archive': data=await versioned(`/api/material-library/packages/${uuid('package')}`,'DELETE',required('version'));break;
       case 'library package restore': data=await versioned(`/api/material-library/packages/${uuid('package')}/restore`,'POST',required('version'));break;
       case 'library files prepare': {try{data=await prepareLibraryFiles(required('manifest'),required('out'),signal);}catch(error){throw new CliError(error instanceof Error?error.message:'材料预处理失败',{kind:'file_error'});}break;}
+      case 'library import': data=await createLibraryRevision();break;
+      case 'library imports list': data=await get('/api/material-library/imports');break;
       case 'library revision create': data=await createLibraryRevision(uuid('package'));break;
       case 'library template list': data=await get('/api/material-library/redaction-templates');break;
       case 'library template show': {const catalog=await get('/api/material-library/redaction-templates');data=catalog.items.find((t:any)=>t.id===required('template'));if(!data)throw new CliError('脱敏模板不存在');break;}
@@ -498,9 +505,8 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       }
       case 'library redaction show': data=await get(`/api/material-library/redactions/${uuid('redaction')}/preview${queryString([['file_id',flags.has('file')?uuid('file'):undefined]])}`);break;
       case 'library file download': {
-        const out=required('out'),bytes=await api.download(`/api/material-library/files/${uuid('file')}/content`,signal);
-        try{await writeFile(out,bytes,{flag:'wx',mode:0o600});}catch{throw new CliError('无法写入下载文件；目标须不存在且父目录已创建',{kind:'file_error'});}
-        data={path:out,bytes:bytes.length,source:'library_original'};break;
+        const out=required('out');
+        data={...await api.downloadTo(`/api/material-library/files/${uuid('file')}/content`,out,signal),source:'library_original'};break;
       }
       case 'library processing show': data=await get('/api/material-library/processing-settings');break;
       case 'library processing update': {
@@ -665,17 +671,11 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       case 'artifact download': case 'export download': {
         const out=required('out');
         const path=command==='artifact download'?`/api/artifacts/${uuid('artifact')}/download`:`/api/exports/${uuid('export')}/download`;
-        const bytes=await api.download(path,signal);
-        try {await writeFile(out,bytes,{flag:'wx',mode:0o600});}
-        catch {throw new CliError('无法写入下载文件；目标须不存在且父目录已创建',{kind:'file_error'});}
-        data={path:out,bytes:bytes.length};break;
+        data=await api.downloadTo(path,out,signal);break;
       }
       case 'siriser download': {
         const out=required('out');
-        const bytes=await api.download(`/api/workflows/${uuid('workflow')}/siriser-zip`,signal);
-        try {await writeFile(out,bytes,{flag:'wx',mode:0o600});}
-        catch {throw new CliError('无法写入下载文件；目标须不存在且父目录已创建',{kind:'file_error'});}
-        data={path:out,bytes:bytes.length,package:'siriser_five_piece',submission_performed:false};break;
+        data={...await api.downloadTo(`/api/workflows/${uuid('workflow')}/siriser-zip`,out,signal),package:'siriser_five_piece',submission_performed:false};break;
       }
     }
     return {outcome:'complete',data};

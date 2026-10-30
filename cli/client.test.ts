@@ -1,6 +1,9 @@
 /** CLI HTTP 边界测试：本机限制、响应异常和写请求不重试；全部使用注入 fetch，不连接业务环境。 */
 import {describe, expect, test} from 'bun:test';
 import {ApiClient, CliError} from './client';
+import {mkdtemp,readFile,stat,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 
 describe('本机 API 客户端', () => {
   test('容量拒绝明确表示未派发，保留容量回执且不重试',async()=>{
@@ -66,4 +69,25 @@ describe('本机 API 客户端', () => {
     }
     expect(calls).toBe(1);
   });
+});
+
+// 下载落盘契约：精确字节、私有权限、不覆盖，以及HTTP/文件错误分离。
+test('下载到文件保留字节和权限，失败不覆盖或创建伪产物',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'cli-download-contract-'));
+ const payload=new Uint8Array([0,1,127,128,255]);let calls=0;
+ const client=new ApiClient(undefined,async()=>{calls++;return new Response(payload);});
+ const out=join(root,'结果.bin');
+ try{
+  expect(await client.downloadTo('/api/artifacts/a/download',out)).toEqual({path:out,bytes:5});
+  expect(new Uint8Array(await readFile(out))).toEqual(payload);
+  expect((await stat(out)).mode&0o777).toBe(0o600);
+  await expect(client.downloadTo('/api/artifacts/a/download',out)).rejects.toMatchObject({detail:{kind:'file_error'}});
+  expect(new Uint8Array(await readFile(out))).toEqual(payload);
+  await expect(client.downloadTo('/api/artifacts/a/download',join(root,'missing','out'))).rejects.toMatchObject({detail:{kind:'file_error'}});
+  expect(calls).toBe(3);
+  const failed=new ApiClient(undefined,async()=>new Response('private error',{status:404}));
+  const missing=join(root,'not-created');
+  await expect(failed.downloadTo('/api/artifacts/a/download',missing)).rejects.toMatchObject({detail:{kind:'http_error',http_status:404}});
+  await expect(stat(missing)).rejects.toMatchObject({code:'ENOENT'});
+ }finally{await rm(root,{recursive:true,force:true});}
 });

@@ -1,6 +1,6 @@
 <!--
 职责：按关键词、标签和出题／作答／评分状态筛选项目全部题目，展示步骤状态、逐模型评分与单题操作。
-关键方法与用法：接收 `workflows`、`packages`、`projectId`；分批读取轻量步骤状态，达标详情和缺少评分的旧列表记录按需补读；`runBatch()` 对全部筛选结果派发。
+关键方法与用法：接收 `workflows`、`packages`、`projectId`；分批读取轻量步骤状态，达标详情和缺少评分的旧列表记录按需补读；返修建议覆盖核对与批量派发覆盖项目全部题目，不受表格筛选和分页影响。
 -->
 
 <script setup lang="ts">
@@ -9,6 +9,7 @@ import {dispatchWorkflowBatch} from '../api/batch-dispatch';
 import { dateLabel } from '../utils/format';
 import { readAcceptanceResult, readAnswerStepResult, readScoreStepResult, statusLabels, type Attempt, type ProjectWorkflowStatus, type ScoreStepModelSummary, type Workflow, type WorkflowDetail } from '../types/api';
 import {workflowStepDisplay,acceptanceBatchSummary,batchStepIssue,type BatchStepResult,type WorkflowStatusView} from '../utils/workflow-status';
+import type {RevisionAdviceView} from '../../../shared/revision-advice';
 import RevisionAdvice from './RevisionAdvice.vue';
 import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
 import ModelEvaluationSummary from './ModelEvaluationSummary.vue';
@@ -47,6 +48,12 @@ const detailLoadingByWorkflow=shallowRef<Record<string,boolean>>({});
 const runningAction=shallowRef<string|null>(null);
 const adviceBatch=shallowRef(false);
 const batchOrdinal=shallowRef<number|null>(null),batchMessage=shallowRef(''),batchIssues=shallowRef<{id:string;title:string;reason:string}[]>([]);
+interface AdviceCoverageItem {workflowId:string;title:string;decision:'repair'|'accepted'|'pending'|'unknown';status:'ready'|'waiting'|'running'|'failed'|'missing'|'unavailable'|'error';attemptId?:string;currentAdvice?:boolean;reason?:string}
+interface QueueCapacity {limit:number;running:number;queued:number;reserved:number;waiting:number;available:number}
+const adviceCoverage=shallowRef<AdviceCoverageItem[]|null>(null),adviceCoverageLoading=shallowRef(false),adviceCoverageError=shallowRef('');
+const adviceQueueCapacity=shallowRef<QueueCapacity|null>(null);
+const adviceBatchOutcomes=shallowRef<Record<string,string>>({});
+let adviceCoverageController:AbortController|undefined;
 const actionMessages=shallowRef<Record<string,string>>({});
 const decisionDetailOpen=shallowRef(false);
 const selectedDecisionFlow=shallowRef<Workflow|null>(null);
@@ -65,6 +72,10 @@ const filteredWorkflows=computed(()=>{
  const keyword=(search.value??'').trim().toLowerCase();
  return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&(flow.title.toLowerCase().includes(keyword)||sourceName(flow).toLowerCase().includes(keyword)))
   .filter(flow=>statusFilters.value.every(filter=>!filter.value||stepState(flow,filter.ordinal).label===filter.value));
+});
+const adviceCoverageSummary=computed(()=>{
+ const items=adviceCoverage.value??[],repair=items.filter(item=>item.decision==='repair');
+ return{total:items.length,repair:repair.length,ready:repair.filter(item=>item.status==='ready').length,waiting:repair.filter(item=>item.status==='waiting').length,running:repair.filter(item=>item.status==='running').length,missing:repair.filter(item=>item.status==='missing').length,failed:repair.filter(item=>item.status==='failed').length,unavailable:repair.filter(item=>item.status==='unavailable').length,error:repair.filter(item=>item.status==='error').length,unknownDecision:items.filter(item=>item.decision==='unknown').length,accepted:items.filter(item=>item.decision==='accepted').length,pending:items.filter(item=>item.decision==='pending').length};
 });
 const pageCount=computed(()=>Math.max(1,Math.ceil(filteredWorkflows.value.length/pageSize)));
 const visibleWorkflows=computed(()=>filteredWorkflows.value.slice((page.value-1)*pageSize,page.value*pageSize));
@@ -229,21 +240,100 @@ onBeforeUnmount(()=>{detailsDisposed=true;refreshRequestedAgain=false;detailsCon
 watch([()=>props.workflows,()=>props.workflowStatus,()=>props.projectId],syncDetailsFromProject);
 watch([search,selectedTag,authorStatus,answerStatus,scoreStatus,acceptanceStatus],()=>{page.value=1;});
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
+async function readAdviceCoverage():Promise<AdviceCoverageItem[]>{
+ const selected=[...props.workflows],projectId=props.projectId,freshStatus:Record<string,ProjectQuestionStatus>={};
+ for(let offset=0;offset<selected.length;offset+=100){
+  Object.assign(freshStatus,await api<Record<string,ProjectQuestionStatus>>(`/projects/${projectId}/workflow-status?ids=${selected.slice(offset,offset+100).map(flow=>flow.id).join(',')}`,{signal:adviceCoverageController?.signal}));
+ }
+ if(projectId!==props.projectId)throw new Error('项目已切换，已取消返修建议核对');
+ details.value={...details.value,...freshStatus};
+ detailErrors.value=Object.fromEntries(Object.entries(detailErrors.value).filter(([id])=>!freshStatus[id]));
+ const base=selected.map(flow=>{
+  const status=freshStatus[flow.id],decision=status?.steps.find(step=>step.ordinal===7);
+  const value=decision?.result?.decision;
+  const classified:AdviceCoverageItem['decision']=decision?.status==='succeeded'&&value==='repair'?'repair':decision?.status==='succeeded'&&value==='accepted'?'accepted':status?'pending':'unknown';
+  return{workflowId:flow.id,title:flow.title,decision:classified,status:classified==='repair'?'missing':classified==='unknown'?'error':'unavailable',reason:classified==='unknown'?'未能读取当前达标结论':undefined} satisfies AdviceCoverageItem;
+ });
+ const candidates=base.filter(item=>item.decision==='repair');
+ for(let offset=0;offset<candidates.length;offset+=4){
+  await Promise.all(candidates.slice(offset,offset+4).map(async item=>{
+   try{
+    const view=await api<RevisionAdviceView>(`/workflows/${item.workflowId}/revision-advice`,{signal:adviceCoverageController?.signal});
+    if(!view.available){item.status='unavailable';item.reason='返修建议功能未启用';return;}
+    const valid=view.attempts.find(attempt=>attempt.status==='succeeded'&&typeof attempt.result?.text==='string'&&attempt.result.text.trim());
+    if(valid){item.status='ready';item.attemptId=valid.id;item.currentAdvice=valid.current;item.reason=valid.current?undefined:'来源题目版本已变化；出题时仍会带入这条已有建议';return;}
+    const active=view.attempts.find(attempt=>['waiting','running'].includes(attempt.status));
+    if(active){item.status=active.status;item.attemptId=active.id;item.reason=active.current?'建议任务尚未完成':'旧版本建议任务仍活动';return;}
+    const failed=view.attempts.find(attempt=>attempt.status==='failed');
+    if(failed){item.status='failed';item.attemptId=failed.id;item.reason='最近一次建议生成失败，且没有可用的成功建议';}
+   }catch(cause){item.status='error';item.reason=cause instanceof Error?cause.message:'读取返修建议状态失败';}
+  }));
+ }
+ return base;
+}
+async function refreshAdviceCoverage(){
+ if(adviceCoverageLoading.value)return;
+ adviceCoverageController?.abort();const controller=new AbortController();adviceCoverageController=controller;
+ adviceCoverageLoading.value=true;adviceCoverageError.value='';
+ try{const [result,capacity]=await Promise.all([readAdviceCoverage(),readAgentCapacity()]);if(!controller.signal.aborted){adviceCoverage.value=result;adviceQueueCapacity.value=capacity;adviceBatchOutcomes.value={};}}
+ catch(cause){if(!controller.signal.aborted)adviceCoverageError.value=cause instanceof Error?cause.message:'读取返修建议状态失败';}
+ finally{if(adviceCoverageController===controller){adviceCoverageLoading.value=false;adviceCoverageController=undefined;}}
+}
+function adviceCoverageLabel(item:AdviceCoverageItem){
+ const outcome=adviceBatchOutcomes.value[item.workflowId];if(outcome)return outcome;
+ if(item.decision==='accepted')return'达标，无需返修';if(item.decision==='pending')return'尚无未达标判定';if(item.decision==='unknown')return'无法核验达标状态';
+ return({ready:item.currentAdvice===false?'已有返修建议（旧版本，仍会带入）':'已有返修建议',waiting:'建议排队中',running:'建议生成中',failed:'建议生成失败',missing:'未生成建议',unavailable:'功能未启用',error:'状态读取失败'} as Record<AdviceCoverageItem['status'],string>)[item.status];
+}
+async function readAgentCapacity():Promise<QueueCapacity|null>{
+ try{const response=await api<{mode:string;capacity?:{agent?:QueueCapacity}}>('/system/execution-queue');return response.mode==='local'?response.capacity?.agent??null:null;}
+ catch{return null;}
+}
+function agentCapacityLabel(capacity:QueueCapacity|null){
+ return capacity?`Agent运行 ${capacity.running}/${capacity.limit}；等待队列 ${capacity.waiting}/${capacity.limit}（排队 ${capacity.queued}、预留 ${capacity.reserved}、还可排 ${capacity.available}）`:'Agent本机队列容量暂不可读取';
+}
 async function generateBatchAdvice(){
  if(adviceBatch.value||batchOrdinal.value!==null)return;
- adviceBatch.value=true;batchMessage.value='';batchIssues.value=[];
- let queued=0,skipped=0,failed=0,capacity=false,unknown=false;
+ adviceBatch.value=true;batchMessage.value='';batchIssues.value=[];adviceBatchOutcomes.value={};
+ adviceCoverageController?.abort();const controller=new AbortController();adviceCoverageController=controller;adviceCoverageLoading.value=true;adviceCoverageError.value='';
+ let queued=0,skippedExisting=0,failed=0,capacity=false,capacityUnavailable=false,unknown=false;const outcomes:Record<string,string>={};
  try{
-  for(const [index,flow] of filteredWorkflows.value.entries()){
-   if(details.value[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision==='accepted'){skipped++;continue;}
-   if(capacity||unknown){batchIssues.value.push({id:flow.id,title:flow.title,reason:capacity?'本机待领取容量已满，未派发':'上一请求回执未知，停止继续派发，请刷新确认'});continue;}
-   batchMessage.value=`派发返修建议 ${index+1}/${filteredWorkflows.value.length}`;
-   try{await api(`/workflows/${flow.id}/revision-advice`,{method:'POST'});queued++;}
-   catch(cause){const reason=cause instanceof Error?cause.message:'派发失败';capacity=cause instanceof ApiRequestError&&cause.code==='local_queue_full';unknown=cause instanceof ApiRequestError&&cause.outcome_unknown;if(!capacity)failed++;batchIssues.value.push({id:flow.id,title:flow.title,reason});}
+  const selected=[...props.workflows],coverage=await readAdviceCoverage();
+  adviceCoverage.value=coverage;
+  let capacityCurrent=await readAgentCapacity();
+  const capacityBefore=capacityCurrent;
+  const byId=new Map(coverage.map(item=>[item.workflowId,item]));
+  const repairCandidates=selected.filter(flow=>byId.get(flow.id)?.decision==='repair');
+  for(const [index,flow] of repairCandidates.entries()){
+   const detail=details.value[flow.id];
+   const coverageItem=byId.get(flow.id);
+   if(!detail||detailErrors.value[flow.id]||!coverageItem){failed++;outcomes[flow.id]='无法核验，未触发';batchIssues.value.push({id:flow.id,title:flow.title,reason:'无法确认当前步骤和达标结论，未触发'});continue;}
+   const activeStep=detail.steps.find(step=>[4,5,6].includes(step.ordinal)&&step.active);
+   if(activeStep){skippedExisting++;outcomes[flow.id]='步骤4–6已有活动任务，跳过';continue;}
+   if(coverageItem.status==='ready'){skippedExisting++;outcomes[flow.id]='已有返修建议，跳过';continue;}
+   if(coverageItem.status==='waiting'||coverageItem.status==='running'){skippedExisting++;outcomes[flow.id]=coverageItem.status==='waiting'?'建议任务排队中，跳过':'建议任务运行中，跳过';continue;}
+   if(coverageItem.status==='unavailable'||coverageItem.status==='error'){failed++;outcomes[flow.id]='状态无法核验，未触发';batchIssues.value.push({id:flow.id,title:flow.title,reason:coverageItem.reason??'返修建议状态无法核验，未触发'});continue;}
+   if(unknown){outcomes[flow.id]='提交结果未知，待核对';batchIssues.value.push({id:flow.id,title:flow.title,reason:'上一请求回执未知，停止继续派发，请刷新确认'});continue;}
+   if(capacityUnavailable){outcomes[flow.id]='无法读取Agent容量，未派发';batchIssues.value.push({id:flow.id,title:flow.title,reason:'无法读取本机Agent队列容量，为避免超额派发已停止'});continue;}
+   if(capacity){outcomes[flow.id]='Agent容量已满，未派发';batchIssues.value.push({id:flow.id,title:flow.title,reason:'Agent运行槽位已由运行/排队/预留任务占满，未派发'});continue;}
+   capacityCurrent=await readAgentCapacity();adviceQueueCapacity.value=capacityCurrent;
+   if(!capacityCurrent){failed++;capacityUnavailable=true;outcomes[flow.id]='无法读取Agent容量，未派发';batchIssues.value.push({id:flow.id,title:flow.title,reason:'无法读取本机Agent队列容量，为避免超额派发已停止'});continue;}
+   if(capacityCurrent.running+capacityCurrent.queued+capacityCurrent.reserved>=capacityCurrent.limit){capacity=true;outcomes[flow.id]='Agent容量已满，未派发';batchIssues.value.push({id:flow.id,title:flow.title,reason:'Agent运行槽位已由运行/排队/预留任务占满，未派发'});continue;}
+   batchMessage.value=`触发返修建议 ${index+1}/${repairCandidates.length}`;
+   try{const receipt=await api<{id:string;reused:boolean}>(`/workflows/${flow.id}/revision-advice`,{method:'POST'});if(receipt.reused){skippedExisting++;outcomes[flow.id]='已有建议或活动任务，服务端复用';}else{queued++;outcomes[flow.id]='已提交，等待队列核对';}capacityCurrent=await readAgentCapacity();adviceQueueCapacity.value=capacityCurrent;if(!capacityCurrent)capacityUnavailable=true;else if(capacityCurrent.running+capacityCurrent.queued+capacityCurrent.reserved>=capacityCurrent.limit)capacity=true;}
+   catch(cause){const reason=cause instanceof Error?cause.message:'派发失败';capacity=cause instanceof ApiRequestError&&cause.code==='local_queue_full';unknown=cause instanceof ApiRequestError&&cause.outcome_unknown;if(!capacity)failed++;outcomes[flow.id]=capacity?'Agent容量已满，未派发':unknown?'提交结果未知，待核对':'派发失败';batchIssues.value.push({id:flow.id,title:flow.title,reason});if(capacityCurrent)capacityCurrent=await readAgentCapacity();}
   }
-  batchMessage.value=`返修建议：已排队/复用 ${queued}，已达标跳过 ${skipped}，失败/不符合条件 ${failed}，容量不足未派发 ${batchIssues.value.filter(item=>item.reason.includes('容量')).length}`;
- }finally{adviceBatch.value=false;}
+  const capacityAfter=await readAgentCapacity();adviceQueueCapacity.value=capacityAfter;adviceBatchOutcomes.value=outcomes;
+  const outstanding=Object.values(outcomes).filter(value=>value==='Agent容量已满，未派发').length;
+  batchMessage.value=`全项目返修建议：题目 ${selected.length}，当前未达标 ${repairCandidates.length}，其余 ${selected.length-repairCandidates.length} 未触发；本次新增 ${queued}，已有可用建议/活动任务跳过 ${skippedExisting}，失败或无法核验 ${failed}，Agent满未派发 ${outstanding}。派发前：${agentCapacityLabel(capacityBefore)}；派发后：${agentCapacityLabel(capacityAfter)}`;
+  const freshCoverage=await readAdviceCoverage();adviceCoverage.value=freshCoverage;
+  for(const item of freshCoverage){if(outcomes[item.workflowId]?.startsWith('已提交'))outcomes[item.workflowId]=item.status==='waiting'?'建议已排队':item.status==='running'?'建议正在生成':item.status==='ready'?'返修建议已生成':outcomes[item.workflowId]!;}
+  adviceBatchOutcomes.value={...outcomes};
+  emit('refresh');
+ }catch(cause){
+  batchMessage.value=`读取当前题目状态失败，未触发返修建议：${cause instanceof Error?cause.message:'读取失败'}`;
+ }finally{if(adviceCoverageController===controller){adviceCoverageLoading.value=false;adviceCoverageController=undefined;}adviceBatch.value=false;}
 }
+onBeforeUnmount(()=>adviceCoverageController?.abort());
 </script>
 
 <template>
@@ -261,8 +351,15 @@ async function generateBatchAdvice(){
   </Row>
   <p v-if="statusLoading" class="text-xs text-muted" role="status">正在读取全部题目状态及评分…</p>
   <v-alert v-if="Object.keys(detailErrors).length" type="error" density="compact">部分题目状态或评分读取失败，请刷新后重试。</v-alert>
-  <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">筛选结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部筛选结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null||adviceBatch" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn><v-btn size="small" variant="outlined" :loading="adviceBatch" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null||adviceBatch" @click="generateBatchAdvice">批量返修建议</v-btn></Row>
+  <Row wrap y="center" :gap="6"><span class="text-xs text-muted mr-4">筛选结果批量操作</span><v-btn v-for="stage in stageColumns" :key="stage.ordinal" size="small" variant="outlined" title="执行全部筛选结果，不限当前页" :loading="batchOrdinal===stage.ordinal" :disabled="statusLoading||!filteredWorkflows.length||runningAction!==null||batchOrdinal!==null||adviceBatch" @click="runBatch(stage.ordinal)">批量{{ stage.name }}</v-btn><v-btn size="small" variant="outlined" title="全项目核对当前未达标题目的返修建议；任一版本已有成功有效文本或有活动建议任务都会跳过，并按本机Agent等待队列容量逐题派发" :loading="adviceBatch" :disabled="statusLoading||!props.workflows.length||runningAction!==null||batchOrdinal!==null||adviceBatch" @click="generateBatchAdvice">批量触发未达标返修建议（跳过已有）</v-btn><v-btn size="small" variant="text" :loading="adviceCoverageLoading" :disabled="adviceCoverageLoading||adviceBatch||!props.workflows.length" @click="refreshAdviceCoverage">核对返修建议状态</v-btn></Row>
   <v-alert v-if="batchMessage" type="info" density="compact" role="status"><Column :gap="4"><span>{{ batchMessage }}</span><details v-if="batchIssues.length"><summary class="cursor-pointer">查看未完成原因</summary><ul class="my-0 pl-20"><li v-for="item in batchIssues" :key="item.id">{{ item.title }}：{{ item.reason }}</li></ul></details></Column></v-alert>
+  <v-alert v-if="adviceCoverageError" type="error" density="compact" role="alert">返修建议核对失败：{{ adviceCoverageError }}</v-alert>
+  <section v-if="adviceCoverage" class="surface-panel p-12">
+   <Row wrap y="center" :gap="8"><strong class="text-sm">返修建议覆盖（全项目 {{ adviceCoverageSummary.total }} 道题）</strong><span class="text-xs text-muted">未达标 {{ adviceCoverageSummary.repair }}：已有可用建议 {{ adviceCoverageSummary.ready }}、排队 {{ adviceCoverageSummary.waiting }}、生成中 {{ adviceCoverageSummary.running }}、待触发 {{ adviceCoverageSummary.missing }}、失败 {{ adviceCoverageSummary.failed }}、建议状态无法核验 {{ adviceCoverageSummary.error+adviceCoverageSummary.unavailable }}；达标 {{ adviceCoverageSummary.accepted }}、未判定 {{ adviceCoverageSummary.pending }}、判定无法核验 {{ adviceCoverageSummary.unknownDecision }}</span></Row>
+   <p class="text-xs text-muted mt-4">{{ agentCapacityLabel(adviceQueueCapacity) }}。运行槽位与等待队列分开显示；可排数是等待容量，不代表Agent空闲数。</p>
+   <p v-if="adviceCoverageLoading" class="text-xs text-muted mt-8" role="status">正在核对全项目未达标题目的建议版本和任务状态…</p>
+   <details class="mt-8"><summary class="cursor-pointer">查看全部 {{ adviceCoverage.length }} 道题的返修建议状态</summary><v-table density="compact" class="mt-8"><thead><tr><th scope="col">题目</th><th scope="col">当前判定</th><th scope="col">返修建议状态</th><th scope="col">任务 ID</th><th scope="col">说明</th></tr></thead><tbody><tr v-for="item in adviceCoverage" :key="item.workflowId"><td>{{ item.title }}</td><td>{{ item.decision==='repair'?'未达标':item.decision==='accepted'?'达标':item.decision==='pending'?'未判定':'无法核验' }}</td><td>{{ adviceCoverageLabel(item) }}</td><td class="font-mono text-xs">{{ item.attemptId??'—' }}</td><td>{{ item.reason??'—' }}</td></tr></tbody></v-table></details>
+  </section>
   <p v-if="!visibleWorkflows.length&&!statusLoading" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。请在“本期材料”中选择材料包并设置题目名称、场景、角色、等级、方向和标签。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-1080px">

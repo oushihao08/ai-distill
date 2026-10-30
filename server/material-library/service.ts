@@ -112,7 +112,7 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
  params.push(sourceMode);
  const result=await pool.query(`SELECT p.id,p.name,p.description,p.tags,p.current_revision_id,p.lock_version,p.deleted_at,p.created_at,p.updated_at,
   COALESCE(r.file_count,0)::int AS file_count,r.state AS revision_state,
-  COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='intake' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS intake_status,
+  COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='intake' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),CASE WHEN r.state='ready' THEN 'succeeded' ELSE 'not_started' END) AS intake_status,
   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='extract' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS extraction_status,
   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='redact' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS redaction_status,
   available.count AS available_redaction_count,

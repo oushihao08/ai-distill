@@ -9,13 +9,14 @@ import {projectStepPolicies,resolveStepProjectKey} from '../lifecycle/steps';
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
+import {assertRepairStepAllowed} from '../revision-advice/jobs';
 import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJobs,localClaimSql,localWaitingSql,deferLocalPublication,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {runExternalCall} from '../external-call';
 import {runAcceptance} from '../decisions/jobs';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
-import type {ScoreStepModelSummary} from '../../shared/workflow-results';
+import type {AnswerStepModelSummary,ScoreStepModelSummary} from '../../shared/workflow-results';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
 import {mkdir,writeFile,rm} from 'node:fs/promises';
@@ -42,7 +43,7 @@ const workflowSql="SELECT w.project_id,p.local_skill_path,p.workspace_path,p.par
 export async function enqueueScore(pool:Pool,id:string){
  const db=await pool.connect();
  try{
-  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);const w=(await db.query(workflowSql,[id])).rows[0];if(!w)throw new HTTPException(404,{message:'工作流不存在'});
+  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);await assertRepairStepAllowed(db,id,6);const w=(await db.query(workflowSql,[id])).rows[0];if(!w)throw new HTTPException(404,{message:'工作流不存在'});
   const answerStep=(await db.query("SELECT status,result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=5",[id])).rows[0];
   const bundle=Array.isArray(answerStep?.result?.models)?answerStep.result.models as any[]:null;
   const terminalAnswerStatuses=['succeeded','failed','skipped'];
@@ -67,10 +68,11 @@ export async function enqueueScore(pool:Pool,id:string){
   const skill=needsHooks?await resolveEffectiveProjectSkill(w):undefined;
   const hooks=skill?await freezeStageHooks(dirname(skill.path),config.workflow):undefined;
   await supersedeForeignPending(db,{kind:'step',id,ordinal:6});
+  const materialCache=new Map();
   for(const answerId of answerIds){
    // 工作流已加锁：先拒绝活动评分，避免重复点击仍读取完整材料并延长事务。
    if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input->'context'->'binding'->>'answer_attempt_id'=$2 AND status IN ('waiting','running') LIMIT 1",[id,answerId])).rowCount)throw new HTTPException(409,{message:'此答案已有评分任务'});
-   const context=await readScoreContext(db,id,answerId);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:context.project_name,content_contract:context.content_contract}),{context});buildAnonymousInput(context);
+   const context=await readScoreContext(db,id,answerId,false,false,materialCache);context.step_prompt=config.prompt||DEFAULT_STEP_PROMPTS[6];projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:context.project_name,content_contract:context.content_contract}),{context});buildAnonymousInput(context);
    const input={context,digest:scoreContextDigest(context),execution_instructions:scoreExecutionInstructions(config.provider,context.scoring_policy?.contract,context.candidate_quote_check),...(hooks?{hooks,hook_digest:createHash('sha256').update(canonicalJson(hooks)).digest('hex')}:{})};
    const attempt=crypto.randomUUID();
    await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,6,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=6",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
@@ -91,23 +93,29 @@ async function stillCurrent(db:PoolClient,job:any){
  try{const current=await readScoreContext(db,job.workflow_id,job.input.context.binding.answer_attempt_id,!!job.input.context.project_rules,!!job.input.context.project_prompt);if(job.input.context.candidate_quote_check!==undefined){if(!projectStepPolicies.scoreProtocol.execute(resolveStepProjectKey({project_name:current.project_name,content_contract:current.content_contract}),{context:current,frozen:job.input.context}))return false;}if(job.input.context.step_prompt!==undefined)current.step_prompt=job.input.context.step_prompt;if(job.input.context.project_name===undefined){delete current.project_name;delete current.question_id;}return current.binding.answer_attempt_id===job.input.context.binding.answer_attempt_id&&scoreContextDigest(current)===job.input.digest;}
  catch(error){if(error instanceof HTTPException&&[404,409].includes(error.status))return false;throw error;}
 }
+/** 聚合查询投影；逐项完整报告仍由独立评分记录保存。 */
+type ScoreAggregationRow={
+ id:string;status:import('../../shared/types').StepStatus;
+ input:{context?:{binding?:{answer_attempt_id?:string|null}}}|null;
+ result:{report?:{contract?:string;total?:unknown;max_score?:unknown;summary?:{raw_score?:number|null;full_score?:number|null;evaluation_percent?:number|null;veto_triggered?:boolean|null};disputes?:unknown[]};validation?:{valid?:boolean};score_extraction?:unknown;binding?:unknown}|null;
+};
 /** 只汇总当前成功答案绑定的最新评分；执行成功与validation.valid分开，达标由decisions判断。 */
-export async function refreshScoreStep(db: PoolClient, job: any) {
+export async function refreshScoreStep(db: PoolClient, job: {workflow_id:string;status:import('../../shared/types').StepStatus;result?:unknown}) {
     const answerStep = (await db.query("SELECT result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=5", [job.workflow_id])).rows[0];
-    const answers = Array.isArray(answerStep?.result?.models) ? answerStep.result.models as any[] : null;
+    const answers = Array.isArray(answerStep?.result?.models) ? answerStep.result.models as AnswerStepModelSummary[] : null;
     if (!answers) {
         await db.query('UPDATE ai_distill.steps SET status=$2,result=$3,error=$4,finished_at=now() WHERE workflow_id=$1 AND ordinal=6', [job.workflow_id, job.status, JSON.stringify(job.result), job.status === 'failed' ? '评分存在争议或执行失败' : null]);
         return job.status;
     }
     // 只汇总当前答案的最新评分；历史上下文和逐项报告仍保存在原记录。
-    const rows = await db.query("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input #>> '{context,binding,answer_attempt_id}') id,jsonb_build_object('context',jsonb_build_object('binding',jsonb_build_object('answer_attempt_id',input #> '{context,binding,answer_attempt_id}'))) AS input,jsonb_build_object('report',jsonb_build_object('total',result #> '{report,total}','max_score',result #> '{report,max_score}','contract',result #> '{report,contract}','summary',result #> '{report,summary}','disputes',result #> '{report,disputes}'),'validation',jsonb_build_object('valid',result #> '{validation,valid}'),'score_extraction',result->'score_extraction','binding',result->'binding') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input #>> '{context,binding,answer_attempt_id}'=ANY($2::text[]) ORDER BY input #>> '{context,binding,answer_attempt_id}',attempt DESC) latest", [job.workflow_id, answers.filter((answer: any) => answer.status === 'succeeded' && typeof answer.attempt_id === 'string').map((answer: any) => answer.attempt_id)]);
-    const latest = new Map<string, any>();
+    const rows = await db.query<ScoreAggregationRow>("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input #>> '{context,binding,answer_attempt_id}') id,jsonb_build_object('context',jsonb_build_object('binding',jsonb_build_object('answer_attempt_id',input #> '{context,binding,answer_attempt_id}'))) AS input,jsonb_build_object('report',jsonb_build_object('total',result #> '{report,total}','max_score',result #> '{report,max_score}','contract',result #> '{report,contract}','summary',result #> '{report,summary}','disputes',result #> '{report,disputes}'),'validation',jsonb_build_object('valid',result #> '{validation,valid}'),'score_extraction',result->'score_extraction','binding',result->'binding') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=6 AND input #>> '{context,binding,answer_attempt_id}'=ANY($2::text[]) ORDER BY input #>> '{context,binding,answer_attempt_id}',attempt DESC) latest", [job.workflow_id, answers.filter((answer) => answer.status === 'succeeded' && typeof answer.attempt_id === 'string').map((answer) => answer.attempt_id)]);
+    const latest = new Map<string, ScoreAggregationRow>();
     for (const row of rows.rows) {
         const answerId = row.input?.context?.binding?.answer_attempt_id;
         if (typeof answerId === 'string' && !latest.has(answerId))
             latest.set(answerId, row);
     }
-    const models: ScoreStepModelSummary[] = answers.map((answer: any) => {
+    const models: ScoreStepModelSummary[] = answers.map((answer) => {
         if (answer.status !== 'succeeded' || typeof answer.attempt_id !== 'string')
             return { model_id: answer.model_id, name: answer.name, answer_attempt_id: answer.attempt_id ?? null, answer_status: answer.status, score_attempt_id: null, score_status: 'skipped' };
         const score = latest.get(answer.attempt_id);
@@ -129,10 +137,10 @@ export async function refreshScoreStep(db: PoolClient, job: any) {
             disputes: Array.isArray(report?.disputes) ? report.disputes : []
         };
     });
-    const expected = models.filter((model: any) => model.answer_status === 'succeeded');
-    const settled = expected.length > 0 && expected.every((model: any) => ['succeeded', 'failed', 'skipped'].includes(model.score_status));
-    const succeeded = settled && expected.every((model: any) => model.score_status === 'succeeded');
-    const running = expected.some((model: any) => model.score_status === 'running');
+    const expected = models.filter((model) => model.answer_status === 'succeeded');
+    const settled = expected.length > 0 && expected.every((model) => ['succeeded', 'failed', 'skipped'].includes(model.score_status));
+    const succeeded = settled && expected.every((model) => model.score_status === 'succeeded');
+    const running = expected.some((model) => model.score_status === 'running');
     const status = succeeded ? 'succeeded' : settled ? 'failed' : running ? 'running' : 'waiting';
     await db.query("UPDATE ai_distill.steps SET status=$2,result=$3,error=$4,finished_at=CASE WHEN $2 IN ('succeeded','failed') THEN now() ELSE NULL END WHERE workflow_id=$1 AND ordinal=6 AND EXISTS(SELECT 1 FROM ai_distill.workflows WHERE id=$1)", [job.workflow_id, status, JSON.stringify({ models }), status === 'failed' ? '部分模型评分未通过或执行失败' : null]);
     return status;

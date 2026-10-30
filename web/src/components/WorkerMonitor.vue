@@ -6,8 +6,8 @@
 <script setup lang="ts">
 import { useResource } from '@/composables/useResource';
 import { dateLabel, fileSize } from '@/utils/format';
-import type { MaterialLibraryQueueStatus,WorkerMonitorStatus } from '@server/monitoring/worker-monitor';
-type MonitorResponse=WorkerMonitorStatus&{active_workflow_tasks:{status:'known'|'unavailable';items:{attempt_id:string;project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;channel:'agent'|'api'|'unknown';state:'running';started_at:string|null}[]};material_library:MaterialLibraryQueueStatus;local_execution_queue?:{executor_id:string;items:{id:string;kind:string;lane:string;state:string;updated_at?:number;cancel_requested:number}[]}|null};
+import type { ActiveWorkflowTask,MaterialLibraryQueueStatus,WorkerMonitorStatus } from '@server/monitoring/worker-monitor';
+type MonitorResponse=WorkerMonitorStatus&{active_workflow_tasks:{status:'known'|'unavailable';items:ActiveWorkflowTask[]};material_library:MaterialLibraryQueueStatus;local_execution_queue?:{executor_id:string;items:{id:string;kind:string;lane:string;state:string;updated_at?:number;cancel_requested:number}[]}|null};
 const {data,error,loading,refresh}=useResource<MonitorResponse>('/monitor');
 let timer:ReturnType<typeof setInterval>|undefined;
 onMounted(()=>{timer=setInterval(()=>{if(!loading.value&&!document.hidden)void refresh();},10000);});

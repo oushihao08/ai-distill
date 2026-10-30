@@ -8,7 +8,7 @@ import type {StepStatus} from './types';
 export interface AnswerStepModelSummary {
  model_id?:string|null;
  name?:string;
- minimum_score?:number;
+ minimum_score?:number|null;
  attempt_id?:string|null;
  status:StepStatus;
  answer_sha256?:string|null;

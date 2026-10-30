@@ -21,6 +21,25 @@ function resetFilters(){search.value='';projectIds.value=[];redactionState.value
 const loading=shallowRef(false),error=shallowRef(''),selected=shallowRef<MaterialLibraryPackageSummary>();
 const revisions=shallowRef<LibraryRevision[]>([]),usage=shallowRef<LibraryUsage>();
 const detailLoading=shallowRef(false),detailError=shallowRef(''),usageError=shallowRef(''),usageLoading=shallowRef(false);
+type ImportTask={id:string;name:string;status:string;package_id:string|null;error_message:string|null;execution?:{label:string};progress:Record<string,unknown>};
+const importTasks=shallowRef<ImportTask[]>([]),importError=shallowRef('');
+let importTimer:ReturnType<typeof setTimeout>|undefined,importsDisposed=false,importsReading=false;
+function scheduleImportPoll(){
+ clearTimeout(importTimer);
+ if(importsDisposed||!importTasks.value.some(task=>['queued','running'].includes(task.status)))return;
+ importTimer=setTimeout(()=>{if(document.hidden)scheduleImportPoll();else void loadImports();},10000);
+}
+async function loadImports(){
+ if(importsDisposed||importsReading)return;importsReading=true;clearTimeout(importTimer);
+ try{
+  const previous=new Map(importTasks.value.map(task=>[task.id,task.status]));
+  const result=await api<{items:ImportTask[]}>('/material-library/imports');
+  if(importsDisposed)return;importTasks.value=result.items;importError.value='';
+  if(result.items.some(task=>task.status==='succeeded'&&previous.has(task.id)&&previous.get(task.id)!=='succeeded'))await refreshAll();
+ }catch(cause){if(!importsDisposed)importError.value=cause instanceof Error?cause.message:'读取导入任务失败';}
+ finally{importsReading=false;scheduleImportPoll();}
+}
+async function importSubmitted(id:string){actionMessage.value=`已提交提取入库任务 ${id}；成功前不会建立材料记录。`;await loadImports();}
 const preparations=shallowRef<LibraryPreparationSummary[]>([]),preparationStatus=shallowRef<'loading'|'error'|'unavailable'|'ready'>('loading');
 const detailDialog=shallowRef<'usage'|'history'|'preparation'|null>(null),packageDialog=shallowRef(false),metadataDialog=shallowRef(false),processingDialog=shallowRef(false),archiveDialog=shallowRef(false);
 const folderInput=shallowRef<HTMLInputElement>(),selectedFiles=shallowRef<File[]>([]),uploadKey=shallowRef('');
@@ -94,10 +113,6 @@ async function restorePackage(item:MaterialLibraryPackageSummary){
  catch(cause){actionError.value=cause instanceof Error?cause.message:'恢复材料包失败';}
  finally{busy.value=false;}
 }
-async function packageCreated(id:string,imported:boolean){
- try{resetFilters();page.value=1;await loadPackages();const item=packages.value.find(row=>row.id===id);if(item)await selectPackage(item);actionMessage.value=imported?'材料文件夹已导入，请开始入库。':'材料包已建立，文件尚未导入，请重新选择文件夹。';}
- catch(cause){actionError.value=cause instanceof Error?cause.message:'刷新导入结果失败';}
-}
 function selectFolder(event:Event){
  actionError.value='';actionMessage.value='';selectedFiles.value=[];
  try{const result=readMaterialFolderSelection(Array.from((event.target as HTMLInputElement).files??[]));selectedFiles.value=result.files;uploadKey.value=crypto.randomUUID();if(result.ignoredCount)actionMessage.value=`已跳过 ${result.ignoredCount} 个不支持的文件。`;}
@@ -107,7 +122,7 @@ function selectFolder(event:Event){
 async function uploadFiles(){
  const current=selected.value;if(!current||busy.value||!selectedFiles.value.length)return;
  busy.value=true;actionError.value='';
- try{const form=new FormData();form.set('request_key',uploadKey.value);selectedFiles.value.forEach(file=>form.append('files',file));await api(`/material-library/packages/${current.id}/revisions`,{method:'POST',headers:{'If-Match':String(current.lock_version)},body:form});selectedFiles.value=[];uploadKey.value='';await refreshAll();detailDialog.value=null;actionMessage.value='新文件版本已保存，历史版本保留。请执行入库和识别。';}
+ try{const form=new FormData();form.set('request_key',uploadKey.value);selectedFiles.value.forEach(file=>form.append('files',file));const job=await api<{id:string}>(`/material-library/packages/${current.id}/revisions`,{method:'POST',headers:{'If-Match':String(current.lock_version)},body:form});selectedFiles.value=[];uploadKey.value='';await refreshAll();detailDialog.value=null;await importSubmitted(job.id);}
  catch(cause){actionError.value=cause instanceof Error?cause.message:'导入新版本失败，可重试原请求';}
  finally{busy.value=false;}
 }
@@ -179,11 +194,16 @@ watch(contextProjectId,async id=>{contextProcessingMode.value=undefined;if(!id)r
 watch(detailDialog,value=>{if(value==='usage'&&selected.value&&!usage.value)void loadUsage(selected.value);});
 watch([search,redactionState,preparationState,packageState,()=>projectIds.value.join(',')],()=>{listRequest++;selectionRequest++;usageRequest++;detailLoading.value=false;usageLoading.value=false;if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(()=>{page.value=1;void loadPackages();},250);});
 watch(routePackageId,(id,previous)=>{detailDialog.value=null;if(id){void openPackageFromRoute(id);return;}if(previous){selectionRequest++;usageRequest++;selected.value=undefined;revisions.value=[];usage.value=undefined;detailLoading.value=false;usageLoading.value=false;void loadPackages();}});
-onMounted(async()=>{try{const packageId=routePackageId.value;await Promise.all([loadPackages(),packageId?openPackageFromRoute(packageId):Promise.resolve()]);try{projectOptions.value=(await api<{items:{id:string;name:string}[]}>('/material-library/project-options')).items;}catch(cause){filterError.value=cause instanceof Error?cause.message:'读取项目选项失败';}}catch(cause){error.value=cause instanceof Error?cause.message:'打开材料库失败';}});
-onUnmounted(()=>{selectionRequest++;usageRequest++;listRequest++;if(searchTimer)clearTimeout(searchTimer);});
+onMounted(async()=>{void loadImports();try{const packageId=routePackageId.value;await Promise.all([loadPackages(),packageId?openPackageFromRoute(packageId):Promise.resolve()]);try{projectOptions.value=(await api<{items:{id:string;name:string}[]}>('/material-library/project-options')).items;}catch(cause){filterError.value=cause instanceof Error?cause.message:'读取项目选项失败';}}catch(cause){error.value=cause instanceof Error?cause.message:'打开材料库失败';}});
+onUnmounted(()=>{importsDisposed=true;clearTimeout(importTimer);selectionRequest++;usageRequest++;listRequest++;if(searchTimer)clearTimeout(searchTimer);});
 </script>
 <template><Column :gap="12" class="min-w-0 lg:flex-1 min-h-0">
  <Row x="between" wrap :gap="16" y="center"><Column :gap="6"><h1 class="text-xl font-bold text-ink-heading">材料库</h1></Column><Row wrap :gap="8"><v-btn variant="outlined" @click="processingDialog=true"><template #prepend><UiIcon name="settings"/></template>共用处理设置</v-btn><v-btn color="primary" @click="packageDialog=true"><template #prepend><UiIcon name="plus"/></template>导入材料文件夹</v-btn></Row></Row>
+ <Column v-if="importTasks.length||importError" class="surface-card p-12" :gap="8">
+  <Row x="between"><strong class="text-sm">提取入库任务（最近50条，非材料记录）</strong><v-btn size="small" @click="loadImports">刷新任务</v-btn></Row>
+  <v-alert v-if="importError" type="error" density="compact">{{ importError }}</v-alert>
+  <table class="w-full text-sm"><thead><tr><th class="text-left">材料名称</th><th class="text-left">状态</th><th class="text-left">结果</th></tr></thead><tbody><tr v-for="task in importTasks" :key="task.id"><td>{{ task.name }}</td><td>{{ task.execution?.label??({queued:'排队中',running:'提取中',succeeded:'已提取并入库',failed:'失败，未新增材料',cancelled:'已取消，未新增材料'} as Record<string,string>)[task.status]??task.status }}</td><td><RouterLink v-if="task.status==='succeeded'&&task.package_id" :to="`/materials/${task.package_id}`">查看材料</RouterLink><span v-else>{{ task.error_message||'成功后才建立正式材料记录' }}</span></td></tr></tbody></table>
+ </Column>
  <v-alert v-if="actionError" type="error" closable @click:close="actionError=''">{{ actionError }}</v-alert><v-alert v-if="actionMessage" type="success" closable @click:close="actionMessage=''">{{ actionMessage }}</v-alert>
  <Row wrap y="center" :gap="12" class="surface-card p-12">
   <v-text-field v-model="search" label="搜索材料包" hide-details clearable :disabled="busy" class="w-full sm:w-200 flex-1 min-w-0"/>
@@ -237,7 +257,7 @@ onUnmounted(()=>{selectionRequest++;usageRequest++;listRequest++;if(searchTimer)
    </v-card-text>
   </v-card>
  </v-dialog>
- <LibraryPackageCreateDialog v-model="packageDialog" @created="packageCreated"/>
+ <LibraryPackageCreateDialog v-model="packageDialog" @submitted="importSubmitted"/>
  <v-dialog v-model="metadataDialog" max-width="600"><LibraryPackageSettings v-if="metadataDialog&&selected" :package-id="selected.id" @close="metadataDialog=false" @saved="refreshAll"/></v-dialog>
  <v-dialog v-model="processingDialog" max-width="900"><LibraryProcessingSettings v-if="processingDialog" @close="processingDialog=false" @saved="actionMessage='共用处理设置已保存，之后派发的新任务使用此配置。'"/></v-dialog>
  <v-dialog v-model="archiveDialog" max-width="520"><v-card><v-card-title>删除这个材料包？</v-card-title><v-card-text><v-alert type="info" density="compact">这里执行可恢复的逻辑删除：材料包会从使用中列表隐藏，原件、处理记录、已加载项目关系、已创建题目的冻结附件和归档历史都会保留。可在“已归档”筛选中恢复；有入库、识别或脱敏任务正在运行时不能删除。</v-alert><p class="mt-12">材料包：{{ selected?.name }}</p></v-card-text><v-card-actions><v-spacer/><v-btn :disabled="busy" @click="archiveDialog=false">取消</v-btn><v-btn color="error" variant="flat" :loading="busy" :disabled="!selected" @click="archivePackage">删除材料包</v-btn></v-card-actions></v-card></v-dialog>

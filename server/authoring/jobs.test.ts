@@ -46,7 +46,7 @@ async function projectFixture(){
  const query=async(sql:string,values:any[]=[]):Promise<any>=>{
   calls.push({sql,values});
   // 跟随现有归档保护的行锁查询；模拟未归档/已归档状态，不能用空结果误判所有题目不存在。
-  if(sql==='SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE')return{rows:state.deleted?[]:[{id:values[0]}],rowCount:state.deleted?0:1};
+  if(sql==='SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE NOWAIT')return{rows:state.deleted?[]:[{id:values[0]}],rowCount:state.deleted?0:1};
   if(sql==='SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8')return{rows:state.archived?[{status:'succeeded'}]:[],rowCount:state.archived?1:0};
   if(state.library){
    if(sql.includes("to_regclass('ai_distill.question_material_scope_uses')"))return{rows:[{available:true}],rowCount:1};
@@ -65,6 +65,7 @@ async function projectFixture(){
   if(sql.includes("a.status='running' AND COALESCE(a.heartbeat_at"))return empty;
   if(sql.startsWith('SELECT a.*'))return{rows:state.job?[state.job]:[],rowCount:state.job?1:0};
   if((sql.startsWith('SELECT w.project_id')||sql.startsWith('SELECT w.*')))return{rows:[{project_id:'project',project_name:'项目名称',material_backend:state.library?'library_v1':'legacy',has_library_snapshot:!!state.library,title:state.title,source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};
+  if(sql.startsWith('SELECT id,project_id FROM ai_distill.workflows'))return{rows:state.deleted?[]:[{id:'workflow',project_id:'project'}],rowCount:state.deleted?0:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redaction'}],rowCount:1};
   if(sql.startsWith('SELECT ar.id'))return{rows:[{id:'attachment',sha256:hash(state.text)}],rowCount:1};
   if(sql.startsWith('SELECT sha256,content'))return{rows:[{sha256:hash(state.text),content:state.text,sources:state.originalNames?.map((original_name:string)=>({original_name}))}],rowCount:1};
@@ -73,7 +74,7 @@ async function projectFixture(){
   if(sql.startsWith('SELECT codex_model'))return{rows:[{codex_model:state.projectDefault?.model??null,codex_reasoning_effort:state.projectDefault?.reasoning_effort??null}]};
   if(sql.startsWith('SELECT credential_home,model'))return{rows:[{credential_home:root,model:'system-model',reasoning_effort:'medium'}]};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("status IN ('waiting','running')"))return{rows:state.reuse?[{id:state.reuse}]:state.active?[{id:'active'}]:[],rowCount:state.reuse||state.active?1:0};
-  if(sql.startsWith('INSERT INTO ai_distill.step_attempts'))saved={id:values[1],workflow_id:'workflow',input:JSON.parse(values[2]),config:JSON.parse(values[3])};
+  if(sql.startsWith('INSERT INTO ai_distill.step_attempts'))saved={id:values[1],workflow_id:'workflow',project_id:'project',input:JSON.parse(values[2]),config:JSON.parse(values[3])};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC'))return{rows:[{id:state.latestId??state.job?.id}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts WHERE id=$1')){const active=!state.cancelled&&(!state.latestId||state.latestId===state.job?.id);return{rows:active?[{id:state.job?.id}]:[],rowCount:active?1:0};}
   if(sql.startsWith('SELECT status FROM ai_distill.step_attempts'))return{rows:[{status:'running'}],rowCount:1};
@@ -121,7 +122,8 @@ test.each([
   expect(f.saved.config.model).toBe(expected);expect(f.saved.input.authoring_contract).toBe('fresh-desktop-v1');
   expect(f.saved.input.project_prompt.workspace_path).toBe(await realpath(f.root));expect(f.saved.input.system_authoring_prompt).toBe(AUTHORING_FIXED_PROMPT);expect(f.saved.input).not.toHaveProperty('evaluation_feedback');
   expect(f.calls.some(c=>c.sql.includes('SELECT id,result')&&c.sql.includes('ordinal=4'))).toBe(false);
-  expect(f.calls.some(c=>c.sql.includes('ordinal=7')&&c.sql.startsWith('SELECT'))).toBe(false);
+  const decisionReads=f.calls.filter(c=>c.sql.includes('ordinal=7')&&c.sql.startsWith('SELECT'));
+  expect(decisionReads).toHaveLength(1);expect(decisionReads[0]!.sql).toContain("jsonb_build_object('decision',result->>'decision') AS result");
   const {digest,...input}=f.saved.input;expect(inputDigest(input)).toBe(digest);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
@@ -201,9 +203,10 @@ test('project author enqueue freezes the database project name and current file 
   await writeFile(join(root,'models_cache.json'),JSON.stringify({models:[{slug:'fixture-model',supported_reasoning_levels:[{effort:'low'}]}]}));
   const project_prompt=await scanProjectPrompt(root,skill);let saved:any;
   const query=async(sql:string,values:any[]=[]):Promise<any>=>{
-   if(sql==='SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE')return{rows:[{id:values[0]}],rowCount:1};
+   if(sql==='SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE NOWAIT')return{rows:[{id:values[0]}],rowCount:1};
    if(sql==='SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=8')return{rows:[],rowCount:0};
    if((sql.startsWith('SELECT w.project_id')||sql.startsWith('SELECT w.*')))return{rows:[{project_id:'project',project_name:'数据库项目名称',title:'题目1',source_key:'题目1',source_manifest:[],local_skill_path:skill,material_root:join(root,'questions'),ingestion_status:'succeeded',redaction_status:'succeeded'}]};
+   if(sql.startsWith('SELECT id,project_id FROM ai_distill.workflows'))return{rows:[{id:'workflow',project_id:'project'}],rowCount:1};
    if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redaction'}]};
    if(sql.startsWith('SELECT ar.id'))return{rows:[{id:'attachment',sha256:'a'.repeat(64)}],rowCount:1};
    if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{provider:'codex',model:'fixture-model',reasoning_effort:'low',prompt:'本次出题设置'}}]};
@@ -295,12 +298,13 @@ test('Work内容契约由项目配置冻结并传入作者',async()=>{
 });
 
 
-test('内容契约配置变化后拒绝旧尝试发布且不调用作者',async()=>{
+test('内容契约配置变化不阻断已冻结任务，仍按本次冻结契约发布',async()=>{
  const f=await projectFixture();try{
   f.state.projectConfig={provider:'codex',model:'fixture-model',reasoning_effort:'low',workflow:{content_contract:'work_legal_v1'}};
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;f.state.projectConfig={provider:'codex',model:'fixture-model',reasoning_effort:'low'};
-  let called=false;await runNextAuthoring(f.pool,f.root,async()=>{called=true;return authored;});expect(called).toBe(false);
-  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(false);
+  expect(f.saved.config.workflow.content_contract).toBe('work_legal_v1');
+  let called=false;await runNextAuthoring(f.pool,f.root,async()=>{called=true;return authored;});expect(called).toBe(true);
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
@@ -414,4 +418,28 @@ test('生命周期前置先于模型，后置在提交释放连接后同步等�
   expect(order).toEqual(['before','model','after','returned']);
   expect(f.calls.some(call=>call.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(false);
  }finally{release?.();removeBefore();removeAfter();await rm(f.root,{recursive:true,force:true});}
+});
+
+test('批次参考只查询同期当前成功投影并白名单复制设计字段',async()=>{
+ const {freezeAuthoringBatch}=await import('./jobs');let sql='',params:unknown[]=[];
+ const db={query:async(q:string,p:unknown[])=>{sql=q;params=p;return{rows:[{selection:{direction:'诉讼',party:'被告',scenes:['举证'],deliverables:['意见'],core_work:'审查证据',question:'禁止泄漏题面',rubric:['禁止泄漏评分'],reference_answer:'禁止泄漏标答',additional_combinations:[{direction:'调解',party:'被告',scenes:['协商'],deliverables:['协议'],business_goal:'解决争议',answer_approach:'禁止泄漏思路'}]}},{selection:null},{selection:{}}]};}};
+ const batch=await freezeAuthoringBatch(db as any,'phase','self');
+ expect(params).toEqual(['phase','self']);expect(sql).toContain('w.project_id=$1 AND w.id<>$2 AND w.deleted_at IS NULL');expect(sql).toContain("s.status='succeeded'");expect(sql).not.toContain('step_attempts');
+ expect(batch).toMatchObject({total:3,included:1,missing:2,truncated:false});expect(JSON.stringify(batch)).not.toContain('禁止泄漏');expect(batch.selections[0]?.additional_combinations?.[0]?.business_goal).toBe('解决争议');
+});
+test('批次观察时间不破坏任务复用，设计变化参与摘要且无整理也传入作者',async()=>{
+ const f=await projectFixture();try{
+  await enqueueAuthoring(f.pool,'workflow');const input=f.saved.input;
+  expect(input.material_scope).toBeUndefined();expect(input.batch_context).toMatchObject({total:0,missing:0,selections:[]});
+  expect(inputDigest({...input,batch_context:{...input.batch_context,captured_at:'later'}})).toBe(input.digest);
+  expect(inputDigest({...input,batch_context:{...input.batch_context,selections:[{direction:'不同',party:'被告',scenes:[],deliverables:[]}]}})).not.toBe(input.digest);
+  f.state.job=f.saved;await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{expect(options.batch_context).toEqual(input.batch_context);return authored;});
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('旧冻结任务缺少批次参考仍执行，作者缺少设计摘要仍保存',async()=>{
+ const f=await projectFixture();try{
+  await enqueueAuthoring(f.pool,'workflow');delete f.saved.input.batch_context;f.saved.input.digest=inputDigest(f.saved.input);f.state.job=f.saved;
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{expect(options.batch_context).toBeUndefined();return authored;});
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
 });

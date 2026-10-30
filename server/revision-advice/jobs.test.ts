@@ -15,17 +15,18 @@ test('advice uses current results, removes model identity and rejects accepted/m
  const running=rows();running[1]!.status='running';expect(()=>adviceSource(running)).toThrow('仍在执行');
  expect(()=>adviceSource(rows().filter(row=>row.ordinal!==6))).toThrow('作答和评分');expect(validateAdvice({text:' 合成建议 '})).toEqual({text:'合成建议'});expect(()=>validateAdvice({text:' '})).toThrow();expect(()=>validateAdvice({text:'x'.repeat(20001)})).toThrow();
 });
-test('only current source advice freezes; active authoring can reuse its original frozen advice after invalidation',async()=>{
+test('latest valid repair advice freezes across source versions; active authoring reuses its original frozen advice',async()=>{
  const source=adviceSource(rows()),id=randomUUID(),value={id,source_digest:hash(source),authoring_version:'q1',text:'修正题面歧义'},frozen={...value,digest:hash(value)};let active:any,version='q1';
  const db={query:async(sql:string)=>{
   if(sql.includes('to_regclass'))return{rows:[{available:true}]};
   if(sql.includes("input->'revision_advice'"))return{rows:active?[{advice:active}]:[]};
   if(sql.startsWith('SELECT ordinal'))return{rows:rows().map(row=>row.ordinal===4?{...row,result:{...row.result,question_version:version}}:row)};
+  if(sql.includes("result->>'decision'"))return{rows:[{decision:'repair'}]};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return{rows:[],rowCount:0};
   if(sql.includes('revision_advice_attempts'))return{rows:[{...value,result:{text:value.text}}]};
   return{rows:[]};
  }} as any;
- expect(await frozenRevisionAdvice(db,'flow')).toEqual(frozen);version='q2';expect(await frozenRevisionAdvice(db,'flow')).toBeUndefined();
+ expect(await frozenRevisionAdvice(db,'flow')).toEqual(frozen);version='q2';expect(await frozenRevisionAdvice(db,'flow')).toEqual(frozen);
  expect(await validFrozenAdvice(db,'flow',{...frozen,text:'tampered'})).toBe(false);active=frozen;expect(await frozenRevisionAdvice(db,'flow')).toEqual(frozen);
 });
 test('suggestion completion persists advice without changing steps and does not author a new question',async()=>{
