@@ -20,6 +20,9 @@ import {resolveLibraryTemplate} from './templates';
 import {importPreparedLibraryMaterials} from './prepared-import';
 import {revalidateAgentLibraryRedaction} from './redaction-review';
 import {importMineruExtraction} from './mineru-import';
+import {readNameRevisionSource,previewNameRevision,applyNameRevision} from './name-revisions';
+import {reviewNameMappings} from './name-mapping-review';
+import type {AgentResult,AgentTask} from '../agent';
 
 function versionHeader(value:string|undefined){
  if(!value)throw new HTTPException(428,{message:'缺少 If-Match 材料包版本'});
@@ -29,9 +32,26 @@ function versionHeader(value:string|undefined){
 }
 async function jsonBody(c:any){try{return await c.req.json();}catch{throw new HTTPException(400,{message:'请求必须是有效JSON'});}}
 
-export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:string){
+export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:string,executeAgent?:<T>(task:AgentTask<T>)=>Promise<AgentResult<T>>){
  registerPreparationRoutes(app,pool,storageRoot);
  const prefix='/api/material-library';
+ app.get(`${prefix}/redactions/:id/name-revision-source`,async c=>{
+  c.header('Cache-Control','no-store');
+  return c.json(await readNameRevisionSource(pool,uuid(c.req.query('project_id')??''),uuid(c.req.param('id'))));
+ });
+ app.post(`${prefix}/redactions/:id/name-revisions/preview`,async c=>{
+  c.header('Cache-Control','no-store');const body=await jsonBody(c);
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['project_id','review_call_id'].includes(key))||typeof body.review_call_id!=='string')throw new HTTPException(400,{message:'名称修订预览参数无效'});
+  return c.json(await previewNameRevision(pool,storageRoot,uuid(body.project_id),uuid(c.req.param('id')),body.review_call_id));
+ });
+ app.post(`${prefix}/redactions/:id/name-revisions/apply`,async c=>{
+  c.header('Cache-Control','no-store');const body=await jsonBody(c);
+  return c.json(await applyNameRevision(pool,storageRoot,uuid(body?.project_id??''),uuid(c.req.param('id')),body));
+ });
+ app.post(`${prefix}/name-revisions/review-mappings`,async c=>{
+  c.header('Cache-Control','no-store');if(!executeAgent)throw new HTTPException(503,{message:'主体映射复核执行器未配置'});
+  return c.json(await reviewNameMappings(storageRoot,await jsonBody(c),executeAgent));
+ });
  app.get(`${prefix}/redaction-templates`,async c=>{const {processing_settings}=await readLibraryProcessingSettings(pool,storageRoot);return c.json({items:libraryRedactionTemplates(processing_settings).map(t=>resolveLibraryTemplate(processing_settings,t.id))});});
  app.get(`${prefix}/processing-defaults`,async c=>c.json(await buildDefaultProcessingSettings(pool)));
  app.get(`${prefix}/processing-settings`,async c=>c.json(await readLibraryProcessingSettings(pool,storageRoot)));

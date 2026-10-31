@@ -31,15 +31,15 @@ it('容量只读上限等待另一个进程的短写锁，保留真实并发上�
 });
 
 describe('worker concurrency settings',()=>{
- it('persists Agent 8 and API 12 and rejects values above the supported bounds',async()=>{
+ it('persists Agent 10 and API 12 and rejects values above the supported bounds',async()=>{
   const root=await mkdtemp(join(tmpdir(),'ai-distill-concurrency-settings-'));
   try{
-   expect(saveWorkerConcurrencySettings(root,{agent:8,llmApi:12})).toEqual({agent:8,llmApi:12});
-   expect(readSavedWorkerConcurrencySettings(root)).toEqual({agent:8,llmApi:12});
-   expect(readConcurrencySettings({},root)).toEqual({agent:8,llmApi:12});
+   expect(saveWorkerConcurrencySettings(root,{agent:10,llmApi:12})).toEqual({agent:10,llmApi:12});
+   expect(readSavedWorkerConcurrencySettings(root)).toEqual({agent:10,llmApi:12});
+   expect(readConcurrencySettings({},root)).toEqual({agent:10,llmApi:12});
    expect(()=>saveWorkerConcurrencySettings(root,{agent:9,llmApi:12})).toThrow();
-   expect(()=>saveWorkerConcurrencySettings(root,{agent:8,llmApi:13})).toThrow();
-   expect(readSavedWorkerConcurrencySettings(root)).toEqual({agent:8,llmApi:12});
+   expect(()=>saveWorkerConcurrencySettings(root,{agent:10,llmApi:13})).toThrow();
+   expect(readSavedWorkerConcurrencySettings(root)).toEqual({agent:10,llmApi:12});
   }finally{await rm(root,{recursive:true,force:true});}
  });
  it('defaults to two Agent calls and eight model API calls',()=>{

@@ -43,6 +43,28 @@ function topLevelSql(sql:string){
  return output;
 }
 function safeDbCode(error:unknown){const code=error&&typeof error==='object'?(error as {code?:unknown}).code:undefined;return typeof code==='string'&&/^[A-Z0-9]{5}$/.test(code)?code:undefined;}
+function safeDbConstraint(error:unknown){
+ const value=error&&typeof error==='object'?error as {constraint?:unknown;message?:unknown;where?:unknown}:{};
+ if(typeof value.constraint==='string'&&/^[a-z][a-z0-9_]{0,119}$/.test(value.constraint))return value.constraint;
+ const known=new Map([
+  ['complete extraction is required before creating library material records','library_material_requires_complete_extraction'],
+  ['source file requires a successfully extracted library document','library_source_file_requires_extraction'],
+  ['successful extract job must contain every revision document','library_documents_complete'],
+  ['successful extract job is incomplete','library_job_success_complete'],
+ ]);
+ const messageConstraint=typeof value.message==='string'?known.get(value.message):undefined;
+ if(messageConstraint)return messageConstraint;
+ const message=typeof value.message==='string'?value.message:'';
+ if(message.includes('complete extraction is required before creating library material records'))return'library_material_requires_complete_extraction';
+ if(message.includes('source file requires a successfully extracted library document'))return'library_source_file_requires_extraction';
+ if(message.includes('successful extract job must contain every revision document'))return'library_documents_complete';
+ if(message.includes('successful extract job is incomplete'))return'library_job_success_complete';
+ const routine=typeof value.where==='string'?value.where:'';
+ if(routine.includes('require_extracted_library_insert'))return'library_material_requires_complete_extraction';
+ if(routine.includes('require_extracted_library_file'))return'library_source_file_requires_extraction';
+ if(routine.includes('validate_library_documents_complete'))return'library_documents_complete';
+ if(routine.includes('validate_library_job_success'))return'library_job_success_complete';
+}
 function transactionEvent(name:string){const op=name.split(':',1)[0];return op==='begin'?'transaction.started':op==='commit'?'transaction.committed':op==='rollback'?'transaction.rolled_back':undefined;}
 /** 后台状态读取：服务端限制SQL执行，驱动同时约束事务往返；超时后销毁连接，避免未结束查询回到池中。 */
 export async function readStatusRows(pool:Pool,text:string,values:unknown[]=[]){
@@ -86,7 +108,7 @@ export function createPool(env = process.env) {
       const finish=(error?:unknown)=>{
         const duration_ms=Math.round(performance.now()-started);
         const stats=queryStats.get(client);if(stats){stats.count++;stats.elapsed+=duration_ms;stats.max=Math.max(stats.max,duration_ms);}
-        if(error){const code=safeDbCode(error);logEvent('db.query.failed',{level:'error',query_name:name,query_id,duration_ms,...classifyLogError(error),...(code?{error_code:code}:{})});}
+        if(error){const code=safeDbCode(error),constraint=safeDbConstraint(error);logEvent('db.query.failed',{level:'error',query_name:name,query_id,duration_ms,...classifyLogError(error),...(code?{error_code:code}:{}),...(constraint?{error_constraint:constraint}:{})});}
         else if(duration_ms>=1000)logEvent('db.query.slow',{level:'warn',query_name:name,query_id,duration_ms});
         const event=transactionEvent(name);
         if(event){const outcomeUnknown=Boolean(error&&(event==='transaction.committed'||event==='transaction.rolled_back'));logEvent(outcomeUnknown?'transaction.outcome_unknown':error?'transaction.failed':event,{level:error?'error':event==='transaction.rolled_back'?'warn':'info',transaction_name:name,duration_ms,...(outcomeUnknown?{state:'unknown'}:{}),...(error?classifyLogError(error):{})});}

@@ -5,6 +5,7 @@ import {createCliClient} from '../../toolSkills/feishu-operations/scripts/proces
 export {FeishuError as SyncError} from '../../toolSkills/feishu-operations/scripts/client';
 import {FeishuError as SyncError} from '../../toolSkills/feishu-operations/scripts/client';
 export const FEISHU_FIELDS=[['题目ID',1],['飞书账号',11],['xpert uid',1],['专家来源',3],['一级行业',3],['L1职业簇',3],['任务名称',1],['任务类型',1],['prompt',1],['输入附件',17],['考点rubric',1],['作答思路',1],['标准答案-文本',1],['标准答案-附件',17],['题目是否完成',3],['系统同步ID',1]] as const;
+const FEISHU_IDENTITY_FIELD_ALIASES:Record<string,readonly string[]>={'飞书账号':['飞书账号','姓名'],'xpert uid':['xpert uid','ID']};
 export const feishuClient=createCliClient;
 
 
@@ -12,7 +13,10 @@ export const feishuClient=createCliClient;
 export async function ensureFeishuSchema(api:Awaited<ReturnType<typeof feishuClient>>,base:string,tableId:string){
  const path=`/bitable/v1/apps/${base}/tables/${tableId}`;
  let actual=await api.list(path+'/fields');
- if(FEISHU_FIELDS.filter(([name])=>name!=='系统同步ID').some(([name,type])=>!actual.some(f=>f.field_name===name&&f.type===type)))throw new SyncError('feishu_schema_mismatch');
+ if(FEISHU_FIELDS.filter(([name])=>name!=='系统同步ID').some(([name,type])=>{
+  const names=FEISHU_IDENTITY_FIELD_ALIASES[name]??[name];
+  return !actual.some(f=>names.includes(f.field_name)&&(f.type===type||(name==='飞书账号'&&f.type===1)));
+ }))throw new SyncError('feishu_schema_mismatch');
  if(!actual.some(f=>f.field_name==='系统同步ID')){
   await api.call(path+'/fields','POST',{field_name:'系统同步ID',type:1});actual=await api.list(path+'/fields');
  }

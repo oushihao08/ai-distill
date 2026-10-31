@@ -72,3 +72,8 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 `053_question_material_scope_uses.sql`保存新建题目最终采用的方向+场景组合，唯一范围为期次项目；不回填无法可靠结构化的历史题。与051一并服务于可选材料整理信息的出题输入和重复组合保护；不得单独推断业务环境已应用。
 
 - `054_atomic_library_import.sql`：新导入任务成功前不绑定材料包/版本，发布事务一次性落全部正式数据；新包/版本/原件采用延迟成功提取约束。只准备迁移文件不代表目标库已应用；不清理历史，不运行全量迁移补此文件。需协调更新API和worker。
+- `055_repair_atomic_import_constraints.sql`：重新部署054的包/版本与原件延迟完整性函数，为拒绝回执附安全约束名；不改表、不回写或重试历史任务。定向应用入口为 `scripts/runtime/apply-atomic-import-constraint-migration.ts --apply`，发现其他待迁移时拒绝执行。
+- `056_split_atomic_import_constraint_triggers.sql`：将包、版本、文件和原件blob的延迟完整性检查拆成独立触发器函数，不再依赖`TG_TABLE_NAME`分流；校验条件及原子回滚边界不变。
+- `057_finalize_atomic_import_on_job_success.sql`：移除依赖后续任务成功状态的包/版本/文件插入循环触发器，由提取任务成功事件统一核对版本ready、当前版本、文件数和提取正文数；任一不完整仍整个事务回滚。
+- `058_remove_document_insert_success_cycle.sql`：移除正文插入时反查后续任务成功状态的循环触发器；正文数已由057的任务成功门禁统一校验，数量不完整仍回滚。
+- `059_allow_atomic_revision_seal.sql`：原子导入版本不再要求不存在的独立intake任务；其ready状态、当前版本、文件数和正文数由057的提取任务成功门禁核对，普通历史版本仍保留intake校验。

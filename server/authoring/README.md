@@ -12,7 +12,7 @@
 | `jobs.ts` | `enqueueAuthoring()`由HTTP派发调用，固定步骤设置、设计输入、有效Skill和材料指纹；`runNextAuthoring()`由worker消费，启动时读取冻结来源，作者返回后直接保存步骤、尝试和公开题包。 |
 | `executor.ts` | `runAuthoring()`建立本次私有输入，调用Agent并接收JSON，不以Markdown存在或一致性阻断保存；`renderPublicQuestionPackage()`排除思路、标答及Work内部研究信息，`renderPrivateQuestionPackage()`用于完整渲染。 |
 | `receive.ts`、`validate.ts` | 前者的`validateDraft()`只转换下游兼容字段，后者仅保留旧导入路径；不校验内容、数量、附件引用或runner声明。 |
-| `restore.ts` | 显式恢复原任务已完成的本地检查点，不重新调用作者；仅接收最新、未取消且因保存失败的出题尝试。 |
+| `restore.ts` | 显式恢复原任务本地检查点，或在后续尝试失败后选择同冻结材料的历史成功结果；不重新调用作者。 |
 | `work-contract.ts` | 旧导入兼容；schema、同源标答/判据和Work交付要求的实现位于`../lifecycle/projects/work-contract.ts`。 |
 | `jobs.test.ts` | 队列冻结、摘要、重出和绑定相关回归；注入数据库/作者替身不证明真实worker或Codex执行。 |
 | `executor.test.ts` | 作者输入、产物渲染与能力边界；替身执行不证明实际工具可用。 |
@@ -48,6 +48,8 @@ Work与豆包等项目共用直接接收策略：保留模型原字段，按现�
 出题Schema是提供给作者的字段说明，不是返回后再次审查的门槛。缺少题面/标答等内容也可保存，其实际可用性由后续步骤的现有入口体现。JSON无法读取、文件或数据库真实写入失败仍会报错，不能假装保存成功。最终项目交付检查仍由各项目脚本负责，本次不改评分、阈值和交付资格。
 
 ## 队列、重出和恢复
+
+`POST /api/workflows/:id/authoring-results/:attemptId/select` 接收且仅接收 `{expected_latest_attempt_id}`，用于用户明确选择已保存的历史成功题包。锁定题目并核对当前最新尝试仍为指定失败/跳过记录、没有活动任务、后续步骤尚无执行结果、共享库材料包/版本/脱敏及正文附件ID相同、历史题包产物存在后，仅替换步骤4当前投影；原成功和失败尝试均保留，旧作答评分不恢复。版本沿用所选成功结果，导出失效。此入口不从失败目录读取未保存题包，也不调用模型；来源变化或有新派发时拒绝。
 
 对于作者已经完成、但原尝试记录为`failure_phase=result_persistence`的本地任务，可显式调用`POST /api/workflows/:id/authoring-results/:attemptId/restore`恢复原检查点。入口仅接受同一最新未取消任务，保留原版本、会话和失败记录；缺少已完成检查点直接报错，不重新调用模型。重复恢复返回`reused=true`。实际数据库写入失败仍回滚并报错，不能将未保存结果标为成功。
 
@@ -95,3 +97,11 @@ Work专属schema、提示片段、题包同源派生、公开/私有投影和版
 新派发独立冻结`batch_context`，不以材料整理成功为前提。仅查询同一期其他未删除题目的步骤4当前成功投影，白名单保留`material_scope_selection`的方向、代理方、场景、交付、业务目标、核心工作及成果用途；不读取历史题面、答案、rubric或评分。无元数据计入missing，不反推补齐；记录冻结时间及覆盖数量，当前不裁剪记录。冻结时间仅为观察信息，不参与输入复用摘要，设计内容仍参与摘要。旧任务没有此字段时沿原输入执行。
 
 执行器将参考写入`input/batch-context.json`，内部选择元数据继续随原JSON保存，不进入公开题面、作答或评分。重复、缺失选择不拦保存。并发尚未完成题目不在参考中；不为避重增加锁、自动重出或调整评分。材料范围中的旧used_combinations从同一当前参考派生，不再混合历史尝试。
+
+## 显式开头修订
+
+`revise.ts` 提供 `POST /api/workflows/:id/opening-revisions`，当前仅支持豆包未归档、无活动任务的题目。请求包含 expected_question_version、expected_rubric_version、opening_before、opening_after、reason；可选 task_type 接受1至100字符的非空专业类别。只替换准确匹配的前缀，后文保持逐字符一致；语义等价须由调用者逐题审阅。原尝试和冻结来源保留，新建 succeeded 的人工修订尝试，保留来源尝试及旧正文并生成新题面版本，rubric版本不变；步骤5至8当前结果失效，历史尝试保留，项目导出标记过期。此入口不调用模型、不派发队列。
+
+## 主体名称置换基础
+
+`name-replacements.ts` 提供已审阅逐包映射的同时置换、歧义拒绝和指定文本字段差异计数；`name-revision-preview.ts` 对冻结材料结构、题面、rubric、思路和标答生成同版预览，重算结构、题目与rubric摘要，并在应用阶段绑定新的材料附件ID。服务端复核回执存在时，材料正文不执行全局子串置换，而是只改同文件、同页、同结构字段的已审查坐标，再从更新后的材料/分册结构重建Markdown；无法证明顶层正文投影或分册来源关系时拒绝。两者不自行判断读音或访问数据库，由材料库名称修订接口调用。对应测试验证替换串联、重叠名称、主体歧义、身份字段保留、附件重绑及损坏快照拒绝边界。

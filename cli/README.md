@@ -317,17 +317,19 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 ## 豆包飞书交付
 
-命令入口为`feishu config show/set`、`feishu table create`、`feishu sync`及`feishu sync-batch`；完整旗标以HELP为准。实现位于`cli/feishu.ts`与`commands.ts`，只调用本机HTTP API，不读取飞书App Secret、不直连数据库。HTTP契约及字段唯一来源见[飞书交付](../server/publishing/README.md#豆包飞书交付)。当前仅豆包启用，不能将其当作Work交付入口。
+命令入口为`feishu config show/set`、`feishu table create`、`feishu sync`、`feishu sync-batch`、`feishu draft-sync`和`feishu draft-sync-batch`；完整旗标以HELP为准。实现位于`cli/feishu.ts`与`commands.ts`，只调用本机HTTP API，不读取飞书App Secret、不直连数据库。HTTP契约及字段唯一来源见[飞书交付](../server/publishing/README.md#豆包飞书交付)。当前仅豆包启用，不能将其当作Work交付入口。
 
 - 查询或更换该期默认表：`feishu config show/set`；set核对既有表字段后保存配置，不自动补传旧题。
 - 一次性交付N题到新表：固定N个当前已达标、已归档的workflow ID；先运行`feishu table create`，记录返回的base_token/table_id，再运行`feishu sync-batch`显式传入这两个ID。只建一张表，不为每道题单独建表，不改变期次默认目标。
 - 默认表已有具体ID时，单题`feishu sync`或批次可省略目标旗标；显式`--base-token`和`--table`必须成对提供。同一表内更新原记录；不同表分别记账。
+- 出题完成后显式运行`feishu draft-sync --workflow UUID`，或用`feishu draft-sync-batch --project UUID --ids UUID,... --out 新进度文件.json`上传草稿；批次只接受明确ID，并预检步骤4已成功且尚未归档。草稿在表内标为“未完成”，不代表达标或平台验收，也不改工作流步骤/归档状态。单题命令立即返回逐题回执，批次保存逐题回执并在未知结果时停止后续发送。
+- 草稿与正式归档使用同一目标表及workflow UUID防重。后续正式归档只会在远端题面、rubric、其他映射字段和冻结材料附件都与当前版本一致时，把“未完成”改为“已完成”；存在差异时保留远端记录并报错，不自动覆写。
 - `sync-batch`只接受明确`--ids`，不提供`--all`。预先核对整批归属/达标/归档，再依次上传。`--out`须为不存在的新JSON文件，父目录须存在；发送前记录dispatching，逐题保存回执。complete表示全部成功；partial/退出码2保留succeeded、failed、in_progress、unknown及pending。
 - 不自动重试。unknown或遗留dispatching先核对远端和服务端归档尝试中的feishu_deliveries；pending没有发送。显式补传时只指定需补传ID并用新的进度文件，不能把原批次未知请求当成未执行。
 - 未指明目标的批次会先读取并固定期次默认具体表ID；尚只有按期名路由、没有具体表ID时，先明确创建/选择目标，不在批次中途自动改向。
-- CLI先查后端能力标记；旧API返回404或未声明target_override时停止，不降级到可能忽略目标参数的旧同步接口。源码支持不等于服务已加载，重载仍须单独授权。
+- CLI先查后端能力标记；旧API返回404或未声明target_override时停止，不降级到可能忽略目标参数的旧同步接口。`draft-sync`还要求API声明`draft_sync`能力。源码支持不等于服务已加载，重载仍须单独授权。
 
-飞书写请求的CLI等待预算为180秒，普通请求仍为35秒；服务入口仅为飞书配置、建表和单题同步请求放宽到180秒空闲连接时限。远端HTTP本身仍受90秒截止控制；超时不是失败未写入的证明，CLI不会自动重发。
+飞书写请求的CLI等待预算为180秒，普通请求仍为35秒；服务入口仅为飞书配置、建表及单题归档/草稿同步请求放宽到180秒空闲连接时限。远端HTTP本身仍受90秒截止控制；超时不是失败未写入的证明，CLI不会自动重发。
 
 批量步骤执行返回 `already_archived` 表示该题已归档并被跳过，CLI 将其视为正常跳过；单题重复出题、作答、评分、判定或归档由服务端返回409，不会清空已有结果。
 
@@ -379,3 +381,7 @@ bun run ai-distill library batch run --file /tmp/phase7-prepare.json
 新导入命令：`library import --name 名称 --request-key UUID --manifest JSON`，清单沿用`files:[{path,redaction_mode?}]`；返回API独立任务回执，`data`不转换为材料包成功结果。`library imports list`查最近任务；原`library revision create`现在也是异步导入任务，须先用返回ID执行`library job wait`，成功后读取package_id/revision_id，不得把初次返回ID当revision。
 
 命令的参数白名单与匹配顺序由 `commands.ts` 模块内统一维护；下载入口共用 `ApiClient.downloadTo()`，保留独占创建、0600权限和HTTP错误不落盘的边界。
+
+## 显式题目开头修订
+
+`workflow opening revise --workflow UUID --file JSON` 调用开头修订HTTP入口；JSON字段、版本冲突、历史保留和后续失效规则见[出题模块](../server/authoring/README.md#显式开头修订)。不直连数据库。随后 `feishu draft-sync --workflow UUID --revision-attempt 修订attempt_UUID` 显式同步该版；可带 --base-token/--table，远端旧值冲突停止，不能直接重复覆盖。

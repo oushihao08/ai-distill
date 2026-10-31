@@ -23,6 +23,7 @@ doubao-high-value/
 | 久盈提供名单 | [数据表](https://ncn9ze979yuh.feishu.cn/base/Xl6lb8KvTaESHjsPze0ctsBunvh?table=tblsdZJZnxcFdjlg) | 同一人员Base中的名单分类；不因表名自动推导资格 |
 | 关联久盈名单 | [数据表](https://ncn9ze979yuh.feishu.cn/base/Xl6lb8KvTaESHjsPze0ctsBunvh?table=tblx2EtDTrr7FOwu) | 同上，保留独立来源记录 |
 | 模仿项目方填写题目·第六期 | [题目填写表](https://ncn9ze979yuh.feishu.cn/base/DuizblJJwavfGjsB4KJcPH0TnRg?table=tblbT3gCovrk5lf0&view=vewzZJYBEu) | 后续按领取人填写身份的目标；这是模拟填写表，不据此声称项目方已接收 |
+| 七期-久盈 | [第七期题目表](https://ncn9ze979yuh.feishu.cn/base/DuizblJJwavfGjsB4KJcPH0TnRg?table=tblG6Bjofil7NoLS&view=vewRgfQZS9) | 用户指定的第七期同步更新目标；按稳定系统同步ID更新现有记录，不以表内行号替代题目身份 |
 | 工具测试Base | [验收多维表格](https://ncn9ze979yuh.feishu.cn/base/XWf6bPBDpakcAasqavJc6BzOn7e) | 合成测试专用；不与人员名单、真实题目混用 |
 
 view ID只决定查看入口，不是数据表或某个人的ID。名单行record_id、专家平台ID、飞书用户open_id、题目workflow UUID、题目表record_id是不同身份，不能相互替代。

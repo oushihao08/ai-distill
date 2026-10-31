@@ -5,7 +5,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `material-paragraph-filter.ts` | 材料入库与材料DOCX导出共用的整段英文过滤；仅清理至少两个英文单词、以英文句末标点结束且不含数字/中文的完整英文说明段；保留网址、邮箱、编号、单位和无句末标点的标题，表格逐单元格处理 |
+| `material-paragraph-filter.ts` | 材料入库与材料DOCX导出共用的整段英文过滤；清理完整纯英文句和至少八词、含小写字母的纯英文OCR截断段；保留全大写标题、网址、邮箱、编号、单位和中英混排，表格逐单元格处理 |
 | `score.ts` | 后端达标与前端评分展示共用百分制换算；无效分数或满分返回空值 |
 | `workflow-config.ts` | 项目阶段扩展配置及旧钩子声明的结构校验（历史 async 兼容读取，新执行统一同步）；缺省不添加字段，不解释业务规则。钩子执行由 server/lifecycle 统一接入，启用所需表仍需按环境核实 |
 | `types.ts` | 项目材料模式、材料包／派生题目身份、材料、步骤、执行尝试与 API 返回类型，含跨项目成果库摘要 |
@@ -25,6 +25,8 @@
 `workflow-results.ts` 定义当前作答、评分和达标摘要，并提供读取未知 JSON 的运行时边界函数；旧记录缺少可选字段时继续可读，不据此推断为成功。它只约束前后端对已有结果的读取，不添加数据库字段或改变 Agent 可见输入。
 
 类型声明不代替服务端运行时校验；修改字段须检查 Hono 返回值、前端消费者和已有任务快照。页面状态名、步骤顺序与数据库序号是不同概念。
+
+`CreateLibraryQuestionRequest.copy_originals` 在脱敏来源中缺省为不复制原件，按正文和结构建题并在私有快照标记未复制原件；显式true才保存原始二进制副本。原文来源始终复制原件。HTTP创建入口执行校验。
 
 `types.ts` 共用 `ModelApiProvider` / `ModelApiConfig`（含 SiliconFlow），脱敏步骤配置支持嵌套 `api` 配置；`RedactionProgress` 只包含阶段、字段计数、批次与请求计数、期限和耗时统计，不含正文或模型配置；`Step.ready` 与 `Step.ready_reason` 由服务端统一计算并供逐题步骤表展示；`Project.workflow_count` 保留总数，`material_package_count` 与 `question_count` 分别供项目列表展示；`ProjectDetail.workflow_status` 是项目详情首屏共用的轻量步骤状态与已出题标记快照，供步骤摘要和题目表复用；`Project.question_tags` 是本期可选目录，`Workflow.question_tags` 是题目创建时的标签快照，旧 `target_level` 仍可读；项目 `Workflow` 的达标判定、逐模型分数及发布／导出状态用于达标题目表；`ResultLibraryItem` 包含跨项目达标题目的来源材料包 ID 与名称；`WorkflowDetail.material_package_questions` 仅在材料包详情列出未删除派生题目的轻量摘要，`source_material_package` 提供派生题目来源标题；新材料库项目显式携带 `material_backend/workspace_path`，新题私有 artifact 的 `attempt_id` 可空并由类型化 `question_material_origin` 绑定；密钥不得进入这些公开类型或配置。
 

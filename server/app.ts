@@ -32,6 +32,7 @@ import {clearGeneratedData} from './generated-data';
 import {enqueueScore} from './scoring/jobs';
 import {scoreExecutionInstructions} from './scoring/executor';
 import {enqueueAuthoring} from './authoring/jobs';
+import {reviseQuestionOpening} from './authoring/revise';
 import {enqueueProjectSkill,listProjectSkillAttempts} from './skill-generation/jobs';
 import {enqueueAnswer} from './answer-models/jobs';
 import {listAnswerModels,registerAnswerModel,setAnswerModelEnabled,readProjectModelSet,saveProjectModelSet,initializeDefaultAnswerModel} from './answer-models/model-set';
@@ -40,7 +41,7 @@ import {runAcceptance} from './decisions/jobs';
 import {readPublicationHistory,readSiriserArchive,withdrawPublication} from './publishing/jobs';
 import {buildProjectExport,verifyProjectAuthoringRules,workbookSha256,withProjectExportLock} from './reporting/export';
 import {enqueuePublication} from './publishing/tasks';
-import {syncArchivedWorkflowToFeishu} from './publishing/feishu';
+import {syncArchivedWorkflowToFeishu,syncAuthoredWorkflowToFeishu} from './publishing/feishu';
 import {registerFeishuTargetRoutes,validateFeishuTarget} from './publishing/feishu-targets';
 import {readArchivedWorkflowWorkbook} from './reporting/archive-workbook';
 import {exportCurrentMaterialDocx,exportRedactedDocx,readCurrentMaterialDocx} from './materials/redacted-docx-export';
@@ -743,6 +744,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      return c.json({ artifacts: artifacts.rows, workflow: workflowData, project, materials: materials.rows.map(m => ({ ...m, size_bytes: Number(m.size_bytes) })), steps: stepsWithReadiness, attempts: attempts.rows, material_package_questions: materialPackageQuestions.rows,source_material_package:sourceMaterialPackage.rows[0]??null,publication_history:publicationHistory,question_material_origin:materialOrigin });
    } catch (error) { throw error; }
  });
+ app.post('/api/workflows/:id/opening-revisions',async c=>{
+  let body:unknown;try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'请求须为JSON'});}
+  return c.json(await reviseQuestionOpening(pool,uuid(c.req.param('id')),body));
+ });
  app.get('/api/workflows/:id/revision-advice',async c=>c.json(await listRevisionAdvice(pool,uuid(c.req.param('id')))));
  app.post('/api/workflows/:id/revision-advice',async c=>c.json(await enqueueRevisionAdvice(pool,uuid(c.req.param('id'))),202));
  app.patch('/api/workflows/:id/authoring-direction',async c=>{
@@ -791,6 +796,15 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const target=body.target===undefined?undefined:validateFeishuTarget(body.target);
   const result=await syncArchivedWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,true);
   return c.json(result,result.status==='failed'?502:200);
+ });
+ // 显式上传已完成出题步骤的草稿；不执行或写入归档、评分及达标状态。
+ app.post('/api/workflows/:id/feishu-draft-sync',async c=>{
+  const raw=await c.req.text();let body:Record<string,unknown>={};
+  if(raw.trim()){try{const parsed=JSON.parse(raw);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('invalid');body=parsed;}catch{throw new HTTPException(400,{message:'请提交有效JSON对象'});}}
+  if(Object.keys(body).some(key=>!['target','revision_attempt_id'].includes(key)))throw new HTTPException(400,{message:'仅允许target和revision_attempt_id'});
+  const target=body.target===undefined?undefined:validateFeishuTarget(body.target);
+  const result=await syncAuthoredWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,body.revision_attempt_id===undefined?undefined:uuid(String(body.revision_attempt_id)));
+  return c.json(result);
  });
  app.post('/api/workflows/:id/material-docx',async c=>{
   const workflowId=uuid(c.req.param('id'));
@@ -968,6 +982,34 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     await db.query('COMMIT');return c.json({deleted:true});
    }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  });
+ app.get('/api/projects/:id/deleted-question-sources',async c=>{
+   const projectId=uuid(c.req.param('id'));
+   const ids=[...new Set((c.req.query('ids')??'').split(',').filter(Boolean).map(value=>uuid(value)))];
+   if(!ids.length||ids.length>100)throw new HTTPException(400,{message:'须明确指定1至100道已删除题目'});
+   const result=await pool.query(`SELECT w.id,w.title,w.deleted_at,q.package_id,q.revision_id,q.redaction_id
+    FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL
+    JOIN ai_distill.question_library_sources q ON q.workflow_id=w.id
+    WHERE w.project_id=$1 AND w.id=ANY($2::uuid[]) AND w.deleted_at IS NOT NULL AND w.workflow_kind='question'`,[projectId,ids]);
+   return c.json({items:result.rows});
+ });
+ app.post('/api/projects/:id/workflows/restore-soft-deleted',async c=>{
+   const projectId=uuid(c.req.param('id')),body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'恢复参数须为有效JSON'});});
+   if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['deleted_after','expected_count'].includes(key))||typeof body.deleted_after!=='string'||!Number.isSafeInteger(body.expected_count)||body.expected_count<1||body.expected_count>500)throw new HTTPException(400,{message:'恢复参数无效'});
+   const deletedAfter=new Date(body.deleted_after);
+   if(!Number.isFinite(deletedAfter.getTime())||deletedAfter.getTime()>Date.now()||Date.now()-deletedAfter.getTime()>24*60*60*1000)throw new HTTPException(400,{message:'恢复时间须在过去24小时内'});
+   const db=await pool.connect();
+   try{
+    await db.query('BEGIN');
+    if(!(await db.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[projectId])).rowCount)throw new HTTPException(404,{message:'项目不存在'});
+    const targets=await db.query(`SELECT id FROM ai_distill.workflows WHERE project_id=$1 AND workflow_kind='question' AND deleted_at >= $2::timestamptz ORDER BY deleted_at,id FOR UPDATE`,[projectId,deletedAfter.toISOString()]);
+    if(targets.rowCount!==body.expected_count)throw new HTTPException(409,{message:`符合时间和项目范围的软删除题目为${targets.rowCount}道，与预期${body.expected_count}道不符；未恢复任何记录`});
+    const ids=targets.rows.map(row=>row.id);
+    if((await db.query("SELECT 1 FROM ai_distill.step_attempts WHERE workflow_id=ANY($1::uuid[]) AND status IN ('waiting','running') LIMIT 1",[ids])).rowCount)throw new HTTPException(409,{message:'待恢复题目仍有活动尝试；未恢复任何记录'});
+    const restored=await db.query('UPDATE ai_distill.workflows SET deleted_at=NULL WHERE id=ANY($1::uuid[]) AND deleted_at IS NOT NULL RETURNING id',[ids]);
+    if(restored.rowCount!==body.expected_count)throw new HTTPException(409,{message:'恢复数量与预期不符；事务已取消'});
+    await db.query('COMMIT');return c.json({restored_count:restored.rowCount,workflow_ids:restored.rows.map(row=>row.id)});
+   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+ });
  app.get('/api/materials/:id/download', async c => {
    try {
      const result = await pool.query('SELECT original_name,storage_path FROM ai_distill.materials WHERE id=$1', [uuid(c.req.param('id'))]);
@@ -1011,7 +1053,12 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   },
  });
  registerRemoteMaterialRoutes(app,pool,storageRoot);
- registerMaterialLibraryRoutes(app,pool,storageRoot);
+ registerMaterialLibraryRoutes(app,pool,storageRoot,async task=>{
+  agentConcurrencyGate??=getAgentConcurrencyGate(storageRoot,concurrency.agent);
+  const admitted=await agentConcurrencyGate.run(()=>runAgent(task),{wait:false,signal:task.signal});
+  if(!admitted.acquired)throw new HTTPException(503,{message:'Agent 当前并发已满，请稍后重试'});
+  return admitted.value;
+ });
  registerProjectGroupRoutes(app,pool);
  registerProjectLibraryRoutes(app,pool,storageRoot);
  app.get('/api/artifacts/:id/download', async c => {

@@ -42,7 +42,7 @@ function remoteError(error:unknown):never{if(error instanceof HTTPException)thro
 export function registerFeishuTargetRoutes(app:Hono,pool:Pool){
  app.get('/api/projects/:id/feishu-delivery',async c=>{
   const id=uuid(c.req.param('id'));await requireProject(pool,id);
-  return c.json({...await readFeishuDeliveryConfig(pool,id),capabilities:{target_override:true,per_target_receipts:true},fields:FEISHU_FIELDS.map(([name,type])=>({name,type,hidden:name==='系统同步ID'}))});
+  return c.json({...await readFeishuDeliveryConfig(pool,id),capabilities:{target_override:true,per_target_receipts:true,draft_sync:true},fields:FEISHU_FIELDS.map(([name,type])=>({name,type,hidden:name==='系统同步ID'}))});
  });
  app.put('/api/projects/:id/feishu-delivery',async c=>{
   const id=uuid(c.req.param('id'));await requireProject(pool,id);const body=await payload(c);

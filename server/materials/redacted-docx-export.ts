@@ -88,10 +88,12 @@ async function safeOriginalBytes(storageRootInput:string,material:Original){
 /** 飞书旧快照未登记原件artifact时，按冻结ID/SHA并实读原件验证；新快照缺关联仍拒绝。 */
 export async function verifyLibraryOriginalManifest(db:Pool|PoolClient,workflowId:string,originals:Original[],storageRoot:string){
  const rows=(await db.query(`SELECT f->>'material_id' AS id,f->>'source_sha256' AS sha256,
-  (f ? 'source_artifact_id') AS artifact_declared,f->>'source_artifact_id' AS source_artifact_id,
+  (f ? 'source_artifact_id') AS artifact_declared,f->>'source_artifact_id' AS source_artifact_id,f->>'original_copy' AS original_copy,COALESCE(s.material_mode,'redacted') AS frozen_mode,b.sha256 AS library_sha256,b.size_bytes AS library_size_bytes,
   a.id AS artifact_id,a.sha256 AS artifact_sha256,a.kind AS artifact_kind,a.size_bytes
   FROM ai_distill.question_library_sources s CROSS JOIN LATERAL jsonb_array_elements(s.snapshot_manifest->'files') f
   LEFT JOIN ai_distill.artifacts a ON a.id=(f->>'source_artifact_id')::uuid AND a.workflow_id=s.workflow_id
+  LEFT JOIN ai_distill.library_files lf ON lf.id=(f->>'library_file_id')::uuid AND lf.revision_id=s.revision_id
+  LEFT JOIN ai_distill.library_blobs b ON b.id=lf.blob_id
   WHERE s.workflow_id=$1`,[workflowId])).rows;
  // 先比较完整冻结清单，不能让JOIN丢行后把缺关联误报成附件数量变化。
  assertOriginalManifest(rows.map(row=>({id:row.id,sha256:row.sha256})),originals);
@@ -100,6 +102,8 @@ export async function verifyLibraryOriginalManifest(db:Pool|PoolClient,workflowI
   const material=originals.find(item=>item.id===row.id)!;
   if(row.source_artifact_id!==null&&row.source_artifact_id!==undefined){
    if(!row.source_artifact_id||row.artifact_id!==row.source_artifact_id||row.artifact_kind!=='source_document'||row.size_bytes===null||!Number.isSafeInteger(Number(row.size_bytes))||Number(row.size_bytes)!==Number(material.size_bytes))throw new HTTPException(409,{message:'冻结原件产物关联或大小不匹配'});
+  }else if(row.original_copy==='omitted'&&row.frozen_mode==='redacted'){
+   if(row.library_sha256!==material.sha256||!Number.isSafeInteger(Number(row.library_size_bytes))||Number(row.library_size_bytes)!==Number(material.size_bytes))throw new HTTPException(409,{message:'未复制原件的冻结来源清单不匹配'});
   }else{
    // 旧快照既可能省略字段，也可能显式存null；无产物ID时必须实读原件验证。
    verified.set(material.id,await safeOriginalBytes(storageRoot,material));

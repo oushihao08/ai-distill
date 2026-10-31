@@ -14,9 +14,10 @@ import {uuid} from './validation';
 import type {StepDispatchTask,WorkflowStepOrdinal} from './step-dispatch';
 import {validateAnswerScore} from './scoring/context';
 import {restoreAnswerScoreResults} from './answer-models/restore';
-import {restoreAuthoringResult} from './authoring/restore';
+import {restoreAuthoringResult,selectHistoricalAuthoringResult} from './authoring/restore';
 import {storageDirectory} from './paths';
 import {QueueCapacityError} from './execution-queue/store';
+import {readActiveConcurrencyLimit,readConcurrencySettings} from './concurrency';
 
 interface RouteDependencies {
  pool:Pool;
@@ -104,6 +105,11 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
   return c.json(await cancelStoppedExecutorAttempt(pool,uuid(c.req.param('id')),uuid(body.workflow_id),uuid(body.executor_id),body.expected_heartbeat_at));
  });
  app.post('/api/workflows/:id/authoring-results/:attemptId/restore',async c=>c.json(await restoreAuthoringResult(pool,storageRoot,uuid(c.req.param('id')),uuid(c.req.param('attemptId')))));
+ app.post('/api/workflows/:id/authoring-results/:attemptId/select',async c=>{
+  const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'须提供当前最新尝试ID'});});
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==1||typeof body.expected_latest_attempt_id!=='string')throw new HTTPException(400,{message:'仅接受expected_latest_attempt_id'});
+  return c.json(await selectHistoricalAuthoringResult(pool,uuid(c.req.param('id')),uuid(c.req.param('attemptId')),uuid(body.expected_latest_attempt_id)));
+ });
  app.post('/api/projects/:id/steps/:ordinal/run-batch',async c=>{
   const projectId=uuid(c.req.param('id'));
   const ordinal=Number(c.req.param('ordinal'));
@@ -126,9 +132,10 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
     if(!statesByWorkflow.has(row.workflow_id))statesByWorkflow.set(row.workflow_id,new Map());
     statesByWorkflow.get(row.workflow_id)!.set(row.ordinal,{project_key:row.project_key,ordinal:row.ordinal,status:row.status,result:row.result,enabled:Boolean(row.enabled),active:Boolean(row.active),has_pdf:Boolean(row.has_pdf),extraction_status:row.extraction_status,workflow_kind:row.workflow_kind,source_workflow_id:row.source_workflow_id,library_source:Boolean(row.library_source),revision_advice_ready:row.revision_advice_ready===true});
    }
-   // 入队事务限制并行，避免整批请求占满连接池；不改变worker执行并发。
+   // 入队并行跟随当前Agent容量，避免固定小批次拖慢worker补位。
    const batchResults=[];
-   for(const admissionBatch of splitIntoBatches(workflowBatch,2)){
+   const admissionConcurrency=readActiveConcurrencyLimit(storageRoot)??readConcurrencySettings(process.env,storageRoot).agent;
+   for(const admissionBatch of splitIntoBatches(workflowBatch,admissionConcurrency)){
    batchResults.push(...await Promise.all(admissionBatch.map(async workflowId=>{
     const row=byId.get(workflowId);
     if(!row||row.project_id!==projectId)return{workflow_id:workflowId,status:'not_found' as const};

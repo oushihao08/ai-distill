@@ -10,7 +10,7 @@ interface ConcurrencySettings {agent:number;llmApi:number}
 interface ConcurrencyResponse {settings:ConcurrencySettings;active:ConcurrencySettings;limits:ConcurrencySettings}
 const settings=ref<ConcurrencySettings>({agent:2,llmApi:8});
 const active=ref<ConcurrencySettings>({agent:2,llmApi:8});
-const limits=ref<ConcurrencySettings>({agent:4,llmApi:8});
+const limits=ref<ConcurrencySettings>({agent:10,llmApi:12});
 const loading=shallowRef(true);
 const saving=shallowRef(false);
 const error=shallowRef('');

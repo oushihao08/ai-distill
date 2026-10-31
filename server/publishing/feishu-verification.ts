@@ -3,9 +3,9 @@ import {canonicalJson} from '../../shared/workflow-config';
 export class VerificationError extends Error {
  constructor(public code:string,public fields:string[]=[]){super(code);}
 }
-export function feishuTextFields(id:string,q:any):Record<string,string>{
+export function feishuTextFields(id:string,q:any,completionStatus:'已完成'|'未完成'='已完成'):Record<string,string>{
  const rubric=Array.isArray(q.rubric)?q.rubric.map((item:any,index:number)=>typeof item==='string'?item:`${item.id??index+1}（${item.max_score??''}分） ${item.criterion??''}${item.rule?`\n计分规则：${item.rule}`:''}`).join('\n'):'';
- return {'题目ID':id,'系统同步ID':id,'任务名称':q.task_name??'','任务类型':q.task_type??'','prompt':q.question??'','考点rubric':rubric,'作答思路':q.answer_approach??'','标准答案-文本':q.reference_answer??'','题目是否完成':'已完成'};
+ return {'题目ID':id,'系统同步ID':id,'任务名称':q.task_name??'','任务类型':q.task_type??'','prompt':q.question??'','考点rubric':rubric,'作答思路':q.answer_approach??'','标准答案-文本':q.reference_answer??'','题目是否完成':completionStatus};
 }
 /** 只保留字段名、长度和首个不同字符位置，不将题面或答案写入公开回执。 */
 export function compareFeishuText(expected:Record<string,string>,actual:Record<string,unknown>){

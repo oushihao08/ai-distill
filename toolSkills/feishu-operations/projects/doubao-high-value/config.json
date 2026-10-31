@@ -32,6 +32,17 @@
       "view_id": "vewzZJYBEu",
       "project_id": "c16164a7-efff-4a7a-bceb-1990cb0b3ec9",
       "fields": {"question_id": "题目ID", "sync_id": "系统同步ID", "expert_id": "xpert uid", "account_user": "飞书账号", "expert_source": "专家来源"}
+    },
+    {
+      "key": "seventh-period-jiuying",
+      "name": "七期-久盈",
+      "role": "submission_update",
+      "phase": "第七期",
+      "base_token": "DuizblJJwavfGjsB4KJcPH0TnRg",
+      "table_id": "tblG6Bjofil7NoLS",
+      "view_id": "vewRgfQZS9",
+      "project_id": "d1cb65a1-7b73-4380-99ed-c7caa9fa481b",
+      "fields": {"question_id": "题目ID", "sync_id": "系统同步ID", "expert_id": "xpert uid", "account_user": "飞书账号", "expert_source": "专家来源"}
     }
   ],
   "identity_mapping": {

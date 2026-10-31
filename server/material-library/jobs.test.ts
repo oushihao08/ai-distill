@@ -1,6 +1,6 @@
 /** 验证材料库任务参数、消费 lane、租约领取、取消和终态写入边界。 */
 import {test,expect} from 'bun:test';
-import {assertLibraryExtractionUsable,validateLibraryJobRequest,chooseLibraryExecutor,hasLibraryQueueWork,claimLibraryJob,enqueueLibraryJob,failLibraryJob,finishLibraryJob} from './jobs';
+import {assertLibraryExtractionUsable,validateLibraryJobRequest,chooseLibraryExecutor,hasLibraryQueueWork,claimLibraryJob,enqueueLibraryJob,failLibraryJob,finishLibraryJob,validateAtomicPublicationConstraints} from './jobs';
 import {withTaskSignal} from '../task-signal';
 
 test('worker stop during publication rolls back without COMMIT or a successful terminal update',async()=>{
@@ -9,6 +9,15 @@ test('worker stop during publication rolls back without COMMIT or a successful t
  const pool={connect:async()=>client} as any;
  await expect(withTaskSignal(c.signal,()=>finishLibraryJob(pool,'job','lease',{},async()=>{c.abort(new Error('worker-stop'));}))).rejects.toThrow('worker-stop');
  expect(queries).toContain('ROLLBACK');expect(queries).not.toContain('COMMIT');expect(queries.some(x=>x.includes("status='succeeded'"))).toBe(false);
+});
+
+test('atomic publication settles deferred constraints one by one and exposes the failing boundary',async()=>{
+ const queries:string[]=[];
+ const db={query:async(sql:string)=>{queries.push(sql);if(sql.includes('library_job_success_complete'))throw new Error('synthetic constraint failure');return{rows:[]};}} as any;
+ await expect(validateAtomicPublicationConstraints(db)).rejects.toMatchObject({reason_code:'atomic_job_success_incomplete'});
+ expect(queries).toEqual([
+  'SET CONSTRAINTS ai_distill.library_job_success_complete IMMEDIATE',
+ ]);
 });
 
 test('redaction retains OCR warnings without treating them as redaction content loss',()=>{

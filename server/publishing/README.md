@@ -7,7 +7,7 @@ HTTP入口持久派发并返回任务ID；worker校验当前达标版本，通�
 
 | 文件 | 职责与入口 |
 | --- | --- |
-| `feishu.ts` | 豆包已归档题目的单题同步、附件校验、按目标表防重和提交回执；不回滚本地归档。 |
+| `feishu.ts` | 豆包出题草稿上传及已归档题目的同步；校验冻结材料DOCX和远端记录。草稿上传不写归档步骤，归档同步成功后才允许把同版本草稿行升级为已完成。 |
 | `feishu-verification.ts` | 六字段固定投影、逐字符差异和材料身份校验的纯函数。 |
 | `feishu.test.ts`、`feishu-verification.test.ts` | 隔离替身验证同步分支及材料/文本规则，不访问真实服务。 |
 | `feishu-api.ts` | 豆包字段/选项、建表与隐藏系统关联；通用远端操作调用toolSkills的CLI，客户端须finally关闭。 |
@@ -85,8 +85,9 @@ HTTP归档入口只持久派发并返回任务ID（202），通过attempt接口/
 | `PUT /api/projects/:id/feishu-delivery` | `{"default_target":{"base_token":"…","table_id":"tbl…"}}`；核实远端结构，合并写入project_step_configs.ordinal=8的feishu_delivery键，不覆盖同配置内其他键，不清空题目或归档。 |
 | `POST /api/projects/:id/feishu-tables` | `{"table_name":"第六期第二批","base_token":"…"}`；base_token可省略，创建空表并返回target，不改变默认目标；同名表拒绝创建，未知响应先核对远端。 |
 | `POST /api/workflows/:id/feishu-sync` | 空body使用期次默认目标；`{"target":{"base_token":"…","table_id":"tbl…"}}`临时指定目标。只同步当前有效的达标归档，不重新评分或归档；逐题请求，不将大批量上传放在单次长HTTP请求中。 |
+| `POST /api/workflows/:id/feishu-draft-sync` | 同样可省略或指定target；要求当前步骤4出题成功且题目尚未归档。上传题面、rubric、思路、标答文本和冻结材料DOCX，将“题目是否完成”设为“未完成”；不改工作流状态或归档回执。 |
 
-同步内容为题面、任务名称/类型、rubric、思路、标答文本及冻结来源的一份合并材料DOCX；不冒填专家账号、xpert uid、行业或标准答案附件。题目ID与隐藏系统同步ID均为workflow UUID；任一匹配可定位记录，找到多条报告重复。
+两种同步内容均包括题面、任务名称/类型、rubric、思路、标答文本及冻结来源的一份合并材料DOCX；不冒填专家账号、xpert uid、行业或标准答案附件。身份列兼容“飞书账号／xpert uid”和“姓名／ID”两组既有表头，交付只校验其存在和类型，不写入这些列。草稿记录明确设为“未完成”。后续正式归档遇到同题草稿时，只在其余字段和材料附件完全一致时将该状态升级为“已完成”；任何差异都停止，不覆盖远端人工修改。题目ID与隐藏系统同步ID均为workflow UUID；任一匹配可定位记录，找到多条报告重复。
 
 ### 回执、失败与验证边界
 
@@ -125,3 +126,9 @@ HTTP归档入口只持久派发并返回任务ID（202），通过attempt接口/
 CLI等待仅确认本地归档attempt终态。`workflow delivery show`通过工作流详情轻量视图读取最近及逐目标飞书安全回执；它不访问飞书、不补传、不替代当前版本与准确目标核对。命令及未知状态恢复见[CLI说明](../../cli/README.md#显式恢复与交付确认)。
 
 本机明确新派发可在同一事务替代他机尚未开始的同范围待办；运行、结果未知和续作仍受保护，新派发失败则旧意图变更回滚。适用范围、共享状态兼容与验证边界见[执行队列的跨机准入](../execution-queue/README.md#他机未开始待办与本机明确派发)。
+
+### 显式草稿修订同步
+
+草稿同步可携带 `revision_attempt_id`，必须与当前题包 `manual_revision.attempt_id` 一致。主体名称修订会在本地尝试中同时冻结修订前后的六项题目字段、材料绑定和旧材料 DOCX 摘要文件名；既有记录只有完整匹配旧字段及旧附件时，才上传新附件并把发生变化的题目字段精确迁移到新值。远端已是完整新值时只回读核对；出现新旧混合状态、缺少旧附件证据或未知写入时停止，不自动重发。更新后回读全部字段并拒绝无关字段变化；普通同步继续拒绝远端正文差异。飞书账号允许既有人员字段或文本字段，本同步不写该字段。
+
+脱敏建题显式 copy_originals=false 的冻结来源使用 original_copy=omitted 标记；交付按冻结 library_file_id/revision 和库原件摘要/大小核对，不要求不存在的本机原件副本。旧快照无该标记仍遵循原校验。

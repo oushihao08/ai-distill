@@ -8,6 +8,7 @@ import {api,apiPostIntent} from '../api/client';
 import {readMaterialFolderSelection} from '../utils/material-folder';
 import {dateLabel} from '../utils/format';
 import LibraryPackageUseMarker from '../components/LibraryPackageUseMarker.vue';
+import MaterialBatchProcessDialog from '../components/MaterialBatchProcessDialog.vue';
 import type {MaterialProcessingMode,MaterialLibraryPackageSummary} from '@shared/material-library';
 import type {LibraryRevision,LibraryUsage,LibraryPreparationSummary} from '../types/material-library';
 const route=useRoute(),router=useRouter();
@@ -21,25 +22,7 @@ function resetFilters(){search.value='';projectIds.value=[];redactionState.value
 const loading=shallowRef(false),error=shallowRef(''),selected=shallowRef<MaterialLibraryPackageSummary>();
 const revisions=shallowRef<LibraryRevision[]>([]),usage=shallowRef<LibraryUsage>();
 const detailLoading=shallowRef(false),detailError=shallowRef(''),usageError=shallowRef(''),usageLoading=shallowRef(false);
-type ImportTask={id:string;name:string;status:string;package_id:string|null;error_message:string|null;execution?:{label:string};progress:Record<string,unknown>};
-const importTasks=shallowRef<ImportTask[]>([]),importError=shallowRef('');
-let importTimer:ReturnType<typeof setTimeout>|undefined,importsDisposed=false,importsReading=false;
-function scheduleImportPoll(){
- clearTimeout(importTimer);
- if(importsDisposed||!importTasks.value.some(task=>['queued','running'].includes(task.status)))return;
- importTimer=setTimeout(()=>{if(document.hidden)scheduleImportPoll();else void loadImports();},10000);
-}
-async function loadImports(){
- if(importsDisposed||importsReading)return;importsReading=true;clearTimeout(importTimer);
- try{
-  const previous=new Map(importTasks.value.map(task=>[task.id,task.status]));
-  const result=await api<{items:ImportTask[]}>('/material-library/imports');
-  if(importsDisposed)return;importTasks.value=result.items;importError.value='';
-  if(result.items.some(task=>task.status==='succeeded'&&previous.has(task.id)&&previous.get(task.id)!=='succeeded'))await refreshAll();
- }catch(cause){if(!importsDisposed)importError.value=cause instanceof Error?cause.message:'读取导入任务失败';}
- finally{importsReading=false;scheduleImportPoll();}
-}
-async function importSubmitted(id:string){actionMessage.value=`已提交提取入库任务 ${id}；成功前不会建立材料记录。`;await loadImports();}
+async function importSubmitted(id:string){actionMessage.value=`已提交提取入库任务 ${id}；成功前不会建立材料记录。`;await refreshAll();}
 const preparations=shallowRef<LibraryPreparationSummary[]>([]),preparationStatus=shallowRef<'loading'|'error'|'unavailable'|'ready'>('loading');
 const detailDialog=shallowRef<'usage'|'history'|'preparation'|null>(null),packageDialog=shallowRef(false),metadataDialog=shallowRef(false),processingDialog=shallowRef(false),archiveDialog=shallowRef(false);
 const folderInput=shallowRef<HTMLInputElement>(),selectedFiles=shallowRef<File[]>([]),uploadKey=shallowRef('');
@@ -135,6 +118,7 @@ async function runJob(revision:LibraryRevision,kind:'intake'|'extract'|'redact',
 }
 type BatchStage='intake'|'extract'|'redact'|'prepare';
 const batchStage=shallowRef<BatchStage>('extract'),batchRunning=shallowRef(false);
+const batchDialog=shallowRef(false);
 const batchRows=shallowRef<{id:string;name:string;status:string;jobId?:string;reason:string}[]>([]);
 const batchStages=[{title:'入库',value:'intake'},{title:'文本提取',value:'extract'},{title:'脱敏',value:'redact'},{title:'材料整理',value:'prepare'}];
 async function runSearchBatch(){
@@ -194,16 +178,11 @@ watch(contextProjectId,async id=>{contextProcessingMode.value=undefined;if(!id)r
 watch(detailDialog,value=>{if(value==='usage'&&selected.value&&!usage.value)void loadUsage(selected.value);});
 watch([search,redactionState,preparationState,packageState,()=>projectIds.value.join(',')],()=>{listRequest++;selectionRequest++;usageRequest++;detailLoading.value=false;usageLoading.value=false;if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(()=>{page.value=1;void loadPackages();},250);});
 watch(routePackageId,(id,previous)=>{detailDialog.value=null;if(id){void openPackageFromRoute(id);return;}if(previous){selectionRequest++;usageRequest++;selected.value=undefined;revisions.value=[];usage.value=undefined;detailLoading.value=false;usageLoading.value=false;void loadPackages();}});
-onMounted(async()=>{void loadImports();try{const packageId=routePackageId.value;await Promise.all([loadPackages(),packageId?openPackageFromRoute(packageId):Promise.resolve()]);try{projectOptions.value=(await api<{items:{id:string;name:string}[]}>('/material-library/project-options')).items;}catch(cause){filterError.value=cause instanceof Error?cause.message:'读取项目选项失败';}}catch(cause){error.value=cause instanceof Error?cause.message:'打开材料库失败';}});
-onUnmounted(()=>{importsDisposed=true;clearTimeout(importTimer);selectionRequest++;usageRequest++;listRequest++;if(searchTimer)clearTimeout(searchTimer);});
+onMounted(async()=>{try{const packageId=routePackageId.value;await Promise.all([loadPackages(),packageId?openPackageFromRoute(packageId):Promise.resolve()]);try{projectOptions.value=(await api<{items:{id:string;name:string}[]}>('/material-library/project-options')).items;}catch(cause){filterError.value=cause instanceof Error?cause.message:'读取项目选项失败';}}catch(cause){error.value=cause instanceof Error?cause.message:'打开材料库失败';}});
+onUnmounted(()=>{selectionRequest++;usageRequest++;listRequest++;if(searchTimer)clearTimeout(searchTimer);});
 </script>
 <template><Column :gap="12" class="min-w-0 lg:flex-1 min-h-0">
  <Row x="between" wrap :gap="16" y="center"><Column :gap="6"><h1 class="text-xl font-bold text-ink-heading">材料库</h1></Column><Row wrap :gap="8"><v-btn variant="outlined" @click="processingDialog=true"><template #prepend><UiIcon name="settings"/></template>共用处理设置</v-btn><v-btn color="primary" @click="packageDialog=true"><template #prepend><UiIcon name="plus"/></template>导入材料文件夹</v-btn></Row></Row>
- <Column v-if="importTasks.length||importError" class="surface-card p-12" :gap="8">
-  <Row x="between"><strong class="text-sm">提取入库任务（最近50条，非材料记录）</strong><v-btn size="small" @click="loadImports">刷新任务</v-btn></Row>
-  <v-alert v-if="importError" type="error" density="compact">{{ importError }}</v-alert>
-  <table class="w-full text-sm"><thead><tr><th class="text-left">材料名称</th><th class="text-left">状态</th><th class="text-left">结果</th></tr></thead><tbody><tr v-for="task in importTasks" :key="task.id"><td>{{ task.name }}</td><td>{{ task.execution?.label??({queued:'排队中',running:'提取中',succeeded:'已提取并入库',failed:'失败，未新增材料',cancelled:'已取消，未新增材料'} as Record<string,string>)[task.status]??task.status }}</td><td><RouterLink v-if="task.status==='succeeded'&&task.package_id" :to="`/materials/${task.package_id}`">查看材料</RouterLink><span v-else>{{ task.error_message||'成功后才建立正式材料记录' }}</span></td></tr></tbody></table>
- </Column>
  <v-alert v-if="actionError" type="error" closable @click:close="actionError=''">{{ actionError }}</v-alert><v-alert v-if="actionMessage" type="success" closable @click:close="actionMessage=''">{{ actionMessage }}</v-alert>
  <Row wrap y="center" :gap="12" class="surface-card p-12">
   <v-text-field v-model="search" label="搜索材料包" hide-details clearable :disabled="busy" class="w-full sm:w-200 flex-1 min-w-0"/>
@@ -211,19 +190,8 @@ onUnmounted(()=>{importsDisposed=true;clearTimeout(importTimer);selectionRequest
   <v-select v-model="redactionState" label="脱敏状态" :items="[{title:'全部',value:'all'},{title:'已脱敏',value:'ready'},{title:'未脱敏',value:'not_ready'}]" hide-details :disabled="busy" class="w-full sm:w-160 sm:max-w-180"/>
   <v-select v-model="preparationState" label="是否整理" :items="[{title:'全部',value:'all'},{title:'已整理',value:'ready'},{title:'未整理',value:'not_ready'}]" hide-details :disabled="busy" class="w-full sm:w-160 sm:max-w-180"/>
   <v-select v-model="packageState" label="材料包状态" :items="[{title:'使用中',value:'active'},{title:'已归档',value:'archived'}]" hide-details :disabled="busy" class="w-full sm:w-140" @update:model-value="selected=undefined"/>
-  <v-btn variant="text" :disabled="busy||!hasFilters" @click="resetFilters">重置</v-btn>
+  <Row :gap="4" class="ml-auto"><v-btn variant="text" :disabled="busy||!hasFilters" @click="resetFilters">重置</v-btn><v-btn variant="outlined" :disabled="busy||loading||!total||packageState==='archived'" aria-haspopup="dialog" @click="batchDialog=true">批量处理 · {{ total }}</v-btn></Row>
  </Row>
- <Column :gap="8" class="surface-card p-12">
-  <Row wrap y="center" :gap="12">
-   <span class="text-sm">对全部搜索结果批量派发（{{ total }} 个包）</span>
-   <v-select v-model="batchStage" :items="batchStages" label="处理阶段" hide-details :disabled="busy" class="w-full sm:w-180 sm:max-w-220"/>
-   <v-btn color="primary" :loading="batchRunning" :disabled="busy||loading||!total||packageState==='archived'" @click="runSearchBatch">批量派发</v-btn>
-  </Row>
-  <p class="text-xs text-muted">包含所有分页；跳过已完成、有活动任务和前置条件未满足的包。容量不足或请求异常时停止，不自动推进下一阶段。</p>
-  <Column v-if="batchRows.length" :gap="0" class="max-h-240 overflow-auto">
-   <table class="w-full text-sm"><thead><tr><th scope="col">材料包</th><th scope="col">派发状态</th><th scope="col">任务 / 原因</th></tr></thead><tbody><tr v-for="row in batchRows" :key="row.id"><td>{{ row.name }}</td><td>{{ row.status }}</td><td class="break-all">{{ row.reason||row.jobId||'—' }}</td></tr></tbody></table>
-  </Column>
- </Column>
  <v-alert v-if="filterError||error" type="error">{{ filterError||error }}</v-alert>
  <Row stack-on-mobile y="stretch" :gap="12" class="min-w-0 lg:flex-1 min-h-0">
   <aside class="surface-card w-full lg:w-220 xl:w-240 shrink-0 overflow-hidden lg:h-full min-h-0" aria-label="材料包列表"><Column :gap="0" class="lg:h-full min-h-0">
@@ -234,7 +202,7 @@ onUnmounted(()=>{importsDisposed=true;clearTimeout(importTimer);selectionRequest
   </Column></aside>
   <section class="surface-card min-w-0 w-full flex-1 overflow-hidden lg:h-full min-h-0" aria-label="材料包详情">
    <template v-if="selected"><Column :gap="0" class="lg:h-full min-h-0">
-    <Row stack-on-mobile x="between" wrap y="start" :gap="12" class="p-12 border-b border-line"><Column :gap="6" class="min-w-0 w-full lg:w-auto flex-1"><h2 class="text-base font-semibold break-words">{{ selected.name }}</h2></Column><Row wrap :gap="8"><v-btn variant="outlined" :disabled="!selected.current_revision_id" aria-haspopup="dialog" @click="detailDialog='preparation'">材料整理</v-btn><v-btn variant="outlined" aria-haspopup="dialog" @click="detailDialog='usage'">使用与提交</v-btn><v-btn variant="outlined" aria-haspopup="dialog" @click="detailDialog='history'">处理记录<template v-if="totalJobs">（{{ totalJobs }}）</template></v-btn><v-btn variant="text" :disabled="busy" @click="metadataDialog=true">编辑信息</v-btn><v-btn variant="outlined" :disabled="busy" @click="folderInput?.click()">更新文件</v-btn><v-btn variant="text" :loading="detailLoading" :disabled="detailLoading||busy" @click="refreshAll"><template #prepend><UiIcon name="refresh"/></template>刷新</v-btn><v-btn color="error" variant="text" :disabled="busy" @click="archiveDialog=true">删除材料包</v-btn></Row><input ref="folderInput" type="file" webkitdirectory multiple class="hidden" aria-label="选择更新后的材料文件夹" @change="selectFolder"/></Row>
+    <Row stack-on-mobile x="between" wrap y="center" :gap="12" class="p-12 border-b border-line"><Column :gap="6" class="min-w-0 w-full lg:w-auto flex-1"><h2 class="text-base font-semibold break-words">{{ selected.name }}</h2></Column><Row wrap y="center" :gap="6"><v-btn size="small" variant="outlined" :disabled="!selected.current_revision_id" aria-haspopup="dialog" @click="detailDialog='preparation'">材料整理</v-btn><v-btn size="small" variant="outlined" aria-haspopup="dialog" @click="detailDialog='usage'">使用与提交</v-btn><v-btn size="small" variant="outlined" aria-haspopup="dialog" @click="detailDialog='history'">处理记录<template v-if="totalJobs">（{{ totalJobs }}）</template></v-btn><v-btn size="small" variant="text" :loading="detailLoading" :disabled="detailLoading||busy" @click="refreshAll"><template #prepend><UiIcon name="refresh"/></template>刷新</v-btn><v-menu location="bottom end"><template #activator="{props:menuProps}"><v-btn v-bind="menuProps" size="small" variant="tonal" :disabled="busy">管理材料</v-btn></template><v-list density="compact" min-width="180" aria-label="材料包管理操作"><v-list-item title="编辑信息" @click="metadataDialog=true"/><v-list-item title="更新文件" @click="folderInput?.click()"/><v-divider/><v-list-item title="删除材料包" base-color="error" @click="archiveDialog=true"/></v-list></v-menu></Row><input ref="folderInput" type="file" webkitdirectory multiple class="hidden" aria-label="选择更新后的材料文件夹" @change="selectFolder"/></Row>
     <Row v-if="selectedFiles.length" wrap x="between" :gap="12" class="px-20 py-12 bg-primary-soft"><p class="text-sm">已选择 {{ selectedFiles.length }} 份文件，将保存为新版本，保留历史文件。</p><Row :gap="8"><v-btn variant="text" :disabled="busy" @click="selectedFiles=[]">取消</v-btn><v-btn color="primary" :loading="busy" :disabled="busy" @click="uploadFiles">确认导入</v-btn></Row></Row>
     <Column :gap="0" class="min-h-0 flex-1 lg:overflow-y-auto">
      <v-alert v-if="detailError" type="error" class="ma-16">{{ detailError }}</v-alert>
@@ -257,6 +225,7 @@ onUnmounted(()=>{importsDisposed=true;clearTimeout(importTimer);selectionRequest
    </v-card-text>
   </v-card>
  </v-dialog>
+ <MaterialBatchProcessDialog :open="batchDialog" :stage="batchStage" :stages="batchStages" :total="total" :rows="batchRows" :running="batchRunning" :disabled="busy||loading||!total||packageState==='archived'" @close="batchDialog=false" @update-stage="batchStage=$event" @run="runSearchBatch"/>
  <LibraryPackageCreateDialog v-model="packageDialog" @submitted="importSubmitted"/>
  <v-dialog v-model="metadataDialog" max-width="600"><LibraryPackageSettings v-if="metadataDialog&&selected" :package-id="selected.id" @close="metadataDialog=false" @saved="refreshAll"/></v-dialog>
  <v-dialog v-model="processingDialog" max-width="900"><LibraryProcessingSettings v-if="processingDialog" @close="processingDialog=false" @saved="actionMessage='共用处理设置已保存，之后派发的新任务使用此配置。'"/></v-dialog>

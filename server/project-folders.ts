@@ -264,11 +264,11 @@ export async function projectStepSummary(pool: Pool, projectId: string, material
     if(row.result?.decision==='repair')values.needs_repair++;
     else if(row.result?.decision==='quarantine')values.quarantined++;
     else if(row.result?.decision==='accepted')values.succeeded++;
-   }else if(status&&status!=='running'&&status in values)values[status]++;
+   }else if(status&&status in values)values[status]++;
    if(row.executions){
-    if(row.executions.some(task=>task.scope==='local'&&task.state==='running'&&task.active))values.running++;
-    if(row.executions.some(task=>task.scope==='local'&&task.state==='queued'&&task.active))values.queued++;
-   }else{if(status==='running')values.running++;if(row.active&&status==='waiting')values.queued++;}
+    if(status!=='running'&&row.executions.some(task=>task.scope==='local'&&task.state==='running'&&task.active))values.running++;
+    if(status!=='queued'&&row.executions.some(task=>task.scope==='local'&&task.state==='queued'&&task.active))values.queued++;
+   }else if(row.active&&status==='waiting')values.queued++;
    if(isWorkflowStepReady(stage.ordinal,steps))values.ready++;
   }
  }

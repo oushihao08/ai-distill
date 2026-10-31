@@ -128,6 +128,16 @@ const scoreDisabled=computed(()=>archived.value || submitting.value || !answerRe
 async function score(){try{submitting.value=true;await api(`/workflows/${route.params.id}/score`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'评分提交失败';}finally{submitting.value=false;}}
 const acceptanceDecision=computed(()=>visibleSteps.value.find(step=>step.ordinal===7)?.result?.decision);
 const publishDisabled=computed(()=>archived.value || submitting.value || activeTask.value || stepStatus(7)!=='succeeded' || acceptanceDecision.value!=='accepted');
+function goToDelivery(){document.getElementById('workflow-step-8')?.scrollIntoView({behavior:'smooth',block:'center'});}
+const deliveryPrerequisiteMessage=computed(()=>{
+ const required:[number,string][]=[[4,'出题'],[5,'模型作答'],[6,'独立评分'],[7,'达标判断']];
+ const missing=required.filter(([ordinal])=>stepStatus(ordinal)!=='succeeded').map(([,name])=>name);
+ if(missing.length)return `交付前尚未完成：${missing.join('、')}。`;
+ if(acceptanceDecision.value==='repair')return '当前题目未达标，完成返修并重新作答、评分后才能交付。';
+ if(acceptanceDecision.value==='quarantine')return '当前题目的达标结果已隔离，核对材料或题目版本后才能交付。';
+ if(acceptanceDecision.value!=='accepted')return '当前没有有效的达标结论，暂不能交付。';
+ return '交付条件已满足。';
+});
 const isWorkProject=computed(()=>data.value?.project.parent_name==='Work法律全场景');
 const archiveIdentityValid=computed(()=>(!archiveTaskId.value.trim()&&!archiveOrg.value.trim())||(/^LAW-\d{3,}$/.test(archiveTaskId.value.trim())&&/^[a-z0-9][a-z0-9-]{1,31}$/.test(archiveOrg.value.trim())));
 const attemptNames:Record<number,string>={1:'入库',2:'PDF文本提取（入库内部）',3:'旧规则绑定（历史）',4:'出题',5:'模型作答',6:'独立评分',7:'达标判断',8:'归档达标题目',9:'脱敏与检查'};
@@ -201,6 +211,7 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
      <v-btn v-if="step.ordinal===9" color="primary" variant="flat" :loading="submitting" :disabled="submitting || stepStatus(1)!=='succeeded' || stepStatus(9)==='succeeded' || data?.attempts.some(a=>a.ordinal===9 && ['waiting','running'].includes(a.status))" @click="redact">脱敏</v-btn>
         <Row v-if="step.ordinal===4 && step.status==='succeeded' && step.result" >
       <v-btn color="secondary" variant="outlined" @click="questionOpen=true">查看完整题目</v-btn>
+      <v-btn color="primary" variant="outlined" @click="goToDelivery">前往交付</v-btn>
      </Row>
   <v-btn v-if="step.ordinal===4" color="primary" variant="flat" :loading="submitting" :disabled="authorDisabled" @click="author">{{ hasSucceededAuthoring ? '重新生成题目' : '生成题目' }}</v-btn>
      <v-btn v-if="step.ordinal===5" color="primary" variant="flat" :loading="submitting" :disabled="answerDisabled" @click="answer">模型作答</v-btn>
@@ -209,6 +220,7 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
    <Column v-if="step.ordinal===8" :gap="8" class="w-full"><Row v-if="isWorkProject" stack-on-mobile :gap="8"><v-text-field v-model="archiveTaskId" label="Harbor task_id（选填）" placeholder="LAW-001" hint="生成Siriser五件套无需填写；仅额外转换Harbor时使用。" persistent-hint :disabled="submitting" /><v-text-field v-model="archiveOrg" label="Harbor org（选填）" placeholder="小写字母或数字" hint="与task_id成对填写；无值时留空。" persistent-hint :disabled="submitting" /></Row><Row wrap y="center" :gap="8"><v-btn color="primary" variant="flat" :loading="submitting" :disabled="publishDisabled||(isWorkProject&&!archiveIdentityValid)" @click="publish">{{ step.status==='succeeded' ? '已归档' : '归档题目并执行项目交付' }}</v-btn><v-btn v-if="step.status==='succeeded'" color="error" variant="outlined" :disabled="submitting" @click="withdrawArchiveOpen=true">撤回归档</v-btn><v-btn v-if="isWorkProject && step.status==='succeeded'" :href="`/api/workflows/${data.workflow.id}/siriser-zip`" color="primary" variant="outlined">下载五件套 ZIP</v-btn><v-btn v-if="step.status==='succeeded' && step.result?.archive_workbook" :href="`/api/workflows/${data.workflow.id}/archive-xlsx`" color="secondary" variant="outlined">下载本题归档 Excel</v-btn><span v-if="step.status==='succeeded' && step.result?.delivery" class="text-xs text-muted">{{ deliveryLabel(step) }}</span></Row></Column>
     </template>
     <template #artifacts="{step}">
+     <v-alert v-if="step.ordinal===8 && !archived" type="info" density="compact" class="mt-8">{{ deliveryPrerequisiteMessage }}</v-alert>
      <p v-if="step.ordinal===9 && redactionProgressLabel(step)" class="text-xs text-muted break-all">{{ redactionProgressLabel(step) }}</p>
      <Column v-if="step.ordinal===4 && materialScopeSelections(step).length" class="mt-8 rounded border border-line-subtle p-8" :gap="4">
       <strong class="text-xs">本题实际采用的材料范围</strong>

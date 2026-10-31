@@ -76,6 +76,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   project materials question --project UUID --link UUID --version N (--redaction UUID | --revision UUID) --title 名称 --request-key UUID [--role 角色] [--scenario 场景] [--level L2|L3|L4|L5] [--direction 方向] [--tags a,b]
   question delete --project UUID --workflow UUID --confirm-title 精确题目名（软删除单题；有活动尝试时拒绝）
   workflow design update --workflow UUID [--direction 文本] [--scenario 文本] [--role 文本]（至少一项；空文本清空，不派发）
+  workflow opening revise --workflow UUID --file JSON（显式开头修订，后续步骤失效）
   workflow authoring restore --workflow UUID --attempt UUID（恢复已保存结果，不重新调用模型）
   workflow material-docx generate --workflow UUID（按冻结材料与项目布局生成全部DOCX，不派发其他步骤）
   workflow archive withdraw --workflow UUID（撤回当前归档，保留历史）
@@ -109,6 +110,8 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   feishu table create --project UUID --name 新表名 [--base-token BASE]（不改变默认目标）
   feishu sync --workflow UUID [--base-token BASE --table TABLE]
   feishu sync-batch --project UUID --ids UUID,... --out 新进度文件.json [--base-token BASE --table TABLE]
+  feishu draft-sync --workflow UUID [--base-token BASE --table TABLE]（出题成功后上传未完成草稿，不归档）
+  feishu draft-sync-batch --project UUID --ids UUID,... --out 新进度文件.json [--base-token BASE --table TABLE]
 STEP_KEY 使用 step list；不使用页面序号。派发只执行一个步骤，不自动继续。
 attempt wait 默认仅返回状态元信息；完整正文使用 attempt show 或 wait --full；归档终态不代表飞书交付完成，另查 workflow delivery show。
 退出码：0 完成/派发已接受（不等于业务达标），1 命令/HTTP 错误，2 部分失败/未就绪，3 等待到期仍运行，130 中断。
@@ -192,6 +195,7 @@ const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'material-package list':['project'],'material-package versions':['workflow'],
       'question list':['project'],'question show':['workflow'],'question delete':['project','workflow','confirm-title'],'question create':['material-package','redaction-attempt','title','scenario','role','level','direction'],'workflow status':['project','ids','all'],
       'workflow design update':['workflow','direction','scenario','role'],
+      'workflow opening revise':['workflow','file'],
       'workflow authoring restore':['workflow','attempt'],'workflow archive withdraw':['workflow'],
       'workflow material-docx generate':['workflow'],
       'workflow hooks show':['workflow'],'workflow delivery show':['workflow'],
@@ -205,6 +209,7 @@ const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'feishu config show':['project'],'feishu config set':['project','base-token','table'],
       'feishu table create':['project','name','base-token'],'feishu sync':['workflow','base-token','table'],
       'feishu sync-batch':['project','ids','out','base-token','table'],
+      'feishu draft-sync':['workflow','base-token','table','revision-attempt'],'feishu draft-sync-batch':['project','ids','out','base-token','table'],
       'export failed':['project','ids','all'],
       'export review':['project','ids'],
       'artifact download':['artifact','out'],'monitor show':[],
@@ -321,6 +326,7 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         if(!Object.keys(body).length)throw new CliError('至少提供出题方向、场景或角色视角');
         data=await patch(`/api/workflows/${workflow}/authoring-direction`,body);break;
       }
+      case 'workflow opening revise': data=await post(`/api/workflows/${uuid('workflow')}/opening-revisions`,await readJsonFile(required('file'),'开头修订'));break;
       case 'workflow authoring restore': data=await post(`/api/workflows/${uuid('workflow')}/authoring-results/${uuid('attempt')}/restore`);break;
       case 'workflow material-docx generate': data=await post(`/api/workflows/${uuid('workflow')}/material-docx`);break;
       case 'workflow archive withdraw': data=await post(`/api/workflows/${uuid('workflow')}/withdraw-archive`);break;
@@ -359,6 +365,14 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         return{outcome:data.status==='succeeded'?'complete':'partial',data};
       }
       case 'feishu sync-batch': return await syncFeishuBatch(api,uuid('project'),[...new Set(ids().map(value=>value.toLowerCase()))],required('out'),feishuTarget(flags.get('base-token'),flags.get('table')),signal);
+      case 'feishu draft-sync': {
+        const workflow=uuid('workflow').toLowerCase(),target=feishuTarget(flags.get('base-token'),flags.get('table'));
+        const detail=await get(`/api/workflows/${workflow}?view=status`),project=id(detail.workflow?.project_id,'项目');
+        await readFeishuConfig(api,project,signal,true);
+        data=await api.json(`/api/workflows/${workflow}/feishu-draft-sync`,'POST',{...(target?{target}:{}),...(flags.has('revision-attempt')?{revision_attempt_id:uuid('revision-attempt')}: {})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
+        return{outcome:data.status==='succeeded'?'complete':'partial',data,note:'草稿仅表示出题结果已上传飞书，字段“题目是否完成”为未完成；不代表评分、达标、归档或平台验收。'};
+      }
+      case 'feishu draft-sync-batch': return await syncFeishuBatch(api,uuid('project'),[...new Set(ids().map(value=>value.toLowerCase()))],required('out'),feishuTarget(flags.get('base-token'),flags.get('table')),signal,'draft');
 
       case 'batch create': {
         const size=batchSize(required('size'));

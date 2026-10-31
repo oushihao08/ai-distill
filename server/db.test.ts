@@ -84,7 +84,7 @@ test('database query and transaction logs keep SQL values and raw errors private
  const root=await mkdtemp(join(tmpdir(),'db-logs-')),logger=configureLogger({root,service:'api'});
  let failCommit=false;
  const pool=createPool({DATABASE_URL:'postgresql://test:test@example.invalid/test'}),client={query:async(sql:string,_values?:unknown[])=>{
-  if(sql==='COMMIT'&&failCommit)throw Object.assign(new Error('private commit result uncertain'),{code:'08006'});
+  if(sql==='COMMIT'&&failCommit)throw Object.assign(new Error('private commit result uncertain'),{code:'23514',where:'PL/pgSQL function ai_distill.validate_library_documents_complete() line 9 at RAISE'});
   if(sql.includes('slow_probe')){await Bun.sleep(1050);return{rows:[],rowCount:1};}
   if(sql.startsWith('SELECT'))throw Object.assign(new Error('private database message'),{code:'23505'});
   return{rows:[],rowCount:1};
@@ -101,6 +101,7 @@ test('database query and transaction logs keep SQL values and raw errors private
   expect(records).not.toContainEqual(expect.objectContaining({event:'transaction.started',transaction_name:'begin',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).not.toContainEqual(expect.objectContaining({event:'transaction.committed',transaction_name:'commit',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'transaction.outcome_unknown',state:'unknown',transaction_name:'commit',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
+  expect(records).toContainEqual(expect.objectContaining({event:'db.query.failed',query_name:'commit',error_code:'23514',error_constraint:'library_documents_complete'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.query.failed',query_name:'select:ai_distill.private_rows',error_code:'23505',workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.query.slow',level:'warn',query_name:'select:ai_distill.slow_probe',duration_ms:expect.any(Number),workflow_id:'workflow-a',attempt_id:'attempt-a'}));
   expect(records).toContainEqual(expect.objectContaining({event:'db.pool.error',error_code:'08006'}));

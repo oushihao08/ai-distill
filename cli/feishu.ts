@@ -16,30 +16,34 @@ export function feishuTarget(base:unknown,table:unknown):FeishuCliTarget|undefin
 }
 
 /** 旧API可能忽略目标body；先读能力标记，未加载新接口就停止，绝不降级上传。 */
-export async function readFeishuConfig(api:ApiClient,projectId:string,signal?:AbortSignal){
+export async function readFeishuConfig(api:ApiClient,projectId:string,signal?:AbortSignal,requireDraftSync=false){
  let config:any;
  try{config=await api.json(`/api/projects/${projectId}/feishu-delivery`,'GET',undefined,signal);}
  catch(error){if(error instanceof CliError&&error.detail.http_status===404)throw new CliError('API尚未加载飞书配置接口，未执行上传；请按授权重载服务后使用',{kind:'feature_unavailable',outcome_unknown:false});throw error;}
  if(config?.capabilities?.target_override!==true)throw new CliError('API未声明支持指定目标表，未执行上传',{kind:'feature_unavailable',outcome_unknown:false});
+ if(requireDraftSync&&config?.capabilities?.draft_sync!==true)throw new CliError('API尚未声明支持出题后草稿上传，未执行上传；请按授权重载服务后使用',{kind:'feature_unavailable',outcome_unknown:false});
  return config;
 }
 
 /** 首先只读核对全部题目归属/达标/归档；每题发送前落盘dispatching，未知响应立即停止。 */
-export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[],output:string,target:FeishuCliTarget|undefined,signal?:AbortSignal){
+export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[],output:string,target:FeishuCliTarget|undefined,signal?:AbortSignal,stage:'draft'|'archived'='archived'){
  if(!ids.length||ids.length>1000)throw new CliError('飞书批次须明确指定1至1000道题');
- const settings=await readFeishuConfig(api,projectId,signal);
+ const settings=await readFeishuConfig(api,projectId,signal,stage==='draft');
  const project=await api.json(`/api/projects/${projectId}`,'GET',undefined,signal);
  if(!Array.isArray(project.workflows)||!project.workflow_status)throw new CliError('项目响应缺少题目状态',{kind:'invalid_response'});
  for(const id of ids){
   const workflow=project.workflows.find((w:any)=>w.id===id),steps=project.workflow_status[id]?.steps;
-  if(!workflow||workflow.workflow_kind!=='question'||workflow.current_decision!=='accepted'||!Array.isArray(steps)||!steps.some((s:any)=>s.ordinal===8&&s.status==='succeeded'))throw new CliError(`题目${id}不属于该期或尚未达标归档，未上传本批题目`);
+  const eligible=stage==='archived'
+   ?workflow?.current_decision==='accepted'&&Array.isArray(steps)&&steps.some((s:any)=>s.ordinal===8&&s.status==='succeeded')
+   :Array.isArray(steps)&&steps.some((s:any)=>s.ordinal===4&&s.status==='succeeded')&&!steps.some((s:any)=>s.ordinal===8&&s.status==='succeeded');
+  if(!workflow||workflow.workflow_kind!=='question'||!eligible)throw new CliError(`题目${id}不属于该期或未满足${stage==='draft'?'出题完成且未归档':'达标归档'}条件，未上传本批题目`);
  }
  if(!target){
   const configured=settings.default_target;
   if(configured?.table_id)target=feishuTarget(configured.base_token,configured.table_id);
   else throw new CliError('本期尚无固定表ID；请先创建或指定目标表，再执行批次，避免批次中途改向');
  }
- const path=resolve(output),state:any={version:1,project_id:projectId,workflow_ids:ids,target,created_at:new Date().toISOString(),items:ids.map(workflow_id=>({workflow_id,status:'pending'}))};
+ const path=resolve(output),state:any={version:1,stage,project_id:projectId,workflow_ids:ids,target,created_at:new Date().toISOString(),items:ids.map(workflow_id=>({workflow_id,status:'pending'}))};
  try{await writeFile(path,JSON.stringify(state,null,2),{flag:'wx',mode:0o600});}
  catch{throw new CliError('进度文件必须不存在且父目录可写；未上传本批题目',{kind:'file_error'});}
  const persist=async()=>{
@@ -51,7 +55,8 @@ export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[
   if(signal?.aborted)break;
   item.status='dispatching';item.dispatched_at=new Date().toISOString();await persist();
   try{
-   const receipt=await api.json(`/api/workflows/${item.workflow_id}/feishu-sync`,'POST',{target},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
+   const route=stage==='draft'?'feishu-draft-sync':'feishu-sync';
+   const receipt=await api.json(`/api/workflows/${item.workflow_id}/${route}`,'POST',{target},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
    item.receipt=receipt;item.status=receipt.status==='succeeded'?'succeeded':receipt.status==='in_progress'?'in_progress':'failed';await persist();
   }catch(error){
    const detail=error instanceof CliError?error.detail:{};
@@ -74,5 +79,5 @@ export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[
    break;
   }
  }
- return{outcome:state.items.every((item:any)=>item.status==='succeeded')?'complete':'partial',data:{progress_file:path,project_id:projectId,target,items:state.items,total:ids.length,succeeded:state.items.filter((item:any)=>item.status==='succeeded').length,verified:state.items.filter((item:any)=>item.receipt?.verification?.status==='passed').length,verification_failed:state.items.filter((item:any)=>item.receipt?.verification?.status==='failed').length,verification_incomplete:state.items.filter((item:any)=>item.status!=='pending'&&item.receipt?.verification?.status!=='passed'&&item.receipt?.verification?.status!=='failed').length,note:'核对结果见每题receipt.verification；旧回执无verification不代表核对通过。仅成功回执代表已提交；unknown先核对远端，pending未派发。补传须明确指定剩余ID并使用新的进度文件，不自动重试。'}};
+ return{outcome:state.items.every((item:any)=>item.status==='succeeded')?'complete':'partial',data:{progress_file:path,project_id:projectId,target,stage,items:state.items,total:ids.length,succeeded:state.items.filter((item:any)=>item.status==='succeeded').length,verified:state.items.filter((item:any)=>item.receipt?.verification?.status==='passed').length,verification_failed:state.items.filter((item:any)=>item.receipt?.verification?.status==='failed').length,verification_incomplete:state.items.filter((item:any)=>item.status!=='pending'&&item.receipt?.verification?.status!=='passed'&&item.receipt?.verification?.status!=='failed').length,note:stage==='draft'?'草稿仅表示出题结果已上传飞书，字段“题目是否完成”为未完成；不代表评分、达标、归档或平台验收。unknown先核对远端，pending未派发。补传须明确指定剩余ID并使用新的进度文件，不自动重试。':'核对结果见每题receipt.verification；旧回执无verification不代表本次核对通过。仅成功回执代表已提交；unknown先核对远端，pending未派发。补传须明确指定剩余ID并使用新的进度文件，不自动重试。'}};
 }

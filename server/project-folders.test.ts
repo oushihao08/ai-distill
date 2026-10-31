@@ -267,6 +267,14 @@ test('library project summary exposes only authoring through publishing even bef
  expect((await projectStepSummary(pool,'project','library_v1')).map(step=>step.ordinal)).toEqual([4,5,6,7,8]);
 });
 
+test('project summary counts database running state from another executor without double-counting local running',async()=>{
+ const base={workflow_id:'foreign-running',ordinal:4,status:'running',enabled:true,active:false,library_source:true,workflow_kind:'question'};
+ const foreign={...base,executions:[{source:'shared_attempt',scope:'other_executor',state:'running',active:false}]};
+ const local={...base,workflow_id:'local-running',active:true,executions:[{source:'local_queue',scope:'local',state:'running',active:true}]};
+ const steps=await projectStepSummary({query:async()=>{throw new Error('只使用预读数据');}} as unknown as Pool,'project','library_v1',Promise.resolve({rows:[foreign,local]} as any),Promise.resolve({model:'gpt-6.1-sol',reasoning_effort:'high',source:'system'} as any),{rows:[]});
+ expect(steps.find(step=>step.ordinal===4)).toMatchObject({total:2,running:2,queued:0,succeeded:0,failed:0,ready:0});
+});
+
 
 test('步骤状态聚合传输后还原原rows结构并保留筛选参数',async()=>{
  const rows=[{workflow_id:'fixture',ordinal:5,status:'succeeded',enabled:true,active:false,result:{models:[{status:'succeeded',attempt_id:'answer'}]}}];

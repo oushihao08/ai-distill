@@ -17,7 +17,7 @@ export class AgentConcurrencyConfigurationError extends Error{
 }
 
 export interface WorkerConcurrencySettings{agent:number;llmApi:number}
-export const SAFE_WORKER_CONCURRENCY_LIMITS={agent:8,llmApi:12} as const;
+export const SAFE_WORKER_CONCURRENCY_LIMITS={agent:10,llmApi:12} as const;
 
 function openConcurrencyDatabase(root:string){
  const directory=join(resolve(root),'.concurrency');

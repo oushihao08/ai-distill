@@ -9,6 +9,7 @@
 | `delivery.test.ts` | 验证归档入口的已有行为 | 运行授权遵循仓库 `AGENTS.md` |
 | `ocr/` | 固定第五期样本的 OCR 试跑、抽查、缓存对比及两道真实题目的工作流轮询 | 逐个阅读脚本顶部的影响说明；会调用模型或读取真实案件；`verify-real-question-folders.ts` 会 POST `/load-rules` 并持续轮询，可能改变工作流；多份脚本还会写 `docs/evidence/` |
 | `skill/` | 使用固定规则和外部模板生成 skill 候选并记录检查结果 | 会调用真实 Codex；候选写入 `.storage/`，摘要写入 `docs/evidence/`；不自动采用 |
+| `name-revision/` | 将私有原件与冻结脱敏结构按坐标对齐，生成第七期逐包主体名称差异候选 | 只读输入、写入调用方指定的 `.storage/` 私有文件；不调用模型或写业务库 |
 
 服务端由 `server/publishing/project-delivery.ts` 解析 `delivery.ts`，传入已验收的题目快照并在独立进程中运行；脚本文件及整个 `scripts/` 内容会参与归档指纹。项目专用脚本统一放在主项目的 `scripts/`，再按用途归入 `ocr/`、`skill/` 等目录；不放进某一期的 `questions/`、`materials/` 或 `skill/`，避免扫描成附件或规则输入。OCR 子目录中的脚本含固定历史题目、样本和任务标识，只用于对应调查，不是通用命令。
 

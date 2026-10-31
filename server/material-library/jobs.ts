@@ -213,18 +213,43 @@ export async function heartbeatLibraryJob(pool:Pool,jobId:string,leaseToken:stri
  return result.rowCount===1;
 }
 
+const atomicPublicationConstraints=[
+ ['library_job_success_complete','atomic_job_success_incomplete'],
+] as const;
+/** 原子导入在COMMIT前逐条结算延迟约束，保留完整性检查并返回可定位的安全原因码。 */
+export async function validateAtomicPublicationConstraints(db:Pick<import('pg').PoolClient,'query'>,jobId?:string){
+ if(jobId){
+  const state=(await db.query(`SELECT j.status,j.package_id,j.revision_id,r.state,r.file_count AS expected_file_count,p.current_revision_id,
+   (SELECT count(*)::int FROM ai_distill.library_files f WHERE f.revision_id=r.id) AS actual_file_count,
+   (SELECT count(*)::int FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=j.id) AS document_count
+   FROM ai_distill.library_jobs j LEFT JOIN ai_distill.library_revisions r ON r.id=j.revision_id LEFT JOIN ai_distill.library_packages p ON p.id=j.package_id WHERE j.id=$1`,[jobId])).rows[0];
+  const reason=!state?'atomic_final_state_missing':state.status!=='succeeded'?'atomic_final_job_not_succeeded':!state.package_id||!state.revision_id?'atomic_final_identity_missing':state.state!=='ready'?'atomic_final_revision_not_ready':state.current_revision_id!==state.revision_id?'atomic_final_package_revision_mismatch':Number(state.expected_file_count)!==Number(state.actual_file_count)?'atomic_final_file_count_mismatch':Number(state.expected_file_count)!==Number(state.document_count)?'atomic_final_document_count_mismatch':undefined;
+  if(reason)throw Object.assign(new Error('原子入库最终状态不完整'),{reason_code:reason});
+  const exact=(await db.query(`SELECT EXISTS(SELECT 1 FROM ai_distill.library_revisions r
+   JOIN ai_distill.library_jobs j ON j.revision_id=r.id AND j.kind='extract' AND j.status='succeeded'
+   WHERE r.package_id=$1 AND r.state='ready' AND r.file_count>0
+    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=j.id)=r.file_count) AS valid`,[state.package_id])).rows[0]?.valid;
+  if(exact!==true)throw Object.assign(new Error('原子入库最终关联不完整'),{reason_code:'atomic_final_package_relation_mismatch'});
+ }
+ for(const [constraint,reasonCode] of atomicPublicationConstraints){
+  try{await db.query(`SET CONSTRAINTS ai_distill.${constraint} IMMEDIATE`);}
+  catch(error){throw Object.assign(new Error('原子入库完整性检查未通过',{cause:error}),{reason_code:reasonCode});}
+ }
+}
+
 export async function finishLibraryJob(pool:Pool,jobId:string,leaseToken:string,resultSummary:Record<string,unknown>,publish:(db:import('pg').PoolClient)=>Promise<void>){
  const signal=currentTaskSignal();signal?.throwIfAborted();if(localCancellationRequested())throw new Error('本机任务已取消');
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
-  const job=(await db.query("SELECT id,revision_id FROM ai_distill.library_jobs WHERE id=$1 AND lease_token=$2 AND status='running' AND cancel_requested_at IS NULL AND lease_expires_at>now() AND deadline_at>now() FOR UPDATE",[jobId,leaseToken])).rows[0];
+  const job=(await db.query("SELECT id,revision_id,input_snapshot ? 'atomic_import' AS atomic_import FROM ai_distill.library_jobs WHERE id=$1 AND lease_token=$2 AND status='running' AND cancel_requested_at IS NULL AND lease_expires_at>now() AND deadline_at>now() FOR UPDATE",[jobId,leaseToken])).rows[0];
   if(!job)throw conflict('材料任务已取消、失租或超过执行期限，结果未发布');
   signal?.throwIfAborted();
   await publish(db);
   signal?.throwIfAborted();
   const saved=await db.query("UPDATE ai_distill.library_jobs SET status='succeeded',result_summary=$3::jsonb,finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1 AND lease_token=$2 AND status='running' RETURNING id",[jobId,leaseToken,JSON.stringify(resultSummary)]);
   if(saved.rowCount!==1)throw conflict('材料任务提交权已失效，结果未发布');
+  if(job.atomic_import===true)await validateAtomicPublicationConstraints(db,jobId);
   signal?.throwIfAborted();
   await db.query('COMMIT');forgetLocalRegistrations(db);return true;
  }catch(error){try{await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);}catch(rollbackError){throw new AggregateError([error,rollbackError],'材料任务结果提交失败且回滚状态不确定');}throw error;}finally{db.release();}

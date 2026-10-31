@@ -174,6 +174,8 @@ export interface CreateLibraryJobRequest {
 
 export interface CreateLibraryQuestionRequest {
   request_key: string;
+  /** 脱敏来源默认不复制原始二进制；显式true可保留副本。原文来源始终复制原件。 */
+  copy_originals?: boolean;
   redaction_id?: string;
   revision_id?: string;
   expected_link_version: number;
