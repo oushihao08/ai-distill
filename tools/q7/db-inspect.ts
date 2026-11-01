@@ -1,0 +1,12 @@
+import {Client} from 'pg';
+import {readFileSync} from 'fs';
+const url = readFileSync('.env','utf8').split('\n').find(l=>l.startsWith('DATABASE_URL='))!.slice(13).trim();
+const c = new Client({connectionString:url, ssl:{rejectUnauthorized:false}});
+await c.connect();
+const q = await c.query(`select id,status,error_code,error_message,result_summary,progress from ai_distill.library_jobs where id='0aac21ee-ae95-4b63-9ca5-7f89a0f777df'`);
+const r=(q.rows as any[])[0];
+console.log('status', r.status, r.error_code);
+console.log('msg', r.error_message);
+console.log('summary', JSON.stringify(r.result_summary).slice(0,1200));
+console.log('progress', JSON.stringify(r.progress).slice(0,600));
+await c.end();

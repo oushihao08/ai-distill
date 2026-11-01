@@ -8,4 +8,4 @@ scripts/client.ts维护认证、截止、分页和媒体下载；commands.ts维�
 
 通用操作不内置项目目标；[projects/](projects/README.md)单独保存各项目的资源登记、字段对应和业务约定。project-registry.ts由CLI的project show/sync调用，只读同步名单与现有题目归属到各项目private目录；不分配题目、不回填身份字段、不读取题目正文。
 
-入口：`bun toolSkills/feishu-operations/scripts/cli.ts --help`。写操作会改变飞书资源，验收须明确目标。常驻API/worker加载新源码后才影响交付；文件存在不代表已重载或远端验收。
+入口：`bun toolSkills/feishu-operations/scripts/cli.ts --help`。写操作会改变飞书资源，验收须明确目标。交付、复制、迁移和批量写入按[SKILL.md](SKILL.md)确定单表或多表唯一性范围，使用稳定业务ID全量查重，并用ledger记录写前集合、逐item回执和写后对账。常驻API/worker加载新源码后才影响交付；文件存在不代表已重载或远端验收。
