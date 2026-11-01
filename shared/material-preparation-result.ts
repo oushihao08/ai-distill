@@ -38,11 +38,11 @@ export function visiblePreparationContext(result:MaterialPreparationResult):Mate
  const counts=preparationCounts({...result,documents,document_count:result.document_count===undefined?undefined:documents.filter(document=>document.unit_kind==='document').length,unassigned_group_count:documents.filter(document=>document.unit_kind==='unassigned').length,unassigned_block_count:documents.filter(document=>document.unit_kind==='unassigned').reduce((sum,document)=>sum+document.block_ids.length,0)});
  return counts.known?{...projection,document_count:counts.document_count,unassigned_group_count:counts.unassigned_group_count,unassigned_block_count:counts.unassigned_block_count}:projection;
 }
-/** 按整理结果还原准确文书后，只向模型或DOCX提供标记为可见的份数。 */
+/** 按整理结果还原准确文书后，只为明确要求可见投影的摘要或DOCX保留visible文书。 */
 export function visiblePreparedDocuments(result:MaterialPreparationResult,units:PreparationUnit[]):PreparedSelectionDocument[]{
  return materializePreparation(result,units).filter(document=>preparationVisibility(document)==='visible');
 }
-/** 为出题/作答生成可见文书正文；正文已有同名首标题时不再补一遍。 */
+/** 将调用方选定的文书渲染为模型或DOCX正文；正文已有同名首标题时不再补一遍。 */
 export function renderPreparationDocuments(documents:PreparedSelectionDocument[]):string{
  const key=(value:string)=>value.normalize('NFKC').replace(/^#+\s*/,'').replace(/\s+/g,'').trim();
  return documents.map(document=>{

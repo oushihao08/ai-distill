@@ -104,6 +104,7 @@ test('production redaction runner publishes the compiled Agent artifact through 
   calls.push(sql);
   if(sql.startsWith('SELECT d.file_id'))return{rows:[{file_id:'file',document_blob_id:'doc',source_sha256:sourceSha,current_source_sha:sourceSha,text_sha256:hash(source),issues:[],blob_sha256:hash(document),text_content:document,original_name:'合成.txt',position:1,redaction_mode:'model'}]};
   if(sql.startsWith('SELECT id,revision_id FROM'))return{rows:[{id:'job',revision_id:'revision'}]};
+  if(sql.includes("input_snapshot ? 'atomic_import'"))return{rows:[{id:'job',revision_id:'revision',atomic_import:false}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.library_blobs')){blobs.push(v[4]);return{rows:[{id:crypto.randomUUID()}],rowCount:1};}
   if(sql.startsWith('INSERT INTO ai_distill.library_redactions'))report=JSON.parse(v[9]);
   return{rows:[],rowCount:1};

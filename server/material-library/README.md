@@ -35,7 +35,7 @@ HTTP入口为`GET /api/material-library/redactions/:id/name-revision-source?proj
 | `agent-redaction-artifacts.ts` | 私有输入、同源检查点、固定结果文件及本地校验工具准备 |
 | `agent-redaction-validator.ts` | 打包到任务内的只读校验CLI，供Agent在同次调用内修正错误；不写库 |
 | `redaction-review.ts` | 显式复核Agent已发布产物，将当前结论及历史追加到job.result_summary，不改不可变产物或任务成功历史 |
-| `preparation.ts` | 可跳过的材料整理任务：按冻结的提取/脱敏来源生成总摘要、逐份摘要、文书可见性和支持范围；对首轮未覆盖或无摘要材料按有限批次补摘要，原文保留在材料库及人工预览 |
+| `preparation.ts` | 可跳过的材料整理任务：按冻结的提取/脱敏来源单次生成总摘要、逐份摘要、文书可见性和支持范围；不自动补调，原文保留在材料库及人工预览 |
 | `worker-once.ts` | 验收入口，只消费HTTP已创建的指定本机Agent材料job UUID，复用共享Agent槽位与正式事务，不领取其他任务 |
 | `prepared-import.ts` | 导入Codex已审阅的原文编辑/分册计划：校验完整提取来源、精确编辑、范围覆盖与请求幂等，在同一事务保存新任务及脱敏结果；不OCR、不调用模型、不改旧结果 |
 | `mineru-import.ts` | 导入MinerU桌面端content_list：核对完整版本原件摘要与PDF页数，复用结构转换，事务保存提取文档与来源摘要；不重跑OCR、不脱敏 |
@@ -81,7 +81,7 @@ PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API
 
 ## 页面与接口
 
-化名脱敏的`POST /revisions/:id/jobs`请求可显式提供`agent_settings:{model,reasoning_effort}`，仅覆盖该次任务并参与幂等摘要及配置冻结；省略时读取共用处理设置中`redaction`的Agent模型和强度，所有项目使用同一默认，不读取项目Agent默认。仅历史共用配置仍为API格式、缺少Agent模型时回退系统Agent默认。单次覆盖不保存回共用、系统或项目设置。只允许用于redact任务，模型真实可用性以本机Codex调用为准。模型改变会使原有同模型检查点失配，保留previous_job_id追溯，但重新审阅整包建立计划。
+化名脱敏的`POST /revisions/:id/jobs`请求可显式提供`agent_settings:{model,reasoning_effort}`，仅覆盖该次任务并参与幂等摘要及配置冻结；省略时读取共用处理设置中`redaction`的Agent模型和强度，所有项目使用同一默认，不读取项目Agent默认。仅历史共用配置仍为API格式、缺少Agent模型时回退系统Agent默认。单次覆盖不保存回共用、系统或项目设置。只允许用于redact任务，模型真实可用性以本机Codex调用为准。模型和强度仅作当次执行配置，不作为续作计划的准入指纹。
 
 `POST /revisions/:id/mineru-extractions` 导入本机已入库PDF的MinerU桌面端提取结果，不重新OCR。JSON为`{request_key,files:[{file_id,source_sha256,page_count,content_list}]}`，必须完整覆盖版本所有文件；`content_list`使用带`page_idx`的`*_content_list.json`或逐页数组，不能传`layout.json`。程序复用MinerU结构转换器，验证原件摘要、大小、PDF真实页数和可处理正文，在同一事务保存成功extract任务和全部library_documents；保留OCR issues并标明`mineru-desktop`及`model_invoked:false`。相同请求键和内容返回原任务，内容改变需新键；活动任务期间拒绝导入。来源对应是用户提供的桌面结果与原件配对声明，摘要/页数校验不证明OCR逐字准确。导入后复用现有Codex化名、分册、建题和DOCX链路，不更改期次来源设置或旧题。
 
@@ -153,14 +153,14 @@ PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API
 | 原文建题 | 成功提取版本 → `createLibraryQuestion()` | 冻结`original`来源；可不脱敏 |
 | 脱敏建题 | 与本期处理模式一致的成功脱敏结果 → `createLibraryQuestion()` | 冻结`redacted`来源；下游不再选择模板 |
 
-CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMaterialPreparationPlan()`；随后按具体来源校验精确编辑、结构和全文覆盖。没有模板字段的旧计划继续兼容；显式模板必须同时提供有效`template_id/template_digest`，空值不能当作旧计划处理。
+CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMaterialPreparationPlan()`；随后按具体来源校验精确编辑、结构和全文覆盖。没有模板字段的旧计划继续兼容；显式模板的`template_id/template_digest`作为审计记录保留，导入不再因当前模板摘要变化而拒绝。
 
 旧文本计划只产出编辑后文字，由导入入口构建明确的段落结构；不沿用编辑前的表格/段落对象。整包模板计划才通过结构编辑器生成编辑后结构，避免正文与旧结构不一致，也避免把旧文本计划冒记成保留原结构。
 
 模板与材料包、项目身份分开。`GET /redaction-templates`读取模板提示词、workflow及digest；目录仅列当前Agent模板；旧mask模板解析和字段映射执行已删除，显式mask不再存在于模板目录；读取旧共用设置时只读过滤旧模板，不回写SQLite，显式保存仅接受Agent模板。省略模板时使用aliases。共用设置可保存最多20项`redaction_templates`，每项id/name/prompt独立，workflow固定codex_plan；新安装或已保存空数组时提供内置Codex整包模板；不保存密钥。
 
 旧`mask/field_mapping`冻结任务也不再执行或复用模型结果，执行入口明确拒绝，需重新创建Agent化名任务；数据库历史结果只读展示及其原身份保留，不删除业务数据。
-- `codex_plan`：默认aliases模板，省略template_id也选择它。每次入队读取共用SQLite配置数据库中的提示词并冻结模板及系统Agent模型；默认由既有Agent消费池整包执行；显式api_settings使用API消费池，均不调用旧字段映射引擎。`shared/agent-material-plan.ts`将完整ID/文本结果与结构块范围编译为既有精确计划，再做无重叠/全文覆盖/结构校验。冻结原结构、ID文本结果和阶段进度保留在`jobs/<job-id>/private/`（700/600），不进入题目或交付。任务领取后沿用冻结预算生成deadline，截止停止子进程并以agent_redaction_timeout终结，不自动重试。显式重试只复用同输入/模板/模型的私有进度。人工CLI精确计划导入仍须绑定template_id/template_digest，保留原幂等行为。
+- `codex_plan`：默认aliases模板，省略template_id也选择它。每次入队读取共用SQLite配置数据库中的提示词并冻结模板及系统Agent模型；默认由既有Agent消费池整包执行；显式api_settings使用API消费池，均不调用旧字段映射引擎。`shared/agent-material-plan.ts`将完整ID/文本结果与结构块范围编译为既有精确计划，再做无重叠/全文覆盖/结构校验。冻结原结构、ID文本结果和阶段进度保留在`jobs/<job-id>/private/`（700/600），不进入题目或交付。任务领取后沿用冻结预算生成deadline，截止停止子进程并以agent_redaction_timeout终结，不自动重试。显式重试仅要求同包、同revision、同提取任务和同任务类型；模板、模型、规则或后端变化不拒绝续作。宿主仍用当前编译器校验ID、覆盖及结构。人工CLI精确计划的模板ID与摘要只作审计记录，不作导入准入门槛。
 
 模板计划沿原提取structure应用字段内编辑，保留行列和rowSpan/columnSpan。跨字段编辑、切断表格或列表、正文覆盖/结构投影不一致均拒绝；原始结构缺失不得静默回退。CLI原文单文件返回structure和field_ranges供定位。索引prepared_documents包含分册document，供通用材料DOCX和Work五件套共用；旧文本型分册仍走兼容渲染。结构保留不等于原始OCR结构准确，须渲染核查异常表格。
 
@@ -176,7 +176,7 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 `aliases/codex_plan`表示化名方法和计划协议，不等于固定模型后端。默认读取共用脱敏Agent设置，优先级及历史回退见上文；新建redact任务可显式传`api_settings: ModelApiConfig`，与`agent_settings`互斥，完整非敏感配置进入请求幂等摘要和冻结快照，使用现有API消费池。未指定时不使用通用API默认值替代Agent。不修改共用默认设置或历史结果。
 
-`agent-redaction.ts`维护共用输入准备、预算、检查点身份、最终编译和私有产物。`api-redaction.ts`只适配模型调用：将同一source/schema/提示词和可用续作计划内联给`llm-api`；宿主执行同一`compileAgentTextMaterialPlan()`，反馈校验错误供模型在剩余预算内修正。API没有本地shell/读文件能力，不把工具脚本作为可执行提示发给模型；供应商失败不自动重试，相同无效计划停止。API配置参与检查点指纹，不能混用Agent检查点。结果沿原redaction-runner事务发布，不新增一套脱敏处理链。
+`agent-redaction.ts`维护共用输入准备、预算、续作私有产物和最终编译。`api-redaction.ts`只适配模型调用：将同一source/schema/提示词和可用续作计划内联给`llm-api`；宿主执行同一`compileAgentTextMaterialPlan()`，反馈校验错误供模型在剩余预算内修正。API没有本地shell/读文件能力，不把工具脚本作为可执行提示发给模型；供应商失败不自动重试，相同无效计划停止。Agent与API的已有计划可在同一稳定来源上续作；后端或配置变化不作为拒绝条件。结果沿原redaction-runner事务发布，不新增一套脱敏处理链。
 
 此能力当前通过HTTP任务参数选择，未增加页面选择器或CLI快捷参数。源码和单元测试不代表已运行服务加载；八包真实对照只在本地生成产物，不验收业务库发布，见`执行观察/api-aliases-20261027/对比报告.md`。
 
@@ -184,7 +184,7 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 Codex、API、本地校验器与宿主发布前统一调用`compileAgentTextMaterialPlan()`，拒绝旧entities/edits结果、混合格式、未知/重复/缺失ID。旧entities/edits计划和v1位置ID结果通过`compileAgentMaterialPlan()`只读重验，不能冒充新任务结果；历史结构若原块ID重复且无法证明旧映射无歧义，明确拒绝重验。旧协议或未冻结协议的待执行任务须显式新建，不自动调用模型转换。重复扫描按冻结模板保留并关联。成功结果继续进入`library_redactions`及`prepared_documents`/题目快照链路，不增加表迁移或改变DOCX结构契约。
 
-新派发的`config_snapshot.text_protocol`、私有校验上下文、正文索引和验证报告均记录文本协议；续作指纹绑定协议、原结构摘要、来源、模板、模型及后端，仅复制匹配的`material-plan.json`和`progress.json`。旧协议或缺少标识的检查点不复用。已有外部调用缓存不换键重调；缺少新协议标识的缓存拒绝发布，须显式新建任务。新契约不再要求模型返回主体映射表，`entity_count`为null表示未统计，不作为零主体。结构/ID通过不代表脱敏零遗漏，也不改变现有unresolved的技术发布语义。
+新派发的`config_snapshot.text_protocol`、私有校验上下文、正文索引和验证报告仍作审计记录，不作为续作准入指纹。续作只按同包、同revision、同提取任务和同任务类型复制`material-plan.json`与`progress.json`；当前编译器仍拒绝未知/重复/缺失ID、覆盖不全和结构冲突。新契约不再要求模型返回主体映射表，`entity_count`为null表示未统计，不作为零主体。结构/ID通过不代表脱敏零遗漏，也不改变现有unresolved的技术发布语义。
 
 边界不清的连续附件可完整保留为组合文书；身份归并不明时不强行合并，分别处理对应字段文本并记录疑点。未确认的归并或精确分册写私有非阻断疑点；隐私处理仍由本次冻结模板指导Agent；unresolved保留原始语义标记，不作为技术发布否决。正文无法完整覆盖仍阻断。
 
@@ -198,7 +198,7 @@ Agent完整语义计划交付到固定私有文件`output/material-plan.json`（
 
 ### 已发布结果的程序复核
 
-`POST /api/material-library/redactions/:id/revalidate`仅适用于程序Agent产物。它按当前编译器读取同一私有输入/计划，将复核追加到处理job的`result_summary.latest_program_validation`与历史数组；`library_redactions`产物行保持不可变，原任务status不改。读取可用版本、加载及新建题目同时排除显式复核失败的结果；旧题冻结快照不切换。缺少私有证据时不能宣称重新验证成功。显式续作可引用同包同集合已成功的redact任务，复用同输入/模板/模型检查点并生成新结果，不覆盖旧版。
+`POST /api/material-library/redactions/:id/revalidate`仅适用于程序Agent产物。它按当前编译器读取同一私有输入/计划，将复核追加到处理job的`result_summary.latest_program_validation`与历史数组；`library_redactions`产物行保持不可变，原任务status不改。读取可用版本、加载及新建题目同时排除显式复核失败的结果；旧题冻结快照不切换。缺少私有证据时不能宣称重新验证成功。显式续作可引用同包、同revision、同提取任务的redact任务，经当前编译器验证后生成新结果，不覆盖旧版。
 
 身份和边界疑点作为私有说明保存，blocking标记、说明定位或缺少化名映射不单独阻止技术发布。真正的编辑和分册仍须定位有效原文字段/结构块。review-hints.json仅作阅读导航。
 
@@ -213,7 +213,7 @@ Agent返回计划后，编译器调用`shared/scan-noise.ts`的统一正则规�
 
 新任务停止原因写入`result_summary.execution_stop`，保留其他摘要；用户取消和worker停机仍为cancelled，超时、心跳不可用与失租按失败/提交权处理。cancelled.error_code继续为null，数据库cancel_requested_at在终态竞争时优先；历史没有该元数据时不推断取消原因。更新未命中当前租约时只报告终态未写入，不覆盖新owner，也不宣称已经改成失败。提交回执出错后若按同job确认已经succeeded，不再次补写失败。
 
-新库提取每个文件完成后在`<STORAGE_DIR>/material-library/jobs/<job UUID>/extraction/<file UUID>.json`原子保存私有检查点（目录0700/文件0600），记录来源/输入清单/版本、实际提取条件、结构、issues和实际provider。v2身份绑定原件、版本清单、PDF冻结供应商/DOCX固定API/文本本地解析及对应转换版本；脱敏模型/提示词/模板、旧provider_config和调度预算不参与复用身份，完整任务配置仍保留。旧无version检查点继续按整份config_digest保守核验，不从旧摘要推断新身份或改写历史。仅显式previous_job_id重试按同一身份验证后复用；request-key变化本身不影响复用。损坏、不匹配、缺失、不可读或不可写检查点都降级为正常提取/继续，不为辅助缓存阻断任务。历史无检查点正常运行，不读取旧工作流ordinal缓存。
+新库提取每个文件完成后在`<STORAGE_DIR>/material-library/jobs/<job UUID>/extraction/<file UUID>.json`原子保存私有检查点（目录0700/文件0600），记录完整文档、产物SHA和实际provider。显式`previous_job_id`重试只按文件ID、原件SHA、检查点产物SHA及页结构复用；供应商、转换版本、配置、模型和调度预算不作为准入条件。旧检查点中的身份字段忽略，但仍校验文档与原件完整性。request-key变化本身不影响复用。损坏、不匹配、缺失、不可读或不可写检查点都降级为正常提取/继续，不为辅助缓存阻断任务。
 
 每次命中的检查点写成本job进度，仍由原事务整包发布；单个PDF尚在供应商处理中时不支持页级续算或接管远端batch。成功清理本job私有临时目录，失败检查点保留到显式续作；人工清理须先确认job无活动执行，只清理指定job目录，不删除原件或其他尝试。检查点可能含未脱敏正文，不作为公开产物和日志字段。
 
@@ -243,13 +243,13 @@ Agent自检、宿主发布及显式复核共用同一编译器。成功表示原
 
 `preparation.ts`复用`library_jobs(kind=prepare)`及本机Agent槽位，读取成功提取或脱敏结构，单次Agent读取固定目录与正文，一次返回逐份描述、可见性、总摘要与组合；规则直接内联，不再读取scene-rules.md，不自动补调，保存材料包总摘要、每份材料摘要/类型/标签，以及多组由材料支持的方向、主体/立场、相容场景/时点、核心工作和多项交付。整理不作默认选择、不裁剪材料，也不增加步骤编号或前置审批；缺失、失败或摘要不完整时，原建题流程继续。prepare不参与提取/脱敏的revision互斥；仍共享现有Agent容量，默认不自动派发。
 
-HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`redaction_id`或`extraction_job_id`，可选`project_id`及`agent_settings`；`GET /api/material-library/packages/:id/preparations`列出最近结果，`GET /api/material-library/preparations/:id?include_content=true`读取完整文书。状态和取消沿用jobs接口。同请求键恢复原ID；同来源/项目/模型及规则的成功结果或本机在途整理复用；成功结果可只读复用，不认领他机在途任务。新任务按来源目录固定材料ID、标题、顺序及全部结构块，Agent只返回描述信息，不接收重分册的块ID或标题。已有脱敏分册直接沿用；未分册原文按原文件保留，不在整理阶段拆合。缺摘要只针对相同材料ID补描述，不新增材料。边界疑点记入notes，交回上游处理；未知或重复描述不替换来源正文，未补出的摘要留空提示，不阻断建题；模型结果未知不自动重调。
+HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`redaction_id`或`extraction_job_id`，可选`project_id`及`agent_settings`；`GET /api/material-library/packages/:id/preparations`列出最近结果，`GET /api/material-library/preparations/:id?include_content=true`读取完整文书。状态和取消沿用jobs接口。同请求键恢复原ID；同来源/项目/模型及规则的成功结果或本机在途整理复用；成功结果可只读复用，不认领他机在途任务。新任务按来源目录固定材料ID、标题、顺序及全部结构块，Agent只返回描述信息，不接收重分册的块ID或标题。已有脱敏分册直接沿用；未分册原文按原文件保留，不在整理阶段拆合。摘要缺失不自动补调或新增材料，保持空值并生成技术提示；边界疑点记入notes，交回上游处理。未知或重复描述不替换来源正文，不阻断建题；模型结果未知不自动重调。
 
 总摘要由Agent根据最终目录、逐份描述及原文概括法律关系、材料构成、主要事实和程序状态，不写整理数量或处理进度；数量由程序计算。单次调用使用本次deadline及完整响应检查点。组合须明确主体、工作、信息时点、交付用途及可见依据；分别处理事件、凭证申请、取得及送达时间，时间不明时注明阶段或适用条件，不猜精确时点。多组选用须同一服务主体、案件与工作关联、场景相容；程序只核验字段和可见引用，不将结构校验冒充语义审查或增加整包准入门槛。
 
-建题POST不接受候选或文书筛选参数。服务端按材料包、revision、脱敏/提取来源摘要及项目自动匹配成功整理；匹配后将摘要、支持范围和可见性冻结到题目来源快照。人工材料预览仍可读取全文；标为隐藏的文书不会发送给出题或作答模型，也不会进入材料DOCX。出题、作答使用相同的可见正文投影；评分使用本轮作答冻结的同一材料输入。合并DOCX按整理出的文书边界拼接可见份数，并复用正文已有的同名首标题；若整理结果存在但没有可见文书，拒绝导出，不回退到全文。整理缺失的历史题维持原来源行为。
+建题POST不接受候选或文书筛选参数。服务端按材料包、revision、脱敏/提取来源摘要及项目自动匹配成功整理；匹配后将摘要、支持范围和可见性冻结到题目来源快照。人工材料预览仍可读取全文；标为隐藏的文书仍发送给出题和作答模型，评分使用本轮作答冻结的同一完整脱敏材料输入。材料DOCX继续按独立交付契约只纳入可见文书。出题、作答、评分的正文范围不再受visibility过滤；整理缺失的历史题维持原来源行为。
 
-隐藏只针对正文已完成出题目标中同类交付成果的文书，例如已写好的证据证明目的说明、庭审提纲、答辩意见、金额核对表或后续申请意见；理由须说明对应成果。判决、裁定、执行记录和其他事实/法律依据正常可见，不因包含结论或后续结果而隐藏。首次整理与补摘要共用这一规则和本次场景规则。实际OCR疑点或材料冲突记入逐份`notes`；`warnings`仅由编译器记录摘要缺失、结构/组合引用无效等实际问题，不采纳模型的正常过程或功能说明作为警告。新规则不回写历史整理结果或题目快照。
+隐藏只针对正文已完成出题目标中同类交付成果的文书，例如已写好的证据证明目的说明、庭审提纲、答辩意见、金额核对表或后续申请意见；理由须说明对应成果。判决、裁定、执行记录和其他事实/法律依据正常可见，不因包含结论或后续结果而隐藏。实际OCR疑点或材料冲突记入逐份`notes`；`warnings`仅由编译器记录摘要缺失、结构/组合引用无效等实际问题，不采纳模型的正常过程或功能说明作为警告。新规则不回写历史整理结果或题目快照。
 
 新整理结果的`document_count`只数完整文书；未归类分组及其结构块单独计数。来源已有类别时沿用，否则Agent只判断现有整条记录的类别，不改变边界；空白、残片、无法确认完整文书或未分册合订文件按未归类保留，全空记录由程序排除完整文书计数。旧结果没有`unit_kind`，其`documents.length`只是整理记录条数，不能当作真实文书份数；详情会显示记录条数、摘要非空数和真实份数未知。出题Agent实际采用的方向、主体、场景及`deliverables`保存在`step_attempts.result.material_scope_selection`（步骤投影也返回该字段）；主组合与`additional_combinations`附加组合均保存在该JSON中；历史单组合仍兼容。`question_material_scope_uses`只保留方向+场景参考索引，冲突不阻断题目保存；每题实际交付以尝试JSON为准。无需新增数据库列或迁移。无法可靠解析的历史题不自动回填；整理结果需要051；053参考索引缺失不阻断整理上下文冻结或出题保存。旧题快照不追溯改变。
 
@@ -257,9 +257,9 @@ HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`
 
 ### 整理显式恢复与预算
 
-prepare请求可带`execution_timeout_ms`（1000至86400000毫秒，默认30分钟），只冻结本次预算，prepare领取任务时不再被通用30分钟上限二次截短。`POST /api/material-library/jobs/:id/prepare-resume`接收新`request_key`和可选预算，只允许失败/取消的prepare，继承来源、项目和模型，创建新job并保留`previous_job_id`；活动/成功任务不续作。当前来源、规则、模型或引擎与原任务不一致时拒绝续作，需显式新建整理。相同request-key仍查回原回执。
+prepare请求可带`execution_timeout_ms`（1000至86400000毫秒，默认30分钟），只冻结本次预算，prepare领取任务时不再被通用30分钟上限二次截短。`POST /api/material-library/jobs/:id/prepare-resume`接收新`request_key`和可选预算，只允许失败/取消的prepare，继承来源、项目和模型，创建新job并保留`previous_job_id`；活动/成功任务不续作。续作只校验同材料包、同revision、同提取/脱敏/项目来源；规则、模型、引擎和提示词变化不作为拒绝条件。相同request-key仍查回原回执。
 
-首次响应和每批补摘要在私有preparation目录原子保存`checkpoint.json`。显式续作只复用同引擎/来源/规则/模型且具体输入、提示词、schema一致的完整检查点；不复用未完成调用、旧引擎的output/result.json或未知结果。每次复用复制到本次私有目录，允许多次显式续作；文件残缺/身份不符时不采纳。不自动重试、不启动worker、不延长原任务deadline。历史无检查点或规则变化的失败任务可明确新建整理，不能宣称能无损续算旧模型调用。
+单次完整响应在私有preparation目录原子保存`checkpoint.json`。显式续作在稳定来源相同时复用具有完整`response`的检查点，不再比对引擎、规则、模型、提示词或schema指纹；当前结果编译仍校验字段、ID及结构。未完成调用或残缺文件不复用。每次复用复制到本次私有目录；不自动重试、不启动worker、不延长原任务deadline。
 
 CLI的start/resume/diagnose使用同一HTTP契约；diagnose只返回状态、停止原因及结果计数，不输出正文、摘要、备注或模型私有事件。CLI语法唯一来源见[CLI说明](../../cli/README.md#可选材料整理)。隔离测试证明检查点身份和调用次数，不能证明正在运行的服务已加载新代码。
 
@@ -267,13 +267,9 @@ CLI的start/resume/diagnose使用同一HTTP契约；diagnose只返回状态、�
 
 库任务每15秒更新心跳。数据库写入异常时仅在最后确认的租约有效期内继续等待下一轮心跳；成功后按请求发起时刻加120秒保守更新本地租约期限。独立租约计时器覆盖数据库查询悬挂；到期停止并记录`heartbeat_unavailable`。明确取消、失租和任务总期限继续立即生效；发布事务仍检查数据库租约。该机制不重新派发任务、不延长任务总预算。
 
-R12单次整理：页面重新整理通过force显式跳过成功结果复用（在途仍复用），列表先按来源/项目过滤；建题只匹配当前引擎结果，项目专属优先。新任务不让Agent判断unit_kind，来源类别不全时不宣称真实完整文书数量。总摘要由Agent仅根据可见事实生成并传给作者，不再拼接替换。旧题快照保持原样。
+当前整理输入由`readPreparationSource()`查库，并通过与出题/作答共用的`documentPagesToModelText()`转换后内联到单次Agent请求；仅发送材料ID、标题和保留页码/表格关系的正文，不传完整结构坐标对象。程序保留原结构并绑定返回元数据，不生成`source.json`，也不要求Agent自行读取材料输入文件。页面重新整理以`force`显式跳过成功结果复用（在途仍复用）；列表按稳定来源和项目过滤，建题按同包、同revision、同提取/脱敏来源且项目专属优先匹配，不校验整理引擎指纹。旧任务检查点和题目快照不改写。
 
-材料整理v9输入直接由readPreparationSource查库并内联到单次Agent请求，不生成source.json或要求Agent读取材料输入文件；检查点、请求诊断和输出仍由既有私有执行目录保存。引擎身份变更，不复用v8调用检查点。
-
-材料整理v10与出题/作答共用documentPagesToModelText，输入仅带材料ID、标题和保留页码/表格合并关系的正文，不传结构坐标对象；程序持有完整原结构以绑定返回元数据。评分使用作答冻结正文，不重新转换。历史任务与快照保留原版输入。
-
-2026-10-29用户修订：8分钟为耗时观察点，不作为主动停止或禁止继续的门槛；新prepare默认执行预算30分钟。已领取任务继续使用原冻结预算，无法原地扩展，终态后仅经显式prepare-resume并指定新预算继续，不自动重发未知调用。
+默认执行预算为30分钟；耗时观察不作为主动停止门槛。已领取任务使用冻结预算，终态后只能通过显式`prepare-resume`指定新预算续作，不自动重发未知调用。
 
 
 材料整理进度复用library_jobs.progress：prepare_input准备输入、agent_analyzing等待Agent完整返回、parse_result核对JSON、publish_result入库。phase_started_at记录阶段开始，附带材料条数等计数，不记录正文或伪造分析百分比。终态以job.status为准；进度写入失败只记录安全告警，不使有效结果失败或重调Agent。旧在途任务不会补造阶段。

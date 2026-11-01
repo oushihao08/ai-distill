@@ -62,8 +62,14 @@ export function libraryQuestionRequestDigest(value:{project_id:string;project_ma
  return hash(canonicalJson({version:3,project_id,project_material_id,...(typeof input.copy_originals==='boolean'?{copy_originals:input.copy_originals}:{}),redaction_id:input.redaction_id??null,revision_id:input.revision_id??null,title:input.title,scenario:input.scenario??null,role_perspective:input.role_perspective??null,target_level:input.target_level??null,authoring_direction:input.authoring_direction??null,question_tags:input.question_tags}));
 }
 
+type PersistedLibraryQuestion={workflow_id:string;request_digest:string;source_digest:string;snapshot_digest:string};
+export function libraryQuestionReplay(row:PersistedLibraryQuestion,requestDigest:string){
+ if(row.request_digest!==requestDigest)throw conflict('同一建题幂等标识对应了不同请求内容');
+ return{id:row.workflow_id,reused:true,source_digest:row.source_digest,snapshot_digest:row.snapshot_digest};
+}
+
 type SourceFile={source_document_id?:string;source_refs?:unknown;id:string;original_name:string;position:number;redaction_mode:'model'|'declared_redacted';source_sha256:string;source_size_bytes:number;source_content_type:string;source_storage_path:string;source_storage_target:string;document_content:string;document_blob_sha256:string;document_sha256:string;document_issues:unknown;};
-type FrozenSource={material_scope?:{preparation_id:string;result:import('../../shared/material-preparation-result').MaterialPreparationResult};processing_mode:MaterialProcessingMode;material_mode:'redacted'|'original';project_id:string;project_name:string;project_tags:string[];package_id:string;package_name:string;revision_id:string;redaction_id:string|null;source_digest:string;markdown:string;markdown_sha256:string;index:string;index_sha256:string;files:SourceFile[];};
+type FrozenSource={material_scope?:{preparation_id:string;result:import('../../shared/material-preparation-result').MaterialPreparationResult};processing_mode:MaterialProcessingMode;material_mode:'redacted'|'original';project_id:string;project_name:string;project_tags:string[];package_id:string;package_name:string;revision_id:string;extraction_job_id:string;redaction_id:string|null;source_digest:string;markdown:string;markdown_sha256:string;index:string;index_sha256:string;files:SourceFile[];};
 
 async function transaction<T>(pool:Pool,action:(db:PoolClient)=>Promise<T>,beforeCommit?:()=>void):Promise<T>{
  const db=await pool.connect();
@@ -126,7 +132,7 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
   }
   const markdown=markdownParts.join('\n\n---\n\n'),index=JSON.stringify({format:'source-index-v1',materials:indexMaterials});
   const markdownSha=hash(markdown),indexSha=hash(index),sourceDigest=hash(canonicalJson({revision_id:link.selected_revision_id,extraction_job_id:extraction.id,files:rows.map(file=>({id:file.id,source_sha256:file.source_sha256,document_sha256:file.document_sha256,document_blob_sha256:file.document_blob_sha256}))}));
-  return{processing_mode:processingMode,material_mode:'original',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:String(link.selected_revision_id),redaction_id:null,source_digest:sourceDigest,markdown,markdown_sha256:markdownSha,index,index_sha256:indexSha,files:rows};
+  return{processing_mode:processingMode,material_mode:'original',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:String(link.selected_revision_id),extraction_job_id:String(extraction.id),redaction_id:null,source_digest:sourceDigest,markdown,markdown_sha256:markdownSha,index,index_sha256:indexSha,files:rows};
  }
  if(!input.redaction_id||link.selected_redaction_id!==input.redaction_id||!link.selected_revision_id)throw conflict('所选脱敏结果与项目当前选择不一致');
  const redaction=(await db.query(`SELECT r.id,r.package_id,r.revision_id,r.extraction_job_id,r.output_digest,r.validation_report,
@@ -157,12 +163,12 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
   assertLibraryExtractionUsable([{issues:file.document_issues,pages:document.pages}]);
   if(document.version!==1||document.source_sha256!==file.source_sha256||hash(document.pages.map((page:any)=>page.text).join('\n'))!==file.document_sha256)throw conflict('材料提取正文摘要校验失败');
  }
- return{processing_mode:processingMode,material_mode:'redacted',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:redaction.revision_id,redaction_id:redaction.id,source_digest:redaction.output_digest,markdown:redaction.markdown,markdown_sha256:redaction.markdown_sha256,index:redaction.redacted_index,index_sha256:redaction.index_sha256,files:rows};
+ return{processing_mode:processingMode,material_mode:'redacted',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:redaction.revision_id,extraction_job_id:redaction.extraction_job_id,redaction_id:redaction.id,source_digest:redaction.output_digest,markdown:redaction.markdown,markdown_sha256:redaction.markdown_sha256,index:redaction.redacted_index,index_sha256:redaction.index_sha256,files:rows};
 }
 
 /** 整理结果只作为作者参考冻结，不改变全文附件或材料可见范围；缺失时完整走原路径。 */
 export async function attachPreparationContext(db:Pick<PoolClient,'query'>,source:FrozenSource,projectId:string):Promise<FrozenSource>{
- const prepared=await findMatchingPreparation(db,{package_id:source.package_id,revision_id:source.revision_id,redaction_id:source.redaction_id,source_digest:source.source_digest},projectId);
+ const prepared=await findMatchingPreparation(db,{package_id:source.package_id,revision_id:source.revision_id,redaction_id:source.redaction_id,extraction_job_id:source.extraction_job_id},projectId);
  return prepared?{...source,material_scope:{preparation_id:prepared.id,result:prepared.result}}:source;
 }
 
@@ -209,8 +215,8 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
  const projectTags=(await pool.query('SELECT question_tags FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[projectId])).rows[0]?.question_tags;
  const input=validateLibraryQuestionInput(value,projectTags);
  const requestDigest=libraryQuestionRequestDigest({project_id:projectId,project_material_id:linkId,input});
- const prior=(await pool.query('SELECT workflow_id,request_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
- if(prior){if(prior.request_digest!==requestDigest)throw conflict('同一建题幂等标识对应了不同请求内容');return{id:prior.workflow_id,reused:true};}
+ const prior=(await pool.query('SELECT workflow_id,request_digest,source_digest,snapshot_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
+ if(prior)return libraryQuestionReplay(prior,requestDigest);
  const base=await transaction(pool,async db=>lockAndReadSource(db,projectId,linkId,packageId,input));
  const first=await attachPreparationContext(pool,base,projectId);
  if(input.copy_originals===false&&first.material_mode!=='redacted')throw conflict('原文来源建题仍须复制原件；仅脱敏来源支持不复制原件');
@@ -227,8 +233,8 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
   const result=await transaction(pool,async db=>{
    const current=await lockAndReadSource(db,projectId,linkId,packageId,input);
    if(current.processing_mode!==first.processing_mode)throw conflict('材料来源在复制期间发生变化，请重新建题');
-   const existing=(await db.query('SELECT workflow_id,request_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
-   if(existing){if(existing.request_digest!==requestDigest)throw conflict('同一建题幂等标识对应了不同请求内容');return{id:existing.workflow_id,reused:true};}
+   const existing=(await db.query('SELECT workflow_id,request_digest,source_digest,snapshot_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
+   if(existing)return libraryQuestionReplay(existing,requestDigest);
    await db.query(`INSERT INTO ai_distill.workflows(id,project_id,request_id,title,source_manifest,workflow_kind,scenario,role_perspective,target_level,question_tags,authoring_direction)
     VALUES($1,$2,$3,$4,$5::jsonb,'question',$6,$7,$8,$9,$10)`,[questionId,projectId,randomUUID(),input.title,JSON.stringify(sourceManifest),input.scenario??null,input.role_perspective??null,input.target_level??null,input.question_tags,input.authoring_direction??null]);
    for(const item of copied!.files){
@@ -255,8 +261,8 @@ export async function createLibraryQuestion(pool:Pool,storageRoot:string,project
   return result;
  }catch(error){
   if(copied){
-   try{const existing=(await pool.query('SELECT workflow_id,request_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
-    if(existing?.request_digest===requestDigest){if(existing.workflow_id!==questionId)await rm(copied.directory,{recursive:true,force:true});return{id:existing.workflow_id,reused:existing.workflow_id!==questionId};}
+   try{const existing=(await pool.query('SELECT workflow_id,request_digest,source_digest,snapshot_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
+    if(existing?.request_digest===requestDigest){if(existing.workflow_id!==questionId)await rm(copied.directory,{recursive:true,force:true});return{...libraryQuestionReplay(existing,requestDigest),reused:existing.workflow_id!==questionId};}
     if(!existing&&!commitAttempted)await rm(copied.directory,{recursive:true,force:true});
    }catch{throw new AggregateError([error],'建题提交状态未知，已保留私有目录供核对');}
   }

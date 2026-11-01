@@ -16,6 +16,12 @@ const run = promisify(execFile);
 const splitRoot = () => join(storageDirectory(), 'pdf-splits');
 const MAX_PDF_PAGES = 200;
 
+/** qpdf 状态3表示已生成结果但源文件存在警告；产物仍须经过后续页数、大小和来源摘要校验。 */
+async function runQpdf(args:string[]){
+ try{await run('qpdf',args,{timeout:180000,maxBuffer:1024*1024});}
+ catch(error){if(Number((error as NodeJS.ErrnoException).code)!==3)throw error;}
+}
+
 async function pageCount(path: string): Promise<number> {
  const { stdout } = await run('pdfinfo', [path]);
  const pages = Number(stdout.match(/^Pages:\s+(\d+)$/m)?.[1]);
@@ -53,7 +59,7 @@ export async function splitLargePdf(path: string, sourceBytes: Uint8Array): Prom
    const name=`${prefix}-页${String(pageOffset+first).padStart(4,'0')}-${String(pageOffset+last).padStart(4,'0')}.pdf`;
    const target=join(temporary,name);
    phase='pdfunite';
-   if(compactSplit)await run('qpdf',['--empty','--pages',path,`${first}-${last}`,'--','--remove-unreferenced-resources=yes',target],{timeout:180000,maxBuffer:1024*1024});
+   if(compactSplit)await runQpdf(['--empty','--pages',path,`${first}-${last}`,'--','--remove-unreferenced-resources=yes',target]);
    else await run('pdfunite',[...Array.from({length:last-first+1},(_,index)=>join(temporary,`page-${first+index}.pdf`)),target]);
    if(await pageCount(target)!==last-first+1)throw new Error('PDF分片页数不一致');
    phase='verify_parts';

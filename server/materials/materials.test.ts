@@ -129,7 +129,7 @@ test('image page uses OCR even with a substantial text layer',async()=>{
 });
 test('PDF extraction resumes from private per-page checkpoints after an OCR interruption',async()=>{
  const root=await mkdtemp(join(tmpdir(),'pdf-page-checkpoints-'));
- const cache={directory:join(root,'cache'),source_sha256:'a'.repeat(64),config_fingerprint:'b'.repeat(64)};
+ const cache={directory:join(root,'cache'),source_sha256:'a'.repeat(64)};
  try{
   let calls=0;
   const run=async(args:string[])=>{
@@ -142,8 +142,8 @@ test('PDF extraction resumes from private per-page checkpoints after an OCR inte
   await expect(extractPdf('unused',vision,run,cache)).rejects.toThrow('temporary provider timeout');
   const pages=await extractPdf('unused',vision,run,cache);
   expect(calls).toBe(5);expect(pages.map(page=>page.text)).toEqual(['page 1','page 2']);expect(pages[0]!.reused).toBe(true);expect(pages[1]!.reused).not.toBe(true);
-  const changedConfig=await extractPdf('unused',vision,run,{...cache,config_fingerprint:'c'.repeat(64)});expect(calls).toBe(7);expect(changedConfig.every(page=>!page.reused)).toBe(true);
-  await extractPdf('unused',vision,run,{...cache,source_sha256:'d'.repeat(64),config_fingerprint:'c'.repeat(64)});expect(calls).toBe(9);
+  const sameSource=await extractPdf('unused',vision,run,cache);expect(calls).toBe(5);expect(sameSource.every(page=>page.reused)).toBe(true);
+  await extractPdf('unused',vision,run,{...cache,source_sha256:'d'.repeat(64)});expect(calls).toBe(7);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 import{readdir,stat}from'node:fs/promises';

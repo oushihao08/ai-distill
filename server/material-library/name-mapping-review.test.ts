@@ -8,7 +8,7 @@ import {reviewNameMappings,validateNameMappingReview,type NameMappingPackage} fr
 const ids={package:'11111111-1111-4111-8111-111111111111',redaction:'22222222-2222-4222-8222-222222222222',workflow:'33333333-3333-4333-8333-333333333333',file:'44444444-4444-4444-8444-444444444444'};
 const candidates=[['杨政','林志远'],['重庆天宇科技有限公司','重庆远辰科技有限公司'],['申请人','当事人']].map(([original,before])=>({original,before,count:1,question_hits:0,samples:[{file_id:ids.file,original_name:'材料.pdf',page:1,path:'/0/text',context:'证据'}]}));
 const packages:NameMappingPackage[]=[{package_id:ids.package,redaction_id:ids.redaction,workflow_id:ids.workflow,candidates}];
-const valid={packages:[{package_id:ids.package,redaction_id:ids.redaction,mappings:[{original:'杨政',before:'林志远',after:'杨正',kind:'person',reason:'姓氏及读音符合'}],unresolved:[{original:'重庆天宇科技有限公司',before:'重庆远辰科技有限公司',reason:'字号边界待核'}],ignored:[{original:'申请人',before:'当事人',reason:'普通角色词'}]}]};
+const valid={packages:[{package_id:ids.package,redaction_id:ids.redaction,mappings:[{original:'杨政',before:'林志远',after:'杨正',kind:'person' as const,reason:'姓氏及读音符合'}],unresolved:[{original:'重庆天宇科技有限公司',before:'重庆远辰科技有限公司',reason:'字号边界待核'}],ignored:[{original:'申请人',before:'当事人',reason:'普通角色词'}]}]};
 
 test('每个候选恰好分流一次并保留人名姓氏',()=>{
  expect(validateNameMappingReview(valid,packages)).toEqual(valid);
@@ -19,7 +19,7 @@ test('每个候选恰好分流一次并保留人名姓氏',()=>{
 
 test('单位映射保留行政区划、行业和组织形式',()=>{
  const source:NameMappingPackage[]=[{package_id:ids.package,redaction_id:ids.redaction,workflow_id:ids.workflow,candidates:[candidates[1]]}];
- const result=(after:string)=>({packages:[{package_id:ids.package,redaction_id:ids.redaction,mappings:[{original:'重庆天宇科技有限公司',before:'重庆远辰科技有限公司',after,kind:'organization',reason:'仅改字号'}],unresolved:[],ignored:[]}]});
+ const result=(after:string)=>({packages:[{package_id:ids.package,redaction_id:ids.redaction,mappings:[{original:'重庆天宇科技有限公司',before:'重庆远辰科技有限公司',after,kind:'organization' as const,reason:'仅改字号'}],unresolved:[],ignored:[]}]});
  expect(validateNameMappingReview(result('重庆添余科技有限公司'),source).packages[0].mappings[0].after).toBe('重庆添余科技有限公司');
  for(const invalid of ['上海添余科技有限公司','重庆添余物流有限公司','重庆添余科技集团'])expect(()=>validateNameMappingReview(result(invalid),source)).toThrow('行政区划、行业或组织形式');
 });

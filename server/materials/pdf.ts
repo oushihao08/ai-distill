@@ -1,6 +1,6 @@
 /**
- * 职责：页级 PDF 工具：封装 Poppler 命令、文字与 OCR 提取、页级并发及指纹缓存。
- * 关键方法与用途：`command()` 安全调用 Poppler 工具；`extractPdf()` 按页执行文字／OCR 提取、并发控制和指纹缓存。
+ * 职责：页级 PDF 工具：封装 Poppler 命令、文字与 OCR 提取、页级并发及原件摘要缓存。
+ * 关键方法与用途：`command()` 安全调用 Poppler 工具；`extractPdf()` 按页执行文字／OCR 提取、并发控制和原件摘要缓存。
  * 使用场景：command供Poppler工具复用，documentBlocksToText供当前结构投影；extractPdf为旧Vision提取路径，不是当前MinerU队列入口。
  */
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -12,7 +12,7 @@ export {DOCUMENT_STRUCTURE_VERSION,documentBlocksToText} from '../../shared/docu
 export type {DocumentCell,DocumentRow,DocumentBlock} from '../../shared/document-structure';
 import type {DocumentBlock} from '../../shared/document-structure';
 export interface Page { page: number; text: string; structure?: DocumentBlock[]; method: 'text' | 'ocr'; usage?: unknown; model?: string; reused?: boolean; issues?: string[]; attempts?: { effort:string; elapsed_ms:number; issue?:string; usage?:unknown }[]; }
-export interface PageCheckpoint { directory:string; source_sha256:string; config_fingerprint:string; }
+export interface PageCheckpoint { directory:string; source_sha256:string; }
 const PAGE_CONCURRENCY=3,MAX_PAGE_RETRIES=2;
 let activePages=0;const pageWaiters:(()=>void)[]=[];
 async function withPageSlot<T>(work:()=>Promise<T>):Promise<T>{
@@ -24,7 +24,7 @@ async function readPageCheckpoint(checkpoint:PageCheckpoint,page:number):Promise
  const path=join(checkpoint.directory,`page-${String(page).padStart(4,'0')}.json`);
  try{
   const value=JSON.parse(await readFile(path,'utf8'));
-  if(value.source_sha256!==checkpoint.source_sha256||value.config_fingerprint!==checkpoint.config_fingerprint||value.page?.page!==page||typeof value.page.text!=='string'||!['text','ocr'].includes(value.page.method))throw new Error('invalid checkpoint');
+  if(value.source_sha256!==checkpoint.source_sha256||value.page?.page!==page||typeof value.page.text!=='string'||!['text','ocr'].includes(value.page.method))throw new Error('invalid checkpoint');
   return {...value.page,reused:true};
  }catch(error){
   if(error instanceof Error&&(error as NodeJS.ErrnoException).code==='ENOENT')return undefined;
@@ -34,7 +34,7 @@ async function readPageCheckpoint(checkpoint:PageCheckpoint,page:number):Promise
 async function writePageCheckpoint(checkpoint:PageCheckpoint,page:Page){
  const path=join(checkpoint.directory,`page-${String(page.page).padStart(4,'0')}.json`),temporary=`${path}.${crypto.randomUUID()}.tmp`;
  const {reused:_,...savedPage}=page;
- try{await writeFile(temporary,JSON.stringify({source_sha256:checkpoint.source_sha256,config_fingerprint:checkpoint.config_fingerprint,page:savedPage}),{mode:0o600,flag:'wx'});await rename(temporary,path);}
+ try{await writeFile(temporary,JSON.stringify({source_sha256:checkpoint.source_sha256,page:savedPage}),{mode:0o600,flag:'wx'});await rename(temporary,path);}
  catch(error){await rm(temporary,{force:true});throw error;}
 }
 export async function command(args: string[]): Promise<string> {

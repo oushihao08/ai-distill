@@ -20,6 +20,12 @@ function clientFromEnv(){
  return new ApiClient(base,fetch,token);
 }
 const lookupPath=(workflowId:string,requestKey:string)=>`/api/remote-answer-operations/by-request?workflow_id=${workflowId}&request_key=${requestKey}`;
+const terminalStatuses=new Set(['succeeded','failed','skipped']);
+/** 远程回执必须仍属于原 workflow/request key；只核对业务身份和状态，不增加机器或网络环境门槛。 */
+function answerState(value:any,workflowId:string,requestKey:string){
+ if(!value||typeof value!=='object'||Array.isArray(value)||value.workflow_id!==workflowId||value.request_key!==requestKey||!['waiting','running','succeeded','failed','skipped'].includes(value.status)||!Array.isArray(value.attempts)||value.attempts.some((attempt:any)=>!attempt||typeof attempt!=='object'||Array.isArray(attempt)||typeof attempt.id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(attempt.id)||!['waiting','running','succeeded','failed','skipped','cancelled'].includes(attempt.status)))throw new CliError('远程作答回执与请求身份不一致',{kind:'invalid_response'});
+ return value;
+}
 
 export async function runRemoteAnswerCommand(args:string[],signal?:AbortSignal){
  if(args[0]!=='remote'||args[1]!=='answer')throw new CliError('远程作答命令无效');
@@ -29,16 +35,16 @@ export async function runRemoteAnswerCommand(args:string[],signal?:AbortSignal){
  const workflowId=uuid(flags.get('workflow'),'workflow'),requestKey=uuid(flags.get('request-key'),'request-key'),client=clientFromEnv();
  const path=lookupPath(workflowId,requestKey);
  if(action==='status'){
-  const data=await client.json(path,'GET',undefined,signal);
-  return{outcome:['succeeded'].includes(data.status)?'complete':['failed','skipped'].includes(data.status)?'partial':'waiting',data};
+  const data=answerState(await client.json(path,'GET',undefined,signal),workflowId,requestKey);
+  return{outcome:data.status==='succeeded'?'complete':terminalStatuses.has(data.status)?'partial':'waiting',data};
  }
  let accepted:any;
- try{accepted=await client.json('/api/remote-answer-operations','POST',{workflow_id:workflowId,request_key:requestKey},signal);}
+ try{accepted=answerState(await client.json('/api/remote-answer-operations','POST',{workflow_id:workflowId,request_key:requestKey},signal),workflowId,requestKey);}
  catch(error){if(error instanceof CliError&&error.detail.outcome_unknown){error.detail.workflow_id=workflowId;error.detail.request_key=requestKey;}throw error;}
  if(action==='start')return{outcome:'complete',data:accepted};
  while(!signal?.aborted){
-  const data=await client.json(path,'GET',undefined,signal);
-  if(['succeeded','failed','skipped'].includes(data.status))return{outcome:data.status==='succeeded'?'complete':'partial',data};
+  const data=answerState(await client.json(path,'GET',undefined,signal),workflowId,requestKey);
+  if(terminalStatuses.has(data.status))return{outcome:data.status==='succeeded'?'complete':'partial',data};
   try{await delay(3000,undefined,{signal});}catch{throw new CliError('等待已中断，服务器作答继续执行',{kind:'interrupted',workflow_id:workflowId,request_key:requestKey});}
  }
  throw new CliError('等待已中断，服务器作答继续执行',{kind:'interrupted',workflow_id:workflowId,request_key:requestKey});

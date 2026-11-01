@@ -96,10 +96,10 @@ test('缺摘要与未归类文书生成定向补摘要任务，回填后覆盖�
 test('建题自动匹配精确来源的整理结果；无表或无匹配记录时返回空且不改材料',async()=>{
  const prepared={id,result};
  const query=async(sql:string)=>sql.includes('to_regclass')?{rows:[{available:true}]}:{rows:[prepared]};
- const source={package_id:'p',revision_id:'r',redaction_id:'redaction',source_digest:'digest'};
+ const source={package_id:'p',revision_id:'r',redaction_id:'redaction',extraction_job_id:'extract'};
  const found=await findMatchingPreparation({query} as any,source,projectId);
  expect(found).toEqual({...prepared,result:{...prepared.result,summary_scope:'visible'}});
- const frozen:any={package_id:'p',revision_id:'r',redaction_id:'redaction',source_digest:'digest',markdown:'FULL MATERIAL',index:JSON.stringify(sourceIndex)};
+ const frozen:any={package_id:'p',revision_id:'r',redaction_id:'redaction',extraction_job_id:'extract',source_digest:'digest',markdown:'FULL MATERIAL',index:JSON.stringify(sourceIndex)};
  const attached=await attachPreparationContext({query} as any,frozen,projectId);
  expect(attached.markdown).toBe('FULL MATERIAL');expect(attached.material_scope?.result.package_summary).toBe(result.package_summary);
  expect(await findMatchingPreparation({query:async()=>({rows:[{available:false}]})} as any,source,projectId)).toBeUndefined();
@@ -173,17 +173,17 @@ test('模型正常说明不成为警告，文书具体疑点保留在notes',()=>
 });
 
 
-test('显式恢复只复用同身份同输入的完整检查点，失败调用不自动重试',async()=>{
+test('显式恢复复用已完整返回的检查点，不因提示词、模型或引擎变化阻断',async()=>{
  const root=await mkdtemp(join(tmpdir(),'preparation-resume-'));
  try{
   const old=join(root,'old'),next=join(root,'next');await mkdir(old);await mkdir(next);
   let calls=0;const execute=async()=>({result:{value:++calls}});
-  expect(await runPreparationCheckpoint(old,undefined,'identity',{input:1},execute)).toEqual({result:{value:1}});
-  expect(await runPreparationCheckpoint(next,old,'identity',{input:1},execute)).toEqual({result:{value:1}});expect(calls).toBe(1);
-  expect(await runPreparationCheckpoint(next,old,'changed',{input:1},execute)).toEqual({result:{value:2}});
-  expect(await runPreparationCheckpoint(next,old,'changed',{input:2},execute)).toEqual({result:{value:3}});
+  expect(await runPreparationCheckpoint(old,undefined,execute)).toEqual({result:{value:1}});
+  expect(await runPreparationCheckpoint(next,old,execute)).toEqual({result:{value:1}});expect(calls).toBe(1);
+  expect(await runPreparationCheckpoint(next,old,execute)).toEqual({result:{value:1}});expect(calls).toBe(1);
   let failures=0;
-  await expect(runPreparationCheckpoint(next,undefined,'new',{},async()=>{failures++;throw new Error('provider unknown');})).rejects.toThrow('provider unknown');expect(failures).toBe(1);
+  const empty=join(root,'empty');await mkdir(empty);
+  await expect(runPreparationCheckpoint(empty,undefined,async()=>{failures++;throw new Error('provider unknown');})).rejects.toThrow('provider unknown');expect(failures).toBe(1);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -210,7 +210,7 @@ test('查库正文直接进入单次请求，不落输入文件且完整检查�
    return{rows:[],rowCount:1};
   },release:()=>{}};
   const pool={query:db.query,connect:async()=>db};const signal=new AbortController().signal;
-  const job={id,revision_id:projectId,lease_token:'lease',deadline_at:new Date(Date.now()+60000).toISOString(),input_snapshot:{redaction_id:id,source_digest:'source-digest',rules:'目标成果：执行请求金额核对表',preparation_key:'identity'},config_snapshot:{agent:{model:'fixture',reasoning_effort:'low'}}};
+  const job={id,package_id:id,revision_id:projectId,lease_token:'lease',deadline_at:new Date(Date.now()+60000).toISOString(),input_snapshot:{redaction_id:id,extraction_job_id:'extract',source_digest:'source-digest',rules:'目标成果：执行请求金额核对表'},config_snapshot:{agent:{model:'fixture',reasoning_effort:'low'}}};
   let calls=0;
   const execute=async(options:any)=>{
    calls++;
@@ -249,7 +249,7 @@ test('固定目录拒绝模型重分册，稳定ID及全部正文沿用来源，
 });
 
 
-test('整理入队与显式恢复冻结预算、模型和来源；同键幂等且引擎不符不续作',async()=>{
+test('整理入队与显式恢复冻结预算、模型和稳定来源；规则、模型或引擎变化不阻断续作',async()=>{
  const before=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='legacy';
  try{
   const source=JSON.stringify({prepared_documents:[{id:'source',title:'材料',text:'正文'}]});const jobs:any[]=[];
@@ -271,8 +271,9 @@ test('整理入队与显式恢复冻结预算、模型和来源；同键幂等�
   jobs[0].status='cancelled';
   const next=await resumePreparation(pool as any,'/unused',first.id,{request_key:projectId,execution_timeout_ms:3600000});
   expect(next.id).not.toBe(first.id);expect(jobs[1].previous_job_id).toBe(first.id);expect(jobs[1].input_snapshot.previous_job_id).toBe(first.id);expect(jobs[1].config_snapshot.agent).toEqual(request.agent_settings);expect(jobs[1].config_snapshot.settings.execution.task_timeout_ms).toBe(3600000);
-  jobs[0].input_snapshot.preparation_key='old-engine';
-  await expect(resumePreparation(pool as any,'/unused',first.id,{request_key:id})).rejects.toThrow('引擎已变化');expect(jobs).toHaveLength(2);
+  jobs[0].input_snapshot.engine_version='old-engine';
+  const thirdKey='33333333-3333-4333-8333-333333333333';
+  expect((await resumePreparation(pool as any,'/unused',first.id,{request_key:thirdKey})).id).not.toBe(first.id);expect(jobs).toHaveLength(3);
   await expect(enqueuePreparation(pool as any,'/unused',projectId,{...request,execution_timeout_ms:0})).rejects.toThrow('执行预算');
  }finally{if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;}
 });
@@ -283,7 +284,7 @@ test('来源分册有多个模型划分时不擅自合并；缺少参考索引�
  const b=preparationBlocks(known),r={documents:[{id:'one',block_ids:[b[0]!.id]},{id:'two',block_ids:[b[1]!.id]}]};
  expect(completeKnownPreparationDocuments(r,known).documents).toEqual(r.documents);
  const db={query:async(sql:string)=>sql.includes('library_preparations')&&sql.includes('to_regclass')?{rows:[{available:true}]}:sql.includes('question_material_scope_uses')?{rows:[{available:false}]}:{rows:[{id,result}]}};
- expect((await findMatchingPreparation(db as any,{package_id:id,revision_id:id,redaction_id:id,source_digest:'digest'},projectId))?.id).toBe(id);
+ expect((await findMatchingPreparation(db as any,{package_id:id,revision_id:id,redaction_id:id,extraction_job_id:'extract'},projectId))?.id).toBe(id);
  await saveMaterialScopeSelection({query:async()=>({rows:[{available:true}]})} as any,projectId,id,id,undefined);
 });
 
@@ -293,11 +294,11 @@ test('可见摘要投影保留Agent总摘要，不用逐份拼接替代',()=>{
  expect(result.document_count).toBeUndefined();
 });
 
-test('项目专属结果优先且建题仅匹配当前整理引擎',async()=>{
+test('项目专属结果优先且建题按稳定提取或脱敏来源匹配，不限定整理引擎',async()=>{
  let sqlText='',parameters:any[]=[];
  const db={query:async(sql:string,values:any[]=[])=>{if(sql.includes('to_regclass'))return{rows:[{available:true}]};sqlText=sql;parameters=values;return{rows:[]};}};
- await findMatchingPreparation(db as any,{package_id:id,revision_id:projectId,redaction_id:id,source_digest:'digest'},projectId);
- expect(sqlText).toContain('DESC NULLS LAST');expect(sqlText).toContain("engine_version'=$6");expect(parameters[5]).toContain('single-inline-v10');
+ await findMatchingPreparation(db as any,{package_id:id,revision_id:projectId,redaction_id:id,extraction_job_id:'extract'},projectId);
+ expect(sqlText).toContain('DESC NULLS LAST');expect(sqlText).toContain('p.extraction_job_id=$4');expect(sqlText).not.toContain('engine_version');expect(parameters[3]).toBe('extract');
 });
 
 test('历史纯正文索引经共用模型正文投影不丢失材料',()=>{

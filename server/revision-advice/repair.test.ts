@@ -7,6 +7,9 @@ import {repairStepIssue,assertRepairStepAllowed} from './jobs';
 import {enqueueAuthoring} from '../authoring/jobs';
 import {enqueueAnswer} from '../answer-models/jobs';
 import {enqueueScore} from '../scoring/jobs';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 
 test('repair permission is restricted to authoring with usable advice',()=>{
  for(const adviceReady of [false,true]){
@@ -94,19 +97,22 @@ test('HTTP single answer and score cannot bypass repair admission',async()=>{
 
 test('HTTP batch preserves advice readiness for authoring and never dispatches old answers or scores',async()=>{
  const project='11111111-1111-4111-8111-111111111111',flow='22222222-2222-4222-8222-222222222222';
- for(const adviceReady of [false,true]){
-  const app=new Hono(),dispatched:number[]=[];
-  registerWorkflowExecutionRoutes(app,{pool:{} as Pool,storageRoot:'/unused',repository:{
-   projectExists:async()=>true,selectWorkflows:async()=>[{id:flow,project_id:project}],
-   readStepStates:async()=>[4,5,6,7].map(ordinal=>({workflow_id:flow,ordinal,status:'succeeded',enabled:true,active:false,revision_advice_ready:adviceReady,result:ordinal===7?{decision:'repair'}:undefined})),
-  },dispatch:async(_id,ordinal)=>{dispatched.push(ordinal);return{id:'synthetic-attempt',reused:false};}});
-  for(const ordinal of [4,5,6]){
-   const response=await app.request(`/api/projects/${project}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-   expect(response.status).toBe(202);
-   const body=await response.json() as {results:{status:string;reason?:string}[]};
-   expect(body.results[0]!.status).toBe(ordinal===4&&adviceReady?'queued':'not_ready');
-   if(ordinal!==4)expect(body.results[0]!.reason).toContain('重新出题');
+ const root=await mkdtemp(join(tmpdir(),'repair-batch-route-'));
+ try{
+  for(const adviceReady of [false,true]){
+   const app=new Hono(),dispatched:number[]=[];
+   registerWorkflowExecutionRoutes(app,{pool:{} as Pool,storageRoot:root,repository:{
+    projectExists:async()=>true,selectWorkflows:async()=>[{id:flow,project_id:project}],
+    readStepStates:async()=>[4,5,6,7].map(ordinal=>({workflow_id:flow,ordinal,status:'succeeded',enabled:true,active:false,revision_advice_ready:adviceReady,result:ordinal===7?{decision:'repair'}:undefined})),
+   },dispatch:async(_id,ordinal)=>{dispatched.push(ordinal);return{id:'synthetic-attempt',reused:false};}});
+   for(const ordinal of [4,5,6]){
+    const response=await app.request(`/api/projects/${project}/steps/${ordinal}/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    expect(response.status).toBe(202);
+    const body=await response.json() as {results:{status:string;reason?:string}[]};
+    expect(body.results[0]!.status).toBe(ordinal===4&&adviceReady?'queued':'not_ready');
+    if(ordinal!==4)expect(body.results[0]!.reason).toContain('重新出题');
+   }
+   expect(dispatched).toEqual(adviceReady?[4]:[]);
   }
-  expect(dispatched).toEqual(adviceReady?[4]:[]);
- }
+ }finally{await rm(root,{recursive:true,force:true});}
 });

@@ -13,9 +13,12 @@ async function pdfPages(path:string){const {stdout}=await run('pdfinfo',[path],{
 export async function prepareLibraryFiles(manifestPath:string,outputPath:string,signal?:AbortSignal){
  try{
   const sourcePath=resolve(manifestPath),output=resolve(outputPath),manifest=JSON.parse(await readFile(sourcePath,'utf8'));
+  if(Object.hasOwn(manifest,'recovery'))throw new Error('临时恢复清单不能再次预处理或作为材料原件');
+  if(Object.keys(manifest).some(key=>key!=='files'))throw new Error('材料清单只能包含 files');
   if(!Array.isArray(manifest.files)||!manifest.files.length||manifest.files.length>100)throw new Error('材料清单须包含1至100份文件');
   const inputs=manifest.files.map((x:any)=>{
    if(!x||typeof x.path!=='string'||!x.path.trim()||!['model','declared_redacted'].includes(x.redaction_mode??'model'))throw new Error('材料清单路径或脱敏声明无效');
+   if(Object.keys(x).some(key=>!['path','redaction_mode'].includes(key)))throw new Error('材料清单文件项含不支持的来源或恢复字段');
    const path=resolve(dirname(sourcePath),x.path),format=extname(path).toLowerCase();
    if(!['.ofd','.pdf','.docx','.txt','.md'].includes(format))throw new Error('材料预处理格式不支持：'+format);
    return{path,format,redaction_mode:x.redaction_mode??'model'};

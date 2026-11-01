@@ -19,7 +19,7 @@ test('缺失计划结构或伪空模板身份在连接数据库前拒绝',async(
   catch(error){expect((error as {status:number}).status).toBe(400);}
  }
 });
-test('同版模板导入保留结构，配置变更后原请求仍幂等，新请求过期模板拒绝',async()=>{
+test('模板导入保留结构，配置变更后原请求仍幂等且新请求不受摘要门槛阻断',async()=>{
  const root=await mkdtemp(join(tmpdir(),'redaction-template-'));const s=settings();saveLibraryProcessingSettings(root,0,s);
  const template=resolveLibraryTemplate(s,'aliases'),text='姓名\t张三',structure=[{id:'t',kind:'table',rows:[{cells:[{text:'姓名'},{text:'张三',columnSpan:2}]}]}];
  const doc=JSON.stringify({version:1,source_sha256:'source',pages:[{page:1,text,structure,issues:[]}]});
@@ -43,11 +43,12 @@ test('同版模板导入保留结构，配置变更后原请求仍幂等，新�
   expect(index.prepared_documents[0].document.pages[0].blocks[0].rows[0].cells[1]).toEqual({text:'人员甲',columnSpan:2});
   const changed={...s,redaction_templates:[{id:'aliases',name:template.name,workflow:'codex_plan',redaction:{provider:'codex',prompt:'新版规则'}}]};saveLibraryProcessingSettings(root,1,changed);
   expect((await importPreparedLibraryMaterials(pool,rid,{request_key:key,plan},root)).reused).toBe(true);expect(inserts).toBe(1);
-  prior=undefined;await expect(importPreparedLibraryMaterials(pool,rid,{request_key:key,plan},root)).rejects.toThrow('摘要不匹配');expect(inserts).toBe(1);
+  prior=undefined;const changedKey='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  expect((await importPreparedLibraryMaterials(pool,rid,{request_key:changedKey,plan},root)).reused).toBe(false);expect(inserts).toBe(2);
   // 旧计划来自同一份带表格结构的提取结果；改名后不能再沿用编辑前结构。
   const legacyPlan:any={...plan};delete legacyPlan.template_id;delete legacyPlan.template_digest;
-  const legacy=await importPreparedLibraryMaterials(pool,rid,{request_key:key,plan:legacyPlan},root);
-  expect(legacy).toMatchObject({structure_mode:'extracted-page-text'});expect(inserts).toBe(2);
+  prior=undefined;const legacy=await importPreparedLibraryMaterials(pool,rid,{request_key:'ffffffff-ffff-4fff-8fff-ffffffffffff',plan:legacyPlan},root);
+  expect(legacy).toMatchObject({structure_mode:'extracted-page-text'});expect(inserts).toBe(3);
   expect(index.materials[0].document.pages[0].blocks).toEqual([{id:'prepared-1',kind:'paragraph',text:'姓名\t人员甲'}]);
   expect(index.preparation_layout).toBe('extracted-page-text');expect(index.prepared_documents[0].title).toBe(plan.documents[0]!.title);
  }finally{await rm(root,{recursive:true,force:true});}

@@ -36,7 +36,13 @@ interface WorkflowExecutionRepository {
 }
 
 export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageRoot=storageDirectory(),batchChunkSize=readBatchChunkSize(),repository,waitForAttempt:wait=waitForAttempt}:RouteDependencies){
- app.post('/api/workflows/:id/answer-score-results/restore',async c=>{const body=await c.req.json().catch(()=>({}));return c.json(await restoreAnswerScoreResults(pool,uuid(c.req.param('id')),body.answer_only===true));});
+ app.post('/api/workflows/:id/answer-score-results/restore',async c=>{
+  const raw=await c.req.text();
+  let body:unknown={};
+  if(raw.trim())try{body=JSON.parse(raw);}catch{throw new HTTPException(400,{message:'恢复参数须为有效JSON'});}
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>key!=='answer_only')||('answer_only'in body&&typeof (body as {answer_only?:unknown}).answer_only!=='boolean'))throw new HTTPException(400,{message:'恢复参数只允许可选布尔值 answer_only'});
+  return c.json(await restoreAnswerScoreResults(pool,uuid(c.req.param('id')),(body as {answer_only?:boolean}).answer_only===true));
+ });
  const data=repository??{
   projectExists:async(projectId:string)=>Boolean((await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[projectId])).rowCount),
   selectWorkflows:async(projectId:string,workflowIds?:string[])=>{

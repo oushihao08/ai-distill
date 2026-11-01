@@ -6,8 +6,6 @@ import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {prepareStructuredMaterialData} from '../../shared/prepared-structure';
-import {readLibraryProcessingSettings} from './settings';
-import {resolveLibraryTemplate} from './templates';
 import {prepareMaterialData,validateMaterialPreparationPlan} from '../../shared/material-preparation';
 import {canonicalJson} from '../../shared/workflow-config';
 import {insertLibraryTextBlob} from './storage';
@@ -16,7 +14,7 @@ import {documentBlocksToText} from '../materials/pdf';
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const idPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const conflict=(s:string)=>new HTTPException(409,{message:s});
-export async function importPreparedLibraryMaterials(pool:Pool,revisionId:string,body:any,storageRoot?:string){
+export async function importPreparedLibraryMaterials(pool:Pool,revisionId:string,body:any,_storageRoot?:string){
  const plan=body?.plan,requestKey=body?.request_key;
  try{validateMaterialPreparationPlan(plan);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'材料计划格式无效'});}
  if(typeof requestKey!=='string'||!idPattern.test(requestKey)||plan.revision_id!==revisionId)throw new HTTPException(400,{message:'材料计划或请求标识无效'});
@@ -28,8 +26,8 @@ export async function importPreparedLibraryMaterials(pool:Pool,revisionId:string
   const revision=(await db.query('SELECT state,file_count FROM ai_distill.library_revisions WHERE id=$1 FOR UPDATE',[revisionId])).rows[0];if(revision?.state!=='ready')throw conflict('来源版本尚未入库');
   const prior=(await db.query('SELECT j.id,j.input_digest,r.id AS redaction_id FROM ai_distill.library_jobs j LEFT JOIN ai_distill.library_redactions r ON r.redaction_job_id=j.id WHERE j.package_id=$1 AND j.request_key=$2',[pkg.id,requestKey])).rows[0];
   if(prior){if(prior.input_digest!==digest||!prior.redaction_id)throw conflict('请求标识与已有任务不匹配');await db.query('COMMIT');return{job_id:prior.id,redaction_id:prior.redaction_id,reused:true};}
-  const template=plan.template_id?resolveLibraryTemplate((await readLibraryProcessingSettings(db,storageRoot)).processing_settings,plan.template_id):undefined;
-  if(template&&(template.workflow!=='codex_plan'||plan.template_digest!==template.digest))throw conflict('模板流程或摘要不匹配，请读取当前模板并重新审阅计划');
+  // 模板字段记录生成计划时的审计上下文；导入只依赖稳定来源、精确编辑、覆盖和结构校验。
+  const template=plan.template_id?{id:plan.template_id,name:plan.template_id,digest:plan.template_digest,workflow:'codex_plan'}:undefined;
   if((await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND kind<>'prepare' AND status IN ('queued','running')",[revisionId])).rowCount)throw conflict('来源版本有活动任务');
   const extraction=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE id=$1 AND revision_id=$2 AND kind='extract' AND status='succeeded'",[plan.extraction_job_id,revisionId])).rows[0];if(!extraction)throw conflict('提取任务未成功或与来源版本不符');
   const rows=(await db.query(`SELECT d.file_id,d.source_sha256,d.text_sha256,b.text_content,b.sha256 FROM ai_distill.library_documents d

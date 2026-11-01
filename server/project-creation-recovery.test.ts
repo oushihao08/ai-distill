@@ -1,11 +1,12 @@
 /** 验证只读回执恢复的路径规范化、配置冲突及显式模型绑定；使用临时目录与SQL替身。 */
 import {test,expect} from 'bun:test';
 import {mkdtemp,rm,mkdir,symlink,realpath} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {recoverCreatedProject} from './project-creation-recovery';
+import {repositoryRoot} from './paths';
 test('回执查询规范化路径并拒绝配置冲突，没有任何写SQL',async()=>{
- const root=await mkdtemp(join(tmpdir(),'phase-receipt-'));
+ const parent=join(repositoryRoot,'.storage','test-fixtures');await mkdir(parent,{recursive:true});
+ const root=await mkdtemp(join(parent,'phase-receipt-'));
  try{
   const path=join(root,'workspace');await mkdir(path);await symlink(path,join(root,'alias'));
   const canonical=await realpath(path),input={name:'甲 - 第一期',parent_name:'甲',phase_name:'第一期',phase_no:1,workspace_path:join(root,'alias')+'/',local_skill_path:join(root,'alias'),authoring_defaults:{model:'gpt-6.1-sol',reasoning_effort:'low'}};

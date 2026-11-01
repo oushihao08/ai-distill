@@ -98,13 +98,13 @@ test('上传材料原文件名从数据库传入作者并用于公开题包表�
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
-test('整理快照含隐藏文书时只把可见正文交给出题Agent并保存实际交付成果',async()=>{
+test('整理快照含隐藏文书时把完整脱敏正文交给出题Agent并保存实际交付成果',async()=>{
  const f=await projectFixture();let received:any;try{
   f.state.library='redacted';f.state.preparation=true;f.state.text='可见证据正文\n隐藏裁判结果正文';
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
   const selection={direction:'证据分析',party:'原告',scenes:['诉前准备'],deliverables:['证据目录','争点清单'],additional_combinations:[{direction:'应诉准备',party:'原告',scenes:['庭审准备'],deliverables:['庭审提纲']}]};
   await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{received=options;return{...authored,draft:{...authored.draft,material_scope_selection:selection}} as any;});
-  expect(received.materials).toHaveLength(1);expect(received.materials[0].text).toContain('可见证据正文');expect(received.materials[0].text).not.toContain('隐藏裁判结果正文');
+  expect(received.materials).toHaveLength(1);expect(received.materials[0].text).toContain('可见证据正文');expect(received.materials[0].text).toContain('隐藏裁判结果正文');
   expect(received.material_scope.result.documents.map((document:any)=>document.title)).toEqual(['证据材料']);
   const completed=f.calls.find(call=>call.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));
   expect(JSON.parse(completed!.values[1]).material_scope_selection).toEqual(selection);

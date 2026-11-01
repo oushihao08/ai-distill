@@ -138,7 +138,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
   const {digest,...input}=job.input;
   if(!input||!Array.isArray(input.materials))throw new Error('stale snapshot');
   const sources=await currentSources(pool,job.workflow_id);
-  if(JSON.stringify(sources.map(x=>[x.material_id,x.artifact_id]).sort())!==JSON.stringify(input.materials.map((x:any)=>[x.material_id,x.artifact_id]).sort()))throw new Error('stale source');
+  if(JSON.stringify(sources.map(x=>[x.material_id,x.artifact_id,x.source_sha256,x.artifact_sha256]).sort())!==JSON.stringify(input.materials.map((x:any)=>[x.material_id,x.artifact_id,x.source_sha256,x.artifact_sha256]).sort()))throw new Error('stale source');
 
   const materials:ExtractedMaterial[]=[];
   // Loading large database text is part of this task's budget, not free time before the model timer.
@@ -171,7 +171,7 @@ export async function runNextRedaction(pool:Pool,root:string,signal?:AbortSignal
    const current=await tx.query("SELECT id FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[job.workflow_id]);
    const active=await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE",[job.id]);
    const sourcesNow=await currentSources(tx,job.workflow_id);
-   if(!current.rowCount||!active.rowCount||JSON.stringify(sourcesNow.map(x=>[x.material_id,x.artifact_id]).sort())!==JSON.stringify(input.materials.map((x:any)=>[x.material_id,x.artifact_id]).sort()))throw new Error('任务附件已失效，结果未发布');
+   if(!current.rowCount||!active.rowCount||JSON.stringify(sourcesNow.map(x=>[x.material_id,x.artifact_id,x.source_sha256,x.artifact_sha256]).sort())!==JSON.stringify(input.materials.map((x:any)=>[x.material_id,x.artifact_id,x.source_sha256,x.artifact_sha256]).sort()))throw new Error('任务附件已失效，结果未发布');
    remainingTask();
    for(const file of files)await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[crypto.randomUUID(),job.workflow_id,job.id,file.kind,file.storage_path,file.sha256,file.size_bytes,file.content]);
    await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,session_id=$3,error=NULL,finished_at=now() WHERE id=$1",[job.id,JSON.stringify(result),output.session_id]);

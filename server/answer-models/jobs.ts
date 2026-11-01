@@ -73,7 +73,7 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
    const source=await readQuestionMaterials(db,id);
    if(JSON.stringify(question.attachment_ids)!==JSON.stringify(source.attachments.map(item=>item.id)))throw new AnswerInputError('题目附件与共享材料包私有快照不一致');
    const modelSources=source.model_attachments??source.attachments;
-   if(source.model_attachments&&!modelSources.length)throw new AnswerInputError('材料整理结果中没有可见文书，不能向作答模型发送隐藏材料');
+   if(source.model_attachments&&!modelSources.length)throw new AnswerInputError('材料整理结果中没有可供模型读取的文书正文');
    materialOrigin=source.origin;
    sources=modelSources.map(item=>({id:item.id,kind:source.origin.kind==='library_v1'&&source.origin.material_mode==='original'?'source_markdown':'redacted_markdown',sha256:item.sha256,text:item.content}));
   }else{
@@ -298,7 +298,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         try {
             await tx.query('BEGIN');
             // 原样保存答案内容，但已取消/删除任务不再具有发布权；不重新审查当前题目或模型内容。
-            const owner=await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status NOT IN ('skipped','failed') FOR UPDATE", [job.id]);
+            const owner=await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE", [job.id]);
             if(!owner.rows.length)throw new Error('作答任务已取消或移除');
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'model_answer', relative(resolve(root), path), answer_sha256, bytes.length, executionTarget === 'server' ? result.text : null]);
             await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE id=$1", [job.id, JSON.stringify(publication)]);

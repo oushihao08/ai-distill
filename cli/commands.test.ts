@@ -111,6 +111,17 @@ describe('命令范围和结果', () => {
     const result=await runCommand(['step','dispatch','author_question','--project',project,'--ids',question],client);
     expect(result.outcome).toBe('partial');
   });
+  test.each([
+    [{workflow_id:second,status:'queued',attempt_id:attempt},'其他题目的回执'],
+    [{workflow_id:question,status:'unknown',attempt_id:attempt},'未知状态'],
+    [{workflow_id:question,status:'queued',attempt_id:'not-a-uuid'},'无效attempt'],
+  ])('派发回执拒绝%s，不能用数量相同冒充本次题目已受理',async(row)=>{
+    const {client}=fixture(()=>({results:[row]}));
+    const result=await runCommand(['step','dispatch','author_question','--project',project,'--ids',question],client);
+    expect(result.outcome).toBe('partial');
+    expect(result.dispatch).toEqual([]);
+    expect(result.batches[0].error).toMatchObject({kind:'invalid_response',outcome_unknown:true});
+  });
   test('删除题目要求匹配期次与精确标题，并拒绝存在活动尝试的题目', async () => {
     const {client,calls}=fixture((url,init)=>{
       if(url.pathname===`/api/workflows/${question}`&&init?.method==='DELETE')return{deleted:true};
@@ -318,6 +329,21 @@ describe('命令范围和结果', () => {
       expect(form.get('request_key')).toBe(attempt);
       expect(form.get('redaction_modes')).toBe('["declared_redacted"]');
       expect((form.get('files') as File).name).toBe('附件.docx');
+    } finally { await rm(root,{recursive:true,force:true}); }
+  });
+
+  test('材料库导入拒绝把临时恢复产物当成原件', async () => {
+    const root=await mkdtemp(join(tmpdir(),'ai-distill-library-recovery-cli-'));
+    try {
+      const source=join(root,'扫描恢复.txt'),manifest=join(root,'manifest.json');
+      await writeFile(source,'扫描全能王 创建');
+      await writeFile(manifest,JSON.stringify({version:1,recovery:'pdf-to-text',files:[{path:source,source_pdf:'原件.pdf',characters:8}]}));
+      const {client,calls}=fixture(()=>({id:second}));
+      await expect(runCommand(['library','import','--name','错误恢复包','--request-key',attempt,'--manifest',manifest],client)).rejects.toThrow('临时恢复清单不能作为材料原件入库');
+      expect(calls).toHaveLength(0);
+      await writeFile(manifest,JSON.stringify({files:[{path:source,source_pdf:'原件.pdf',characters:8}]}));
+      await expect(runCommand(['library','import','--name','去掉恢复标记的错误包','--request-key',attempt,'--manifest',manifest],client)).rejects.toThrow('不支持的来源或恢复字段');
+      expect(calls).toHaveLength(0);
     } finally { await rm(root,{recursive:true,force:true}); }
   });
 
@@ -640,6 +666,72 @@ test('材料整理CLI诊断只返回安全计数和停止原因，不输出摘�
  const out=await runCommand(['library','prepare','diagnose','--job',attempt],client);
  expect(out.data).toMatchObject({document_count:1,entry_count:2,visible_count:1,hidden_count:1,summary_count:2,combination_count:1,warning_count:1});
  expect(JSON.stringify(out)).not.toContain('私有');expect(calls.every(call=>!call.init?.method||call.init.method==='GET')).toBe(true);
+});
+
+describe('材料库 CLI 与 HTTP 契约映射',()=>{
+ test('只读命令逐项命中唯一对应接口且不产生写请求',async()=>{
+  const cases:[string[],string][]=[
+   [['library','package','list','--page','2','--page-size','10','--ready-only'], '/api/material-library/packages'],
+   [['library','package','show','--package',question],`/api/material-library/packages/${question}`],
+   [['library','package','usage','--package',question],`/api/material-library/packages/${question}/usage`],
+   [['library','package','revisions','--package',question],`/api/material-library/packages/${question}/revisions`],
+   [['library','imports','list'],'/api/material-library/imports'],
+   [['library','job','show','--job',attempt],`/api/material-library/jobs/${attempt}`],
+   [['library','documents','show','--revision',question,'--extraction-job',attempt],`/api/material-library/revisions/${question}/documents`],
+   [['library','redaction','show','--redaction',second],`/api/material-library/redactions/${second}/preview`],
+   [['library','processing','show'],'/api/material-library/processing-settings'],
+   [['library','prepare','list','--package',question],`/api/material-library/packages/${question}/preparations`],
+   [['library','prepare','show','--preparation',attempt],`/api/material-library/preparations/${attempt}`],
+  ];
+  for(const [command,path] of cases){
+   const f=fixture(()=>({items:[]}));
+   await runCommand(command,f.client);
+   expect(f.calls).toHaveLength(1);expect(f.calls[0]!.url.pathname).toBe(path);
+   expect(f.calls[0]!.init?.method??'GET').toBe('GET');
+  }
+ });
+
+ test('模板查询、复核和取消分别保持查询与显式写入语义',async()=>{
+  const f=fixture((url)=>url.pathname.endsWith('/redaction-templates')?{items:[{id:'standard',name:'标准'}]}:{ok:true});
+  const shown=await runCommand(['library','template','show','--template','standard'],f.client);
+  expect((shown.data as any).id).toBe('standard');
+  await runCommand(['library','redaction','revalidate','--redaction',second],f.client);
+  await runCommand(['library','job','cancel','--job',attempt],f.client);
+  expect(f.calls.map(call=>[call.url.pathname,call.init?.method??'GET'])).toEqual([
+   ['/api/material-library/redaction-templates','GET'],
+   [`/api/material-library/redactions/${second}/revalidate`,'POST'],
+   [`/api/material-library/jobs/${attempt}/cancel`,'POST'],
+  ]);
+ });
+
+ test('版本化修改只发送文件内容与If-Match，不把本机路径传给服务端',async()=>{
+  const root=await mkdtemp(join(tmpdir(),'cli-library-contract-'));
+  const update=join(root,'update.json'),settings=join(root,'settings.json');
+  await writeFile(update,JSON.stringify({name:'新名称'}));await writeFile(settings,JSON.stringify({material_processing_mode:'aliases'}));
+  try{
+   const f=fixture(()=>({ok:true}));
+   await runCommand(['library','package','update','--package',question,'--version','3','--file',update],f.client);
+   await runCommand(['library','package','archive','--package',question,'--version','4'],f.client);
+   await runCommand(['library','package','restore','--package',question,'--version','5'],f.client);
+   await runCommand(['library','processing','update','--version','6','--file',settings],f.client);
+   expect(f.calls.map(call=>[call.url.pathname,call.init?.method])).toEqual([
+    [`/api/material-library/packages/${question}`,'PATCH'],
+    [`/api/material-library/packages/${question}`,'DELETE'],
+    [`/api/material-library/packages/${question}/restore`,'POST'],
+    ['/api/material-library/processing-settings','PUT'],
+   ]);
+   expect(f.calls.map(call=>new Headers(call.init?.headers).get('If-Match'))).toEqual(['3','4','5','6']);
+   expect(String(f.calls[0]!.init?.body)).toBe(JSON.stringify({name:'新名称'}));
+   expect(String(f.calls[0]!.init?.body)).not.toContain(root);
+  }finally{await rm(root,{recursive:true,force:true});}
+ });
+
+ test('任务启动只发送稳定记录ID、幂等键和明确执行目标',async()=>{
+  const f=fixture(()=>({id:attempt}));
+  await runCommand(['library','job','start','--revision',question,'--kind','extract','--target','local','--request-key',attempt],f.client);
+  expect(f.calls[0]!.url.pathname).toBe(`/api/material-library/revisions/${question}/jobs`);
+  expect(JSON.parse(String(f.calls[0]!.init?.body))).toEqual({kind:'extract',request_key:attempt,execution_target:'local'});
+ });
 });
 
 // Siriser与其他下载入口共用文件安全逻辑，交付语义保持独立。

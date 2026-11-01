@@ -1,9 +1,7 @@
 /** 职责：限时生成整包ID/文本脱敏结果，按冻结字段映射回填原结构；由材料库runner调用，不自行入队或写库。 */
-import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {runAgent,type AgentTask,type AgentResult} from '../agent';
 import {AGENT_TEXT_REDACTION_PROTOCOL,compileAgentTextMaterialPlan,type PreparationFile} from '../../shared/agent-material-plan';
-import {canonicalJson} from '../../shared/workflow-config';
 import {prepareAgentRedactionArtifacts,readAgentRedactionPlan,writePrivateJson} from './agent-redaction-artifacts';
 import {apiMaterialExecutor} from './api-redaction';
 import type {ModelApiConfig} from '../llm-api';
@@ -23,9 +21,8 @@ export async function prepareAgentLibraryMaterials(options:Options){
  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(timeoutError()),budget);
  const signal=options.signal?AbortSignal.any([options.signal,controller.signal]):controller.signal;
  const identity={revision_id:options.revision_id,extraction_job_id:options.extraction_job_id,template_id:options.template.id,template_digest:options.template.digest};
- const fingerprint=createHash('sha256').update(canonicalJson({...identity,files:options.files.map(f=>({file_id:f.file_id,text_sha256:f.text_sha256,structure_sha256:createHash('sha256').update(canonicalJson(f.pages.map(page=>({page:page.page,structure:page.structure})))).digest('hex')})),text_protocol:AGENT_TEXT_REDACTION_PROTOCOL,model:options.model,reasoning_effort:options.reasoning_effort,...(options.api?{api:options.api}:{})})).digest('hex');
  try{
-  await prepareAgentRedactionArtifacts({...options,fingerprint,identity});
+  await prepareAgentRedactionArtifacts({...options,identity});
   if(signal.aborted)throw signal.reason;
   const output=await (options.execute??(options.api?apiMaterialExecutor(options.api):runAgent))<{plan_file:string}>({task_type:'material_preparation',directory:options.directory,model:options.model,reasoning_effort:options.reasoning_effort,schema:completionSchema,
    timeout_ms:Math.max(1,budget-(performance.now()-started)),signal,

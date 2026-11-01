@@ -32,7 +32,7 @@ bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本
 
 `run` 一次提交并等待服务器完成，再下载本机所需原件副本和脱敏产物；`start` 只提交，`status` 查询服务器状态，`sync` 可在断线后继续本机文件收尾。只入库使用 `--mode intake`；`--mode redact` 仅兼容人工已脱敏声明。相同题目、模式和请求标识重复提交返回同一操作；请求响应不确定时用原 `workflow` 和 `request-key` 查询或同步，不能生成新标识盲目重做。本机文件完整且指纹一致时才报告 `ready_for_local_authoring`；服务器成功但本机下载失败时继续运行 `sync`。全局库的 `library job --target server`另要求该revision所有blob的storage_target匹配；当前普通上传只建立local blob，remote material不自动迁移库级文件。CLI 只接受 localhost URL，以 SSH 隧道转发到服务器端口；不在命令行输入令牌。
 
-远程作答复用既有 ordinal 5 队列：服务器只领取 `execution_target=server` 的作答 attempt；相同题目与请求标识重复提交返回原 attempt 集合，失败后若要显式重试须生成新请求标识。`status` 仅返回 attempt 状态和时间，不返回答案正文；共享数据库中的正常工作流页面和结果接口仍负责查看作答。服务器作答暂不支持项目步骤钩子；普通本机派发仍使用 `execution_target=local`，既有本地队列行为不变。
+远程作答复用既有 ordinal 5 队列：服务器只领取 `execution_target=server` 的作答 attempt；相同题目与请求标识重复提交返回原 attempt 集合，失败后若要显式重试须生成新请求标识。CLI 会核对回执中的 workflow、request key、attempt ID 和状态；回执与原请求不一致时停止，不把其他题的结果当成本次结果。POST 断连时保留原 workflow 和 request key，使用 `status` 查同一请求，不换 key 重发。`status` 仅返回 attempt 状态和时间，不返回答案正文；共享数据库中的正常工作流页面和结果接口仍负责查看作答。服务器作答暂不支持项目步骤钩子；普通本机派发仍使用 `execution_target=local`，既有本地队列行为不变。
 
 远程 `redact`／`intake-redact` 不执行 API 模型脱敏，只兼容全部附件均为 `declared_redacted` 的旧工作流。需要生成化名时使用本机共享材料库 Agent；旧模式有任一附件需要模型处理即拒绝。
 
@@ -42,7 +42,7 @@ bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本
 
 材料处理仅两种：默认Agent化名使用`library job start --kind redact --extraction-job UUID --project 期次UUID`；原文无需脱敏，直接使用成功提取版本。新任务模板固定codex_plan，历史mask读取保留但不得再派发。任务读取并冻结数据库提示词，使用本次冻结执行预算，到限不自动重试。
 
-计划导入和导出共用服务端采用的格式校验；模板身份与摘要须成对提供。旧计划完全不带模板字段时保留兼容。导出成功只证明来源、精确编辑及覆盖有效；正式导入还需核对当前模板、活动任务和数据库事务。重放原导入请求须保留原plan与request-key，不能修改plan后复用旧key。
+计划导入和导出共用服务端采用的格式校验；模板身份与摘要须成对提供，但只作审计记录，不与当前模板目录比对。旧计划完全不带模板字段时保留兼容。导出成功只证明来源、精确编辑及覆盖有效；正式导入还需核对稳定来源、活动任务和数据库事务。重放原导入请求须保留原plan与request-key，不能修改plan后复用旧key。
 
 全局材料包不隶属于单个项目；主项目用稳定 group ID 关联多个期次，每期仍是独立 project/workflow 范围。创建新期次用 `project create --material-backend library_v1 --workspace-path <仓库相对路径> --parent-name <主项目> --phase-name <期名> --phase-no <正整数>`，或用 `--project-group UUID` 关联已有主项目。缺省backend为library_v1；旧目录创建须显式指定legacy。首期必须以--skill-path明确共享Skill目录，后续期次复用主项目既有路径。
 
@@ -81,6 +81,43 @@ bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本
 ## 能力总览与选择入口
 
 CLI 是 API 客户端和少量本机文件工具。它不会直连数据库、启动服务、执行 SQL、实现第二套评分/达标算法，也不会自动把一个步骤推进到下一个步骤。材料库与期次命令见上节；其他命令的精确语法以 `--help` 为准，避免在多个文档维护重复的完整参数表。
+
+### 出题、作答、评分的唯一派发路径
+
+| 业务阶段 | CLI step key | 稳定ordinal | API | 服务端实际执行 |
+| --- | --- | --- | --- | --- |
+| 出题 | `author_question` | 4 | `POST /api/projects/:project/steps/4/run-batch` | `enqueueAuthoring()`建立冻结任务，worker调用作者Agent。 |
+| 作答 | `model_answer` | 5 | `POST /api/projects/:project/steps/5/run-batch` | `enqueueAnswer()`按冻结模型集合建立一个或多个attempt。 |
+| 评分 | `independent_score` | 6 | `POST /api/projects/:project/steps/6/run-batch` | `enqueueScore()`为每个当前成功答案建立独立评分attempt。 |
+
+CLI不读取或拼装这三阶段的模型正文。隐藏材料、题面、Rubric、答案、Skill和提示词的选择均由服务端在对应模块冻结；因此材料输入规则变化不应在CLI复制一套过滤器。`--ids`固定明确题目范围，`--all`先读取项目当前题目ID再按明确数组派发，两者必须且只能选择一个。
+
+批量回执逐项核对本次`workflow_id`、唯一性、状态枚举以及可选`attempt_id/attempt_ids` UUID。数量相同但身份不同、重复题目、未知状态或无效attempt均视为响应未知，停止后续批次；这防止CLI把其他题目的回执冒充本次已受理。服务端仍是就绪、版本、队列容量和业务结果的唯一判断方，CLI不复制这些规则。
+
+推荐的可恢复操作顺序：
+
+1. `step dispatch ... --ids ... --json`保存本次逐题回执；`queued`只表示派发受理，`succeeded`只表示同步步骤完成。
+2. 只对回执中的`attempt_ids`执行`attempt wait`；超时或中断不取消后台任务，也不重新派发。
+3. 回执未知时先用`workflow status`、`question show`或已有attempt ID核对原任务，不能因没有CLI输出就生成一次新模型调用。
+4. 作答可能返回多个attempt；必须保留全部ID，不能只等待第一个模型。
+5. 评分完成后用`result show`读取服务端达标结论；CLI不从分数自行推算accepted。
+
+### 目录文件职责
+
+| 文件 | 职责 |
+| --- | --- |
+| `index.ts` | Bun入口，选择本机/远程命令、输出稳定信封并映射退出码。 |
+| `commands.ts` | 本机命令解析、参数白名单、HTTP映射、批量回执核对和attempt等待；不实现模型或评分业务。 |
+| `client.ts` | 受限本机HTTP客户端、错误安全投影、multipart和独占下载；写请求不自动重试。 |
+| `batches.ts` | 固定批次范围和人工跳过记录；不是数据库任务状态。 |
+| `library-batch.ts` | 材料库搜索/派发清单及断点恢复；不属于ordinal 4/5/6模型正文。 |
+| `remote-answers.ts` | 远程服务器作答的workflow/request-key幂等提交与查询；不支持远程Agent出题或评分。 |
+| `remote-materials.ts` | 远程材料操作和下载摘要核对；不派发出题、作答或评分。 |
+| `failed-export.ts` | 按当前题/答/评绑定导出复核包，不修改业务状态。 |
+| `material-export.ts` | 将已审阅材料计划导出为本地候选，不调用模型或入库。 |
+| `queue-diagnostics.ts` | 只读队列/监控快照并给出诊断，不重启、不取消、不重派。 |
+| `feishu.ts` | 飞书目标和批次回执处理；归档与飞书提交是独立状态。 |
+| `*.test.ts` | 注入HTTP/文件替身验证命令契约；不证明真实服务、模型、数据库或飞书已运行。 |
 
 | 你要做的事 | 命令组 | 运行位置/对象 | 主要效果 |
 | --- | --- | --- | --- |
@@ -289,7 +326,7 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/remote-materials.test
 
 `library template list`及`library template show --template ID`读取提示词、workflow、digest；不要从旧笔记推断当前规则。`library job start --kind redact ... --template ID`按数据库模板选择实际流程；省略模板默认aliases/codex_plan，自动进入本机Agent消费池。默认沿用系统Agent设置并在入队冻结；也可成对提供`--agent-model 模型 --reasoning-effort 等级`，仅覆盖并冻结本次脱敏任务，不修改系统默认。Agent读取整包、维护私有固定虚构姓名表、保留法院名称并输出字段/结构块语义计划；程序计算偏移、校验并在现有事务保存。使用本次冻结执行预算，到限停止保留私有进度，不自动重试。显式mask或旧字段映射新任务会被拒绝；CLI本身不调用模型。
 
-新计划在既有`codex-material-export-v1`上增加`template_id`和`template_digest`。单文件documents show返回structure及field_ranges，原页UTF-16编辑必须位于单个字段内，分册定位替换后正文且不切断表格/列表。export与import均校验模板摘要和结构；import保存新版本，不切换项目选版。无模板旧计划保留文本兼容，不能声称保留表格结构。
+新计划在既有`codex-material-export-v1`上增加`template_id`和`template_digest`。单文件documents show返回structure及field_ranges，原页UTF-16编辑必须位于单个字段内，分册定位替换后正文且不切断表格/列表。export与import校验来源、精确编辑、覆盖和结构；模板摘要只作审计记录。import保存新版本，不切换项目选版。无模板旧计划保留文本兼容，不能声称保留表格结构。
 
 共用设置的新模板只支持codex_plan，每项仅配置provider=codex与prompt；旧字段映射模板不允许新保存。读取设置不改写历史任务或结果。
 
@@ -378,7 +415,7 @@ bun run ai-distill library batch run --file /tmp/phase7-prepare.json
 
 原子提取入库更新：旧的先创建空package再上传revision流程已停止，POST /material-library/packages返回410。新客户端须通过multipart POST /api/material-library/imports(name,request_key,files)取得独立任务ID并查询/jobs/:id，只有succeeded后的package_id/revision_id是正式材料记录；本CLI旧package create命令不再可用于建立空包。不要通过直写数据库绕过。054迁移和新版API/worker部署前不可用。
 
-新导入命令：`library import --name 名称 --request-key UUID --manifest JSON`，清单沿用`files:[{path,redaction_mode?}]`；返回API独立任务回执，`data`不转换为材料包成功结果。`library imports list`查最近任务；原`library revision create`现在也是异步导入任务，须先用返回ID执行`library job wait`，成功后读取package_id/revision_id，不得把初次返回ID当revision。
+新导入命令：`library import --name 名称 --request-key UUID --manifest JSON`，清单严格为`files:[{path,redaction_mode?}]`，顶层及文件项不接受来源转换或恢复字段；返回API独立任务回执，`data`不转换为材料包成功结果。`library imports list`查最近任务；原`library revision create`现在也是异步导入任务，须先用返回ID执行`library job wait`，成功后读取package_id/revision_id，不得把初次返回ID当revision。带`recovery`标记或`source_pdf`、`characters`等字段的临时转换清单不能预处理或入库；提取失败后仍须重新提交原始PDF、DOCX、TXT或MD，不能用OCR摘录、PDF转TXT等中间产物替换原件身份。合法短TXT按原件处理，不设置任意最小字数门槛。
 
 命令的参数白名单与匹配顺序由 `commands.ts` 模块内统一维护；下载入口共用 `ApiClient.downloadTo()`，保留独占创建、0600权限和HTTP错误不落盘的边界。
 

@@ -10,7 +10,6 @@ import { currentTaskSignal } from '../task-signal';
 import { DOCUMENT_STRUCTURE_VERSION, documentBlocksToText, type Page } from './pdf';
 import { ProjectDocumentExtractor,type DocumentExtractor } from './document';
 import type {VisionClient} from './vision';
-import {filterEnglishOnlyBlocks} from '../../shared/material-paragraph-filter';
 
 export interface ExtractionCache { storage_path: string; sha256: string; attempt_id: string; material_id: string; }
 export interface InputMaterial { id: string; storage_path: string; sha256: string; extraction_cache?: ExtractionCache; }
@@ -28,6 +27,8 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
   for(const material of materials){
    const sourcePath=join(resolve(root),material.storage_path);
    const sourceBytes=await Bun.file(sourcePath).arrayBuffer();
+   const sourceSha256=createHash('sha256').update(Buffer.from(sourceBytes)).digest('hex');
+   if(sourceSha256!==material.sha256){await rm(directory,{recursive:true,force:true});throw new Error('原件指纹变化，已清理未发布的提取结果');}
    const format=material.storage_path.split('.').at(-1)?.toLowerCase()??'';
    let pages:Page[]|undefined,provider='glm-ocr',mode:'fresh'|'cached'='fresh',from_attempt_id:string|null=null,from_material_id:string|null=null,cache_error:'missing_or_invalid'|undefined;
    if(format!=='pdf'&&format!=='docx')throw new Error('仅PDF/DOCX进入结构化提取队列');
@@ -38,7 +39,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
      const bytes=await Bun.file(path).arrayBuffer();
      if(createHash('sha256').update(Buffer.from(bytes)).digest('hex')!==cache.sha256)throw new Error('invalid cache hash');
      const value=JSON.parse(new TextDecoder().decode(bytes));
-    if(value.source_sha256!==material.sha256||value.structure_version!==DOCUMENT_STRUCTURE_VERSION||!Array.isArray(value.pages)||!value.pages.length||value.pages.some((page:Page,index:number)=>!page||page.page!==index+1||typeof page.text!=='string'||!Array.isArray(page.structure)||documentBlocksToText(page.structure)!==page.text||!['text','ocr'].includes(page.method)))throw new Error('invalid cached pages');
+     if(value.source_sha256!==material.sha256||value.structure_version!==DOCUMENT_STRUCTURE_VERSION||!Array.isArray(value.pages)||!value.pages.length||value.pages.some((page:Page,index:number)=>!page||page.page!==index+1||typeof page.text!=='string'||!Array.isArray(page.structure)||documentBlocksToText(page.structure)!==page.text||!['text','ocr'].includes(page.method)))throw new Error('invalid cached pages');
      pages=value.pages;provider=typeof value.provider==='string'?value.provider:'glm-ocr';mode='cached';from_attempt_id=cache.attempt_id;from_material_id=cache.material_id;
     }catch{cache_error='missing_or_invalid';}
    }
@@ -76,7 +77,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
     const pending=new Set(ocrPagesToRecheck.map(page=>page.page));
     pages=pages.map(page=>pending.has(page.page)?{...page,issues:[...new Set([...(page.issues??[]),'ocr_recheck_unavailable'])]}:page);
    }
-   pages=pages.map(page=>{const structure=filterEnglishOnlyBlocks(page.structure??[{id:`p${page.page}-b1`,kind:'paragraph',text:page.text}]);return{...page,structure,text:documentBlocksToText(structure)};});
+   pages=pages.map(page=>{const structure=page.structure?.length?page.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:page.text}];return{...page,structure,text:documentBlocksToText(structure)};});
    extracted.push({material_id:material.id,sha256:material.sha256,format,pages,provider,mode,from_attempt_id,from_material_id,...(cache_error?{cache_error}:{})});
   }
   const allPages=extracted.flatMap(material=>material.pages.map(page=>({...page,material_id:material.material_id,reused:material.mode==='cached'||page.reused===true})));

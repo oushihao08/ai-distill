@@ -89,10 +89,8 @@ async function basePrerequisites(db:PoolClient,id:string){
  if(workflow.material_backend==='library_v1'||workflow.has_library_snapshot){
   const source=await readQuestionMaterials(db,id);
   if(source.origin.kind!=='library_v1')throw new HTTPException(409,{message:'共享材料题目来源类型无效'});
-  if(source.model_attachments&&!source.model_attachments.length)throw new HTTPException(409,{message:'材料整理结果中没有可见文书，不能向出题或作答模型发送隐藏材料'});
-  const visibleNames=source.model_source_names?new Set(source.model_source_names):undefined;
-  const authoringSourceFiles=visibleNames?sourceFiles(workflow).filter(file=>visibleNames.has(file.name)):sourceFiles(workflow);
-  return{workflow,redaction:null,origin:source.origin,loaded_materials:source,material_scope:source.material_scope,materials:source.attachments.map(({id,sha256})=>({id,sha256})),...(source.model_attachments?{model_materials:source.model_attachments.map(({id,sha256})=>({id,sha256}))}:{}),source_files:authoringSourceFiles};
+  if(source.model_attachments&&!source.model_attachments.length)throw new HTTPException(409,{message:'材料整理结果中没有可供模型读取的文书正文'});
+  return{workflow,redaction:null,origin:source.origin,loaded_materials:source,material_scope:source.material_scope,materials:source.attachments.map(({id,sha256})=>({id,sha256})),...(source.model_attachments?{model_materials:source.model_attachments.map(({id,sha256})=>({id,sha256}))}:{}),source_files:sourceFiles(workflow)};
  }
  if(workflow.ingestion_status!=='succeeded'||workflow.redaction_status!=='succeeded')throw new HTTPException(409,{message:'请先完成当前附件入库与脱敏'});
  const redaction=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=9 AND status='succeeded' ORDER BY attempt DESC LIMIT 1",[id])).rows[0];

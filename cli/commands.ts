@@ -132,8 +132,9 @@ function parse(args: string[]) {
   }
   return {words,flags};
 }
+const UUID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function id(value: unknown, name: string): string {
-  if (typeof value!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new CliError(`${name} 须为 UUID`);
+  if (typeof value!=='string'||!UUID_PATTERN.test(value)) throw new CliError(`${name} 须为 UUID`);
   return value;
 }
 function duration(value: string,maximum=3600000) {
@@ -145,6 +146,30 @@ function duration(value: string,maximum=3600000) {
 function object(value: any, label: string) {
   if(!value||typeof value!=='object'||Array.isArray(value)) throw new CliError(`${label} 响应结构无效`,{kind:'invalid_response'});
   return value;
+}
+const dispatchStatuses=new Set(['queued','succeeded','not_ready','failed','not_found','capacity_exceeded','already_accepted','already_archived']);
+/**
+ * 批量派发回执是 CLI 判断“哪些题已受理”的唯一依据，因此必须逐项绑定本次请求身份。
+ * 这里只验证 workflow/attempt ID、唯一性和状态枚举；就绪、版本、队列容量及业务结果仍由 API 决定，
+ * 不能在客户端复制服务端规则，也不能用数量相同替代身份相同。
+ */
+function dispatchResults(value:unknown,requested:string[]){
+  if(!Array.isArray(value))throw new CliError('派发响应缺少 results',{kind:'invalid_response',outcome_unknown:true});
+  const requestedSet=new Set(requested),seen=new Set<string>();
+  for(const row of value){
+    if(!row||typeof row!=='object'||Array.isArray(row))throw new CliError('派发回执条目无效',{kind:'invalid_response',outcome_unknown:true});
+    const item=row as Record<string,unknown>,workflowId=item.workflow_id,status=item.status;
+    if(typeof workflowId!=='string'||!requestedSet.has(workflowId)||seen.has(workflowId))throw new CliError('派发回执题目身份与请求不一致',{kind:'invalid_response',outcome_unknown:true});
+    if(typeof status!=='string'||!dispatchStatuses.has(status))throw new CliError('派发回执状态无效',{kind:'invalid_response',outcome_unknown:true});
+    if(item.attempt_id!==undefined&&(typeof item.attempt_id!=='string'||!UUID_PATTERN.test(item.attempt_id)))throw new CliError('派发回执 attempt_id 无效',{kind:'invalid_response',outcome_unknown:true});
+    if(item.attempt_ids!==undefined){
+      if(!Array.isArray(item.attempt_ids)||new Set(item.attempt_ids).size!==item.attempt_ids.length)throw new CliError('派发回执 attempt_ids 无效',{kind:'invalid_response',outcome_unknown:true});
+      if(item.attempt_ids.some(attemptId=>typeof attemptId!=='string'||!UUID_PATTERN.test(attemptId)))throw new CliError('派发回执 attempt_ids 无效',{kind:'invalid_response',outcome_unknown:true});
+    }
+    seen.add(workflowId);
+  }
+  if(value.length!==requested.length||seen.size!==requestedSet.size)throw new CliError('派发回执未完整覆盖请求题目',{kind:'invalid_response',outcome_unknown:true});
+  return value as Array<Record<string,any>>;
 }
 function positiveInteger(value:string,label:string){
   const number=Number(value);
@@ -244,11 +269,14 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
     const createLibraryRevision=async(packageId?:string)=>{
       const manifestPath=required('manifest');
       const manifest=await readJsonFile(manifestPath,'材料清单');
+      if(Object.hasOwn(manifest,'recovery'))throw new CliError('临时恢复清单不能作为材料原件入库；请重新提交原始PDF、DOCX、TXT或MD文件',{kind:'file_error'});
+      if(Object.keys(manifest).some(key=>key!=='files'))throw new CliError('材料清单只能包含 files；来源转换或恢复元数据不能作为原件清单提交',{kind:'file_error'});
       if(!Array.isArray(manifest.files)||manifest.files.length<1||manifest.files.length>100)throw new CliError('材料清单须包含1至100个文件');
       const form=new FormData();form.set('request_key',uuid('request-key'));
       const modes:string[]=[];
       for(const [index,item] of manifest.files.entries()){
         if(!item||typeof item!=='object'||Array.isArray(item)||typeof item.path!=='string'||!item.path.trim())throw new CliError(`材料清单第${index+1}项缺少 path`);
+        if(Object.keys(item).some(key=>!['path','redaction_mode'].includes(key)))throw new CliError(`材料清单第${index+1}项含不支持的来源或恢复字段`,{kind:'file_error'});
         const mode=item.redaction_mode??'model';
         if(mode!=='model'&&mode!=='declared_redacted')throw new CliError(`材料清单第${index+1}项 redaction_mode 无效`);
         const filePath=resolve(dirname(resolve(manifestPath)),item.path);
@@ -664,9 +692,8 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
           const workflowIds=selected.slice(i,i+100);
           try {
             const response=object(await post(`/api/projects/${project}/steps/${step.ordinal}/run-batch`,{workflow_ids:workflowIds}),'派发');
-            if(!Array.isArray(response.results))throw new CliError('派发响应缺少 results',{kind:'invalid_response',outcome_unknown:true});
-            batches.push({workflow_ids:workflowIds,data:response});results.push(...response.results);
-            if(response.results.length!==workflowIds.length)failed=true;
+            const rows=dispatchResults(response.results,workflowIds);
+            batches.push({workflow_ids:workflowIds,data:response});results.push(...rows);
           } catch(error) {
             failed=true;batches.push({workflow_ids:workflowIds,error:error instanceof CliError?{message:error.message,...error.detail}:{kind:'unknown_error'},unsubmitted_workflow_ids:selected.slice(i+100)});break;
           }

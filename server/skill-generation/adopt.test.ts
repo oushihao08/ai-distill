@@ -4,11 +4,11 @@
 import {test,expect} from 'bun:test';
 import {mkdtemp,mkdir,readFile,writeFile,rm,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
 import {scanRuleWorkspace} from '../rule-files';
 import {adoptProjectSkill} from '../rules';
+import {repositoryRoot} from '../paths';
 import type {Pool} from 'pg';
-async function fixture(run:(f:any)=>Promise<void>,shared=false){const root=await mkdtemp(join(tmpdir(),'adopt-skill-'));try{
+async function fixture(run:(f:any)=>Promise<void>,shared=false){const parent=join(repositoryRoot,'.storage','test-fixtures');await mkdir(parent,{recursive:true});const root=await mkdtemp(join(parent,'adopt-skill-'));try{
  const projectRoot=join(root,'project'),template=join(root,'template'),storage=join(root,'storage'),candidate=join(storage,'project-skills','project','attempt','skill-fixture','candidate'),projectSkill=join(projectRoot,'original');for(const path of [join(projectRoot,'materials'),template,candidate,projectSkill])await mkdir(path,{recursive:true});const entry='---\nname: fixture\ndescription: fixture\n---';await writeFile(join(projectRoot,'materials/rules.md'),'本期规则');await writeFile(join(template,'SKILL.md'),entry);await writeFile(join(candidate,'SKILL.md'),entry+'\n本期专属');await writeFile(join(projectSkill,'SKILL.md'),entry+'\n旧版本');
  const source=await scanRuleWorkspace(projectRoot,template),view=await scanRuleWorkspace(projectRoot,candidate);
  const project={id:'project',material_root:join(projectRoot,'questions'),local_skill_path:projectSkill,...(shared?{parent_name:'parent'}:{})},sibling={id:'sibling',parent_name:'parent',local_skill_path:join(projectRoot,'sibling-skill')};const task={id:'attempt',project_id:'project',status:'succeeded',input:{workspace_path:source.workspace_path,template_path:source.skill_path,source_digest:source.source_digest},result:{candidate_path:candidate,publishable:true,candidate_files:view.files.filter(f=>f.path.startsWith('skill/')),issues:[],unresolved:[{id:'external',detail:'外部资格未核实',blocking:false}],session_id:'session'}};

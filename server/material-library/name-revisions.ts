@@ -152,11 +152,11 @@ export async function previewNameRevision(pool:Pool,storageRoot:string,projectId
 }
 
 /** 应用同一预览绑定的修订；新库级结果、题目快照、作者尝试与下游失效均在同一事务提交。 */
-export async function applyNameRevision(pool:Pool,storageRoot:string,projectId:string,redactionId:string,raw:any,readMaterials=readQuestionMaterials){
+export async function applyNameRevision(pool:Pool,storageRoot:string,projectId:string,redactionId:string,raw:any,readMaterials=readQuestionMaterials,readReview=readReviewedNameRevision){
  if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).some(key=>!['project_id','request_key','preview_digest','review_call_id','reason'].includes(key))||
   typeof raw.request_key!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(raw.request_key)||
   typeof raw.review_call_id!=='string'||typeof raw.preview_digest!=='string'||!/^[a-f0-9]{64}$/.test(raw.preview_digest)||typeof raw.reason!=='string'||!raw.reason.trim()||raw.reason.length>500)throw new HTTPException(400,{message:'名称修订应用参数无效'});
- const review=await readReviewedNameRevision(storageRoot,raw.review_call_id,redactionId),mappings=review.mappings;
+ const review=await readReview(storageRoot,raw.review_call_id,redactionId),mappings=review.mappings;
  const requestDigest=hash(canonicalJson({project_id:projectId,redaction_id:redactionId,review_call_id:review.review_call_id,review_request_digest:review.request_digest,mappings,preview_digest:raw.preview_digest,reason:raw.reason}));
  const db=await pool.connect();
  try{

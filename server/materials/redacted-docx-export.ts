@@ -82,6 +82,7 @@ async function safeOriginalBytes(storageRootInput:string,material:Original){
  let actual:string,info;try{actual=await realpath(path);info=await lstat(path);}catch{throw new HTTPException(409,{message:'当前附件原件文件缺失'});}
  if(actual!==path||info.isSymbolicLink()||!info.isFile())throw new HTTPException(409,{message:'当前附件原件路径不能包含符号链接'});
  const bytes=await readFile(path);
+ if(bytes.byteLength!==Number(material.size_bytes)||digest(bytes)!==material.sha256)throw new HTTPException(409,{message:'当前附件原件指纹校验失败'});
  return bytes;
 }
 
@@ -101,7 +102,7 @@ export async function verifyLibraryOriginalManifest(db:Pool|PoolClient,workflowI
  for(const row of rows){
   const material=originals.find(item=>item.id===row.id)!;
   if(row.source_artifact_id!==null&&row.source_artifact_id!==undefined){
-   if(!row.source_artifact_id||row.artifact_id!==row.source_artifact_id||row.artifact_kind!=='source_document'||row.size_bytes===null||!Number.isSafeInteger(Number(row.size_bytes))||Number(row.size_bytes)!==Number(material.size_bytes))throw new HTTPException(409,{message:'冻结原件产物关联或大小不匹配'});
+   if(!row.source_artifact_id||row.artifact_id!==row.source_artifact_id||row.artifact_kind!=='source_document'||row.artifact_sha256!==material.sha256||row.size_bytes===null||!Number.isSafeInteger(Number(row.size_bytes))||Number(row.size_bytes)!==Number(material.size_bytes))throw new HTTPException(409,{message:'冻结原件产物关联或大小不匹配'});
   }else if(row.original_copy==='omitted'&&row.frozen_mode==='redacted'){
    if(row.library_sha256!==material.sha256||!Number.isSafeInteger(Number(row.library_size_bytes))||Number(row.library_size_bytes)!==Number(material.size_bytes))throw new HTTPException(409,{message:'未复制原件的冻结来源清单不匹配'});
   }else{
@@ -209,9 +210,11 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
  const sourceOrder=new Map(inputMaterials.map((material,index)=>[material?.material_id,index]));
  sources.sort((a,b)=>(sourceOrder.get(a.material_id)??Number.MAX_SAFE_INTEGER)-(sourceOrder.get(b.material_id)??Number.MAX_SAFE_INTEGER));
  if(!Array.isArray(input.materials)||sources.length!==input.materials.length||sources.some(source=>!inputMaterials.some(item=>item.material_id===source.material_id)))throw new HTTPException(409,{message:'当前脱敏结果与附件ID不一致'});
+ if(typeof input.digest!=='string'||input.digest!==redactionInputDigest(sources))throw new HTTPException(409,{message:'当前脱敏结果与附件版本不一致'});
  const indexRow=(await db.query("SELECT content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND attempt_id=$2 AND kind='redacted_index'",[workflowId,row.id])).rows[0];
  let index:any;try{if(typeof indexRow?.content!=='string')throw new Error('invalid index');index=JSON.parse(indexRow.content);}catch{throw new HTTPException(409,{message:'脱敏附件索引缺失或损坏，请重新脱敏'});}
  if(!Array.isArray(index.materials)||index.materials.length!==sources.length)throw new HTTPException(409,{message:'脱敏附件索引与当前附件不一致'});
+ if(typeof index.redacted_sha256==='string'&&index.redacted_sha256!==row.sha256)throw new HTTPException(409,{message:'脱敏附件索引与当前附件不一致'});
  const materialMarkdown=new Map<string,string>(),materialDocuments=new Map<string,IndexedDocument>();
  for(const material of index.materials){
   if(typeof material?.material_id!=='string'||typeof material.markdown!=='string'||materialMarkdown.has(material.material_id))throw new HTTPException(409,{message:'脱敏附件正文缺失或重复'});
@@ -221,6 +224,7 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
    if(!Array.isArray(document.pages)||!document.pages.length||document.pages.some(page=>!Number.isSafeInteger(page.page)||!Array.isArray(page.blocks)))throw new HTTPException(409,{message:'脱敏结构与正文投影不一致，请重新脱敏'});
    const projected=document.pages.map(page=>documentBlocksToText(page.blocks)).join('\n\n'),structure_sha256=digest(JSON.stringify(document));
    if(projected!==material.markdown)throw new HTTPException(409,{message:'脱敏结构与正文投影不一致，请重新脱敏'});
+   if(typeof material.structure_sha256==='string'&&material.structure_sha256!==structure_sha256)throw new HTTPException(409,{message:'脱敏结构与正文投影不一致，请重新脱敏'});
    materialDocuments.set(material.material_id,{document,structure_sha256});
   }
  }

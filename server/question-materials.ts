@@ -1,10 +1,10 @@
 /**
  * 文件职责：按项目材料后端读取并校验题目冻结的材料来源。
- * 关键入口：`readQuestionMaterials()` 返回完整冻结附件及可选的可见文书模型投影；library_v1缺快照时拒绝旧步骤回退。
- * 使用场景：出题与作答使用投影附件，评分核对来源身份，归档/导出按各自契约读取；不执行OCR或脱敏；数据库回读后可写本机受管快照缓存，不修改原件。
+ * 关键入口：`readQuestionMaterials()` 返回完整冻结附件及按文书边界整理的全量模型投影；library_v1缺快照时拒绝旧步骤回退。
+ * 使用场景：出题与作答使用包含隐藏文书的脱敏投影附件，评分沿用作答冻结输入；归档/导出按各自契约读取；不执行OCR或脱敏；数据库回读后可写本机受管快照缓存，不修改原件。
  */
 import {createHash} from 'node:crypto';
-import {visiblePreparedDocuments,preparationUnits,renderPreparationDocuments,validateSelectedMaterialIndex,visiblePreparationContext} from '../shared/material-preparation-result';
+import {materializePreparation,preparationUnits,renderPreparationDocuments,validateSelectedMaterialIndex,visiblePreparationContext} from '../shared/material-preparation-result';
 import {readFile,realpath,stat,mkdir,lstat,writeFile,rename,rm} from 'node:fs/promises';
 import {resolve,relative,sep,isAbsolute} from 'node:path';
 import type {Pool,PoolClient} from 'pg';
@@ -20,7 +20,7 @@ type Db=Pool|PoolClient;
 type MaterialArtifact={id:string;kind:string;attempt_id:string|null;sha256:string;content:string|null};
 type SnapshotArtifact=Omit<MaterialArtifact,'content'>&{content?:string|null;storage_path?:string;size_bytes?:number|string};
 export interface QuestionMaterialAttachment {id:string;sha256:string;content:string;source_names:string[];attempt_id:string|null}
-export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:QuestionMaterialAttachment[];digest:string;model_attachments?:QuestionMaterialAttachment[];model_source_names?:string[];material_scope?:{preparation_id:string;result:import('../shared/material-preparation-result').MaterialPreparationResult}}
+export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:QuestionMaterialAttachment[];digest:string;model_attachments?:QuestionMaterialAttachment[];material_scope?:{preparation_id:string;result:import('../shared/material-preparation-result').MaterialPreparationResult}}
 
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const conflict=(message:string)=>new HTTPException(409,{message});
@@ -165,11 +165,11 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
   const content=renderPreparationDocuments(docs);
   return{origin,attachments:[attachment],model_attachments:content.trim()?[{...attachment,content,sha256:hash(content)}]:[],digest:String(row.snapshot_digest)};
  }
- const visibleDocuments=visiblePreparedDocuments(prepared.result,preparationUnits(parsedIndex));
- const content=renderPreparationDocuments(visibleDocuments);
- const hasHidden=prepared.result.documents.some(document=>document.visibility==='hidden');
- const modelAttachment:QuestionMaterialAttachment={...attachment,sha256:hash(content),content,source_names:hasHidden?[]:attachment.source_names};
- return{origin,attachments:[attachment],model_attachments:[...(content.trim()?[modelAttachment]:[])],model_source_names:hasHidden?[]:attachment.source_names,digest:String(row.snapshot_digest),material_scope:{preparation_id:prepared.preparation_id,result:visiblePreparationContext(prepared.result)}};
+ // visibility 只用于整理结果的界面/范围提示；出题、作答和评分必须共享完整脱敏正文。
+ const modelDocuments=materializePreparation(prepared.result,preparationUnits(parsedIndex));
+ const content=renderPreparationDocuments(modelDocuments);
+ const modelAttachment:QuestionMaterialAttachment={...attachment,sha256:hash(content),content};
+ return{origin,attachments:[attachment],model_attachments:[...(content.trim()?[modelAttachment]:[])],digest:String(row.snapshot_digest),material_scope:{preparation_id:prepared.preparation_id,result:visiblePreparationContext(prepared.result)}};
 }
 
 export async function readQuestionMaterials(db:Db,workflowId:string,root=storageDirectory()):Promise<QuestionMaterials>{

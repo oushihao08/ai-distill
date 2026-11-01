@@ -5,9 +5,8 @@ import {agentMaterialSource,AGENT_MATERIAL_PLAN_SCHEMA,AGENT_TEXT_REDACTION_PROT
 
 export async function writePrivateJson(path:string,value:unknown){await writeFile(path,JSON.stringify(value),{mode:0o600});}
 
-export async function prepareAgentRedactionArtifacts(options:{directory:string;files:PreparationFile[];identity:{revision_id:string;extraction_job_id:string;template_id:string;template_digest:string};fingerprint:string;previous_directory?:string}){
+export async function prepareAgentRedactionArtifacts(options:{directory:string;files:PreparationFile[];identity:{revision_id:string;extraction_job_id:string;template_id:string;template_digest:string};previous_directory?:string}){
  await mkdir(options.directory,{recursive:true,mode:0o700});
- await writePrivateJson(join(options.directory,'checkpoint-identity.json'),{fingerprint:options.fingerprint,text_protocol:AGENT_TEXT_REDACTION_PROTOCOL});
  const material=agentMaterialSource(options.files);
  await writePrivateJson(join(options.directory,'source.json'),{texts:[...material.fields].map(([id,field])=>({id,text:field.text}))});
  // 仅作阅读导航，不判定身份/边界，也不据命中数制造材料份数。
@@ -21,8 +20,6 @@ export async function prepareAgentRedactionArtifacts(options:{directory:string;f
  await writeFile(join(options.directory,'validate-plan.mjs'),await validator.outputs[0]!.text(),{mode:0o600});
  if(!options.previous_directory)return;
  try{
-  const prior=JSON.parse(await readFile(join(options.previous_directory,'checkpoint-identity.json'),'utf8'));
-  if(prior.fingerprint!==options.fingerprint||prior.text_protocol!==AGENT_TEXT_REDACTION_PROTOCOL)return;
   await mkdir(join(options.directory,'resume'),{mode:0o700,recursive:true});
   for(const name of ['material-plan.json','progress.json']){
    const source=join(options.previous_directory,'output',name);

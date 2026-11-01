@@ -85,10 +85,11 @@ export function preserveMissingDecisionsAsUnresolved(value:unknown,packages:Name
  const reviewed=copy.packages as unknown[];
  for(const raw of reviewed){
   if(!object(raw)||!Array.isArray(raw.mappings)||!Array.isArray(raw.unresolved)||!Array.isArray(raw.ignored))continue;
+  const mappings=raw.mappings as unknown[],unresolved=raw.unresolved as unknown[],ignored=raw.ignored as unknown[];
   const source=packages.find(item=>item.redaction_id===raw.redaction_id&&item.package_id===raw.package_id);
   if(!source)continue;
   const safeMappings:unknown[]=[];
-  for(const item of raw.mappings){
+  for(const item of mappings){
    if(!object(item)){safeMappings.push(item);continue;}
    try{
     const base=validateNameReplacements([{original:item.original,before:item.before,after:item.after,kind:item.kind}])[0];
@@ -100,7 +101,7 @@ export function preserveMissingDecisionsAsUnresolved(value:unknown,packages:Name
     }
     safeMappings.push(item);
    }catch{
-    if(typeof item.original==='string'&&typeof item.before==='string')raw.unresolved.push({original:item.original,before:item.before,reason:'模型给出的化名违反姓氏或单位保留边界，降级为未决并阻断自动应用'});
+    if(typeof item.original==='string'&&typeof item.before==='string')unresolved.push({original:item.original,before:item.before,reason:'模型给出的化名违反姓氏或单位保留边界，降级为未决并阻断自动应用'});
     else safeMappings.push(item);
    }
   }
@@ -108,18 +109,19 @@ export function preserveMissingDecisionsAsUnresolved(value:unknown,packages:Name
   for(const item of safeMappings)if(object(item)&&typeof item.before==='string')beforeCounts.set(item.before,(beforeCounts.get(item.before)??0)+1);
   const uniqueBefore=safeMappings.filter(item=>{
    if(!object(item)||typeof item.before!=='string'||(beforeCounts.get(item.before)??0)===1)return true;
-   if(typeof item.original==='string')raw.unresolved.push({original:item.original,before:item.before,reason:'同一旧名称对应多个主体候选，降级为未决并阻断自动应用'});
+   if(typeof item.original==='string')unresolved.push({original:item.original,before:item.before,reason:'同一旧名称对应多个主体候选，降级为未决并阻断自动应用'});
    return false;
   });
   const afterCounts=new Map<string,number>();
   for(const item of uniqueBefore)if(object(item)&&typeof item.after==='string')afterCounts.set(item.after,(afterCounts.get(item.after)??0)+1);
-  raw.mappings=uniqueBefore.filter(item=>{
+  const uniqueMappings=uniqueBefore.filter(item=>{
    if(!object(item)||typeof item.after!=='string'||(afterCounts.get(item.after)??0)===1)return true;
-   if(typeof item.original==='string'&&typeof item.before==='string')raw.unresolved.push({original:item.original,before:item.before,reason:'多个主体使用相同新化名，降级为未决并阻断自动应用'});
+   if(typeof item.original==='string'&&typeof item.before==='string')unresolved.push({original:item.original,before:item.before,reason:'多个主体使用相同新化名，降级为未决并阻断自动应用'});
    return false;
   });
-  const decided=new Set([...raw.mappings,...raw.unresolved,...raw.ignored].filter(object).map(item=>canonicalJson([item.original,item.before])));
-  for(const candidate of source.candidates)if(!decided.has(canonicalJson([candidate.original,candidate.before])))raw.unresolved.push({original:candidate.original,before:candidate.before,reason:'模型未返回该候选的唯一分流，保留为未决并阻断自动应用'});
+  raw.mappings=uniqueMappings;
+  const decided=new Set([...uniqueMappings,...unresolved,...ignored].filter(object).map(item=>canonicalJson([item.original,item.before])));
+  for(const candidate of source.candidates)if(!decided.has(canonicalJson([candidate.original,candidate.before])))unresolved.push({original:candidate.original,before:candidate.before,reason:'模型未返回该候选的唯一分流，保留为未决并阻断自动应用'});
  }
  return copy;
 }

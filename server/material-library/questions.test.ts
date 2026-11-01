@@ -3,7 +3,7 @@
  * 主要边界：忽略预期版本对幂等语义的影响，但题目内容、材料关系或脱敏结果变化必须产生不同摘要。
  */
 import {expect,test} from 'bun:test';
-import {libraryQuestionRequestDigest,libraryQuestionStepOrdinals,remapLibraryRedactedIndex,validateLibraryQuestionInput} from './questions';
+import {libraryQuestionReplay,libraryQuestionRequestDigest,libraryQuestionStepOrdinals,remapLibraryRedactedIndex,validateLibraryQuestionInput} from './questions';
 
 const request={request_key:'11111111-1111-4111-8111-111111111111',redaction_id:'22222222-2222-4222-8222-222222222222',expected_link_version:3,title:'执行异议审查',scenario:'执行程序',role_perspective:'申请执行人代理律师',target_level:'L4' as const,question_tags:['执行']};
 
@@ -21,6 +21,14 @@ test('request digest binds question content, package link and redaction but not 
  expect(libraryQuestionRequestDigest({project_id:'p2',project_material_id:'link-a',input})).not.toBe(first);
  expect(libraryQuestionRequestDigest({project_id:'p1',project_material_id:'link-b',input})).not.toBe(first);
  expect(libraryQuestionRequestDigest({project_id:'p1',project_material_id:'link-a',input:{...input,title:'不同题目'}})).not.toBe(first);
+});
+
+test('idempotent replay returns the same source identity as initial creation',()=>{
+ const input=validateLibraryQuestionInput(request,['执行']);
+ const requestDigest=libraryQuestionRequestDigest({project_id:'p1',project_material_id:'link-a',input});
+ const row={workflow_id:'workflow-a',request_digest:requestDigest,source_digest:'a'.repeat(64),snapshot_digest:'b'.repeat(64)};
+ expect(libraryQuestionReplay(row,requestDigest)).toEqual({id:'workflow-a',reused:true,source_digest:'a'.repeat(64),snapshot_digest:'b'.repeat(64)});
+ expect(()=>libraryQuestionReplay(row,'c'.repeat(64))).toThrow('不同请求内容');
 });
 
 test('library questions create only visible workflow ordinals 4 through 8',()=>{
@@ -74,8 +82,8 @@ test('creates a private question from a usable redaction while retaining OCR war
   expect(result.reused).toBe(false);
   const frozen=inserts.find(item=>item.sql.includes("'private_extracted_pages'"));
   expect(JSON.parse(frozen!.values[6]).pages[0].issues).toEqual(['image_without_text']);
-  const source=inserts.find(item=>item.sql.includes("'source_document'"));
-  expect(await readFile(join(root,source!.values[3]),'utf8')).toBe('原始案件材料');
+  // 脱敏题目按当前契约省略原件副本（original_copy=omitted），只冻结脱敏正文与提取结构。
+  expect(inserts.some(item=>item.sql.includes("'source_document'"))).toBe(false);
   expect(inserts.filter(item=>item.sql.includes('INSERT INTO ai_distill.steps')).map(item=>item.values[1])).toEqual([4,5,6,7,8]);
  }finally{await rm(root,{recursive:true,force:true});}
 });
@@ -110,8 +118,8 @@ test('creates a private question from extracted original without requiring redac
   const pool={query,connect:async()=>({query,release(){}})} as any;
   const result=await createLibraryQuestion(pool,root,'project-a','link-a',{...request,request_key:'33333333-3333-4333-8333-333333333333',redaction_id:undefined,revision_id:'44444444-4444-4444-8444-444444444444'});
   expect(result.reused).toBe(false);
-  const source=inserts.find(item=>item.sql.includes("'source_document'"));
-  expect(await readFile(join(root,source!.values[3]),'utf8')).toBe('原始案件材料');
+  // 原文题目保留原件副本，供原文模式归档与交付。
+  expect(inserts.some(item=>item.sql.includes("'source_document'"))).toBe(true);
   expect(inserts.some(item=>item.values[2]==='source_markdown')).toBe(true);
   expect(inserts.some(item=>item.values[2]==='source_index')).toBe(true);
   expect(inserts.some(item=>item.values[2]==='redacted_markdown')).toBe(false);

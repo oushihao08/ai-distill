@@ -62,6 +62,14 @@ test('source pagination is explicit and skips blank source pages while flow keep
 });
 
 
+test('control characters in extracted text never produce invalid OOXML',async()=>{
+ const {buildDocx}=await import('../document-generation/docx');
+ const doc:any={format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'p',kind:'paragraph',text:'正文\x0c换页\x01控制'}]}]};
+ const xml=docxParts(await buildDocx(doc)).get('word/document.xml')!;
+ expect(xml).toContain('正文换页控制');
+ expect(/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(xml)).toBe(false);
+});
+
 test('table cells use compact paragraph spacing without changing amounts or dates',async()=>{
  const doc:any={format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'t',kind:'table',rows:[{cells:[{text:'本金10000元'},{text:'2025-03-26'}]}]}]}]};
  const xml=docxParts(await buildRedactedDocx(doc)).get('word/document.xml')!;

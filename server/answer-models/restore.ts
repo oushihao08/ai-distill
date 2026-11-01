@@ -1,4 +1,7 @@
-/** 显式恢复因配置变更丢失的步骤投影；HTTP调用，复用原成功答案/评分，不调用模型或修改历史attempt。 */
+/**
+ * 职责：在单题事务中显式重建因配置变更丢失的答案/评分当前投影。
+ * 公开入口：restoreAnswerScoreResults() 由工作流恢复 HTTP 路由调用；只复用同版成功attempt，不调用模型、不修改历史attempt，任一绑定失败整题回滚。
+ */
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {refreshAnswerStep} from './jobs';

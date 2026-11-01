@@ -117,8 +117,9 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:file.redaction_mode})),settings.redaction,request.execution_target);
   if(request.kind==='extract'&&executor==='api'&&!process.env.MINERU_KEY?.trim())throw conflict('文本提取服务尚未配置');
   if(request.previous_job_id){
-   const retry=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE id=$1 AND package_id=$2 AND revision_id=$3 AND kind=$4 AND (status IN ('failed','cancelled') OR (kind='redact' AND status='succeeded')) FOR UPDATE",[request.previous_job_id,packageId,revisionId,request.kind])).rows[0];
+   const retry=(await db.query("SELECT id,input_snapshot FROM ai_distill.library_jobs WHERE id=$1 AND package_id=$2 AND revision_id=$3 AND kind=$4 AND (status IN ('failed','cancelled') OR (kind='redact' AND status='succeeded')) FOR UPDATE",[request.previous_job_id,packageId,revisionId,request.kind])).rows[0];
    if(!retry)throw conflict('重试来源必须是同包、同文件集合、同类型且已失败或取消的任务');
+   if(request.kind==='redact'&&retry.input_snapshot?.extraction_job_id!==request.extraction_job_id)throw conflict('脱敏续作必须使用同一文本提取任务');
   }
   if(request.kind==='intake'&&revision.state!=='pending')throw conflict('只有待入库核验的文件集合可以入库');
   if(request.kind!=='intake'&&revision.state!=='ready')throw conflict('请先完成材料入库核验');

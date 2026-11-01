@@ -29,7 +29,11 @@ export function preparedTextDocument(text:string,id:string):RedactedDocumentStru
 function tableCells(line:string){return line.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(cell=>cell.trim());}
 function isTableSeparator(line:string){return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);}
 const inlineMarkup=/(?<!\*)\*\*(?!\*)(.+?)(?<!\*)\*\*(?!\*)|(?<!_)__(?!_)(.+?)(?<!_)__(?!_)|`([^`]+)`/g;
+const controlCharacters=/[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+/** XML 1.0 禁止控制字符；来源文本可能带换页符或 OCR 控制符，渲染前统一剔除。 */
+function cleanText(value:string){return value.replace(controlCharacters,'');}
 function textRuns(value:string,forceBold=false){
+ value=cleanText(value);
  const runs:TextRun[]=[];let cursor=0;
  for(const match of value.matchAll(inlineMarkup)){
   const token=match[0],start=match.index??0;if(start>cursor)runs.push(new TextRun({text:value.slice(cursor,start),...(forceBold?{bold:true}:{})}));
@@ -46,7 +50,7 @@ function asTable(lines:string[]){
  return structuredTable({id:'markdown-table',kind:'table',rows:rows.map(row=>({cells:row.map(text=>({text}))}))},true);
 }
 
-function plainRuns(value:string){return value?[new TextRun({text:value})]:[new TextRun({text:''})];}
+function plainRuns(value:string){return value?[new TextRun({text:cleanText(value)})]:[new TextRun({text:''})];}
 function structuredTable(block:Extract<DocumentBlock,{kind:'table'}>,markdown=false){
  const plan=planTableLayout(block);
  const rows=plan.rows.map((row,rowIndex)=>new TableRow({children:row.cells.map(cell=>new TableCell({

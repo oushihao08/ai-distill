@@ -92,7 +92,7 @@ export function registerRemoteMaterialRoutes(app:Hono,pool:Pool,storageRoot:stri
  }
  app.post(answerPrefix,async c=>{
   let body:any;try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'请求必须是 JSON'});}
-  if(!body||typeof body!=='object'||Array.isArray(body)||typeof body.request_key!=='string')throw new HTTPException(400,{message:'远程作答参数无效'});
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==2||!Object.hasOwn(body,'workflow_id')||!Object.hasOwn(body,'request_key')||typeof body.workflow_id!=='string'||typeof body.request_key!=='string')throw new HTTPException(400,{message:'远程作答参数只允许 workflow_id 和 request_key'});
   const workflowId=uuid(body.workflow_id),requestKey=uuid(body.request_key);
   const task=await enqueueAnswer(pool,workflowId,storageRoot,'server',requestKey);
   const state=await readRemoteAnswerOperation(workflowId,requestKey);

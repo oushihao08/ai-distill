@@ -5,7 +5,7 @@
 import { test,expect,beforeEach,afterEach } from 'bun:test';
 import type {Pool} from 'pg';
 import{mkdir,mkdtemp,readFile,readdir,realpath,rm,writeFile}from'node:fs/promises';
-import{join}from'node:path';
+import{join,relative}from'node:path';
 import{tmpdir}from'node:os';
 import{createApp}from'./app';
 import{Hono}from'hono';
@@ -18,6 +18,7 @@ import {localQueue} from './execution-queue/runtime';
 import{createHash}from'node:crypto';
 import{redactionInputDigest}from'./materials/redaction-jobs';
 import{scanProjectPrompt}from'./rule-files';
+import{repositoryRoot}from'./paths';
 const id='11111111-1111-4111-8111-111111111111';
 const dirs:string[]=[];
 // createApp reads local concurrency settings; each test needs a writable isolated root.
@@ -32,6 +33,7 @@ function setupExecutionRoutes(repository:{projectExists:(projectId:string)=>Prom
  registerWorkflowExecutionRoutes(app,{pool:{} as Pool,storageRoot:dirs.at(-1)!,repository,dispatch,batchChunkSize,...(wait?{waitForAttempt:wait}:{})});
  return app;
 }
+async function projectTemp(prefix:string){const base=join(repositoryRoot,'.storage','route-test-projects');await mkdir(base,{recursive:true});const root=await mkdtemp(join(base,prefix));dirs.push(root);return root;}
 const empty={rows:[],rowCount:0};
 test('single dispatch reports full local queue as 429 with an explicit non-dispatch receipt',async()=>{
  const app=setup(async()=>empty);app.get('/api/test-capacity',()=>{throw new QueueCapacityError('agent',4,4,1);});
@@ -78,7 +80,7 @@ test('Work archive passes only validated external identity to the archive handle
  for(const identity of [{task_id:'',org:'org-legal'},{task_id:'LAW-012',org:''},{task_id:'LAW-012',org:'org-legal',extra:'x'}])expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delivery_identity:identity})})).status).toBe(400);
 });
 test('step-eight publication has an execution route and rejects incomplete prerequisites',async()=>{
- const app=setup(sql=>sql.startsWith('SELECT workflow_kind,source_workflow_id')?{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1}:sql.startsWith('SELECT w.project_id')?{rows:[{project_id:id}],rowCount:1}:empty);
+ const app=setup(sql=>sql.startsWith('SELECT workflow_kind,source_workflow_id')?{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1}:sql.startsWith('SELECT id FROM ai_distill.workflows WHERE id=$1')?{rows:[{id}],rowCount:1}:sql.includes('SELECT w.project_id,w.title,w.source_key,p.parent_name')?{rows:[{project_id:id,title:'题目1',source_key:'题目1',parent_name:'项目',phase_name:null}],rowCount:1}:empty);
  expect((await app.request(`/api/workflows/${id}/publish`,{method:'POST'})).status).toBe(409);
 });
 test('authored question public package can be downloaded through the artifact whitelist',async()=>{
@@ -95,6 +97,7 @@ test('health reports database availability and disables caching',async()=>{
  const bad=await setup(()=>{throw new Error('secret database URL');}).request('/api/health');expect(bad.status).toBe(503);expect(await bad.json()).toMatchObject({database:'unavailable',schema:'unavailable',phase:2});
 });
 test('monitor starts active workflow and material library reads concurrently',async()=>{
+ const previous=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='legacy';
  let started=0,releaseReads!:()=>void;
  const readGate=new Promise<void>(resolve=>{releaseReads=resolve;});
  const app=setup(sql=>{
@@ -102,13 +105,15 @@ test('monitor starts active workflow and material library reads concurrently',as
   if(sql.includes("to_regclass('ai_distill.library_jobs')")){started++;return readGate.then(()=>({rows:[{available:false}],rowCount:1}));}
   return empty;
  });
- const pending=app.request('/api/monitor');
- await new Promise(resolve=>setTimeout(resolve,0));
- const startedBeforeRelease=started;
- releaseReads();
- const response=await pending;
- expect(startedBeforeRelease).toBe(2);
- expect(response.status).toBe(200);
+ try{
+  const pending=app.request('/api/monitor');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  const startedBeforeRelease=started;
+  releaseReads();
+  const response=await pending;
+  expect(startedBeforeRelease).toBe(2);
+  expect(response.status).toBe(200);
+ }finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;}
 });
 test('project group phase listing starts group and phase reads concurrently',async()=>{
  let started=0,releaseReads!:()=>void;
@@ -156,27 +161,28 @@ test('answer generation policy reads project and config in one scoped query',asy
 });
 test('project creation validates JSON and trims input before persisting',async()=>{
  let saved:unknown[]|undefined;
- const root=await mkdtemp(join(tmpdir(),'create-project-'));dirs.push(root);
- const app=setup((sql,values)=>{if(sql.startsWith('INSERT INTO ai_distill.project_groups'))return{rows:[{id:'55555555-5555-4555-8555-555555555555',name:values?.[1],deleted_at:null}],rowCount:1};if(sql.startsWith('INSERT INTO ai_distill.projects'))saved=values;return {rows:sql.startsWith('INSERT INTO ai_distill.projects')?[{id,name:values?.[1],description:values?.[2]}]:[],rowCount:1};});
+ const root=await projectTemp('create-project-');
+ const app=setup((sql,values)=>{if(sql.startsWith('INSERT INTO ai_distill.project_groups'))return{rows:[{id:'55555555-5555-4555-8555-555555555555',name:values?.[1],deleted_at:null}],rowCount:1};if(sql.startsWith('SELECT id,enabled FROM ai_distill.system_answer_models'))return{rows:[{id:'model',enabled:true}],rowCount:1};if(sql.startsWith('INSERT INTO ai_distill.projects'))saved=values;return {rows:sql.startsWith('INSERT INTO ai_distill.projects')?[{id,name:values?.[1],description:values?.[2]}]:[],rowCount:1};});
  for(const body of ['{',JSON.stringify({name:''}),JSON.stringify({name:'x'.repeat(121)}),JSON.stringify({name:123}),JSON.stringify({name:'test',description:123})]){
   expect((await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body})).status).toBe(400);
  }
  const good=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:' test ',description:' text ',material_backend:'legacy',material_root:root})});expect(good.status).toBe(201);expect(saved?.slice(1,3)).toEqual(['test','text']);expect(saved?.[12]).toBeNull();expect((await good.json()as any).name).toBe('test');
 });
 test('project creation records the parent and phase and reuses that parent skill path',async()=>{
- const root=await mkdtemp(join(tmpdir(),'create-project-phase-'));dirs.push(root);
+ const root=await projectTemp('create-project-phase-');
  const materialRoot=join(root,'第五期','questions'),skillPath=join(root,'skill');await mkdir(materialRoot,{recursive:true});await mkdir(skillPath,{recursive:true});
  let inserted:unknown[]|undefined;
  const app=setup((sql,values)=>{
   if(sql.startsWith('SELECT DISTINCT local_skill_path FROM ai_distill.projects'))return{rows:[{local_skill_path:skillPath}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.project_groups'))return{rows:[{id:'55555555-5555-4555-8555-555555555555',name:values?.[1],deleted_at:null}],rowCount:1};
+  if(sql.startsWith('SELECT id,enabled FROM ai_distill.system_answer_models'))return{rows:[{id:'model',enabled:true}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.projects')){inserted=values;return{rows:[{id,name:values?.[1],parent_name:values?.[5],phase_name:values?.[6],local_skill_path:values?.[4]}],rowCount:1};}
   return empty;
  });
  const response=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'豆包高经济价值 - 第五期',parent_name:'豆包高经济价值',phase_name:'第五期',material_backend:'legacy',material_root:materialRoot})});
  expect(response.status).toBe(201);
  expect(inserted?.slice(5,7)).toEqual(['豆包高经济价值','第五期']);
- expect(inserted?.[4]).toBe(skillPath);
+ expect(inserted?.[4]).toBe(relative(repositoryRoot,skillPath));
  expect(inserted?.[12]).toBeNull();
 });
 test('project listing and project detail return persisted rows',async()=>{
@@ -223,7 +229,7 @@ test('project detail starts independent workflow and step reads before project l
  expect((await responsePending).status).toBe(200);
 });
 test('changing the project skill path invalidates current archive and exports',async()=>{
- const root=await mkdtemp(join(tmpdir(),'project-skill-binding-'));dirs.push(root);
+ const root=await projectTemp('project-skill-binding-');
  const oldSkill=join(root,'old-skill'),newSkill=join(root,'new-skill');await mkdir(oldSkill);await mkdir(newSkill);
  const previous={id,name:'项目',description:'',material_root:root,local_skill_path:oldSkill},updated={...previous,local_skill_path:newSkill};
  const statements:string[]=[];
@@ -234,11 +240,11 @@ test('changing the project skill path invalidates current archive and exports',a
  expect(statements.some(sql=>sql.includes('UPDATE ai_distill.steps')||sql.startsWith('UPDATE ai_distill.step_attempts'))).toBe(false);
 });
 test('moving a legacy period into a shared project keeps the target project skill path',async()=>{
- const tempRoot=await mkdtemp(join(tmpdir(),'project-period-move-'));dirs.push(tempRoot);const root=await realpath(tempRoot),oldSkill=join(root,'old-skill'),sharedSkill=join(root,'shared-skill');await mkdir(oldSkill);await mkdir(sharedSkill);
+ const tempRoot=await projectTemp('project-period-move-');const root=await realpath(tempRoot),oldSkill=join(root,'old-skill'),sharedSkill=join(root,'shared-skill');await mkdir(oldSkill);await mkdir(sharedSkill);
  const previous={id,name:'旧项目 - 第五期',description:'',material_root:root,local_skill_path:oldSkill,parent_name:'旧项目 - 第五期',phase_name:''},updated={...previous,name:'统一项目 - 第五期',local_skill_path:sharedSkill,parent_name:'统一项目',phase_name:'第五期'};const updates:unknown[][]=[];
  const app=setup((sql,values)=>{if(sql.startsWith('SELECT * FROM ai_distill.projects WHERE id=$1'))return{rows:[previous],rowCount:1};if(sql.startsWith('SELECT DISTINCT local_skill_path'))return{rows:[{local_skill_path:sharedSkill}],rowCount:1};if(sql.startsWith('UPDATE ai_distill.projects SET name='))return{rows:[updated],rowCount:1};if(sql.startsWith('UPDATE ai_distill.projects SET local_skill_path='))updates.push(values??[]);return empty;});
  const response=await app.request(`/api/projects/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'统一项目 - 第五期',parent_name:'统一项目',phase_name:'第五期',description:'',material_root:root,local_skill_path:oldSkill})});
- expect(response.status).toBe(200);expect((await response.json()as any).local_skill_path).toBe(sharedSkill);expect(updates).toContainEqual(['统一项目',sharedSkill]);
+ expect(response.status).toBe(200);expect((await response.json()as any).local_skill_path).toBe(sharedSkill);expect(updates).toContainEqual(['统一项目',relative(repositoryRoot,sharedSkill)]);
 });
 test('export download follows the frozen skill snapshot after the live skill changes',async()=>{
  const root=dirs.at(-1)!,skill=join(root,'skill'),exportId='22222222-2222-4222-8222-222222222222',workbook=Buffer.from('xlsx fixture');
@@ -301,7 +307,7 @@ test('optional redacted DOCX export is separate from workflow steps and safely d
  };
  const client={query,release(){}};const assetRoot=join(root,'assets','out');const app=createApp({query,connect:async()=>client}as unknown as Pool,root,assetRoot);
  const response=await app.request(`/api/workflows/${id}/redacted-docx`,{method:'POST'});expect(response.status).toBe(201);expect(await response.json()).toMatchObject({artifact_id:expect.any(String),reused:false});
- expect(exported?.storage_path).toBe('附件库/测试项目/第五期/题目1/成果/source-脱敏-33333333.docx');expect((await readFile(join(assetRoot,exported!.storage_path))).readUInt32LE(0)).toBe(0x04034b50);
+ expect(exported?.storage_path).toBe('附件库/测试项目/第五期/题目1/成果/001-source.pdf.docx');expect((await readFile(join(assetRoot,exported!.storage_path))).readUInt32LE(0)).toBe(0x04034b50);
  expect(await readFile(join(assetRoot,'附件库','测试项目','第五期','题目1','原件','33333333_source.pdf'))).toEqual(sourceBytes);
  const download=await app.request(`/api/artifacts/${exported!.id}/download`);expect(download.headers.get('Content-Type')).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
  attachmentsChanged=true;expect((await app.request(`/api/artifacts/${exported!.id}/download`)).status).toBe(409);
@@ -315,7 +321,7 @@ test('extraction API rejects missing workflow and incomplete intake',async()=>{
  const app=setup(sql=>sql.startsWith('SELECT workflow_kind,source_workflow_id')?{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1}:sql.startsWith('SELECT id')?{rows:[{}],rowCount:1}:sql.startsWith('SELECT ordinal')?{rows:[{status:'failed'}],rowCount:1}:empty);expect((await app.request(`/api/workflows/${id}/extract`,{method:'POST'})).status).toBe(409);
 });
 test('authoring route refuses to enqueue when the current redacted artifact is missing',async()=>{
- const calls:string[]=[];const app=setup(sql=>{calls.push(sql);if(sql.startsWith('SELECT workflow_kind,source_workflow_id'))return{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1};if(sql.startsWith('SELECT w.*,p.name AS project_name'))return{rows:[{project_id:id,title:'题目1',source_key:'题目1',source_manifest:[],project_name:'项目',local_skill_path:'/unused/skill',material_root:'/unused',ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};if(sql.includes("ordinal=9 AND status='succeeded'"))return{rows:[{id:'22222222-2222-4222-8222-222222222222'}],rowCount:1};return empty;});
+ const calls:string[]=[];const app=setup(sql=>{calls.push(sql);if(sql.startsWith('SELECT workflow_kind,source_workflow_id'))return{rows:[{workflow_kind:'question',source_workflow_id:null}],rowCount:1};if(sql.startsWith('SELECT id FROM ai_distill.workflows WHERE id=$1'))return{rows:[{id}],rowCount:1};if(sql.startsWith('SELECT w.*,p.name AS project_name'))return{rows:[{workflow_kind:'question',source_workflow_id:null,project_id:id,title:'题目1',source_key:'题目1',source_manifest:[],project_name:'项目',material_backend:'legacy',has_library_snapshot:false,local_skill_path:'/unused/skill',material_root:'/unused',ingestion_status:'succeeded',redaction_status:'succeeded'}],rowCount:1};if(sql.includes("ordinal=9 AND status='succeeded'"))return{rows:[{id:'22222222-2222-4222-8222-222222222222'}],rowCount:1};return empty;});
  const response=await app.request(`/api/workflows/${id}/author`,{method:'POST'});
  expect(response.status).toBe(409);expect(await response.json()).toMatchObject({error:'当前版本没有可用于出题的脱敏文本'});expect(calls.some(sql=>sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
 });
@@ -351,6 +357,36 @@ test('rule binding is no longer exposed as a standalone workflow route or batch 
  expect((await app.request(`/api/workflows/${id}/load-rules`,{method:'POST'})).status).toBe(404);
  const response=await app.request(`/api/projects/${id}/steps/3/run-batch`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
  expect(response.status).toBe(400);
+});
+test('answer and score restore rejects malformed or ambiguous modes before database access',async()=>{
+ const app=setupExecutionRoutes({projectExists:async()=>true,selectWorkflows:async()=>[],readStepStates:async()=>[]},async()=>({id:'unused'}));
+ const request=(body:string)=>app.request(`/api/workflows/${id}/answer-score-results/restore`,{method:'POST',headers:{'Content-Type':'application/json'},body});
+ for(const body of ['{','[]',JSON.stringify({answer_only:'true'}),JSON.stringify({answer_only:true,workflow_id:id})]){
+  const response=await request(body);
+  expect(response.status).toBe(400);
+ }
+});
+test('step attempt history validates scope and returns only the requested workflow and ordinal page',async()=>{
+ const calls:{sql:string;values?:unknown[]}[]=[];
+ const app=setup((sql,values)=>{
+  calls.push({sql,values});
+  if(sql.startsWith('SELECT 1 FROM ai_distill.workflows'))return{rows:[{}],rowCount:1};
+  if(sql.startsWith('SELECT a.id,a.ordinal'))return{rows:[{id:'attempt',ordinal:5,status:'succeeded'}],rowCount:1};
+  if(sql.startsWith('SELECT count(*)::int'))return{rows:[{count:21}],rowCount:1};
+  return empty;
+ });
+ const response=await app.request(`/api/workflows/${id}/steps/5/attempts?offset=20`);
+ expect(response.status).toBe(200);expect(await response.json()).toEqual({attempts:[{id:'attempt',ordinal:5,status:'succeeded'}],total:21,offset:20,limit:20});
+ expect(calls.filter(call=>call.sql.includes('FROM ai_distill.step_attempts')).map(call=>call.values)).toEqual([[id,5,20],[id,5]]);
+ const before=calls.length;
+ for(const path of [`/api/workflows/${id}/steps/2/attempts`,`/api/workflows/${id}/steps/5/attempts?offset=-1`,`/api/workflows/${id}/steps/5/attempts?offset=1.5`])expect((await app.request(path)).status).toBe(400);
+ expect(calls).toHaveLength(before);
+});
+test('manual score validation rejects malformed report or IDs before reading answer data',async()=>{
+ let calls=0;const app=setup(()=>{calls++;return empty;});
+ expect((await app.request(`/api/workflows/${id}/answers/${id}/validate-score`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{'})).status).toBe(400);
+ expect((await app.request(`/api/workflows/${id}/answers/not-an-id/validate-score`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status).toBe(400);
+ expect(calls).toBe(0);
 });
 test('current rule file routes validate malformed requests before touching database',async()=>{
  let calls=0;const app=setup(()=>{calls++;return empty;});const request={method:'POST',headers:{'Content-Type':'application/json'}};
@@ -479,10 +515,11 @@ test('空钩子无需033迁移即可健康，其他必需迁移缺失仍报未�
 
 
 test('HTTP新期缺省共享材料库并冻结出题专用默认，首期不猜Skill路径',async()=>{
- const root=await mkdtemp(join(tmpdir(),'library-phase-default-'));dirs.push(root);
+ const root=await projectTemp('library-phase-default-');
  const saved:any[][]=[],configs:any[][]=[];let scanned=false;
  const app=setup((sql,values)=>{
   if(sql.startsWith('INSERT INTO ai_distill.project_groups'))return{rows:[{id:'55555555-5555-4555-8555-555555555555',name:'新主项目'}],rowCount:1};
+  if(sql.startsWith('SELECT id,enabled FROM ai_distill.system_answer_models'))return{rows:[{id:'model',enabled:true}],rowCount:1};
   if(sql.startsWith('SELECT authoring_defaults'))return{rows:[{authoring_defaults:{model:'gpt-6.1-sol',reasoning_effort:'low'}}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.projects')){saved.push(values as any[]);return{rows:[{id}],rowCount:1};}
   if(sql.startsWith('INSERT INTO ai_distill.project_step_configs'))configs.push(values as any[]);

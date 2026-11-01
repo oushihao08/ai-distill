@@ -13,7 +13,7 @@ import {documentBlocksToText} from '../materials/pdf';
 const conflict=(message:string)=>new HTTPException(409,{message});
 const missing=()=>new HTTPException(404,{message:'材料预览不存在'});
 function verifiedText(content:unknown,sha:unknown){
- if(typeof content!=='string'||typeof sha!=='string')throw conflict('材料预览摘要校验失败');
+ if(typeof content!=='string'||typeof sha!=='string'||createHash('sha256').update(content).digest('hex')!==sha)throw conflict('材料预览摘要校验失败');
  return content;
 }
 function checkedText(content:unknown,sha:unknown){

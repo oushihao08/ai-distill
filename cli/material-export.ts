@@ -33,7 +33,6 @@ export async function exportPreparedMaterials(client:ApiClient,planPath:string,o
   if(sha(item.pages.map((p:any)=>p.text).join('\n'))!==f.text_sha256)fail('原文已变化，不能应用旧处理计划');
   for(const p of item.pages){const k=key(f.file_id,p.page);if(pages.has(k))fail('提取原文页身份重复');pages.set(k,{file_id:f.file_id,page:p.page,text:p.text,structure:p.structure});}
  }
- if(plan.template_id){const catalog=await client.json('/api/material-library/redaction-templates','GET',undefined,signal);const template=catalog.items.find((t:any)=>t.id===plan.template_id);if(!template||template.workflow!=='codex_plan'||template.digest!==plan.template_digest)fail('模板流程或摘要不匹配，请重新审阅计划');}
  const {documents}=plan.template_id?prepareStructuredMaterialData(plan,[...pages.values()] as any):prepareMaterialData(plan,[...pages.values()]);
  const out=resolve(outPath);let created=false;
  try{

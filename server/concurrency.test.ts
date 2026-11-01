@@ -37,7 +37,7 @@ describe('worker concurrency settings',()=>{
    expect(saveWorkerConcurrencySettings(root,{agent:10,llmApi:12})).toEqual({agent:10,llmApi:12});
    expect(readSavedWorkerConcurrencySettings(root)).toEqual({agent:10,llmApi:12});
    expect(readConcurrencySettings({},root)).toEqual({agent:10,llmApi:12});
-   expect(()=>saveWorkerConcurrencySettings(root,{agent:9,llmApi:12})).toThrow();
+   expect(()=>saveWorkerConcurrencySettings(root,{agent:11,llmApi:12})).toThrow();
    expect(()=>saveWorkerConcurrencySettings(root,{agent:10,llmApi:13})).toThrow();
    expect(readSavedWorkerConcurrencySettings(root)).toEqual({agent:10,llmApi:12});
   }finally{await rm(root,{recursive:true,force:true});}

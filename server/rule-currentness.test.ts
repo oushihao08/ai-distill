@@ -5,6 +5,7 @@ import{join,dirname}from'node:path';
 import{tmpdir}from'node:os';
 import type{Pool,PoolClient}from'pg';
 import{scanProjectPrompt,scanRuleWorkspace}from'./rule-files';
+import{repositoryRoot}from'./paths';
 
 async function fixture(){
  const root=await mkdtemp(join(tmpdir(),'rule-currentness-')),skill=join(root,'skill');
@@ -56,7 +57,8 @@ test('marks project exports stale while preserving current archive and attempts'
 });
 
 test('adopting a different skill preserves archives and refreshes project exports',async()=>{
- const root=await mkdtemp(join(tmpdir(),'rule-adoption-currentness-'));
+ const parent=join(repositoryRoot,'.storage','test-fixtures');await mkdir(parent,{recursive:true});
+ const root=await mkdtemp(join(parent,'rule-adoption-currentness-'));
  try{
   const projectRoot=join(root,'project'),materials=join(projectRoot,'materials'),oldSkill=join(projectRoot,'skill'),storage=join(root,'storage'),candidate=join(storage,'project-skills','project','attempt','candidate');
   await mkdir(materials,{recursive:true});await mkdir(oldSkill,{recursive:true});await mkdir(candidate,{recursive:true});

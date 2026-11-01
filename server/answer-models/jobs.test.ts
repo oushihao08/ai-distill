@@ -38,7 +38,7 @@ function fake(options:{reuse?:boolean;previousByModel?:Record<string,string>;aut
   if(sql.startsWith('SELECT config'))return {rowCount:1,rows:[{config:options.projectConfig??config}]};
   if(sql.includes("input->>'model_set_digest' IS DISTINCT FROM"))return {rowCount:0,rows:[]};
   if(options.models?.length&&sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes("input->>'model_id' IS NOT DISTINCT FROM")){const prior=options.previousByModel?.[values[3] as string];return {rowCount:prior?1:0,rows:prior?[{id:prior}]:[]};}
-  if(sql.startsWith("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status NOT IN ('skipped','failed')"))return {rows:options.inactive?[]:[{id:'answer'}],rowCount:options.inactive?0:1};
+  if(sql.startsWith("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running'"))return {rows:options.inactive?[]:[{id:'answer'}],rowCount:options.inactive?0:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&!sql.includes("status='running'"))return {rowCount:options.reuse?1:0,rows:options.reuse?[{id:'existing'}]:[]};
   if(sql.startsWith('SELECT a.*'))return {rowCount:options.empty?0:1,rows:options.empty?[]:[job]};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts'))return {rowCount:options.inactive?0:1,rows:options.inactive?[]:[{id:'answer'}]};
@@ -84,6 +84,7 @@ test('enqueue uses the database redacted text rather than a local file copy',asy
 test('idle worker does not invoke provider',async()=>{const {pool}=fake({empty:true});let called=false;expect(await runNextAnswer(pool,'unused',async()=>{called=true;return answer();})).toBe(false);expect(called).toBe(false);});
 test('worker persists exact answer and usage with immutable config',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,answer);const saved=calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'));expect(saved?.values[1]).toBe('succeeded');expect(JSON.parse(saved?.values[2])).toMatchObject({text:'答案',usage:{total_tokens:8},model:'actual'});}));
 test.each([{inactive:true},{authorId:'new-author'}])('cancelled tasks or changed author attempt identity cannot publish',async options=>fixture(async root=>{const {pool,calls}=fake(options);await runNextAnswer(pool,root,answer);expect(calls.some(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'))).toBe(false);expect(calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);}));
+test('publication requires the claimed attempt to remain running',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,answer);expect(calls.some(c=>c.sql.startsWith("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE"))).toBe(true);}));
 test('provider errors are bounded and do not publish success',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,async()=>{throw new Error('secret provider response');});expect(JSON.stringify(calls)).not.toContain('secret provider response');expect(calls.some(c=>c.values[1]==='succeeded')).toBe(false);}));
 import {QwenError} from './qwen';
 import {readAnswerAttachment} from './jobs';
