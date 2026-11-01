@@ -24,6 +24,7 @@ export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:Qu
 
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const conflict=(message:string)=>new HTTPException(409,{message});
+const validSha256=(value:unknown):value is string=>typeof value==='string'&&/^[0-9a-f]{64}$/i.test(value);
 
 type LegacyMaterialOrigin=Extract<QuestionMaterialOrigin,{kind:'legacy'}>;
 function readLegacyOrigin(value:unknown):LegacyMaterialOrigin{
@@ -111,6 +112,9 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
    !Array.isArray(manifest.files)){
   throw conflict('library_v1 题目材料来源快照结构或摘要无效');
  }
+ if(!validSha256(row.snapshot_digest)||hash(canonicalJson(manifest))!==row.snapshot_digest){
+  throw conflict('library_v1 题目材料来源快照结构或摘要无效');
+ }
  // 不在元数据查询中携带大字段；本地命中时不再下载整份结构索引。
  const artifacts=(await db.query(`SELECT id,kind,attempt_id,sha256,storage_path,size_bytes FROM ai_distill.artifacts
   WHERE workflow_id=$1 AND id=ANY($2::uuid[])`,[workflowId,[row.markdown_artifact_id,row.index_artifact_id]])).rows as SnapshotArtifact[];
@@ -120,6 +124,9 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  if(markdown?.kind!==expectedMarkdownKind||index?.kind!==expectedIndexKind||markdown.attempt_id!==null||index.attempt_id!==null){
   throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  }
+ if(!validSha256(markdown.sha256)||!validSha256(index.sha256)||markdownEntry.sha256!==markdown.sha256||indexEntry.sha256!==index.sha256){
+  throw conflict('library_v1 题目正文或索引与来源快照不匹配');
+ }
  await Promise.all(artifacts.map(async artifact=>{artifact.content=await readLocalSnapshot(root,workflowId,artifact)??await readLocalSnapshot(root,workflowId,cachedSnapshot(workflowId,artifact));}));
  const missing=artifacts.filter(artifact=>typeof artifact.content!=='string').map(artifact=>artifact.id);
  let databaseBytes=0;
@@ -127,7 +134,16 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
   const remote=(await db.query(`SELECT id,content FROM ai_distill.artifacts
    WHERE workflow_id=$1 AND id=ANY($2::uuid[])`,[workflowId,missing])).rows as {id:string;content:string|null}[];
   databaseBytes=remote.reduce((sum,artifact)=>sum+Buffer.byteLength(artifact.content??''),0);
-  for(const artifact of artifacts)if(missing.includes(artifact.id))artifact.content=remote.find(value=>value.id===artifact.id)?.content;
+  for(const artifact of artifacts)if(missing.includes(artifact.id)){
+   const matches=remote.filter(value=>value.id===artifact.id),content=matches[0]?.content;
+   if(matches.length!==1||typeof content!=='string'||hash(content)!==artifact.sha256){
+    throw conflict('library_v1 题目正文或索引与来源快照不匹配');
+   }
+   if(Number.isSafeInteger(Number(artifact.size_bytes))&&Number(artifact.size_bytes)>=0&&Buffer.byteLength(content)!==Number(artifact.size_bytes)){
+    throw conflict('library_v1 题目正文或索引与来源快照不匹配');
+   }
+   artifact.content=content;
+  }
  }
  if(typeof markdown.content!=='string'||typeof index.content!=='string')throw conflict('library_v1 题目正文或索引与来源快照不匹配');
  let parsedIndex:any;

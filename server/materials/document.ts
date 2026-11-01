@@ -83,7 +83,7 @@ export class ProjectDocumentExtractor implements DocumentExtractor {
  async extract(path:string,signal?:AbortSignal):Promise<DocumentExtraction>{
   const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex'),extension=path.split('.').at(-1)?.toLowerCase();
   if(extension==='pdf'){
-   if(!this.pdfProvider)throw new Error('MinerU PDF解析器未配置');
+   if(!this.pdfProvider)throw new Error('PDF解析器未配置');
    const result=await this.pdfProvider.extract(path,signal);
    return{format:'pdf',...result};
   }

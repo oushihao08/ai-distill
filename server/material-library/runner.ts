@@ -13,6 +13,7 @@ import type {LibraryExecutionTarget,LibraryExecutorKind} from '../../shared/mate
 import {type DocumentExtractor,extractLocalDocument,ProjectDocumentExtractor} from '../materials/document';
 import {MineruCliPdfExtractor} from '../materials/pdf-extraction/mineru-cli';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor} from '../materials/pdf-extraction/mineru-api';
+import {GlmOcrPdfExtractor} from '../materials/pdf-extraction/glm-ocr';
 import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
@@ -52,10 +53,11 @@ async function executeIntake(pool:Pool,root:string,job:any,signal:AbortSignal){
 }
 
 async function documentExtractor(root:string,jobId:string,provider:unknown){
- if(!process.env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'文本提取服务未配置'});
- if(provider!=='mineru-api'&&provider!=='mineru-cli')throw new HTTPException(409,{message:'提取任务缺少冻结供应商，请创建新的提取任务'});
+ if(!['glm-ocr','mineru-api','mineru-cli'].includes(String(provider)))throw new HTTPException(409,{message:'提取任务缺少冻结供应商，请创建新的提取任务'});
+ if(provider==='glm-ocr'&&!process.env.ZHIPU_API_KEY?.trim())throw new HTTPException(503,{message:'GLM-OCR文本提取服务未配置'});
+ if(provider!=='glm-ocr'&&!process.env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
  const cli=new MineruCliPdfExtractor(process.env);
- const pdf=provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli);
+ const pdf=provider==='glm-ocr'?new GlmOcrPdfExtractor(process.env):provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli);
  const extractor=new ProjectDocumentExtractor(pdf,new MineruApiDocxExtractor(process.env));
  const directory=join(jobDirectory(root,jobId),'source');
  await mkdir(directory,{recursive:true,mode:0o700});
@@ -82,7 +84,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
    document=ensurePages(extracted.pages,item.source_sha256);actualProvider=extracted.provider;
   }
   if(signal.aborted)throw signal.reason;
-  await writeExtractionCheckpoint(root,job,item,document,actualProvider);
+  await writeExtractionCheckpoint(root,job,item,document,actualProvider,item.format==='pdf'?job.config_snapshot?.pdf_ocr_version:undefined);
   const issues=document.pages.flatMap(page=>[
    ...(page.issues??[]).map(kind=>({page:page.page,kind})),
    ...(!page.text.trim()?[{page:page.page,kind:'empty_page'}]:[]),

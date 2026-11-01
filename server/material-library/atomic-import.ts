@@ -14,6 +14,8 @@ import {validateLibraryPackageInput,buildLibraryManifest,type LibraryFileInput} 
 import {readLibraryProcessingSettings} from './settings';
 import {chooseLibraryExecutor,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS} from './jobs';
 import {installLibraryBlob,lockLibraryBlobWrites,normalizeLibraryFilename,readLibraryBlob} from './storage';
+import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
+import {GLM_OCR_VERSION} from '../materials/pdf-extraction/glm-ocr';
 
 export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKey:string,value:unknown,uploads:LibraryFileInput[],target?:{package_id:string;lock_version:number}){
  uuid(requestKey);if(target)uuid(target.package_id);
@@ -43,13 +45,15 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
   const settings=(await readLibraryProcessingSettings(db,root)).processing_settings as any;
   const executor=chooseLibraryExecutor('extract',files.map(f=>({format:f.format as any,redaction_mode:f.redaction_mode})),settings.redaction,'local');
   const pdf_provider=process.env.PDF_EXTRACTION_PROVIDER||'mineru-api';
-  if(executor==='api'&&(!process.env.MINERU_KEY?.trim()||!['mineru-api','mineru-cli'].includes(pdf_provider)))throw new HTTPException(503,{message:'文本提取服务尚未正确配置'});
+  const requiresMineruDocx=files.some(file=>file.format==='docx');
+  const providerReady=(pdf_provider==='glm-ocr'?Boolean(process.env.ZHIPU_API_KEY?.trim()):['mineru-api','mineru-cli'].includes(pdf_provider)&&Boolean(process.env.MINERU_KEY?.trim()))&&(!requiresMineruDocx||Boolean(process.env.MINERU_KEY?.trim()));
+  if(executor==='api'&&!providerReady)throw new HTTPException(503,{message:'文本提取服务尚未正确配置'});
   if(executor==='api')settings.execution={...settings.execution,task_timeout_ms:Math.max(Number(settings.execution?.task_timeout_ms)||1200000,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS)};
   await mkdir(directory,{recursive:true,mode:0o700});
   const staged=[];
   for(const file of files){const {bytes,...metadata}=file,path=join(directory,file.file_id);await writeFile(path,bytes,{flag:'wx',mode:0o600});staged.push({...metadata,storage_path:relative(root,path)});}
   const snapshot={version:1,request_digest:requestDigest,manifest_sha256:manifest.sha256,files:staged,atomic_import:{package_id:target?.package_id??randomUUID(),revision_id:randomUUID(),package_input:input,expected_version:target?.lock_version??null}};
-  const config={version:1,settings,pdf_provider};
+  const config={version:1,settings,pdf_provider,pdf_ocr_version:pdf_provider==='glm-ocr'?GLM_OCR_VERSION:MINERU_OCR_VERSION};
   await db.query(`INSERT INTO ai_distill.library_jobs(id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
    VALUES($1,'extract','queued',$2,$3,$4::jsonb,$5,$6::jsonb,$7,'local')`,[id,requestKey,hash(snapshot),JSON.stringify(snapshot),hash(config),JSON.stringify(config),executor]);
   await registerLocalJob(db,id,'library',executor,'library:extract');commitAttempted=true;

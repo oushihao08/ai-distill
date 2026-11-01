@@ -175,13 +175,22 @@ test('same-size local corruption falls back without weakening SHA verification',
  }finally{await f.cleanup();}
 });
 
-test('changed metadata SHA misses the cache but does not reintroduce a business digest gate',async()=>{
+test('changed artifact metadata SHA is rejected before database content can be mistaken for the frozen source',async()=>{
  const f=await snapshotCacheFixture();
  try{
   f.metadata[1].sha256='f'.repeat(64);
-  expect((await readQuestionMaterials(f.db,workflowId,f.root)).attachments[0].content).toBe(markdown);
-  await readQuestionMaterials(f.db,workflowId,f.root);
-  expect(f.contentReads).toEqual([['index-1'],['index-1']]);
+  await expect(readQuestionMaterials(f.db,workflowId,f.root)).rejects.toThrow('与来源快照不匹配');
+  expect(f.contentReads).toEqual([]);
+ }finally{await f.cleanup();}
+});
+
+test('snapshot digest mismatch is rejected before reading artifact bodies',async()=>{
+ const f=await snapshotCacheFixture();
+ try{
+  const query=f.db.query.bind(f.db);
+  const broken={query:async(sql:string,values:any[])=>sql.startsWith('SELECT project_id,package_id')?{rows:[{snapshot_manifest:manifest,snapshot_digest:'f'.repeat(64),package_id:'p1',revision_id:'r1',redaction_id:'d1',source_digest:'a'.repeat(64),markdown_artifact_id:'markdown-1',index_artifact_id:'index-1'}]}:query(sql,values)} as unknown as PoolClient;
+  await expect(readQuestionMaterials(broken,workflowId,f.root)).rejects.toThrow('来源快照结构或摘要无效');
+  expect(f.contentReads).toEqual([]);
  }finally{await f.cleanup();}
 });
 
@@ -194,7 +203,7 @@ test('paths outside the workflow directory are never accepted as a snapshot cach
  }finally{await f.cleanup();}
 });
 
-test('both missing snapshots retain database fallback and reject malformed database structure',async()=>{
+test('both missing snapshots retain database fallback and reject database content with a wrong SHA',async()=>{
  const f=await snapshotCacheFixture();const {rm}=await import('node:fs/promises');const {join}=await import('node:path');
  try{
   await rm(join(f.root,workflowId),{recursive:true});
@@ -203,7 +212,7 @@ test('both missing snapshots retain database fallback and reject malformed datab
   await rm(join(f.root,workflowId),{recursive:true});
   const query=f.db.query.bind(f.db);
   const broken={query:async(sql:string,values:any[])=>sql.startsWith('SELECT id,content FROM ai_distill.artifacts')?{rows:[{id:'markdown-1',content:'wrong'},{id:'index-1',content:'invalid-json'}]}:query(sql,values)} as unknown as PoolClient;
-  await expect(readQuestionMaterials(broken,workflowId,f.root)).rejects.toThrow('索引格式无效');
+  await expect(readQuestionMaterials(broken,workflowId,f.root)).rejects.toThrow('与来源快照不匹配');
  }finally{await f.cleanup();}
 });
 

@@ -1,7 +1,7 @@
-<!-- 文件职责：说明 PDF 提取 provider 契约、MinerU API 优先流程及 CLI 回退实现。 -->
+<!-- 文件职责：说明 PDF 提取 provider 契约、独立 GLM-OCR、MinerU API 优先流程及 CLI 回退实现。 -->
 # PDF provider 契约
 
-为 MinerU PDF 解析提供统一页级文本、来源指纹和 provider 身份；默认直连 MinerU v4 API，仅网络、5xx或云端任务提交前的超时失败时回退一次到本机 `mineru-open-api` CLI。云端已接收文件并进入轮询后的超时不通过 CLI 重复提交。
+为 PDF 解析提供统一页级文本、稳定文档结构、来源指纹和 provider 身份。默认直连 MinerU v4 API；也可显式选择独立 GLM-OCR provider。两者的请求、响应转换、凭证和失败边界相互隔离。
 
 ## 文件职责
 
@@ -9,11 +9,14 @@
 | --- | --- |
 | `mineru-cli.ts` | MinerU CLI PDF 适配器：限制子进程环境、解析带页码 JSON 并支持超时和取消。 |
 | `mineru-api.ts` | MinerU v4 API 适配器与 API 优先／CLI 回退组合；管理上传、轮询、结构读取、超时和取消。 |
+| `glm-ocr.ts` | 智谱 `layout_parsing` 独立适配器；严格核对页数，将全部带正文的布局块转换为当前 `DocumentBlock`，不经过 MinerU 回退链。 |
 | `types.ts` | PDF 提取供应商契约：统一页级文本、来源指纹和供应商标识。 |
 
 ## 数据流与依赖
 
-types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtractor` 先调用 MinerU v4 API，经共享 `parseMineruJson()` 转成版本化文档结构及确定性文字投影；仅网络、5xx或云端任务提交前的超时失败且任务未取消时调用一次 CLI 适配器。文件上传成功并进入轮询后超时保留 `provider_timeout`，记录 `extraction.cli.fallback.skipped`，不向同一 MinerU 服务重复提交。设置 `PDF_EXTRACTION_PROVIDER=mineru-cli` 可显式强制 CLI。API 与 CLI 都需 `MINERU_KEY`，不支持 GLM provider 分流。
+types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtractor` 先调用 MinerU v4 API，经共享 `parseMineruJson()` 转成版本化文档结构及确定性文字投影；仅网络、5xx或云端任务提交前的超时失败且任务未取消时调用一次 CLI 适配器。文件上传成功并进入轮询后超时保留 `provider_timeout`，记录 `extraction.cli.fallback.skipped`，不向同一 MinerU 服务重复提交。设置 `PDF_EXTRACTION_PROVIDER=mineru-cli` 可显式强制 CLI。
+
+设置 `PDF_EXTRACTION_PROVIDER=glm-ocr` 时只调用智谱 `layout_parsing`，使用 `ZHIPU_API_KEY`，不调用或回退 MinerU。单个PDF超过50 MiB或100页时在外发前拒绝，须先走现有材料预处理切片。GLM-OCR转换以当前`DocumentBlock`为唯一输出：`doc_title`／`paragraph_title`转标题，`table`转含合并关系的表格，`figure_title`转图注，`vision_footnote`转脚注，其余所有带`content`的块按原顺序转正文。表格HTML无法可靠解析时保留为正文块，禁止静默丢字；没有文字载荷的图片布局块不伪造占位符，因为当前稳定结构不保存图片载荷。DOCX仍走MinerU结构化接口，含DOCX的材料包必须同时配置`MINERU_KEY`。
 
 ## 维护边界
 

@@ -4,7 +4,7 @@ import {join,relative,resolve,sep} from 'node:path';
 import {logEvent} from '../logging';
 import {ensurePages,hash,jobDirectory} from './execution-shared';
 
-type CheckpointJob={id:string;previous_job_id?:string|null};
+type CheckpointJob={id:string;previous_job_id?:string|null;config_snapshot?:{pdf_provider?:string;pdf_ocr_version?:string}};
 type CheckpointFile={file_id:string;source_sha256:string;format:string};
 type Document=ReturnType<typeof ensurePages>;
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -33,6 +33,9 @@ export async function readExtractionCheckpoint(root:string,job:CheckpointJob,fil
   const record=JSON.parse(await readFile(path,'utf8'));
   if(record.sha256!==hash(record.document)||record.document?.source_sha256!==file.source_sha256)throw new Error('checkpoint mismatch');
   if(!['local','mineru-api','mineru-cli','glm-ocr'].includes(record.provider))throw new Error('invalid checkpoint provider');
+  const expectedProvider=file.format==='pdf'?job.config_snapshot?.pdf_provider:file.format==='docx'?'mineru-api':'local';
+  if(expectedProvider&&record.provider!==expectedProvider)throw new Error('checkpoint provider mismatch');
+  if(file.format==='pdf'&&job.config_snapshot?.pdf_ocr_version&&record.provider_version!==job.config_snapshot.pdf_ocr_version)throw new Error('checkpoint provider version mismatch');
   return{document:ensurePages(record.document.pages,file.source_sha256),provider:record.provider};
  }catch(error){
   if((error as NodeJS.ErrnoException).code!=='ENOENT')degraded('checkpoint_unusable');
@@ -40,13 +43,13 @@ export async function readExtractionCheckpoint(root:string,job:CheckpointJob,fil
  }
 }
 
-export async function writeExtractionCheckpoint(root:string,job:CheckpointJob,file:CheckpointFile,document:Document,provider='local'):Promise<boolean>{
+export async function writeExtractionCheckpoint(root:string,job:CheckpointJob,file:CheckpointFile,document:Document,provider='local',providerVersion?:string):Promise<boolean>{
  let temporary:string|undefined;
  try{
   if(!uuid.test(file.file_id))throw new Error('invalid checkpoint file');
   const path=join(await directory(root,job.id,true),`${file.file_id}.json`);
   temporary=`${path}.${crypto.randomUUID()}.tmp`;
-  await writeFile(temporary,JSON.stringify({sha256:hash(document),document,provider}),{mode:0o600,flag:'wx'});
+  await writeFile(temporary,JSON.stringify({sha256:hash(document),document,provider,...(providerVersion?{provider_version:providerVersion}:{})}),{mode:0o600,flag:'wx'});
   await rename(temporary,path);
   return true;
  }catch(error){

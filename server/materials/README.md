@@ -11,14 +11,14 @@
 
 | 文件 | 职责和边界 |
 | --- | --- |
-| `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；`extractPages()`以Poppler生成问题页PDF子集后调用同一provider并映回原页码。PDF必须注入provider，DOCX有provider走它，否则保留本地OOXML兼容解析；TXT/MD本地UTF8。当前队列为PDF/DOCX注入MinerU。 |
+| `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；`extractPages()`以Poppler生成问题页PDF子集后调用同一provider并映回原页码。PDF必须注入冻结provider，DOCX使用MinerU结构化接口；TXT/MD本地UTF8。 |
 | `jobs.ts` | 旧步骤2入队、冻结MinerU配置/转换版本、按执行端领取/缓存/发布；更新步骤1处理状态，非全局库队列。 |
 | `process.ts` | `processMaterials()`核对原件/缓存，生成私有页结构；只对可重试问题页做一次子集复识别并保留issues，无页级能力则标记不可复查，不整份重传。旧无调用的检查点清理入口已移除，不删除历史缓存。 |
 | `pdf.ts` | 当前共享Page/DocumentBlock和确定性`documentBlocksToText()`；`command()`封装Poppler；`extractPdf()`是旧Vision页级路径，非当前MinerU主入口。 |
 | `pdf-split.ts` | `splitLargePdf()`供旧目录同步，按页/大小拆至受管缓存，不修改来源；不是所有全局库上传的自动拆片器；有qpdf时按范围导出并清除未引用资源，避免共享资源被逐页重复携带，无qpdf仍用Poppler兼容路径。 |
 | `pdf-extraction/` | MinerU API/CLI与结构转换，详见本目录README。 |
 | `config.ts` | `loadExtractionConfig()`读JSON兼容识别配置，仅用EXTRACTION_CONFIG_PATH选文件；不是当前MinerU逐字段环境配置合并器。 |
-| `vision.ts` | 旧智谱OCR/实体客户端，保留调查与测试路径；当前MinerU队列不调用。 |
+| `vision.ts` | 旧智谱聊天视觉/实体客户端，保留调查与测试路径；独立GLM-OCR版面解析不复用此客户端。 |
 | `state.ts` | 旧附件/脱敏设置变更的事务失效；保留历史，取消活动尝试，使依赖当前结果失效。共享库题目来源保持独立冻结。 |
 | `redaction-config.ts` | 合并API/Codex默认和校验；`sameRedactionConfig()`比较有效配置，忽略键序和等价默认。 |
 | `redaction-jobs.ts` | 旧步骤9只处理人工已脱敏声明，重验来源并原子发布；旧字段映射冻结任务明确失败，不再复用或调用模型。 |
@@ -50,7 +50,7 @@
 
 旧目录按题目入库，旧材料包先处理material_package，再由`../material-package-questions.ts`建派生题。全局库由`../material-library/questions.ts`冻结脱敏或成功提取原文，默认脱敏；创建后期次设置变化不切换旧题来源，出题/作答/评分/归档均使用同一快照。派生题不再运行旧入库/脱敏。主项目永久使用账不归本模块管理。
 
-旧提取入队冻结PDF provider及转换版本，API默认优先，符合特定网络/服务/超时错误时才回退一次CLI；DOCX直接MinerU API，忽略图片、按原文序映射为单逻辑页。TXT/MD本地解析。两种MinerU方式需MINERU_KEY，当前队列不回退智谱。空白页及provider明确的异常用于局部复查；新解析不再生成图片/占位/未知块/表格降级推断标记，历史缓存记录不回写。
+旧提取入队冻结PDF provider及转换版本。默认MinerU API符合特定网络/服务/超时错误时才回退一次CLI；显式`glm-ocr`只调用智谱版面解析，不进入MinerU回退链。DOCX仍直接使用MinerU API，忽略图片、按原文序映射为单逻辑页；TXT/MD本地解析。MinerU需`MINERU_KEY`，GLM-OCR需`ZHIPU_API_KEY`。空白页及provider明确的异常用于局部复查；新解析不生成图片占位或推断式问题标记，历史缓存不回写。
 
 提取入队可复用同来源/配置的成功尝试，活动去重；执行时另选同来源/供应商配置的历史PDF产物，校验文件、SHA、结构文字投影，不等于只读取成功尝试缓存。损坏缓存可重新提取。只对OCR空白页或empty_page/truncated_response/ocr_page_error/unreadable问题做一次复查；新解析不再生成图片无文字、未知块和表格结构降级提示，历史缓存中的旧标记不会触发复查。复查通过pdfseparate/pdfunite在私有临时目录构造问题页子集，交给原provider，验证子集摘要、原件绑定及返回页数/页序后只替换指定页，正常缓存页保留复用及usage身份。缺少extractPages能力的注入提取器保留原文并添加ocr_recheck_unavailable，不降级为整份重传；结果仍有问题时保留issues，不阻断旧入库。全局库有自己的可用性判断，不套用旧队列状态。
 

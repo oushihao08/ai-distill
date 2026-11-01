@@ -17,6 +17,8 @@ import {resolveLibraryTemplate} from './templates';
 import {readAgentDefaults,validateAgentModelSettings} from '../agent';
 import {resolveModelApiConfig} from '../llm-api';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
+import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
+import {GLM_OCR_VERSION} from '../materials/pdf-extraction/glm-ocr';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
 const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -139,8 +141,11 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   }
   const inputSnapshot={...intent,...(projectMode?{material_processing_mode:projectMode}:{}),manifest_sha256:revision.manifest_sha256,request_digest:requestDigest,files:fileSnapshot};
   const pdfProvider=process.env.PDF_EXTRACTION_PROVIDER||'mineru-api';
-  if(request.kind==='extract'&&executor==='api'&&!['mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取供应商配置无效');
-  const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id,text_protocol:AGENT_TEXT_REDACTION_PROTOCOL}:{})},configDigest=hash(configSnapshot),id=randomUUID();
+  if(request.kind==='extract'&&executor==='api'&&!['glm-ocr','mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取供应商配置无效');
+  if(request.kind==='extract'&&executor==='api'&&pdfProvider==='glm-ocr'&&!process.env.ZHIPU_API_KEY?.trim())throw conflict('GLM-OCR文本提取服务未配置');
+  if(request.kind==='extract'&&executor==='api'&&pdfProvider!=='glm-ocr'&&!process.env.MINERU_KEY?.trim())throw conflict('MinerU文本提取服务未配置');
+  if(request.kind==='extract'&&executor==='api'&&files.some(file=>String(file.original_name).toLowerCase().endsWith('.docx'))&&!process.env.MINERU_KEY?.trim())throw conflict('DOCX结构化提取仍需配置MinerU');
+  const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider,pdf_ocr_version:pdfProvider==='glm-ocr'?GLM_OCR_VERSION:MINERU_OCR_VERSION}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id,text_protocol:AGENT_TEXT_REDACTION_PROTOCOL}:{})},configDigest=hash(configSnapshot),id=randomUUID();
   await supersedeForeignPending(db,{kind:'library',id:revisionId,jobKind:request.kind},request.execution_target);
   const active=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND kind<>'prepare' AND status IN ('queued','running') LIMIT 1",[revisionId])).rows[0];
   if(active)throw conflict('该文件集合已有活动任务，请等待完成或取消后重试');

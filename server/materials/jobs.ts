@@ -10,6 +10,7 @@ import {ProjectDocumentExtractor,type DocumentExtractor} from './document';
 import {invalidateMaterialResults} from './state';
 import {MINERU_DOCX_VERSION,MINERU_OCR_VERSION,MineruCliPdfExtractor} from './pdf-extraction/mineru-cli';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor} from './pdf-extraction/mineru-api';
+import {GLM_OCR_VERSION,GlmOcrPdfExtractor} from './pdf-extraction/glm-ocr';
 import {watchTaskCancellation,withTaskSignal} from '../task-signal';
 import type { Pool } from 'pg';
 import { HTTPException } from 'hono/http-exception';
@@ -17,10 +18,11 @@ import { processMaterials, type InputMaterial, type ExtractionCache } from './pr
 import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
-export function resolvePdfProvider(env:NodeJS.ProcessEnv=process.env):'mineru-api'|'mineru-cli'{
+export function resolvePdfProvider(env:NodeJS.ProcessEnv=process.env):'glm-ocr'|'mineru-api'|'mineru-cli'{
  const provider=env.PDF_EXTRACTION_PROVIDER||'mineru-api';
- if(provider!=='mineru-api'&&provider!=='mineru-cli')throw new HTTPException(503,{message:'当前仅支持MinerU API或CLI解析'});
- if(!env.MINERU_KEY)throw new HTTPException(503,{message:'使用MinerU前请配置MINERU_KEY'});
+ if(provider!=='glm-ocr'&&provider!=='mineru-api'&&provider!=='mineru-cli')throw new HTTPException(503,{message:'当前文本提取供应商配置无效'});
+ if(provider==='glm-ocr'&&!env.ZHIPU_API_KEY?.trim())throw new HTTPException(503,{message:'使用GLM-OCR前请配置ZHIPU_API_KEY'});
+ if(provider!=='glm-ocr'&&!env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'使用MinerU前请配置MINERU_KEY'});
  return provider;
 }
 export async function enqueueExtraction(pool: Pool, id: string, executionTarget:'local'|'server'='local') {
@@ -37,7 +39,10 @@ export async function enqueueExtraction(pool: Pool, id: string, executionTarget:
   if(!['succeeded','waiting','running','failed'].includes(steps.rows[0].status)) throw new HTTPException(409,{message:'材料入库尚未完成'});
   const materials=(await client.query("SELECT id,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND (lower(original_name) LIKE '%.pdf' OR lower(original_name) LIKE '%.docx') ORDER BY id",[id])).rows;
   const pdfProvider=resolvePdfProvider();
-  const pdfConfig={pdf_provider:pdfProvider,model:'mineru-vlm',base_url:'https://mineru.net',ocr_version:MINERU_OCR_VERSION,processor:'pdf-text-ingestion-structured-v1'};
+  if(materialCheck.rows[0]?.docxs&&!process.env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'DOCX结构化提取仍需配置MINERU_KEY'});
+  const pdfConfig=pdfProvider==='glm-ocr'
+   ?{pdf_provider:pdfProvider,model:'glm-ocr',base_url:process.env.ZHIPU_BASE_URL??'https://open.bigmodel.cn/api/paas/v4',ocr_version:GLM_OCR_VERSION,processor:'pdf-text-ingestion-structured-v1'}
+   :{pdf_provider:pdfProvider,model:'mineru-vlm',base_url:'https://mineru.net',ocr_version:MINERU_OCR_VERSION,processor:'pdf-text-ingestion-structured-v1'};
   const config=materialCheck.rows[0]?.docxs?{...pdfConfig,docx_version:MINERU_DOCX_VERSION}:pdfConfig;
   await supersedeForeignPending(client,{kind:'step',id,ordinal:2},executionTarget);
   const active=(await client.query("SELECT execution_target FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=2 AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id])).rows[0];
@@ -86,9 +91,9 @@ export async function runNextExtraction(pool: Pool, root: string, processor = pr
   const cacheRows=await pool.query("SELECT DISTINCT ON (m.sha256) m.sha256 AS source_sha256,ar.storage_path,ar.sha256,a.id AS attempt_id,m.id AS material_id FROM ai_distill.artifacts ar JOIN ai_distill.materials m ON m.id=ar.material_id JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE m.workflow_id=$1 AND lower(m.original_name) LIKE '%.pdf' AND ar.kind='private_extracted_pages' AND a.ordinal=2 AND COALESCE(a.config->>'pdf_provider','glm-ocr')=COALESCE($2::jsonb->>'pdf_provider','glm-ocr') AND (a.config->>'ocr_version')=($2::jsonb->>'ocr_version') AND (a.config->>'model')=($2::jsonb->>'model') AND (a.config->>'base_url')=($2::jsonb->>'base_url') ORDER BY m.sha256,ar.created_at DESC,ar.id DESC",[job.workflow_id,JSON.stringify(job.config)]);
   const caches = new Map<string,ExtractionCache>(cacheRows.rows.map(row=>[row.source_sha256,row]));
   const inputs:InputMaterial[] = materials.rows.map(material=>({...material,extraction_cache:material.storage_path.toLowerCase().endsWith('.pdf')?caches.get(material.sha256):undefined}));
-  if(job.config.pdf_provider!=='mineru-api'&&job.config.pdf_provider!=='mineru-cli')throw new Error('任务未冻结为MinerU解析配置，已停止调用');
+  if(!['glm-ocr','mineru-api','mineru-cli'].includes(job.config.pdf_provider))throw new Error('任务未冻结有效解析配置，已停止调用');
   const cliProvider=new MineruCliPdfExtractor(process.env);
-  const pdfProvider=job.config.pdf_provider==='mineru-cli'?cliProvider:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cliProvider);
+  const pdfProvider=job.config.pdf_provider==='glm-ocr'?new GlmOcrPdfExtractor(process.env):job.config.pdf_provider==='mineru-cli'?cliProvider:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cliProvider);
   const original=new ProjectDocumentExtractor(pdfProvider,new MineruApiDocxExtractor(process.env));
   const extractor:DocumentExtractor={extract:async(path,signal)=>{
    const material=inputs.find(item=>join(resolve(root),item.storage_path)===path);
