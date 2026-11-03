@@ -91,6 +91,26 @@ export function assertWorkBusinessRequirements(rubric:unknown,files:{path:string
   if(refs.some((p:string)=>p!=='all'&&!paths.has(p))||refs.includes('all')&&refs.length!==1)fail(`evaluated_files引用无效：${item.id}`);
  }
 }
+const workReferenceResidues=[
+ {pattern:/(?:AI|人工智能|大模型|模型)(?:作者|生成|编制|拟制|形成|撰写|参考稿)|作者为AI|非真人专家|真人专家(?:认证|确认|审核)/i,label:'AI或真人身份制作说明'},
+ {pattern:/AnySearch|ChatGPT|Codex|research_records|reference_outputs|Harbor|JSON内容稿|历史题包|历史评分|本次会话/i,label:'内部工具或题包制作说明'},
+ {pattern:/不要求候选|候选(?:人)?(?:无需|不必)|作者(?:网址|检索记录|检索轨迹)|唯一答案键|参考答案|标准答案|Rubric|评分(?:项|细则)/i,label:'出题或评分视角'},
+] as const;
+function assertWorkReferenceAudience(value:any,deliverables:any[]){
+ const outputs=list(value.reference_outputs,'标准成果',1,100);
+ for(const output of outputs){
+  const file=deliverables.find(item=>item.id===output.deliverable_id),texts=[output.content];
+  for(const sheet of Array.isArray(output.sheets)?output.sheets:[]){
+   texts.push(sheet.name,...(Array.isArray(sheet.columns)?sheet.columns:[]));
+   for(const row of Array.isArray(sheet.rows)?sheet.rows:[])for(const cell of Array.isArray(row)?row:[])if(typeof cell==='string')texts.push(cell);
+  }
+  for(const residue of workReferenceResidues){
+   if(texts.some(text=>typeof text==='string'&&residue.pattern.test(text)))fail(`标准成果含${residue.label}，须移入generation_note、research_records或Rubric后再交付：${file?.path??output.deliverable_id}`);
+  }
+ }
+ const traceFiles=deliverables.filter(file=>/(?:法律|法源|法规案例)?检索(?:轨迹|记录)\.(?:docx|xlsx)$/i.test(file.path));
+ if(traceFiles.length>1)fail(`同一检索事实只能维护一份轨迹：${traceFiles.map(file=>file.path).join('、')}`);
+}
 /** 标准成果与公开文件要求的既有结构检查；出题和交付均不得丢失映射。 */
 function validateWorkOutputs(value: any) {
     const deliverables = list(value.deliverables, '成果清单', 1, 100), paths = new Set(), ids = new Set();
@@ -136,6 +156,7 @@ function validateWorkOutputs(value: any) {
     }
     if (outputIds.size !== ids.size)
         fail('每份成果必须有对应完整标准内容');
+    assertWorkReferenceAudience(value,deliverables);
     return { deliverables, paths, ids };
 }
 /** 仅用于重新生成Work交付；历史读取不调用，不修改冻结题包。 */

@@ -4,6 +4,7 @@
 /projects/豆包高经济价值/第五期/questions/
 /projects/Work法律全场景/首批筹备/questions/
 
+outputs/
 node_modules/
 dist/
 .env

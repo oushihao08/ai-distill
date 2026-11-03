@@ -190,8 +190,9 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   // Resolve credentials at invocation time, outside the persisted configuration.
   const router = new URL(config.base_url).hostname === 'openrouter.ai';
   const key=readModelApiKey(config,env);
-  // SiliconFlow长答案使用已有SSE解析器；传输方式不改变作答输入或完整性门槛。
-  const stream=input.observe_reasoning===true||config.provider==='siliconflow';
+  // OpenRouter与SiliconFlow长答案使用已有SSE解析器，避免长时间等待单个JSON响应；
+  // 传输方式不改变作答输入、模型路由或完整性门槛。
+  const stream=router||input.observe_reasoning===true||config.provider==='siliconflow';
   const started_at = new Date().toISOString(); const started = performance.now();
   const controller = new AbortController();
   let abortKind: 'timeout' | 'cancelled' | undefined;
@@ -214,7 +215,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
      model: config.model, stream,
-     ...(config.provider==='siliconflow'?{stream_options:{include_usage:true}}:{}),
+     ...(stream&&(router||config.provider==='siliconflow')?{stream_options:{include_usage:true}}:{}),
      ...(config.enable_thinking !== undefined ? (router ? {reasoning:{enabled:config.enable_thinking}} : {enable_thinking:config.enable_thinking}) : {}),
      ...(input.response_format?{response_format:input.response_format}:{}),
      ...(router&&(config.provider_options||input.response_format||config.enable_thinking!==undefined)?{provider:{...config.provider_options,require_parameters:true}}:{}),

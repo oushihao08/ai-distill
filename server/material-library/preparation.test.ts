@@ -8,7 +8,7 @@ import {mkdtemp,readFile,rm,mkdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {preparationUnits,preparationBlocks,completeKnownPreparationDocuments,compilePreparation,compileFixedPreparation,materializePreparation,missingPreparationSummaryTasks,mergePreparationSummaryRepairs,preparationCounts,visiblePreparationContext,visiblePreparedDocuments,renderPreparationDocuments} from '../../shared/material-preparation-result';
-import {findMatchingPreparation,runPreparationCheckpoint,resumePreparation,executePreparation,enqueuePreparation,registerPreparationRoutes} from './preparation';
+import {PREPARATION_PROMPT,findMatchingPreparation,runPreparationCheckpoint,resumePreparation,executePreparation,enqueuePreparation,registerPreparationRoutes} from './preparation';
 import {hash} from './execution-shared';
 import {Hono} from 'hono';
 import {attachPreparationContext} from './questions';
@@ -246,6 +246,38 @@ test('固定目录拒绝模型重分册，稳定ID及全部正文沿用来源，
  expect(r.document_count).toBe(2);expect(r.unassigned_group_count).toBe(2);expect(r.documents).toHaveLength(4);expect(r.combinations.map(c=>c.id)).toEqual(['valid']);
  expect(r.documents.flatMap(d=>d.block_ids)).toHaveLength(preparationBlocks(source).length);
  expect(materializePreparation(r,source)[0]!.text).toContain('第二段正文');expect(visiblePreparedDocuments(r,source).map(d=>d.id)).not.toContain('target');
+});
+
+test('提示词联合判断候选与可见性，无有效候选时程序恢复全部材料可见',()=>{
+ expect(PREPARATION_PROMPT).toContain('没有有效候选组合时全部材料标visible');
+ expect(PREPARATION_PROMPT).toContain('混有待考结果与不可拆分必要案件事实');
+ expect(PREPARATION_PROMPT).toContain('内容相同或实质重复的文书采用一致visibility');
+ const source=preparationUnits({prepared_documents:[
+  {id:'judgment',title:'判决书',text:'记载案件主体、金额与裁判结果'},
+  {id:'notice',title:'执行通知',text:'记载执行金额和程序节点'},
+ ]});
+ const result=compileFixedPreparation({package_summary:'案件结果材料',documents:[
+  {id:'judgment',summary:'判决结果',document_type:'判决',tags:['裁判'],notes:'',visibility:'hidden',visibility_reason:'透露结论'},
+  {id:'notice',summary:'执行进度',document_type:'通知',tags:['执行'],notes:'',visibility:'hidden',visibility_reason:'包含结果'},
+ ],combinations:[]},source,true);
+ expect(result.documents.map(document=>document.visibility)).toEqual(['visible','visible']);
+ expect(result.documents.every(document=>document.visibility_reason==='')).toBe(true);
+ expect(result.warnings).toContain('无有效候选组合，隐藏标记已按可见处理');
+});
+
+test('整包出题支持度由五维分数确定状态并约束危险候选，历史缺失字段保持兼容',()=>{
+ expect(PREPARATION_PROMPT).toContain('出题支持度question_support');
+ const source=preparationUnits({prepared_documents:[{id:'evidence',title:'合同与付款记录',text:'合同、付款及催收事实'}]});
+ const document={id:'evidence',summary:'合同履行证据',document_type:'证据',tags:['合同'],notes:'',visibility:'visible',visibility_reason:''};
+ const combination={id:'scope',direction:'合同履行审查',party:'债权人',scenes:[{scene:'诉前核验',as_of:'起诉前'}],core_work:'核验欠款',deliverables:['法律意见'],document_ids:['evidence'],notes:''};
+ const support=(dimensions:Record<string,number>)=>({dimensions,reason:'能够形成证据核验任务',allowed_task_types:['证据核验'],unsupported_conclusions:['确定最终余额']});
+ const usable=compileFixedPreparation({package_summary:'合同材料',documents:[document],combinations:[combination],question_support:support({task_actor:2,factual_basis:2,professional_judgment:2,deliverable_viability:2,information_boundary:1})},source,true);
+ expect(usable.question_support).toMatchObject({score:9,status:'usable'});expect(usable.combinations).toHaveLength(1);
+ const dangerous=compileFixedPreparation({package_summary:'材料不足',documents:[document],combinations:[combination],question_support:support({task_actor:1,factual_basis:1,professional_judgment:1,deliverable_viability:1,information_boundary:1})},source,true);
+ expect(dangerous.question_support).toMatchObject({score:5,status:'dangerous'});expect(dangerous.combinations).toEqual([]);expect(dangerous.documents[0]!.visibility).toBe('visible');expect(dangerous.warnings).toContain('出题支持度为危险，候选组合已忽略');
+ const missingCandidate=compileFixedPreparation({package_summary:'材料充分',documents:[document],combinations:[],question_support:support({task_actor:2,factual_basis:2,professional_judgment:2,deliverable_viability:2,information_boundary:2})},source,true);
+ expect(missingCandidate.question_support).toMatchObject({score:10,status:'preparation_error'});
+ const legacy=compileFixedPreparation({package_summary:'旧结果',documents:[document],combinations:[]},source,true);expect(legacy.question_support).toBeUndefined();
 });
 
 

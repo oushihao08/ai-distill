@@ -33,8 +33,8 @@ test('Work新结构从公开题面到五件套分字段同源，原始Rubric与�
   expect(projected.background).toBe(instruction.background);expect(projected.requests).toEqual(instruction.requests);expect(projected.baselineDate).toBe(instruction.baseline_date);expect(projected.hardConstraints).toEqual(instruction.hard_constraints);
   expect(projected.deliverableReqs).toContain('意见.docx');expect(projected.background).not.toContain('合成独立条件');
   expect(JSON.parse(await readFile(join(result.directory,'rubric.json'),'utf8')).items).toEqual(input.question.rubric.map((r:any)=>({id:r.id,...r.metadata})));
-  const metadata=JSON.parse(await readFile(join(result.directory,'metadata.json'),'utf8'));expect(metadata.hasScan).toBe(false);expect(metadata.scanFiles).toEqual([]);expect(metadata.taskDesc).not.toContain('内部生成记录');expect(metadata.dataSource).toContain('内部生成记录');
-  const state=JSON.parse(await readFile(join(root,'Siriser五件套.json'),'utf8'));expect(state.quality_warnings.length).toBeGreaterThan(0);expect(state.confirmation_renderer).toBe('siriser-confirmation-office-v9');expect(JSON.stringify(input)).toBe(original);
+  const metadata=JSON.parse(await readFile(join(result.directory,'metadata.json'),'utf8'));expect(metadata.hasScan).toBe(false);expect(metadata.scanFiles).toEqual([]);expect(metadata.taskDesc).not.toContain('内部生成记录');expect(metadata.dataSource).toBe('合成来源');
+  const state=JSON.parse(await readFile(join(root,'Siriser五件套.json'),'utf8'));expect(state.quality_warnings.length).toBeGreaterThan(0);expect(state.confirmation_renderer).toBe('siriser-confirmation-office-v10');expect(JSON.stringify(input)).toBe(original);
   const reused=await generator.generateSiriserConfirmation(root,input,{expertName:'测试',date:'20261025'});expect(reused.reused).toBe(true);expect(reused.sha256).toBe(result.sha256);
   // 选用原文仍生成所选分册DOCX；不要求也不使用可能包含隐藏文书的整包原件。
   const selected=structuredClone(input);selected.source_digest='e'.repeat(64);

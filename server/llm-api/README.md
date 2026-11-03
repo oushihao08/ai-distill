@@ -49,7 +49,7 @@ Qwen 原生使用 `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY`，Kimi 使用 `KIMI_API
 - 不自动改供应商/模型、不自动重试收费请求。队列和返修调用账本继续由业务模块管理。
 - 非流式分支只接受单一choice、assistant角色、stop结束的非空文本；SSE分支核对单choice、可选角色、stop与非空正文。两者共用消息字段检查：tool_calls为非空数组或非法类型、function_call非null、refusal非null时拒绝；缺省/null及空tool_calls数组不代表工具调用。SSE逐事件检查，不能用先前或后续正文掩盖异常字段；拒绝原因码与JSON路径一致，异常时释放reader。两者不返回可执行工具循环，也不把reasoning正文拼进答案。usage、返回模型名及completion ID是可选元数据，缺失不使完整正文失败。安全日志不记录请求/响应正文及密钥。
 
-当前支持纯文字非流式调用和 SSE 完整收集；SiliconFlow 默认使用 SSE。流式与非流式均保留白名单中的异常结束原因并拒绝截断正文；长文仍受模型上下文与最大输出长度限制。业务是否拆分输入由调用方决定，本模块不重试或缩批。真实 API、模型输出质量和浏览器操作需另外取得证据。
+当前支持纯文字非流式调用和 SSE 完整收集；OpenRouter 与 SiliconFlow 默认使用 SSE。流式与非流式均保留白名单中的异常结束原因并拒绝截断正文；长文仍受模型上下文与最大输出长度限制。业务是否拆分输入由调用方决定，本模块不重试或缩批。真实 API、模型输出质量和浏览器操作需另外取得证据。
 
 调用开始日志记录实际超时；JSON 解析失败使用 `invalid_json`，业务校验失败沿用调用方的安全原因码。共用错误分类保留 HTTP 状态和安全原因码，不记录原始供应商说明或响应正文。作答失败时，作答任务将安全 `reason_code` 保存在失败结果中；工作流只读投影仅暴露该码，详情页显示对应的响应校验原因。历史失败没有原始响应或原因码的，仍无法追溯具体字段。
 
@@ -62,7 +62,7 @@ Qwen 原生使用 `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY`，Kimi 使用 `KIMI_API
 `ModelApiConfig.provider_options` 可携带 `only` 和 `allow_fallbacks`，只在 OpenRouter 配置接受；客户端向 provider 转发并在需要 Schema／reasoning 参数时声明 `require_parameters`。模型身份和路由分别冻结，显式路由保持。通用客户端不指定默认上游；旧脱敏API配置解析保留的路由兼容值不代表当前Agent化名调用该API。禁止不可用时静默更换模型或供应商。真实上游以供应商返回元数据核实，配置不等于运行证据。
 
 
-SiliconFlow 请求默认使用 SSE 流式传输并请求 usage，复用现有完整结束校验；只保存完整正文，不将 reasoning_content 拼入答案。所有供应商 HTTP 请求显式关闭 Bun 自带空闲计时，仍由业务 AbortSignal 总时限和取消控制。Bun 已知连接关闭、空闲超时保留安全原因码；不自动重试收费请求。
+OpenRouter 与 SiliconFlow 请求默认使用 SSE 流式传输并请求 usage，复用现有完整结束校验；只保存完整正文，不将 reasoning 内容拼入答案。这可避免 OpenRouter 长生成在完整 JSON 返回前长时间无增量响应，但仍不接受连接中断后的部分正文。所有供应商 HTTP 请求显式关闭 Bun 自带空闲计时，仍由业务 AbortSignal 总时限和取消控制。Bun 已知连接关闭、空闲超时保留安全原因码；不自动重试收费请求。
 
 ## 端点与目录细节
 

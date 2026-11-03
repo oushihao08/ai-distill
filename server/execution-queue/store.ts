@@ -25,7 +25,9 @@ export class LocalQueue {
  constructor(root:string,deviceToken?:string){
   this.root=resolve(root);const directory=join(this.root,'runtime');mkdirSync(directory,{recursive:true,mode:0o700});chmodSync(directory,0o700);
   const path=join(directory,'queue.sqlite3');this.db=new Database(path);chmodSync(path,0o600);
-  this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA busy_timeout=5000;PRAGMA foreign_keys=ON;
+  // API 与 worker 可能同时首次打开队列；先启用忙锁等待，再执行会取写锁的 WAL/建表初始化。
+  this.db.exec('PRAGMA busy_timeout=5000');
+  this.db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA foreign_keys=ON;
    CREATE TABLE IF NOT EXISTS identity(id INTEGER PRIMARY KEY CHECK(id=1),executor_id TEXT NOT NULL,device_digest TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,generation INTEGER NOT NULL DEFAULT 0,kind TEXT NOT NULL,lane TEXT NOT NULL,state TEXT NOT NULL,route TEXT NOT NULL,lease TEXT,pid INTEGER,cancel_requested INTEGER NOT NULL DEFAULT 0,cancel_synced INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,error TEXT);
    CREATE INDEX IF NOT EXISTS jobs_lane_state ON jobs(lane,state,created_at);

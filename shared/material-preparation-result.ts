@@ -17,7 +17,10 @@ export interface PreparationDocument {id:string;title:string;block_ids:string[];
 export interface PreparationSummaryTask {id:string;title:string;block_ids:string[];kind:'existing'|'document'|'unassigned';raw_index?:number}
 export interface PreparationScene {scene:string;as_of:string}
 export interface PreparationCombination {id:string;direction:string;party:string;scenes:PreparationScene[];core_work:string;deliverables:string[];document_ids:string[];notes:string}
-export interface MaterialPreparationResult {summary_scope?:'visible';format:'material-preparation-v2';package_summary:string;documents:PreparationDocument[];combinations:PreparationCombination[];warnings:string[];document_count?:number;unassigned_group_count?:number;unassigned_block_count?:number}
+export type QuestionSupportStatus='usable'|'limited'|'dangerous'|'preparation_error';
+export interface QuestionSupportDimensions {task_actor:number;factual_basis:number;professional_judgment:number;deliverable_viability:number;information_boundary:number}
+export interface QuestionSupport {score:number;status:QuestionSupportStatus;dimensions:QuestionSupportDimensions;reason:string;allowed_task_types:string[];unsupported_conclusions:string[]}
+export interface MaterialPreparationResult {summary_scope?:'visible';format:'material-preparation-v2';package_summary:string;documents:PreparationDocument[];combinations:PreparationCombination[];question_support?:QuestionSupport;warnings:string[];document_count?:number;unassigned_group_count?:number;unassigned_block_count?:number}
 export interface MaterialScopeSelection {business_goal?:string;core_work?:string;deliverable_use?:string;direction:string;party:string;scenes:string[];deliverables:string[];additional_combinations?:Omit<MaterialScopeSelection,'additional_combinations'>[]}
 /** 同期当前成功题目的设计参考，不包含历史题面、答案或评分；缺失元数据不推断。 */
 export interface AuthoringBatchContext {captured_at:string;total:number;included:number;missing:number;truncated:boolean;selections:MaterialScopeSelection[]}
@@ -34,7 +37,7 @@ export function visiblePreparationContext(result:MaterialPreparationResult):Mate
  const documents=result.documents.filter(document=>preparationVisibility(document)==='visible');
  const visibleIds=new Set(documents.map(document=>document.id));
  const combinations=result.combinations.filter(combination=>combination.document_ids.length>0&&combination.document_ids.every(id=>visibleIds.has(id)));
- const projection:MaterialPreparationResult={format:result.format,package_summary:result.summary_scope==='visible'?result.package_summary:documents.map(document=>`${document.title}${document.summary?`：${document.summary}`:''}`).join('\n'),...(result.summary_scope?{summary_scope:result.summary_scope}:{}),documents,combinations,warnings:[]};
+ const projection:MaterialPreparationResult={format:result.format,package_summary:result.summary_scope==='visible'?result.package_summary:documents.map(document=>`${document.title}${document.summary?`：${document.summary}`:''}`).join('\n'),...(result.summary_scope?{summary_scope:result.summary_scope}:{}),documents,combinations,...(result.question_support?{question_support:result.question_support}:{}),warnings:[]};
  const counts=preparationCounts({...result,documents,document_count:result.document_count===undefined?undefined:documents.filter(document=>document.unit_kind==='document').length,unassigned_group_count:documents.filter(document=>document.unit_kind==='unassigned').length,unassigned_block_count:documents.filter(document=>document.unit_kind==='unassigned').reduce((sum,document)=>sum+document.block_ids.length,0)});
  return counts.known?{...projection,document_count:counts.document_count,unassigned_group_count:counts.unassigned_group_count,unassigned_block_count:counts.unassigned_block_count}:projection;
 }
@@ -165,9 +168,19 @@ export function compileFixedPreparation(raw:any,units:PreparationUnit[],inheritK
   }
   combinationIds.add(id);combinations.push({id,direction,party,scenes,core_work,deliverables,document_ids:refs,notes:text(item.notes).trim()});
  }
+ const rawDimensions=raw?.question_support?.dimensions,dimensionKeys=['task_actor','factual_basis','professional_judgment','deliverable_viability','information_boundary'] as const;
+ const validSupport=rawDimensions&&dimensionKeys.every(key=>Number.isInteger(rawDimensions[key])&&rawDimensions[key]>=0&&rawDimensions[key]<=2);
+ const dimensions=validSupport?Object.fromEntries(dimensionKeys.map(key=>[key,rawDimensions[key]])) as unknown as QuestionSupportDimensions:undefined;
+ const score=dimensions?dimensionKeys.reduce((sum,key)=>sum+dimensions[key],0):undefined;
+ const effectiveCombinations=score!==undefined&&score<=5?[]:combinations;
+ if(combinations.length&&!effectiveCombinations.length)warnings.push('出题支持度为危险，候选组合已忽略');
+ const question_support:QuestionSupport|undefined=score===undefined?undefined:{score,status:score<=5?'dangerous':score<=7?'limited':effectiveCombinations.length?'usable':'preparation_error',dimensions:dimensions!,reason:text(raw.question_support?.reason).trim(),allowed_task_types:strings(raw.question_support?.allowed_task_types),unsupported_conclusions:strings(raw.question_support?.unsupported_conclusions)};
+ if(raw?.question_support&&!question_support)warnings.push('出题支持度评分无效，已忽略');
  const package_summary=text(raw.package_summary).trim();if(!package_summary)warnings.push('材料包总摘要为空');
- const unassigned=documents.filter(document=>document.unit_kind==='unassigned');
- return{...(inheritKindsOnly?{summary_scope:'visible' as const}:{}),format:'material-preparation-v2',package_summary,documents,combinations,warnings,...(documents.every(document=>document.unit_kind!==undefined)?{document_count:documents.length-unassigned.length,unassigned_group_count:unassigned.length,unassigned_block_count:unassigned.reduce((sum,document)=>sum+document.block_ids.length,0)}:{})};
+ const effectiveDocuments=effectiveCombinations.length?documents:documents.map(document=>document.visibility==='hidden'?{...document,visibility:'visible' as const,visibility_reason:''}:document);
+ if(!effectiveCombinations.length&&effectiveDocuments.some((document,index)=>document!==documents[index]))warnings.push('无有效候选组合，隐藏标记已按可见处理');
+ const unassigned=effectiveDocuments.filter(document=>document.unit_kind==='unassigned');
+ return{...(inheritKindsOnly?{summary_scope:'visible' as const}:{}),format:'material-preparation-v2',package_summary,documents:effectiveDocuments,combinations:effectiveCombinations,...(question_support?{question_support}:{}),warnings,...(effectiveDocuments.every(document=>document.unit_kind!==undefined)?{document_count:effectiveDocuments.length-unassigned.length,unassigned_group_count:unassigned.length,unassigned_block_count:unassigned.reduce((sum,document)=>sum+document.block_ids.length,0)}:{})};
 }
 export function materializePreparation(result:MaterialPreparationResult,units:PreparationUnit[]):PreparedSelectionDocument[]{
  const blocks=preparationBlocks(units),byId=new Map(blocks.map(b=>[b.id,b]));
@@ -178,7 +191,8 @@ export function materializePreparation(result:MaterialPreparationResult,units:Pr
   return{id:d.id,title:d.title,text:pages.map(p=>documentBlocksToText(p.blocks)).join('\n\n'),document,source_refs:[...new Set(d.block_ids.map(id=>byId.get(id)!.unit_id))].map(id=>units.find(u=>u.id===id)?.source_refs??[]),unit_kind:d.unit_kind,visibility:preparationVisibility(d),visibility_reason:d.visibility_reason??''};
  });
 }
-const str={type:'string'},arr=(items:unknown)=>({type:'array',items}),obj=(properties:Record<string,unknown>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
+const str={type:'string'},scoreDimension={type:'integer',minimum:0,maximum:2},arr=(items:unknown)=>({type:'array',items}),obj=(properties:Record<string,unknown>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
+export const QUESTION_SUPPORT_SCHEMA=obj({dimensions:obj({task_actor:scoreDimension,factual_basis:scoreDimension,professional_judgment:scoreDimension,deliverable_viability:scoreDimension,information_boundary:scoreDimension}),reason:str,allowed_task_types:arr(str),unsupported_conclusions:arr(str)});
 export const MATERIAL_PREPARATION_SCHEMA=obj({package_summary:str,documents:arr(obj({id:str,title:str,block_ids:arr(str),summary:str,document_type:str,tags:arr(str),notes:str,visibility:{type:'string',enum:['visible','hidden']},visibility_reason:str})),combinations:arr(obj({id:str,direction:str,party:str,scenes:arr(obj({scene:str,as_of:str})),core_work:str,deliverables:arr(str),document_ids:arr(str),notes:str}))});
 export const MATERIAL_PREPARATION_SUMMARY_SCHEMA=obj({documents:arr(obj({id:str,summary:str,document_type:str,tags:arr(str),notes:str,visibility:{type:'string',enum:['visible','hidden']},visibility_reason:str}))});
 /** 固定目录只允许回传元数据；不接收可用于重新划分正文的块ID或标题。 */
@@ -193,4 +207,4 @@ export function validateSelectedMaterialIndex(index:any,markdown:string,checkPro
 }
 
 /** 单次整理只返回描述，不让Agent重新判定上游文书类别或边界。 */
-export const MATERIAL_PREPARATION_SINGLE_SCHEMA=obj({package_summary:str,documents:MATERIAL_PREPARATION_SUMMARY_SCHEMA.properties.documents,combinations:MATERIAL_PREPARATION_SCHEMA.properties.combinations});
+export const MATERIAL_PREPARATION_SINGLE_SCHEMA=obj({package_summary:str,documents:MATERIAL_PREPARATION_SUMMARY_SCHEMA.properties.documents,combinations:MATERIAL_PREPARATION_SCHEMA.properties.combinations,question_support:QUESTION_SUPPORT_SCHEMA});
