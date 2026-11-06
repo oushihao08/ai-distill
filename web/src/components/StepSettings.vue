@@ -28,7 +28,8 @@ const model=shallowRef(props.step.config.model ?? 'gpt-6.1-sol');
 const effort=shallowRef(props.step.config.reasoning_effort ?? 'medium');
 const authorTimeoutMinutes=shallowRef<number|string>(props.step.config.timeout_ms?props.step.config.timeout_ms/60000:'');
 const authoringProcessingMode=shallowRef<MaterialProcessingMode>(resolveMaterialProcessingMode(props.step.config));
-const prompt=shallowRef(props.step.ordinal===6?resolveScoreStepPrompt(props.step.config.prompt):props.step.config.prompt??'');
+const openedPrompt=props.step.config.prompt??'';
+const prompt=shallowRef(props.step.ordinal===6?resolveScoreStepPrompt(props.step.config.prompt):openedPrompt);
 const scoreInstructions=shallowRef<{developer_instructions:string;task_prompt:string;isolation_config:Record<string,unknown>}|null>(null);
 interface ModelOption {slug:string;supported_reasoning_levels:{effort:string}[]}
 const modelOptions=shallowRef<ModelOption[]>([]),loadingModels=shallowRef(false);
@@ -71,21 +72,21 @@ async function save(){
  try{
   busy.value=true;error.value='';
   if(props.step.ordinal===5){
-   await api(`/projects/${props.projectId}/steps/5/prompt`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt.value})});
+   await api(`/projects/${props.projectId}/steps/5/prompt`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt.value,expected_prompt:openedPrompt})});
    await api(`/projects/${props.projectId}/steps/5/workflow`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow:workflowDraft.value??null})});
    emit('saved');emit('close');return;
   }
   const apiSettings=isApiScoring.value?{provider:apiConfig.value!.provider,model:apiConfig.value!.model,base_url:apiConfig.value!.base_url,...(apiMaxTokens.value===''?{}:{max_tokens:Number(apiMaxTokens.value)}),...(['qwen','openrouter'].includes(apiConfig.value!.provider)&&apiThinking.value!=='default'?{enable_thinking:apiThinking.value==='enabled'}:{})}:undefined;
   const config=isApiScoring.value?{provider:'api',prompt:prompt.value,api:apiSettings}:{model:model.value,reasoning_effort:effort.value,prompt:prompt.value};
   const endpoint=`/${isCodexStep.value?'agent/':''}projects/${props.projectId}/steps/${props.step.ordinal}/config`;
-  await api(endpoint,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...config,...(props.step.ordinal===4?{material_processing_mode:authoringProcessingMode.value,material_source_mode:materialProcessingSourceMode(authoringProcessingMode.value)}:{}),...(props.step.ordinal===4&&authorTimeoutMinutes.value!==''?{timeout_ms:Number(authorTimeoutMinutes.value)*60000}:{}),...([4,6].includes(props.step.ordinal)&&workflowDraft.value?{workflow:workflowDraft.value}:{})})});
+  await api(endpoint,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({...config,expected_prompt:openedPrompt,...(props.step.ordinal===4?{material_processing_mode:authoringProcessingMode.value,material_source_mode:materialProcessingSourceMode(authoringProcessingMode.value)}:{}),...(props.step.ordinal===4&&authorTimeoutMinutes.value!==''?{timeout_ms:Number(authorTimeoutMinutes.value)*60000}:{}),...([4,6].includes(props.step.ordinal)&&workflowDraft.value?{workflow:workflowDraft.value}:{})})});
   emit('saved');emit('close');
  }catch(cause){
   error.value=cause instanceof Error?cause.message:'保存失败';
  }finally{busy.value=false;}
 }
 async function inheritDefaults(){
- try{busy.value=true;error.value='';await api(`/projects/${props.projectId}/steps/${props.step.ordinal}/config`,{method:'DELETE'});emit('saved');emit('close');}
+ try{busy.value=true;error.value='';await api(`/projects/${props.projectId}/steps/${props.step.ordinal}/config`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_prompt:openedPrompt})});emit('saved');emit('close');}
  catch(cause){error.value=cause instanceof Error?cause.message:'恢复默认设置失败';}finally{busy.value=false;}
 }
 </script>
@@ -93,7 +94,7 @@ async function inheritDefaults(){
  <Row x="between" class="p-20 pb-12 shrink-0"><h2 class="section-title">{{ step.position }} · {{ step.name }}</h2><v-btn icon="$close" variant="text" aria-label="关闭步骤设置" :disabled="busy" @click="emit('close')" /></Row>
  <Column :gap="16" class="min-h-0 overflow-y-auto px-20 pb-16">
  <p class="text-sm text-muted">就绪 {{ step.ready }} · 排队 {{ step.queued }} · 运行 {{ step.running }} · 成功 {{ step.succeeded }} · 失败 {{ step.failed }}</p>
- <Column v-if="step.ordinal===5" :gap="8"><ProjectAnswerModelsSummary :project-id="projectId" /><v-alert type="info">点击“模型作答”会为项目模型集合中的每个已选模型分别派发作答任务，随后逐份评分。每题只读取创建题目时冻结的材料版本，脱敏或未脱敏由题目快照决定；请在出题前为本期选择新题材料版本。请在项目的“作答模型”页选择并保存多个模型；这里无需选择单个模型。新建项目会复制当时的系统提示词，修改本项目提示词只影响后续作答。</v-alert><v-textarea v-model="prompt" label="模型作答步骤提示词" rows="8" required :disabled="busy" /><Row x="end"><v-btn color="primary" variant="flat" @click="emit('openModels')">配置作答模型</v-btn></Row></Column>
+ <Column v-if="step.ordinal===5" :gap="8"><ProjectAnswerModelsSummary :project-id="projectId" /><v-alert type="info">点击“模型作答”会为项目模型集合中的每个已选模型分别派发作答任务，随后逐份评分。每题只读取创建题目时冻结的材料版本，脱敏或未脱敏由题目快照决定；请在出题前为本期选择新题材料版本。请在项目的“作答模型”页选择并保存多个模型；这里无需选择单个模型。同一主项目各期共用本提示词，保存会同步到其他期次，但只影响之后创建的作答任务。</v-alert><v-textarea v-model="prompt" label="模型作答步骤提示词" rows="8" required :disabled="busy" /><Row x="end"><v-btn color="primary" variant="flat" @click="emit('openModels')">配置作答模型</v-btn></Row></Column>
  <template v-else-if="editable">
   <Column v-if="step.ordinal===4" :gap="8" class="rounded border border-line-subtle p-12"><strong class="text-sm">系统固定通用出题规则</strong><pre class="max-h-[320px] overflow-auto whitespace-pre-wrap break-words text-xs">{{ AUTHORING_FIXED_PROMPT }}</pre></Column>
   <v-alert v-if="step.ordinal===4&&authoringProcessingMode==='mask'" type="warning">本期仍为历史遮挡设置，请明确选择Agent化名或原文；保存不会将旧结果改标为化名。</v-alert>

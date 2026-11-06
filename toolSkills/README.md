@@ -4,6 +4,7 @@
 
 | 目录 | 用途 |
 | --- | --- |
+| [phase8-materials-full-capacity](phase8-materials-full-capacity/SKILL.md) | 第八期八个固定来源材料包的 Agent/API 双 lane 满载补位与逐包追溯 |
 | [ai-distill-scheduled-runner](ai-distill-scheduled-runner/SKILL.md) | 按用户指定间隔逐题对账、主动补位，推进材料、出题、作答、评分与有限返修 |
 | [feishu-operations](feishu-operations/SKILL.md) | 通用飞书表格/字段/记录/视图、附件操作CLI与工具包，豆包交付复用；支持官方CLI透传 |
 | [ai-trace-review](ai-trace-review/SKILL.md) | 审查明确处理残留、制作/语体问题及批量任务名称雷同；附带显式授权后的飞书任务名称改名工具，不鉴定AI来源、不冒充数据库同步 |

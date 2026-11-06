@@ -16,6 +16,7 @@ declare module 'vue' {
     ActiveWorkflowTasks: typeof import('./components/ActiveWorkflowTasks.vue')['default']
     AnswerGenerationPolicySettings: typeof import('./components/AnswerGenerationPolicySettings.vue')['default']
     AnswerModelSet: typeof import('./components/AnswerModelSet.vue')['default']
+    AnswerToolSettings: typeof import('./components/AnswerToolSettings.vue')['default']
     AppShell: typeof import('./components/AppShell.vue')['default']
     CodexConfig: typeof import('./components/CodexConfig.vue')['default']
     Column: typeof import('./layout/Column.vue')['default']

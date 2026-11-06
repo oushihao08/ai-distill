@@ -33,7 +33,7 @@ export function acceptanceSourceDigest(snapshot:AcceptanceSnapshot){
  const models=snapshot.config.required_models.map(model=>{
   const answer=snapshot.answers.find(item=>item.model===model),a=answer?.result;
   const score=answer&&snapshot.scores.find(item=>item.answer_attempt_id===answer.id);
-  return {model,answer:answer?{id:answer.id,status:answer.status,text:a?.text,answer_sha256:a?.answer_sha256,input_digest:a?.input_digest,question_attempt_id:a?.question_attempt_id,question_version:a?.question_version}:null,score:score?{id:score.id,status:score.status,binding:score.result?.binding,report:score.result?.report,validation:score.result?.validation}:null};
+  return {model,answer:answer?{id:answer.id,status:answer.status,text:a?.text,answer_sha256:a?.answer_sha256,input_digest:a?.input_digest,question_attempt_id:a?.question_attempt_id,question_version:a?.question_version,outcome:a?.outcome,reason_code:a?.reason_code,generation_activity:a?.generation_activity}:null,score:score?{id:score.id,status:score.status,binding:score.result?.binding,report:score.result?.report,validation:score.result?.validation}:null};
  });
  // 判定口径变化后旧达标摘要失效，发布时必须按百分制重新判定。
  return createHash('sha256').update(JSON.stringify(canonical({acceptance_policy:snapshot.config.aggregation??'percentage_strict_below',config:snapshot.config,question:question?{id:question.id,status:question.status,source:question.input,question:q?.question,question_version:q?.question_version,rubric:q?.rubric,...(q?.scoring_policy?{scoring_policy:q.scoring_policy}:{}),rubric_version:q?.rubric_version,attachment_ids:q?.attachment_ids,answer_requirements:q?.answer_requirements}:null,models}))).digest('hex');
@@ -62,7 +62,7 @@ export function buildAcceptanceInput(snapshot:{config:AcceptanceConfig;question?
   const modelReport=questionResult?.scoring_policy?.contract==='model_report_v1';
   const scoreMatches=!!answerMatches&&!!score&&binding?.answer_attempt_id===answer.id&&binding?.question_version===questionResult?.question_version&&binding?.rubric_version===questionResult?.rubric_version&&binding?.input_digest===answer.result?.input_digest&&binding?.answer_sha256===answer.result?.answer_sha256&&binding?.rubric_digest===rubricDigest&&answer.result?.answer_sha256===createHash('sha256').update(answer.result?.text??'').digest('hex');
   // 来源绑定与历史报告审查标记分离；只有当前来源和模型分数参与判断。
-  return {model,answer_status:!answer?'waiting':!answerMatches?'failed':answer.status as ModelAssessment['answer_status'],score_status:score?.status as ModelAssessment['score_status'],source_current:scoreMatches,...(modelReport?{score_contract:'model_report_v1' as const,evaluation_percent:report?.summary?.evaluation_percent??null,raw_score:report?.summary?.raw_score??null,full_score:report?.summary?.full_score??null,veto_triggered:report?.summary?.veto_triggered??null}:{}),score:typeof report?.total==='number'?report.total:undefined,max_score:typeof report?.max_score==='number'?report.max_score:undefined};
+  return {model,answer_status:!answer?'waiting':!answerMatches?'failed':answer.status as ModelAssessment['answer_status'],...(answer?.result?.outcome==='qualified_timeout_unscored'?{answer_outcome:'qualified_timeout_unscored' as const}:{}),score_status:score?.status as ModelAssessment['score_status'],source_current:scoreMatches,...(modelReport?{score_contract:'model_report_v1' as const,evaluation_percent:report?.summary?.evaluation_percent??null,raw_score:report?.summary?.raw_score??null,full_score:report?.summary?.full_score??null,veto_triggered:report?.summary?.veto_triggered??null}:{}),score:typeof report?.total==='number'?report.total:undefined,max_score:typeof report?.max_score==='number'?report.max_score:undefined};
  });
  return {question_current:current,config:snapshot.config,models};
 }
@@ -117,6 +117,7 @@ export async function runAcceptance(pool:Pool,workflowId:string){
   const decision=decideAcceptance(input);
   const result={...decision,evaluation_records:buildEvaluationRecordRefs(snapshot,decision.model_scores??{})};
   const stepStatus=result.decision==='waiting'?'waiting':'succeeded';
+  const allDirectPasses=result.decision==='accepted'&&config.required_models.every(model=>decision.model_scores?.[model]?.outcome==='qualified_timeout_unscored');
   const previous=(await db.query(`SELECT a.id,a.status,a.input,a.result,s.status AS step_status,s.result AS step_result
    FROM ai_distill.step_attempts a JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=7
    WHERE a.workflow_id=$1 AND a.ordinal=7 ORDER BY a.attempt DESC LIMIT 1`,[workflowId])).rows[0];
@@ -131,6 +132,7 @@ export async function runAcceptance(pool:Pool,workflowId:string){
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,config,finished_at) SELECT $2,$1::uuid,7,COALESCE(max(attempt),0)+1,'succeeded',$3,$4,$5,now() FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=7",[workflowId,attemptId,JSON.stringify(input),JSON.stringify(result),JSON.stringify(config)]);
   // The threshold outcome lives in result.decision; this step records that the decision completed.
   await db.query("UPDATE ai_distill.steps SET implemented=true,status=$3,result=$2,error=NULL,started_at=COALESCE(started_at,now()),finished_at=now() WHERE workflow_id=$1 AND ordinal=7",[workflowId,JSON.stringify(result),stepStatus]);
+  if(allDirectPasses)await db.query("UPDATE ai_distill.steps SET implemented=true,status='skipped',result=$2,error=NULL,started_at=COALESCE(started_at,now()),finished_at=now() WHERE workflow_id=$1 AND ordinal=6",[workflowId,JSON.stringify({outcome:'qualified_timeout_unscored',models:config.required_models.map(model=>{const answer=snapshot.answers.find(item=>item.model===model);return{model_id:model,answer_attempt_id:answer?.id??null,answer_status:'skipped',score_attempt_id:null,score_status:'skipped',outcome:'qualified_timeout_unscored'};})})]);
   await db.query("UPDATE ai_distill.project_exports SET status='stale',error='达标判定已更新',finished_at=now() WHERE status IN ('running','succeeded') AND project_id=(SELECT project_id FROM ai_distill.workflows WHERE id=$1)",[workflowId]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=8",[workflowId]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[workflowId]);

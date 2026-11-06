@@ -4,7 +4,7 @@
  * 不按密钥猜测通用默认供应商；Qwen 旧配置兼容由 resolveQwenConfig() 单独保留。
  */
 import {ModelApiError,type ModelApiConfig} from './types';
-import {DEFAULT_MODEL_API_MODEL} from '@shared/types';
+import {ANSWER_LOCAL_TOOLS,DEFAULT_MODEL_API_MODEL,OPENROUTER_SERVER_TOOLS,type AnswerLocalTool,type OpenRouterServerTool} from '@shared/types';
 export type QwenApiConfig=ModelApiConfig&{provider:'qwen'};
 export type OtherApiConfig=ModelApiConfig&{provider:'kimi'|'deepseek'|'doubao'|'openrouter'|'siliconflow'};
 function record(value: unknown): value is Record<string, unknown> {
@@ -14,7 +14,7 @@ function onlyFields(value: unknown, fields: string[]): asserts value is Record<s
  if (!record(value) || Object.keys(value).some(key => !fields.includes(key))) throw new ModelApiError('configuration');
 }
 export function resolveQwenConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env): QwenApiConfig {
- onlyFields(raw, ['provider', 'base_url', 'model', 'enable_thinking', 'max_tokens']);
+ onlyFields(raw, ['provider', 'base_url', 'model', 'enable_thinking', 'max_tokens','server_tools','local_tools','max_tool_calls']);
  const routerDefault = Boolean(env.OPEN_ROUTER_KEY?.trim()) && !(env.QWEN_API_KEY?.trim() || env.DASHSCOPE_API_KEY?.trim());
  const base = raw.base_url === undefined ? (env.QWEN_BASE_URL?.trim() || (routerDefault ? 'https://openrouter.ai/api/v1' : undefined)) : raw.base_url;
  const model = raw.model === undefined ? (env.QWEN_MODEL?.trim() || (typeof base === 'string' && /^https:\/\/openrouter\.ai\/api\/v1\/?$/.test(base) ? 'qwen/qwen-plus' : undefined)) : raw.model;
@@ -29,10 +29,13 @@ export function resolveQwenConfig(raw: unknown, env: NodeJS.ProcessEnv = process
  if (typeof model !== 'string' || !(router ? /^qwen\/[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/ : /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/).test(model)) throw new ModelApiError('configuration');
  if (raw.enable_thinking !== undefined && typeof raw.enable_thinking !== 'boolean') throw new ModelApiError('configuration');
  if (raw.max_tokens !== undefined && (!Number.isSafeInteger(raw.max_tokens) || (raw.max_tokens as number) <= 0)) throw new ModelApiError('configuration');
+ const tools=resolveServerTools(raw.server_tools,raw.max_tool_calls,router),local=resolveLocalTools(raw.local_tools,router);
+ if(raw.max_tool_calls!==undefined&&!tools.server_tools?.length&&!local.local_tools?.length)throw new ModelApiError('configuration');
  return {
   provider: 'qwen', base_url: url.href.replace(/\/$/, ''), model,
   ...(raw.enable_thinking !== undefined ? { enable_thinking: raw.enable_thinking as boolean } : {}),
   ...(raw.max_tokens !== undefined ? { max_tokens: raw.max_tokens as number } : {}),
+  ...tools,...local,
  };
 }
 
@@ -44,7 +47,7 @@ const endpoints:Record<OtherApiConfig['provider'], {base:string;hosts:string[];p
  siliconflow:{base:'https://api.siliconflow.com/v1',hosts:['api.siliconflow.com'],path:/^\/v1\/?$/,keys:['SILICONFLOW_API_KEY']},
 };
 export function resolveOtherApiConfig(raw:unknown,env:NodeJS.ProcessEnv=process.env):OtherApiConfig {
- onlyFields(raw,['provider','base_url','model','max_tokens','enable_thinking','provider_options']);
+ onlyFields(raw,['provider','base_url','model','max_tokens','enable_thinking','provider_options','server_tools','local_tools','max_tool_calls']);
  if(raw.enable_thinking!==undefined&&((raw.provider!=='openrouter'&&raw.provider!=='siliconflow')||typeof raw.enable_thinking!=='boolean'))throw new ModelApiError('configuration');
  if(raw.provider!=='kimi' && raw.provider!=='deepseek' && raw.provider!=='doubao' && raw.provider!=='openrouter' && raw.provider!=='siliconflow') throw new ModelApiError('configuration');
  const provider=raw.provider,spec=endpoints[provider],prefix=provider.toUpperCase();
@@ -62,7 +65,21 @@ export function resolveOtherApiConfig(raw:unknown,env:NodeJS.ProcessEnv=process.
   if(!Array.isArray(options.only)||options.only.length<1||options.only.length>4||options.only.some(item=>typeof item!=='string'||!/^[a-z0-9][a-z0-9_/-]{0,79}$/.test(item))||new Set(options.only).size!==options.only.length||typeof options.allow_fallbacks!=='boolean')throw new ModelApiError('configuration');
   provider_options={only:[...options.only] as string[],allow_fallbacks:options.allow_fallbacks};
  }
- return {provider,base_url:url.href.replace(/\/$/,''),model,...(raw.enable_thinking!==undefined?{enable_thinking:raw.enable_thinking as boolean}:{}),...(raw.max_tokens!==undefined ? {max_tokens:raw.max_tokens as number}: {}),...(provider_options?{provider_options}:{})};
+ const tools=resolveServerTools(raw.server_tools,raw.max_tool_calls,provider==='openrouter'),local=resolveLocalTools(raw.local_tools,provider==='openrouter');
+ if(raw.max_tool_calls!==undefined&&!tools.server_tools?.length&&!local.local_tools?.length)throw new ModelApiError('configuration');
+ return {provider,base_url:url.href.replace(/\/$/,''),model,...(raw.enable_thinking!==undefined?{enable_thinking:raw.enable_thinking as boolean}:{}),...(raw.max_tokens!==undefined ? {max_tokens:raw.max_tokens as number}: {}),...(provider_options?{provider_options}:{}),...tools,...local};
+}
+
+function resolveServerTools(raw:unknown,maxToolCalls:unknown,allowed:boolean):Pick<ModelApiConfig,'server_tools'|'max_tool_calls'>{
+ if(raw===undefined){if(maxToolCalls!==undefined&&(!Number.isSafeInteger(maxToolCalls)||(maxToolCalls as number)<1||(maxToolCalls as number)>100))throw new ModelApiError('configuration');return maxToolCalls===undefined?{}:{max_tool_calls:maxToolCalls as number};}
+ if(!allowed||!Array.isArray(raw)||raw.length<1||raw.length>OPENROUTER_SERVER_TOOLS.length||raw.some(item=>typeof item!=='string'||!OPENROUTER_SERVER_TOOLS.includes(item as OpenRouterServerTool))||new Set(raw).size!==raw.length)throw new ModelApiError('configuration');
+ if(maxToolCalls!==undefined&&(!Number.isSafeInteger(maxToolCalls)||(maxToolCalls as number)<1||(maxToolCalls as number)>100))throw new ModelApiError('configuration');
+ return{server_tools:[...raw] as OpenRouterServerTool[],...(maxToolCalls!==undefined?{max_tool_calls:maxToolCalls as number}:{})};
+}
+function resolveLocalTools(raw:unknown,allowed:boolean):Pick<ModelApiConfig,'local_tools'>{
+ if(raw===undefined)return{};
+ if(!allowed||!Array.isArray(raw)||raw.length>ANSWER_LOCAL_TOOLS.length||raw.some(item=>typeof item!=='string'||!ANSWER_LOCAL_TOOLS.includes(item as AnswerLocalTool))||new Set(raw).size!==raw.length)throw new ModelApiError('configuration');
+ return{local_tools:[...raw] as AnswerLocalTool[]};
 }
 
 

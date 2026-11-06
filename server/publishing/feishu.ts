@@ -107,6 +107,9 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
   if(matches.length>1)throw new VerificationError('feishu_duplicate_question_records',['题目ID重复']);
   const existing=matches[0];
   const expected=feishuTextFields(workflowId,initial.question,stage==='draft'?'未完成':'已完成');
+  // 普通重试保留已上传旧版编号，不因展示改版覆盖正文；仍逐字符验证同版全部字段。
+  const legacyExpected=feishuTextFields(workflowId,initial.question,stage==='draft'?'未完成':'已完成','legacy');
+  if(existing&&!revisionAttemptId&&existing.fields?.['考点rubric']===legacyExpected['考点rubric'])expected['考点rubric']=legacyExpected['考点rubric']!;
   const currentAttachmentNames=files.map(file=>`材料-${createHash('sha256').update(file.bytes).digest('hex').slice(0,16)}.docx`);
   const hasAttachmentNames=(value:unknown,names:string[])=>Array.isArray(value)&&value.length===names.length&&value.every((file:any,index:number)=>file?.name===names[index]);
   const uploadCurrentAttachments=async()=>{
@@ -158,7 +161,7 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
    const currentDifferences=compareFeishuText(expected,actual),currentAttachments=hasAttachmentNames(actual['输入附件'],currentAttachmentNames);
    if(currentDifferences.length||!currentAttachments){
     const recordedStatus=revision.before?.completion_status==='已完成'?'已完成':'未完成';
-    const priorComparisons=[recordedStatus,recordedStatus==='已完成'?'未完成':'已完成'].map(status=>compareFeishuText(feishuTextFields(workflowId,beforeQuestion,status as '已完成'|'未完成'),actual));
+    const priorComparisons=[recordedStatus,recordedStatus==='已完成'?'未完成':'已完成'].flatMap(status=>(['numbered','legacy'] as const).map(layout=>compareFeishuText(feishuTextFields(workflowId,beforeQuestion,status as '已完成'|'未完成',layout),actual)));
     const differences=priorComparisons.find(items=>items.length===0)??priorComparisons[0]!;
     const previousAttachmentNames=revision.before?.attachment_names;
     const subjectNameRevision=revision.kind==='subject_names',previousAttachmentsMatch=Array.isArray(previousAttachmentNames)&&previousAttachmentNames.length>0&&hasAttachmentNames(actual['输入附件'],previousAttachmentNames);

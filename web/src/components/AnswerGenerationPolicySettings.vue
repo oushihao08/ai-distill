@@ -13,9 +13,9 @@ interface AnswerGenerationPolicyView{
  skip_scoring_on_qualified_timeout:boolean;
  source:'default'|'project';
 }
-const requestTimeoutMinutes=shallowRef(60);
-const reasoningThresholdMinutes=shallowRef(45);
-const skipScoringOnQualifiedTimeout=shallowRef(false);
+const requestTimeoutMinutes=shallowRef(45);
+const reasoningThresholdMinutes=shallowRef(40);
+const skipScoringOnQualifiedTimeout=shallowRef(true);
 const source=shallowRef<'default'|'project'>('default');
 const loading=shallowRef(false);const saving=shallowRef(false);const error=shallowRef('');const message=shallowRef('');
 async function refresh(){
@@ -55,8 +55,8 @@ onMounted(refresh);
    <v-text-field :model-value="requestTimeoutMinutes" type="number" min="2" max="35791" step="1" label="单次作答请求上限（分钟）" :disabled="loading||saving" @update:model-value="requestTimeoutMinutes=Number($event)" />
    <v-text-field :model-value="reasoningThresholdMinutes" type="number" min="1" max="35790" step="1" label="推理增量认定阈值（分钟）" :disabled="loading||saving" @update:model-value="reasoningThresholdMinutes=Number($event)" />
   </Row>
-  <v-switch v-model="skipScoringOnQualifiedTimeout" color="primary" hide-details disabled label="自动免评分（供应商时序证据未验证）" />
-  <p class="text-xs text-muted">当前 OpenRouter／DashScope 文档没有承诺推理增量的最大到达间隔，实际供应商／模型路由也尚未完成连续性验证，因此自动免评分暂不可启用。请求上限与阈值仍可设置；超时保留原技术失败状态，不自动标为难题。失败任务可按原步骤重新派发。</p>
+  <v-switch v-model="skipScoringOnQualifiedTimeout" color="primary" hide-details label="持续生成达上限时免评分直接通过" />
+  <p class="text-xs text-muted">只有本地请求到达上限，且可识别的推理增量持续超过阈值、最后活动仍在 2 分钟内、事件间隔不超过 2 分钟时，才会免评分直接通过。断流、失联、心跳异常、无活动证据或其他超时仍按技术失败处理。</p>
   <Row x="end"><v-btn color="primary" variant="flat" :loading="saving" :disabled="loading||saving" @click="save">保存作答策略</v-btn></Row>
  </Column>
 </template>

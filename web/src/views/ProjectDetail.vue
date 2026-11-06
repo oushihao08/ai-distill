@@ -13,6 +13,7 @@ import ProjectLibraryMaterials from '../components/ProjectLibraryMaterials.vue';
 import AcceptedQuestionList from '../components/AcceptedQuestionList.vue';
 import ProjectAnswerModelsSummary from '../components/ProjectAnswerModelsSummary.vue';
 import AnswerGenerationPolicySettings from '../components/AnswerGenerationPolicySettings.vue';
+import AnswerToolSettings from '../components/AnswerToolSettings.vue';
 import { api } from '../api/client';
 import {dispatchWorkflowBatch} from '../api/batch-dispatch';
 import {acceptanceBatchSummary,batchStepIssue,type BatchStepResult} from '../utils/workflow-status';
@@ -151,7 +152,7 @@ async function savedTags(){tagsOpen.value=false;await refresh();}
    <v-card class="surface-card max-h-[90vh] overflow-hidden">
     <v-card-title class="p-20 pb-8"><Row x="between" y="center" :gap="12"><h2 class="section-title">作答模型设置</h2><v-btn icon="$close" variant="text" aria-label="关闭作答模型设置" @click="modelSettingsOpen=false" /></Row></v-card-title>
     <v-card-text class="min-h-0 overflow-y-auto p-20 pt-0">
-     <Column :gap="20"><AnswerModelSet v-if="modelSettingsOpen" :key="data.project.id" :project-id="data.project.id" @saved="answerModelsVersion++" /><AnswerGenerationPolicySettings v-if="modelSettingsOpen" :key="`${data.project.id}-answer-policy`" :project-id="data.project.id" /></Column>
+     <Column :gap="20"><AnswerModelSet v-if="modelSettingsOpen" :key="data.project.id" :project-id="data.project.id" @saved="answerModelsVersion++" /><AnswerToolSettings v-if="modelSettingsOpen" :key="`${data.project.id}-answer-tools`" :project-id="data.project.id" /><AnswerGenerationPolicySettings v-if="modelSettingsOpen" :key="`${data.project.id}-answer-policy`" :project-id="data.project.id" /></Column>
     </v-card-text>
    </v-card>
   </v-dialog>

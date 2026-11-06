@@ -9,7 +9,7 @@
 | `config.ts` | Qwen、Kimi、DeepSeek、豆包、OpenRouter、SiliconFlow 的端点、模型与参数校验；服务端密钥和环境默认值 |
 | `models.ts` | `/api/llm-api/models` 的模型选项和默认配置，复用已登记系统模型，沿用现有表，不新增目录 |
 | `concurrency.ts` | 默认 HTTP 传输共享的本机 SQLite 请求槽位及有界排队 |
-| `client.ts` | `complete()` 纯文字调用；`completeJson()` JSON 解析及调用方校验；HTTP、取消、超时、usage 和安全日志 |
+| `client.ts` | `complete()` 默认纯文字调用；显式 OpenRouter `server_tools` 走 Responses 并收集安全轨迹；`completeJson()` JSON 解析及调用方校验；HTTP、取消、超时、usage 和安全日志 |
 
 ## 使用
 
@@ -30,6 +30,14 @@ const result=await createModelApiClient().complete({
 
 业务层显式提供消息。模型不能自行读取本地文件、聊天记忆或工作区；原始数据需要由调用方在消息中提供。仅使用当前请求的消息，没有隐式会话。`completeJson(request, validate)` 默认发送 `json_object`，消息需包含 JSON 要求；调用方提供结构/业务校验器。需要供应商原生 Schema 时显式传 `response_format:{type:'json_schema',json_schema:{name,strict:true,schema}}`，选择支持此参数的模型/端点；不支持则报错，不降级为无约束文本。OpenRouter 使用 `require_parameters:true` 防止静默丢弃输出或思考参数。结构化业务可显式请求JSON Schema并提供自己的校验器；本模块不定义业务计划或内容准入规则。
 
+### OpenRouter 服务端工具
+
+默认仍是纯文字请求。冻结配置显式包含 `server_tools`，或业务调用方注入受校验的 `function_tools` 时，OpenRouter 调用才转到 Responses API。通用客户端用 `function_call_output` 继续同一逻辑作答，但不直接读业务材料或工作目录；实际函数由业务调用方提供。服务端工具白名单为 `web_search`、`web_fetch`、`shell`。Shell 运行在 OpenRouter 托管容器，不是本机工作区。
+
+工具结果仅白名单化保存类型、状态、usage 计数及 HTTP(S) 引用，不保存 Shell 命令、搜索词或工具返回正文。`execution_steps.effective_steps` 只统计 Responses 轨迹中显式 `completed` 的调用；失败调用不计入，只有 usage 没有逐次轨迹时为 `null`，不把底层计数冒充业务步长。
+
+每次模型结果还归一化保存两个直接观测字段：`reasoning_tokens` 从供应商 `usage.completion_tokens_details.reasoning_tokens` 或 Responses 的 `usage.output_tokens_details.reasoning_tokens` 读取，缺失时为 `null`，不把未知当作零；`completed_tool_calls` 是结构化轨迹中状态为 `completed` 的外部工具调用数，普通无工具请求为零。前者是内部推理消耗量而非语义步骤数，后者是外部动作数量，两者不得合并成“模型内部步长”。
+
 ## 配置与凭证
 
 通用默认连接为 OpenRouter 标准端点，默认模型为 `deepseek/deepseek-v4.1-flash`，默认关闭思考模式，复用服务端已有 `OPEN_ROUTER_KEY`。可通过 `LLM_API_PROVIDER`、`LLM_API_MODEL`、可选 `LLM_API_BASE_URL` 覆盖；供应商也可使用已有各自的模型/端点环境默认值。默认值是明确的产品配置，不按密钥猜测供应商。业务步骤的覆盖配置优先，并在入队时冻结。
@@ -47,9 +55,9 @@ Qwen 原生使用 `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY`，Kimi 使用 `KIMI_API
 - 材料库化名共用执行位于`material-library/agent-redaction.ts`，默认Agent，可由`material-library/api-redaction.ts`适配显式API任务；`materials/redaction.ts`仅渲染正文和索引，不发模型请求。
 - `agent/` 继续提供本地 Codex 任务执行，没有 API 适配器，也不依赖本模块。
 - 不自动改供应商/模型、不自动重试收费请求。队列和返修调用账本继续由业务模块管理。
-- 非流式分支只接受单一choice、assistant角色、stop结束的非空文本；SSE分支核对单choice、可选角色、stop与非空正文。两者共用消息字段检查：tool_calls为非空数组或非法类型、function_call非null、refusal非null时拒绝；缺省/null及空tool_calls数组不代表工具调用。SSE逐事件检查，不能用先前或后续正文掩盖异常字段；拒绝原因码与JSON路径一致，异常时释放reader。两者不返回可执行工具循环，也不把reasoning正文拼进答案。usage、返回模型名及completion ID是可选元数据，缺失不使完整正文失败。安全日志不记录请求/响应正文及密钥。
+- 未启用工具时，非流式与SSE分支仍拒绝未执行的 `tool_calls`、`function_call` 和 refusal；它们不返回客户端工具循环。显式 OpenRouter 服务端工具改走 Responses，由供应商在请求内执行，客户端只接收完整正文与可审计元数据。所有路径均不把 reasoning 正文拼进答案，安全日志不记录请求／响应正文或密钥。
 
-当前支持纯文字非流式调用和 SSE 完整收集；OpenRouter 与 SiliconFlow 默认使用 SSE。流式与非流式均保留白名单中的异常结束原因并拒绝截断正文；长文仍受模型上下文与最大输出长度限制。业务是否拆分输入由调用方决定，本模块不重试或缩批。真实 API、模型输出质量和浏览器操作需另外取得证据。
+当前支持纯文字非流式调用、SSE 完整收集，以及显式 OpenRouter 工具的非流式 Responses 调用；未启用工具的 OpenRouter 与 SiliconFlow 仍默认使用 SSE。各路径均拒绝截断正文；长文仍受模型上下文与最大输出长度限制。本模块不重试收费请求。真实 API、模型输出质量和浏览器操作需另外取得证据。
 
 调用开始日志记录实际超时；JSON 解析失败使用 `invalid_json`，业务校验失败沿用调用方的安全原因码。共用错误分类保留 HTTP 状态和安全原因码，不记录原始供应商说明或响应正文。作答失败时，作答任务将安全 `reason_code` 保存在失败结果中；工作流只读投影仅暴露该码，详情页显示对应的响应校验原因。历史失败没有原始响应或原因码的，仍无法追溯具体字段。
 
@@ -70,7 +78,7 @@ OpenRouter 与 SiliconFlow 请求默认使用 SSE 流式传输并请求 usage，
 
 `readModelApiCatalog()`读取enabled系统模型并过滤Codex条目，只解析API配置；非法API配置仍明确报错，不静默跳过。端点身份去重只比较provider/base_url/model，不比较思考参数或路由。
 
-SSE收到stop并取得正文即可接受，不强制存在[DONE]；推理活动时序是观测元数据，不证明供应商连续生成，也不自动授权免评分。`request_id`只保留UUID形态；供应商其他格式ID可能显示为空，不能解释成供应商没返回ID。
+SSE收到stop并取得正文即可接受，不强制存在[DONE]。推理活动时序只记录可识别推理字段的首末时间、事件数和最大间隔；单独出现任何一个字段都不证明供应商仍在生成。作答层仅在本地截止且同时满足持续跨度、事件数、最大间隔、末次活动新鲜度和时间戳自洽检查时，才使用该证据认定合格长生成；任务心跳和数据库状态不参与认定。`request_id`只保留UUID形态；供应商其他格式ID可能显示为空，不能解释成供应商没返回ID。
 
 `concurrency.test.ts`覆盖本机槽位共享/等待/取消等边界；兼容客户端响应测试位于answer-models的qwen/domestic测试。替身传输跳过真实SQLite槽位与网络，不证明真实供应商或跨机并发。
 

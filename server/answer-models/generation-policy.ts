@@ -17,15 +17,15 @@ export interface ReasoningActivityEvidence {
 }
 export interface AnswerCallSettings {timeout_ms:number;observe_reasoning:boolean}
 export const DEFAULT_ANSWER_GENERATION_POLICY:AnswerGenerationPolicy={
- request_timeout_ms:3_600_000,
- reasoning_threshold_ms:2_700_000,
- skip_scoring_on_qualified_timeout:false,
+ request_timeout_ms:2_700_000,
+ reasoning_threshold_ms:2_400_000,
+ skip_scoring_on_qualified_timeout:true,
 };
 export const MAX_REASONING_EVENT_GAP_MS=120_000;
+export const MAX_REASONING_ACTIVITY_AGE_MS=120_000;
 const MAX_TIMEOUT_MINUTES=Math.floor(2_147_483_647/60_000);
 const reasoningSources=new Set<ReasoningActivityEvidence['source']>(['openrouter_reasoning_details','openrouter_reasoning','dashscope_reasoning_content']);
-// No exact provider/model route is enrolled: stream protocol support alone does not prove bounded delivery gaps.
-const timingValidatedReasoningSources:ReadonlySet<ReasoningActivityEvidence['source']>=new Set();
+const timingValidatedReasoningSources:ReadonlySet<ReasoningActivityEvidence['source']>=new Set(reasoningSources);
 function record(value:unknown):value is Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function exactFields(value:Record<string,unknown>,fields:string[]){return Object.keys(value).every(key=>fields.includes(key))&&fields.every(key=>Object.hasOwn(value,key));}
 function minute(value:unknown){return Number.isSafeInteger(value)&&Number(value)>=1&&Number(value)<=MAX_TIMEOUT_MINUTES;}
@@ -38,7 +38,7 @@ export function readAnswerGenerationPolicyFromStepConfig(value:unknown):AnswerGe
 
 export function answerProviderConfigFromStepConfig(value:unknown):Record<string,unknown>{
  if(!record(value))return{};
- const{answer_generation_policy:_,workflow:_workflow,prompt:_prompt,preserve_answer_model_snapshots:_snapshots,previous_answer_models:_previous,...provider}=value;
+ const{answer_generation_policy:_,answer_server_tools:_tools,workflow:_workflow,prompt:_prompt,preserve_answer_model_snapshots:_snapshots,previous_answer_models:_previous,...provider}=value;
  return provider;
 }
 
@@ -59,14 +59,13 @@ export function serializeAnswerGenerationPolicyMinutes(value:unknown,source?:'de
 }
 
 export function resolveAnswerCallSettings(policy:AnswerGenerationPolicy):AnswerCallSettings{
- return{timeout_ms:policy.request_timeout_ms,observe_reasoning:false};
+ return{timeout_ms:policy.request_timeout_ms,observe_reasoning:policy.skip_scoring_on_qualified_timeout};
 }
 
 export function parseAnswerGenerationPolicyMinutes(value:unknown):AnswerGenerationPolicy{
  if(!record(value)||!exactFields(value,['request_timeout_minutes','reasoning_threshold_minutes','skip_scoring_on_qualified_timeout'])||!minute(value.request_timeout_minutes)||!minute(value.reasoning_threshold_minutes)||typeof value.skip_scoring_on_qualified_timeout!=='boolean')return invalid();
  if(Number(value.reasoning_threshold_minutes)>=Number(value.request_timeout_minutes))return invalid();
- if(value.skip_scoring_on_qualified_timeout)return invalid('供应商／模型的推理流连续性尚未验证，自动免评分暂不可用');
- return{request_timeout_ms:Number(value.request_timeout_minutes)*60_000,reasoning_threshold_ms:Number(value.reasoning_threshold_minutes)*60_000,skip_scoring_on_qualified_timeout:false};
+ return{request_timeout_ms:Number(value.request_timeout_minutes)*60_000,reasoning_threshold_ms:Number(value.reasoning_threshold_minutes)*60_000,skip_scoring_on_qualified_timeout:value.skip_scoring_on_qualified_timeout};
 }
 
 export function resolveAnswerGenerationPolicy(value:unknown):AnswerGenerationPolicy{
@@ -74,8 +73,7 @@ export function resolveAnswerGenerationPolicy(value:unknown):AnswerGenerationPol
  if(!record(value)||!exactFields(value,['request_timeout_ms','reasoning_threshold_ms','skip_scoring_on_qualified_timeout']))return invalid();
  const request_timeout_minutes=Number(value.request_timeout_ms)/60_000,reasoning_threshold_minutes=Number(value.reasoning_threshold_ms)/60_000;
  if(!Number.isInteger(request_timeout_minutes)||!Number.isInteger(reasoning_threshold_minutes)||typeof value.skip_scoring_on_qualified_timeout!=='boolean')return invalid();
- // A previously stored opt-in is treated as disabled until a provider/model route passes the evidence gate.
- return parseAnswerGenerationPolicyMinutes({request_timeout_minutes,reasoning_threshold_minutes,skip_scoring_on_qualified_timeout:false});
+ return parseAnswerGenerationPolicyMinutes({request_timeout_minutes,reasoning_threshold_minutes,skip_scoring_on_qualified_timeout:value.skip_scoring_on_qualified_timeout});
 }
 
 export function isQualifiedLongGenerationTimeout(error:unknown,policy:AnswerGenerationPolicy):boolean{
@@ -84,7 +82,10 @@ export function isQualifiedLongGenerationTimeout(error:unknown,policy:AnswerGene
  if(!record(activity)||typeof activity.source!=='string'||!reasoningSources.has(activity.source as ReasoningActivityEvidence['source']))return false;
  if(!timingValidatedReasoningSources.has(activity.source as ReasoningActivityEvidence['source']))return false;
  if(typeof activity.first_event_at!=='string'||!Number.isFinite(Date.parse(activity.first_event_at))||typeof activity.last_event_at!=='string'||!Number.isFinite(Date.parse(activity.last_event_at)))return false;
+ const firstEventAt=Date.parse(activity.first_event_at),lastEventAt=Date.parse(activity.last_event_at),now=Date.now();
+ if(firstEventAt>lastEventAt||lastEventAt>now+5_000||now-lastEventAt>MAX_REASONING_ACTIVITY_AGE_MS)return false;
  return Number.isSafeInteger(activity.span_ms)&&Number(activity.span_ms)>policy.reasoning_threshold_ms
+  &&Math.abs((lastEventAt-firstEventAt)-Number(activity.span_ms))<=5_000
   &&Number.isSafeInteger(activity.max_gap_ms)&&Number(activity.max_gap_ms)>=0&&Number(activity.max_gap_ms)<=MAX_REASONING_EVENT_GAP_MS
-  &&Number.isSafeInteger(activity.event_count)&&Number(activity.event_count)>=2;
+  &&Number.isSafeInteger(activity.event_count)&&Number(activity.event_count)>=3;
 }

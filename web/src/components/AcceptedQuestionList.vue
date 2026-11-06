@@ -67,5 +67,5 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
   </Column>
   <Row x="between" wrap y="center" :gap="8"><span class="text-xs text-muted">第 {{ page }} / {{ pageCount }} 页 · 每页 {{ pageSize }} 道</span><v-pagination v-model="page" :length="pageCount" :total-visible="5" :disabled="pageCount<=1" aria-label="达标题目分页" /></Row>
  </Column>
- <AcceptedQuestionDetail v-if="selected" :workflow-id="selected.id" :title="selected.title" :acceptance-result="selected.acceptance_result" @close="selected=null" />
+ <AcceptedQuestionDetail v-if="selected" :workflow-id="selected.id" :title="selected.title" :acceptance-result="selected.acceptance_result" detail-label="达标题目" @close="selected=null" />
 </template>

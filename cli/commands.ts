@@ -57,13 +57,13 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
     默认 library_v1、期号1、Agent化名；需要 --workspace-path，首期明确 --skill-path；旧目录须显式 --material-backend legacy。
   project phase-update --project UUID --phase-no N --phase-name 期名 --expected-name 当前完整名称
   project-group rename|archive|restore --group UUID [--name 主项目名称]
-  library import --name 名称 --request-key UUID --manifest JSON（成功提取后才入库）
+  library import --name 名称 --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli]（成功提取后才入库）
   library imports list
   library package create（已停止先建空包，使用 library import）
   library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
-  library files prepare --manifest JSON --out 新输出目录（本地OFD转PDF及PDF切割；不上传、不调用模型）
-  library revision create --package UUID --version N --request-key UUID --manifest JSON
-  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级]
+  library files prepare --manifest JSON --out 新输出目录（DOC/WPS/OFD转PDF、PDF切割、图片原样准备；不上传、不调用模型）
+  library revision create --package UUID --version N --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli]
+  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级]
   library prepare start --revision UUID (--redaction UUID | --extraction-job UUID) --request-key UUID [--project UUID] [--agent-model 模型 --reasoning-effort 等级] [--execution-timeout 30m] [--force]
   library prepare resume --job UUID --request-key UUID [--execution-timeout 30m]（显式续作，不启动worker）
   library prepare diagnose --job UUID（只读计数与停止原因，不输出正文）
@@ -205,11 +205,11 @@ const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'library package list':['q','page','page-size','ready-only','redaction-state','preparation-state','archived-only','project'],'library package show':['package'],
       'library package usage':['package'],'library package revisions':['package'],'library package create':['name','description','tags'],
       'library package update':['package','version','file'],'library package archive':['package','version'],'library package restore':['package','version'],
-      'library files prepare':['manifest','out'],'library import':['name','manifest','request-key'],'library imports list':[],
+      'library files prepare':['manifest','out'],'library import':['name','manifest','request-key','pdf-provider'],'library imports list':[],
       'library batch plan':['kind','project','project-query','q','redaction-state','preparation-state','extraction-state','out'],
       'library batch run':['file'],
-      'library revision create':['package','version','request-key','manifest'],
-      'library job start':['revision','kind','target','request-key','extraction-job','previous-job','template','project','agent-model','reasoning-effort'],
+      'library revision create':['package','version','request-key','manifest','pdf-provider'],
+      'library job start':['revision','kind','target','request-key','pdf-provider','extraction-job','previous-job','template','project','agent-model','reasoning-effort'],
       'library job show':['job'],'library job cancel':['job'],'library job wait':['job','timeout'],
       'library prepare start':['revision','redaction','extraction-job','request-key','project','agent-model','reasoning-effort','execution-timeout','force'],'library prepare resume':['job','request-key','execution-timeout'],'library prepare diagnose':['job'],'library prepare list':['package','revision','redaction','project'],'library prepare show':['preparation','content'],
       'library template list':[],'library template show':['template'],
@@ -269,10 +269,13 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
     const createLibraryRevision=async(packageId?:string)=>{
       const manifestPath=required('manifest');
       const manifest=await readJsonFile(manifestPath,'材料清单');
-      if(Object.hasOwn(manifest,'recovery'))throw new CliError('临时恢复清单不能作为材料原件入库；请重新提交原始PDF、DOCX、TXT或MD文件',{kind:'file_error'});
+      if(Object.hasOwn(manifest,'recovery'))throw new CliError('临时恢复清单不能作为材料原件入库；请重新提交原始PDF、DOCX、TXT、MD、PNG或JPEG文件',{kind:'file_error'});
       if(Object.keys(manifest).some(key=>key!=='files'))throw new CliError('材料清单只能包含 files；来源转换或恢复元数据不能作为原件清单提交',{kind:'file_error'});
       if(!Array.isArray(manifest.files)||manifest.files.length<1||manifest.files.length>100)throw new CliError('材料清单须包含1至100个文件');
       const form=new FormData();form.set('request_key',uuid('request-key'));
+      if(flags.has('pdf-provider')){
+        const provider=required('pdf-provider');if(!['glm-ocr','mineru-api','mineru-cli'].includes(provider))throw new CliError('--pdf-provider 无效');form.set('pdf_provider',provider);
+      }
       const modes:string[]=[];
       for(const [index,item] of manifest.files.entries()){
         if(!item||typeof item!=='object'||Array.isArray(item)||typeof item.path!=='string'||!item.path.trim())throw new CliError(`材料清单第${index+1}项缺少 path`);
@@ -280,6 +283,10 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const mode=item.redaction_mode??'model';
         if(mode!=='model'&&mode!=='declared_redacted')throw new CliError(`材料清单第${index+1}项 redaction_mode 无效`);
         const filePath=resolve(dirname(resolve(manifestPath)),item.path);
+        const extension=filePath.split('.').at(-1)?.toLowerCase()??'';
+        if(['doc','wps','ofd'].includes(extension))throw new CliError(`材料文件需先转换：${basename(filePath)}；请先执行 library files prepare`,{kind:'file_error'});
+        if(!['pdf','docx','txt','md','png','jpg','jpeg'].includes(extension))throw new CliError(`材料文件格式不支持直接入库：${basename(filePath)}`,{kind:'file_error'});
+        if(mode==='declared_redacted'&&extension!=='docx')throw new CliError(`只有DOCX可声明已人工脱敏：${basename(filePath)}`,{kind:'file_error'});
         let bytes:Uint8Array;
         try{bytes=await readFile(filePath);}catch{throw new CliError(`材料文件无法读取：${basename(filePath)}`,{kind:'file_error'});}
         const uploadBytes=new Uint8Array(bytes.byteLength);uploadBytes.set(bytes);
@@ -500,7 +507,10 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const hasAgentModel=flags.has('agent-model'),hasReasoningEffort=flags.has('reasoning-effort');
         if(hasAgentModel!==hasReasoningEffort)throw new CliError('--agent-model 与 --reasoning-effort 必须同时提供');
         if(hasAgentModel&&kind!=='redact')throw new CliError('Agent模型设置仅用于redact任务');
-        const body={kind,request_key:uuid('request-key'),execution_target:target,...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{}) ,...(hasAgentModel?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})};
+        if(flags.has('pdf-provider')&&kind!=='extract')throw new CliError('--pdf-provider 仅用于extract任务');
+        const provider=flags.has('pdf-provider')?required('pdf-provider'):undefined;
+        if(provider&&!['glm-ocr','mineru-api','mineru-cli'].includes(provider))throw new CliError('--pdf-provider 无效');
+        const body={kind,request_key:uuid('request-key'),execution_target:target,...(provider?{pdf_provider:provider}:{}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{}) ,...(hasAgentModel?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})};
         data=await post(`/api/material-library/revisions/${uuid('revision')}/jobs`,body);break;
       }
       case 'library prepare start': {

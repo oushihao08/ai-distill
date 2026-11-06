@@ -20,6 +20,13 @@ test('SiliconFlow model registration pins provider endpoint and never stores cre
  expect(saved).toMatchObject({provider:'siliconflow',base_url:'https://api.siliconflow.com/v1',model:'Qwen/Qwen3.8-2.4T-A95B'});
  expect(JSON.stringify(inserts)).not.toContain('siliconflow-fixture');
 });
+test('OpenRouter model registration freezes only supported server tools',async()=>{
+ const inserts:any[]=[];
+ const db={query:async(sql:string,args:any[]=[])=>{if(sql.startsWith('INSERT INTO ai_distill.system_answer_models')){inserts.push(args);return{rowCount:1,rows:[{config:JSON.parse(args[5])}]};}return{rowCount:1,rows:[]};}} as unknown as Pool;
+ const saved=await registerAnswerModel(db,{model_id:'qwen/qwen-plus',server_tools:['web_search','web_fetch','shell'],max_tool_calls:20});
+ expect(saved.config).toMatchObject({provider:'openrouter',server_tools:['web_search','web_fetch','shell'],max_tool_calls:20});
+ await expect(registerAnswerModel(db,{model_id:'qwen/qwen-plus',server_tools:['browser']})).rejects.toThrow();
+});
 test('model-set digest is stable when JSONB reorders nested object keys',()=>{
  const restored=[{config:{model:'qwen/qwen-plus',provider:'qwen' as const,base_url:'https://openrouter.ai/api/v1'},minimum_score:8,name:'Qwen Plus',model_id:qwen.model_id},{model_id:deepseek.model_id,name:'DeepSeek',minimum_score:7,config:{model:'deepseek-chat',base_url:'https://api.deepseek.com',provider:'deepseek' as const}}];
  expect(answerModelSetDigest([qwen,deepseek])).toBe(answerModelSetDigest(restored));

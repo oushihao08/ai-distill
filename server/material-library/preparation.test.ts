@@ -109,14 +109,21 @@ test('出题Agent收到摘要和范围文件，同时保留全部材料附件并
  const root=await mkdtemp(join(tmpdir(),'material-scope-author-'));
  try{
   const workspace=join(root,'workspace');await mkdir(workspace);
-  const scope={preparation_id:id,result,used_combinations:[{direction:'已用方向',scene:'已用场景'}]};
+  const analysisResult=structuredClone(result);
+  analysisResult.combinations[0]!.notes='核定范围用于后续修订；核验条款与适用条件一致，不要求新增表格。';
+  analysisResult.combinations[0]!.deliverables=['供客户决定办理路径的意见及可审签修订稿'];
+  const scope={preparation_id:id,result:analysisResult,used_combinations:[]};
   const draft=sampleDraft();
   const out=await runAuthoring({root:join(root,'execution'),workspace_path:workspace,project_name:'测试项目',question:'完成法律工作',materials:[{id:'attachment-1',sha256:'a'.repeat(64),text:'完整材料正文'}],project_context:{source_digest:'rules',files:[{path:'skill/SKILL.md',text:'遵守项目Skill'}]},material_scope:scope,model:'fixture',reasoning_effort:'low',execute:async(call:any)=>{
    const scopeFile=JSON.parse(await readFile(join(call.directory,'input','material-scope.json'),'utf8'));
    expect(scopeFile.result.package_summary).toBe(result.package_summary);
    expect(scopeFile.result.documents).toHaveLength(3);
+   expect(scopeFile.result.combinations[0].notes).toBe(analysisResult.combinations[0]!.notes);
+   expect(scopeFile.result.combinations[0].deliverables).toEqual(analysisResult.combinations[0]!.deliverables);
+   expect(scopeFile.used_combinations).toEqual([]);
+   expect(call.prompt).toContain('材料依据—专业处理—使用动作—实际文件—验收证据');
    expect(await readFile(join(call.directory,'input','attachments','附件1.txt'),'utf8')).toBe('完整材料正文');
-   expect(call.prompt).toContain('本期已用组合仅供参考');
+   expect(call.prompt).toContain('实际生成支持该动作的业务文件');
    expect(call.schema.properties.material_scope_selection.properties.additional_combinations).toBeDefined();
    return{result:call.validate({...draft,attachment_ids:['attachment-1'],material_scope_selection:{direction:'债务清偿核算',party:'借款人代理方',scenes:['诉前核账'],deliverables:['核账意见'],additional_combinations:[{direction:'执行推进',party:'债权人',scenes:['执行阶段'],deliverables:['执行意见']}]}}),session_id:'fixture',usage:null,duration_ms:1,diagnostic_path:'fixture',provider:'fixture',model:'fixture'} as any;
   }});
@@ -140,6 +147,23 @@ test('已用方向与场景仅作参考，重复与多组合不阻断保存',asy
  await saveMaterialScopeSelection(db as any,projectId,'workflow-3','attempt-3',{...choice,scenes:['执行异议审查']});
  expect(saved.size).toBe(2);
  await saveMaterialScopeSelection({query:async()=>({rows:[{available:false}]})} as any,projectId,'workflow-4','attempt-4',undefined);
+});
+
+test('材料整理页面接口完整返回候选分析，旧结果无说明仍可读取且不查询原文',async()=>{
+ for(const notes of ['前项审查用于后项修订；成果供委托方审签并核验适用条件','']){
+  const stored=structuredClone(result);stored.combinations[0]!.notes=notes;
+  const app=new Hono();
+  registerPreparationRoutes(app,{query:async(sql:string)=>{
+   if(sql.includes('to_regclass'))return{rows:[{available:true}]};
+   if(sql.includes('SELECT * FROM ai_distill.library_preparations'))return{rows:[{id,result:stored}]};
+   if(sql.includes('SELECT id,job_id,revision_id'))return{rows:[{id,result:stored}]};
+   throw new Error('不应扩读材料或其他题包：'+sql);
+  }} as any,'/unused');
+  const detail=await app.request(`/api/material-library/preparations/${id}`);
+  expect(detail.status).toBe(200);expect((await detail.json()).result.combinations).toEqual(stored.combinations);
+  const list=await app.request(`/api/material-library/packages/${id}/preparations`);
+  expect(list.status).toBe(200);expect((await list.json()).items[0].result.combinations).toEqual(stored.combinations);
+ }
 });
 
 
@@ -211,6 +235,7 @@ test('查库正文直接进入单次请求，不落输入文件且完整检查�
   },release:()=>{}};
   const pool={query:db.query,connect:async()=>db};const signal=new AbortController().signal;
   const job={id,package_id:id,revision_id:projectId,lease_token:'lease',deadline_at:new Date(Date.now()+60000).toISOString(),input_snapshot:{redaction_id:id,extraction_job_id:'extract',source_digest:'source-digest',rules:'目标成果：执行请求金额核对表'},config_snapshot:{agent:{model:'fixture',reasoning_effort:'low'}}};
+  const combination={id:'C1',direction:'执行办理',party:'申请执行人',scenes:[{scene:'办理准备',as_of:'现有材料时点'}],core_work:'核对可办范围并完成申请',deliverables:['供委托方审签的申请正文'],document_ids:['unit'],notes:'范围核对用于申请修订；核验请求与材料支持范围一致；无依据事项保留边界'};
   let calls=0;
   const execute=async(options:any)=>{
    calls++;
@@ -220,9 +245,14 @@ test('查库正文直接进入单次请求，不落输入文件且完整检查�
    expect(input.units[0].id).toBe('unit');expect(input.units[0].text).toContain('判决记载执行依据');expect(input.units[0].pages).toBeUndefined();
    expect(options.prompt).not.toContain('scene-rules.md');
    expect(options.schema.properties.documents.items.properties.unit_kind).toBeUndefined();
-   return{result:{package_summary:'最终目录：判决记载执行依据',documents:[{id:'unit',summary:'判决是执行依据',document_type:'判决',tags:['依据'],notes:'',visibility:'visible',visibility_reason:''}],combinations:[]}} as any;
+   expect(options.prompt).toContain('候选工作分析沿用上述组合字段');
+   return{result:{package_summary:'最终目录：判决记载执行依据',documents:[{id:'unit',summary:'判决是执行依据',document_type:'判决',tags:['依据'],notes:'',visibility:'visible',visibility_reason:''}],combinations:[combination]}} as any;
   };
   await executePreparation(pool as any,root,job,signal,execute);expect(calls).toBe(1);expect(published.document_count).toBeUndefined();expect(published.documents[0].visibility).toBe('visible');expect(published.package_summary).toBe('最终目录：判决记载执行依据');expect(phases).toEqual(['prepare_input','agent_analyzing','parse_result','publish_result']);
+  expect(published.combinations).toEqual([combination]);
+  const attached=await attachPreparationContext({query:async(sql:string)=>sql.includes('to_regclass')?{rows:[{available:true}]}:{rows:[{id,result:published}]}} as any,{package_id:id,revision_id:projectId,redaction_id:id,extraction_job_id:'extract',source_digest:'source-digest',markdown:'判决记载执行依据',index} as any,projectId);
+  expect(attached.material_scope?.result.combinations).toEqual([combination]);
+  expect(attached.markdown).toBe('判决记载执行依据');
   await executePreparation(pool as any,root,job,signal,async()=>{throw new Error('不应重调');});expect(updates).toBe(2);
   const flakyPool={...pool,query:async(sql:string,values:any[])=>{if(sql.includes('SET progress=$3'))throw new Error('进度写入暂时不可用');return db.query(sql,values);}};
   await executePreparation(flakyPool as any,root,job,signal,async()=>{throw new Error('进度失败不得重调Agent');});expect(updates).toBe(3);

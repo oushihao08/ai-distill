@@ -11,7 +11,7 @@
 ## 比较对象与证据
 
 - A：[官方案例重建 Skill](official-example-skill/SKILL.md)。来自[法律服务优秀案例](https://bytedance.larkoffice.com/wiki/XzRuwLQ1sitJDWkYTrccayA7nWe)的可见题面；本地读取稿位于 `.storage/review-phase6-vs-demo/lark-case.txt`。未取得15份判决附件、官方 rubric、完整答案、运行记录或原作者指令。
-- B：[现用 Skill](skill/SKILL.md)，结合四份专项规则、题目模版、表达建议和模板迁移规则评价。案例索引当前明确没有可读案例卡，不把索引名称当成已验证成功证据。
+- B：[现用 Skill](skill/SKILL.md)，结合专项规则、题目模版和表达建议评价。当前共享 Skill 已移除成功案例索引及模板迁移入口，不把历史案例成品作为新题输入。
 - A 中的样本推广边界、历史与现行规则分离、工具能力确认属于本次重建补充；不是官方原题的已证实优点。泛化地区、数量和格式是为复用作的转换。
 - B 的现行版本与历史三道题不是受控实验关系；历史成绩不能作为本版 Skill 优越性的因果证据。
 

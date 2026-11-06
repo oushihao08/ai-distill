@@ -16,6 +16,11 @@ export interface AnswerStepModelSummary {
  outcome?:string;
  reason_code?:string;
  generation_activity?:unknown;
+ reasoning_tokens?:number|null;
+ completed_tool_calls?:number;
+ execution_steps?:unknown;
+ tool_trace?:unknown;
+ source_citations?:unknown[];
 }
 export interface AnswerStepResult {
  model_set_digest?:string;
@@ -43,6 +48,7 @@ export interface ScoreStepResult {models:ScoreStepModelSummary[]}
 export interface ModelAcceptance {
  score_contract?:'model_report_v1';raw_score?:number|null;full_score?:number|null;veto_triggered?:boolean|null;
  status:'passed'|'not_passed'|'pending'|'invalid'|'included';
+ outcome?:'qualified_timeout_unscored';
  score?:number;
  max_score?:number;
  percentage?:number;
@@ -66,6 +72,8 @@ export function readAnswerStepResult(value:unknown):AnswerStepResult|undefined{
   if(row.model_id!==undefined&&row.model_id!==null&&typeof row.model_id!=='string')return;
   if(row.name!==undefined&&typeof row.name!=='string')return;
   if(row.attempt_id!==undefined&&row.attempt_id!==null&&typeof row.attempt_id!=='string')return;
+  if(row.reasoning_tokens!==undefined&&row.reasoning_tokens!==null&&(!Number.isSafeInteger(row.reasoning_tokens)||Number(row.reasoning_tokens)<0))return;
+  if(row.completed_tool_calls!==undefined&&(!Number.isSafeInteger(row.completed_tool_calls)||Number(row.completed_tool_calls)<0))return;
   models.push({...row,status:row.status as StepStatus} as AnswerStepModelSummary);
  }
  return {...value,models} as AnswerStepResult;
@@ -91,6 +99,7 @@ export function readScoreStepResult(value:unknown):ScoreStepResult|undefined{
 
 function readModelAcceptance(value:unknown):value is ModelAcceptance{
  if(!isRecord(value)||!['passed','not_passed','pending','invalid','included'].includes(String(value.status))||!finite(value.threshold))return false;
+ if(value.outcome!==undefined&&value.outcome!=='qualified_timeout_unscored')return false;
  if(value.score_contract!==undefined&&value.score_contract!=='model_report_v1')return false;
  if(['raw_score','full_score'].some(key=>value[key]!==undefined&&value[key]!==null&&!finite(value[key])))return false;
  if(value.veto_triggered!==undefined&&value.veto_triggered!==null&&typeof value.veto_triggered!=='boolean')return false;

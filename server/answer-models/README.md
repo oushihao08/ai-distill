@@ -54,7 +54,7 @@
 | `dispatch.test.ts` | 验证冻结 provider 配置、API 凭证/端点路由、请求关联字段隔离及 Codex Agent 消息转换；适配器和 HTTP 为注入替身。 |
 | `domestic.ts` | 其他供应商作答兼容入口；配置、凭证和 HTTP 由 llm-api 管理。 |
 | `domestic.test.ts` | 验证原生 provider 与 OpenRouter 的配置校验、凭证隔离、完整响应和安全错误分类；HTTP 使用替身，含一个本机超时夹具。 |
-| `input.ts` | 作答输入契约：校验出题成功的题目和冻结来源附件引用，组装无工具的文字输入并计算指纹。 |
+| `input.ts` | 作答输入契约：校验出题成功的题目、冻结来源附件引用和受控能力声明，组装输入并计算指纹；旧纯文字题保持可读。 |
 | `input.test.ts` | 验证题面/附件白名单、能力边界、成果呈现快照和输入摘要兼容；不调用供应商。 |
 | `file-executor.ts` | Work文件作答的容器执行基础模块：固定Claude Code版本、保留OpenRouter模型、只挂载公开任务及脱敏附件并收集实际候选文件；尚未接入持久队列或改变现有就绪判断。 |
 | `file-executor.test.ts` | 注入进程验证文件执行参数、输入隔离、实际临时文件收集、空响应/缺件/版本/取消边界；不调用Docker或模型。 |
@@ -65,23 +65,23 @@
 | `workflow-models.ts` | 仅后续切换模式下读取当前答案冻结集合，校验摘要并兼容无集合快照的旧结果；供发布、达标及作答发布校验使用。 |
 | `model-set.ts` | 项目模型集合：校验注册模型、读取启用配置并生成包含评分门槛的稳定指纹。 |
 | `model-set.test.ts` | 验证模型登记/集合校验、凭证不入库、顺序与阈值摘要，以及集合变化后的结果失效写入；数据库使用替身。 |
-| `generation-policy.ts` | 作答时长与推理活动策略：解析请求上限、阈值和免评分资格；当前未验证供应商连续输出时强制关闭自动免评分。 |
-| `generation-policy.test.ts` | 验证时长默认、配置边界、历史免评分选项降级及推理事件资格拒绝条件；不调用供应商。 |
-| `provider.ts` | 作答供应商公共契约：定义固定模型配置、纯文字请求、完整答案和 usage 元数据。 |
+| `generation-policy.ts` | 作答时长与推理活动策略：解析请求上限、阈值，并以持续活动、最大间隔和末次活动新鲜度判断免评分资格。 |
+| `generation-policy.test.ts` | 验证时长默认、配置边界及推理事件资格拒绝条件；不调用供应商。 |
+| `provider.ts` | 作答供应商公共契约：定义固定模型配置、文字作答请求、完整答案、usage 及可选工具轨迹。 |
 | `qwen.ts` | Qwen 作答兼容入口；实际配置解析和 HTTP 由 llm-api 管理。 |
 | `qwen.test.ts` | 验证Qwen/DashScope与OpenRouter路由、请求和响应校验、用量、错误保密、取消及响应体超时；供应商请求使用替身，含一个本机HTTP夹具。 |
 
 ## 数据流与依赖
 
-input.ts → jobs.ts 从数据库取当前题面获准的冻结来源附件并冻结输入／配置 → dispatch.ts 只发送题面、该题选择的脱敏或 MinerU 提取原文附件、成果呈现约定和作答步骤提示词 → API provider 走独立 llm-api，Codex provider 走隔离 Agent → 保存当前答案。旧目录题仍读取其脱敏附件。系统提示词要求答案直接写在回复正文、只返回纯文本，不生成或附加 DOCX、PDF 等文件。model-set.ts 管理稳定模型身份、顺序及阈值摘要。
+input.ts → jobs.ts 从数据库取当前题面获准的冻结来源附件与 `answer_requirements`，并冻结输入／配置 → dispatch.ts 只发送题面、该题选择的脱敏或 MinerU 提取原文附件、成果呈现约定和作答步骤提示词 → API provider 走独立 llm-api，Codex provider 走隔离 Agent → 保存当前答案与同 attempt 产物。旧目录题仍读取其脱敏附件。纯文字题继续在回复正文交付；题目声明文件输出时必须冻结项目已开启的 `artifact_write` 与 `artifact_render`，实际生成并读回成功后才保存成功。model-set.ts 管理稳定模型身份、顺序及阈值摘要。
 
 ## 维护边界
 
-不发送作答思路、Rubric、标答、历史答案、评分结果、目标分数或项目 Skill 给作答者。API provider 是纯文字请求／响应；Codex provider 是本机隔离 Agent，可调用受限工作区内的 shell/unified_exec，但网络、记忆、宿主 Skill、插件、MCP 和浏览器均关闭。不同执行方式记录真实 provider/model/reasoning effort，不自动切换。修改模型集合后不能用旧集合答案冒充当前结果。
+不发送作答思路、Rubric、标答、历史答案、评分结果、目标分数或项目 Skill 给作答者。API provider 默认是纯文字请求／响应；只有显式冻结 `server_tools` 的 OpenRouter 模型可在供应商托管环境使用联网和Shell，结果仍以文字作答发布。Codex provider 是本机隔离 Agent，可调用受限工作区内的 shell/unified_exec，但网络、记忆、宿主 Skill、插件、MCP 和浏览器均关闭。不同执行方式记录真实 provider/model/reasoning effort，不自动切换。修改模型集合后不能用旧集合答案冒充当前结果。
 
-`answerCapabilityIssue()`供实际派发与项目就绪列表共用，项目规则通过生命周期注册；旧`workAnswerCapabilityIssue`仅保留导入兼容。Work草稿和非文字输入会阻断派发；业务工具清单不作为禁止作答的条件，工具操作是否完成由冻结题面和评分标准判断。文件成果可按下文的文字呈现适配进入作答。对 Agent 派发仍保持题目声明的 `answer_requirements` 与正文成果能力边界。
+`answerCapabilityIssue()`供实际派发与项目就绪列表共用，项目规则通过生命周期注册；旧`workAnswerCapabilityIssue`仅保留导入兼容。非文字输入会阻断派发。新题声明的工具必须属于系统白名单且已在本期步骤5策略中启用；每次新 attempt 只冻结本题声明所需的子集，旧 attempt 和旧结果不回填。文件输出还必须同时声明 `artifact_write` 与 `artifact_render`。未声明工具的旧纯文字题保持原路径。
 
-任何项目的题目具有`deliverables`清单（`path`、`description`或`desc`、`required`）时，`answerPresentation()`只提取名称、说明、必交标记，生成`text_deliverables_v1`呈现快照。`buildAnswerMessage()`将原题面、快照说明、成果清单组成实际用户消息，附件仍完整发送；不读取Rubric、标答、思路或Skill。模型在回复中逐项呈现成果，不能声称实际创建文件或完成外部操作。无成果清单的旧文字题维持原输入。
+任何文字输出题具有`deliverables`清单（`path`、`description`或`desc`、`required`）时，`answerPresentation()`只提取名称、说明、必交标记，生成`text_deliverables_v1`呈现快照。`buildAnswerMessage()`将原题面、快照说明、成果清单组成实际用户消息，附件仍完整发送；不读取Rubric、标答、思路或Skill。题目未声明工具时沿用原文字呈现约定；声明工具时按冻结要求实际执行，只报告可核验的操作。无成果清单的旧文字题维持原输入。
 
 `presentation`随作答输入冻结并参与摘要，文字成果快照整体规范化，JSONB键重排不改变摘要；最初已派发的呈现摘要通过同内容固定字段算法兼容，普通旧题摘要不变。队列执行与评分回读均校验当前题目和冻结成果清单；评分另收到同一呈现约定，不能因缺实体文件误判内容缺失，也不能豁免专业内容或将未验证工具能力当通过。既有模型配置、Rubric、原始题目和草稿状态不被适配改写。无需数据库迁移，不需要Docker。
 
@@ -94,17 +94,23 @@ input.ts → jobs.ts 从数据库取当前题面获准的冻结来源附件并�
 
 OpenRouter 与 SiliconFlow 模型登记分别固定使用其官方 API 地址和对应服务端密钥；登记表单只要求供应商模型 ID，SiliconFlow 为新登记 API 模型的默认渠道。系统目录保存非敏感 provider、端点及模型配置，密钥只在服务端请求时读取。既有目录记录保留原冻结供应商配置；改变渠道须登记新 provider 的模型并更新项目模型集合，不能静默改写历史任务。
 
+OpenRouter 登记 API 可选冻结 `server_tools`（`web_search`、`web_fetch`、`shell`）和 1—100 的 `max_tool_calls`。项目还可通过 `GET/PUT /api/projects/:id/answer-tools` 保存步骤5工具策略；项目策略在新建作答 attempt 时覆盖所选 OpenRouter 模型目录配置，空数组明确关闭工具，非 OpenRouter 模型不受影响。工具设置只影响新 attempt，旧 attempt 及其结果不回填；未配置时继续使用模型目录快照。
+
+项目工具策略还可显式冻结 `local_tools`：`attachment_list`、`attachment_search`、`attachment_read`、`document_inspect`、`artifact_write`、`artifact_render`。附件工具只读本次 attempt 冻结的材料文本；产物工具只在本 attempt 的 `artifacts/` 目录写入和读回 TXT/MD/CSV/JSON/HTML/DOCX/XLSX，不接受任意本机路径。DOCX使用公共生成器把Markdown生成真实OOXML，XLSX使用受限工作表JSON生成真实OOXML；两者保存文件摘要与规范化生成源。`document_inspect` 只报告已提取文本可观测的结构；`artifact_render` 对Office只核验ZIP结构、文件/生成源摘要及可评分正文，不冒充WPS/Word/Excel像素渲染。当前不提供PDF生成。
+
+生成文件保存为绑定当前作答 attempt 的 `model_answer_file` artifact，二进制从受管路径下载并重新核对SHA-256；评分用同一记录的规范化生成源，不接收任意本机路径。单次最多10个文件，评分正文合计最多5,000,000字节；数量、摘要、来源或attempt绑定不一致时拒绝评分。工具调用轨迹只保存类型和状态等白名单证据，不向评分者暴露作答模型身份。
+
 项目模型的兼容字段 `minimum_score` 表示百分制分数上限（0—100，null表示未配置）；达标模块按评分契约取得百分制比较值，再按项目配置判断；具体聚合与阈值关系以 `../decisions/` 为准，不把此字段名解释成“最低分”。
 
 默认整体切换项目模型集合或任一分数上限会使项目题目的作答、评分、达标和发布当前状态失效；显式 `future_only:true` 的后续任务切换除外（见下文）。历史尝试保留，须按新设置重新执行作答和评分。该处理保证模型集合摘要、答案来源和通过状态使用同一配置。
 
-作答时长策略由 `generation-policy.ts` 解析，保存在ordinal 5配置并在新attempt冻结；缺省60分钟请求、45分钟阈值。当前供应商时序尚未验证，自动免评分强制关闭，既有正常评分路线保留。项目设置通过 `/api/projects/:id/answer-generation-policy` 读写，不追溯修改历史attempt。
+作答时长策略由 `generation-policy.ts` 解析，保存在ordinal 5配置并在新attempt冻结；缺省45分钟请求、40分钟持续推理阈值，并开启合格长生成免评分。只有本地截止、可识别推理事件至少3次、活动跨度超过阈值、事件间隔不超过2分钟、末次活动距截止不超过2分钟且活动时间戳自洽时，才记为 `qualified_timeout_unscored` 并作为直接通过项；断流、失联、状态卡死、普通超时和其他错误仍失败。项目设置通过 `/api/projects/:id/answer-generation-policy` 读写，不追溯修改历史attempt。
 
 作答状态汇总在数据库按同一题目、输入摘要和模型集合选取各模型最新尝试，仅传回汇总字段与完整当前答案；历史输入和完整调用结果仍保存在尝试记录。
 
 worker 恢复超时作答 attempt 时先记录该 attempt 失败；只有其冻结题目与当前题目、模型集合仍匹配，才用当前题目和模型集合重建步骤汇总。旧题或旧模型集合的迟到恢复不会覆盖当前汇总；恢复只整理状态，不自动重试。
 
-旧尝试缺少 answer_generation_policy 时，去重按既有默认策略（60分钟请求、45分钟阈值、关闭免评分）比较；不能将缺失字段视为匹配任意本次策略。历史记录不回填、不改写。
+旧尝试缺少 answer_generation_policy 时，去重按当前缺省策略（45分钟请求、40分钟阈值、开启严格证据免评分）比较；不能将缺失字段视为匹配任意本次策略。历史记录不回填、不改写。
 
 ## 配置与恢复的补充边界
 
@@ -112,15 +118,15 @@ worker 恢复超时作答 attempt 时先记录该 attempt 失败；只有其冻�
 - 项目集合为1—8个模型；为空时旧作答链退回步骤5供应商配置。集合顺序、名称、阈值与配置参与摘要，修改集合会使当前下游失效，历史尝试保留。
 - 本机普通派发按同题目/输入/模型/策略复用等待、运行或已成功尝试；评分的重新派发行为不同，不要套用同一重试策略。远程request_key重放返回原attempt集合，先查询后决定是否使用新key。
 - 单模型失败不使成功答案消失：集合全部终态后，可以继续给成功答案评分；作答步骤总状态仍可能为failed。任务成功、集合全成功、评分可执行是不同条件。
-- generation-policy当前始终关闭自动免评分和推理增量观察；历史opt-in读取也会归为关闭。超时不是有效零分，不根据等待时长自动达标。
+- generation-policy只对带有上述连续推理证据的本地截止开启免评分直接通过；等待时长、任务心跳或数据库状态本身都不是生成证据，也不能触发直接通过。
 
-`dispatch.test.ts`核对API/Agent转换；`input.test.ts`核对白名单、来源与呈现指纹；`jobs.test.ts`核对队列/绑定/恢复；`model-set.test.ts`核对集合/阈值；`generation-policy.test.ts`核对时长与禁用免评分；`domestic.test.ts`和`qwen.test.ts`覆盖兼容客户端及供应商响应。各测试的替身/本地执行范围须看文件，存在测试不代表真实模型或供应商验收。
+`dispatch.test.ts`核对API/Agent转换；`input.test.ts`核对白名单、来源与呈现指纹；`jobs.test.ts`核对队列/绑定/恢复；`model-set.test.ts`核对集合/阈值；`generation-policy.test.ts`核对时长与免评分证据门槛；`domestic.test.ts`和`qwen.test.ts`覆盖兼容客户端及供应商响应。各测试的替身/本地执行范围须看文件，存在测试不代表真实模型或供应商验收。
 
 本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。
 
 ## 队列代码维护导航
 
-`jobs.ts`的`buildAnswerFailure()`集中生成安全错误载荷，保留原失败检查点及供应商白名单字段；它不决定是否重试。时长资格仍由`generation-policy.ts`判断，不可在错误格式化时启用免评分。`refreshAnswerStep()`负责当前模型集合的汇总；部分模型失败不能抹去其他模型的成功答案。修改提交逻辑须保留当前题目、附件和模型集合绑定校验。
+`jobs.ts`的`buildAnswerFailure()`集中生成安全错误载荷，保留原失败检查点及供应商白名单字段；它不决定是否重试。时长资格仍由`generation-policy.ts`判断，不可在错误格式化时启用免评分。合格长生成保存为跳过评分并立即触发同版达标判断；全模型均为该结果时评分步骤记为跳过。`refreshAnswerStep()`负责当前模型集合的汇总；部分模型失败不能抹去其他模型的成功答案。修改提交逻辑须保留当前题目、附件和模型集合绑定校验。
 
 任务心跳复用`../attempt-heartbeat.ts`：10秒间隔、查询防重、失败去重和恢复日志；finally停止定时器。作答原有逐模型复用、事务及失败恢复不由心跳函数管理。
 
@@ -141,6 +147,8 @@ worker 恢复超时作答 attempt 时先记录该 attempt 失败；只有其冻�
 `answerCapabilityIssue()`保留通用文字输入限制，再通过`lifecycle/steps.ts`调用项目输入策略。Work草稿和任务能力规则只在`lifecycle/projects/work.ts`注册；页面就绪与实际派发共用此入口。旧`workAnswerCapabilityIssue`仅为同函数别名。成果清单白名单、模型调用、结果直接保存、取消/删除保护及多模型汇总仍是通用流程。
 
 作答结果的`requested_model`表示请求配置；`model`表示底层返回的模型标识，无法确认时为null。Codex Agent作答仅读取Agent显式returned_model，不把Agent历史model配置字段当作实际返回证据；未知不影响完整答案保存，历史结果不回写。
+
+API作答在当前attempt结果和步骤5模型汇总中保存`reasoning_tokens`与`completed_tool_calls`。`reasoning_tokens`只接受供应商usage明确报告的非负整数，未报告时为null；`completed_tool_calls`统计OpenRouter Responses轨迹中完成的服务端与本地函数工具调用。Codex Agent没有同口径供应商推理计量时保持null，不从文本或事件分片猜测内部步数。
 
 本机明确新派发可在同一事务替代他机尚未开始的同范围待办；运行、结果未知和续作仍受保护，新派发失败则旧意图变更回滚。适用范围、共享状态兼容与验证边界见[执行队列的跨机准入](../execution-queue/README.md#他机未开始待办与本机明确派发)。
 

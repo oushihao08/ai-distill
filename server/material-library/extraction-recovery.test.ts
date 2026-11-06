@@ -12,32 +12,34 @@ const file={file_id:crypto.randomUUID(),source_sha256:hash('%PDF-fake'),format:'
 const doc=ensurePages([{page:1,text:'正文',method:'text',structure:[{id:'b1',kind:'paragraph',text:'正文'}],issues:['image_without_text']}],file.source_sha256);
 function job(){return{id:crypto.randomUUID(),package_id:crypto.randomUUID(),revision_id:crypto.randomUUID(),config_digest:'config-v1',input_snapshot:{manifest_sha256:'manifest',files:[file]},lease_token:'lease',deadline_at:new Date(Date.now()+60000).toISOString(),config_snapshot:{pdf_provider:'mineru-api'},kind:'extract'};}
 
-test('checkpoint resumes by stable file identity and content integrity without config or engine gates',async()=>{
+test('checkpoint resumes by stable file identity, format, provider and content integrity',async()=>{
  const root=await mkdtemp(join(tmpdir(),'library-checkpoint-')),first=job();
  try{
-  expect(await writeExtractionCheckpoint(root,first,file,doc)).toBe(true);
+  expect(await writeExtractionCheckpoint(root,first,file,doc,'mineru-api')).toBe(true);
   const retry={...first,id:crypto.randomUUID(),previous_job_id:first.id,input_snapshot:{...first.input_snapshot,request_digest:'new-request'}};
   expect((await readExtractionCheckpoint(root,retry,file))?.document).toEqual(doc);
   expect((await stat(join(jobDirectory(root,first.id),'extraction',file.file_id+'.json'))).mode&0o777).toBe(0o600);
   expect((await readExtractionCheckpoint(root,{...retry,config_digest:'changed-redaction-and-budget'},file))?.document).toEqual(doc);
-  for(const changed of [{config_snapshot:{pdf_provider:'mineru-cli'}},{revision_id:crypto.randomUUID()},{input_snapshot:{...retry.input_snapshot,manifest_sha256:'new'}}])expect((await readExtractionCheckpoint(root,{...retry,...changed},file))?.document).toEqual(doc);
+  expect(await readExtractionCheckpoint(root,{...retry,config_snapshot:{pdf_provider:'mineru-cli'}},file)).toBeUndefined();
+  for(const changed of [{revision_id:crypto.randomUUID()},{input_snapshot:{...retry.input_snapshot,manifest_sha256:'new'}}])expect((await readExtractionCheckpoint(root,{...retry,...changed},file))?.document).toEqual(doc);
   expect(await readExtractionCheckpoint(root,retry,{...file,source_sha256:'changed'})).toBeUndefined();
+  expect(await readExtractionCheckpoint(root,retry,{...file,format:'png'})).toBeUndefined();
   await writeFile(join(jobDirectory(root,first.id),'extraction',file.file_id+'.json'),'broken');
   expect(await readExtractionCheckpoint(root,retry,file)).toBeUndefined();
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
-test('legacy checkpoints ignore obsolete config identity but retain document and source integrity checks',async()=>{
+test('legacy checkpoints without explicit input format are not reused',async()=>{
  const root=await mkdtemp(join(tmpdir(),'legacy-checkpoint-')),first=job();
  try{
   await writeExtractionCheckpoint(root,first,file,doc,'mineru-api');
   const path=join(jobDirectory(root,first.id),'extraction',file.file_id+'.json');
   await writeFile(path,JSON.stringify({identity:'legacy',sha256:hash(doc),document:doc,provider:'mineru-api'}));
   const retry={...first,id:crypto.randomUUID(),previous_job_id:first.id};
-  expect((await readExtractionCheckpoint(root,retry,file))?.document).toEqual(doc);
-  expect((await readExtractionCheckpoint(root,{...retry,config_digest:'changed'},file))?.document).toEqual(doc);
+  expect(await readExtractionCheckpoint(root,retry,file)).toBeUndefined();
+  expect(await readExtractionCheckpoint(root,{...retry,config_digest:'changed'},file)).toBeUndefined();
   await writeFile(path,JSON.stringify({identity:'another-old-engine',sha256:hash(doc),document:doc,provider:'mineru-api'}));
-  expect((await readExtractionCheckpoint(root,retry,file))?.document).toEqual(doc);
+  expect(await readExtractionCheckpoint(root,retry,file)).toBeUndefined();
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

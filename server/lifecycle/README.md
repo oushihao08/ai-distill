@@ -28,7 +28,7 @@
 | `materialQuestion` | 材料库建题事务取得原锁后 | Work一包一题；其他项目默认无此限制 |
 | `authoringPlan` | 作者调用前 | Work新旧schema、提示段、交卷字段与原配置要求 |
 | `normalize` | 题包接收 | Work同源派生题面/标答；不增加内容准入 |
-| `packageProjection` | 公开/私有题包渲染 | Work判据及私有业务字段；公开包不泄露标答或思路 |
+| `packageProjection` | 公开/私有题包渲染 | Work判据及私有业务字段；豆包考点普通数字编号；公开包不泄露标答或思路 |
 | `authoringVersion` | 题目版本摘要输入组装 | 保持Work原字段和序列，不补写历史任务 |
 | `answerIssue` | 原题检查、就绪与作答派发 | Work草稿/能力规则；通用文字能力和白名单仍由作答入口维护 |
 | `scoreProtocol` | 新评分派发、旧任务绑定复核 | Work选择引文协议；无标记历史任务不补造标记 |

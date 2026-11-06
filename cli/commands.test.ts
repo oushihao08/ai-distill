@@ -320,13 +320,14 @@ describe('命令范围和结果', () => {
       await writeFile(source,'test material');
       await writeFile(manifest,JSON.stringify({files:[{path:source,redaction_mode:'declared_redacted'}]}));
       const {client,calls}=fixture(()=>({id:second,reused:false}));
-      await runCommand(['library','revision','create','--package',question,'--version','3','--request-key',attempt,'--manifest',manifest],client);
+      await runCommand(['library','revision','create','--package',question,'--version','3','--request-key',attempt,'--manifest',manifest,'--pdf-provider','glm-ocr'],client);
       const call=calls[0];
       expect(call.url.pathname).toBe(`/api/material-library/packages/${question}/revisions`);
       expect(call.init?.headers).toMatchObject({'If-Match':'3'});
       expect(call.init?.body).toBeInstanceOf(FormData);
       const form=call.init?.body as FormData;
       expect(form.get('request_key')).toBe(attempt);
+      expect(form.get('pdf_provider')).toBe('glm-ocr');
       expect(form.get('redaction_modes')).toBe('["declared_redacted"]');
       expect((form.get('files') as File).name).toBe('附件.docx');
     } finally { await rm(root,{recursive:true,force:true}); }
@@ -347,15 +348,26 @@ describe('命令范围和结果', () => {
     } finally { await rm(root,{recursive:true,force:true}); }
   });
 
+  test('CLI区分需预处理格式与不支持直接入库格式',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'ai-distill-library-format-cli-'));
+    try{
+      const {client,calls}=fixture(()=>({id:second})),manifest=join(root,'manifest.json');
+      await writeFile(join(root,'legacy.doc'),'source');await writeFile(manifest,JSON.stringify({files:[{path:'legacy.doc'}]}));
+      await expect(runCommand(['library','import','--name','需转换','--request-key',attempt,'--manifest',manifest],client)).rejects.toThrow('library files prepare');
+      await writeFile(join(root,'sheet.xlsx'),'source');await writeFile(manifest,JSON.stringify({files:[{path:'sheet.xlsx'}]}));
+      await expect(runCommand(['library','import','--name','不支持','--request-key',attempt,'--manifest',manifest],client)).rejects.toThrow('不支持直接入库');expect(calls).toHaveLength(0);
+    }finally{await rm(root,{recursive:true,force:true});}
+  });
+
   test('新材料任务保留执行目标和 request key，读取与取消复用任务 ID', async () => {
     const revision='00000000-0000-4000-8000-000000000008';
     const job='00000000-0000-4000-8000-000000000009';
     const {client,calls}=fixture((url,init)=>init?.method==='POST'?{id:job,status:'queued',reused:false}:{id:job,status:'running'});
-    await runCommand(['library','job','start','--revision',revision,'--kind','extract','--target','server','--request-key',attempt],client);
+    await runCommand(['library','job','start','--revision',revision,'--kind','extract','--target','server','--request-key',attempt,'--pdf-provider','glm-ocr'],client);
     await runCommand(['library','job','show','--job',job],client);
     await runCommand(['library','job','cancel','--job',job],client);
     expect(calls.map(call=>call.url.pathname)).toEqual([`/api/material-library/revisions/${revision}/jobs`,`/api/material-library/jobs/${job}`,`/api/material-library/jobs/${job}/cancel`]);
-    expect(JSON.parse(String(calls[0].init?.body))).toEqual({kind:'extract',request_key:attempt,execution_target:'server'});
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({kind:'extract',request_key:attempt,execution_target:'server',pdf_provider:'glm-ocr'});
   });
   test('材料任务将期次上下文交给服务端选择模式',async()=>{
     const {client,calls}=fixture(()=>({id:second,status:'queued'}));

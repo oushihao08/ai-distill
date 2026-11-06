@@ -209,7 +209,7 @@ export class MineruCliPdfExtractor implements PdfExtractionProvider {
   const diagnosticDirectory = resolve(storageDirectory(this.env), '.mineru-diagnostics', diagnosticId);
   await mkdir(diagnosticDirectory, { recursive: true, mode: 0o700 });
   const executable = resolveRepositoryPath(this.env.MINERU_CLI_PATH ?? '.storage/tools/mineru-open-api');
-  const child = Bun.spawn([executable, 'extract', path, '--model', 'vlm', '--ocr', '--language', 'ch', '-f', 'json', '--timeout', '1800'], {
+  const child = Bun.spawn([executable, 'extract', path, '--model', 'vlm', '--ocr', '--language', 'ch', '-f', 'json', '--timeout', '900'], {
    env: { PATH: this.env.PATH ?? '/usr/bin:/bin', HOME: this.env.HOME ?? '', MINERU_TOKEN: token, NO_COLOR: '1', NO_PROXY: 'cdn-mineru.openxlab.org.cn', no_proxy: 'cdn-mineru.openxlab.org.cn' },
    stdout: 'pipe', stderr: 'pipe',
   });
@@ -217,7 +217,7 @@ export class MineruCliPdfExtractor implements PdfExtractionProvider {
   signal?.addEventListener('abort', abort, { once: true });
   if(signal?.aborted)abort();
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; abort(); }, 30 * 60 * 1000);
+  const timer = setTimeout(() => { timedOut = true; abort(); }, 15 * 60 * 1000);
   try {
    const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
@@ -231,7 +231,7 @@ export class MineruCliPdfExtractor implements PdfExtractionProvider {
    await writeFile(resolve(diagnosticDirectory, 'metadata.json'), JSON.stringify({ source_sha256: sha256, page_count: pageCount, ocr_version: MINERU_OCR_VERSION, exit_code: exitCode, timed_out: timedOut, cancelled: signal?.aborted ?? false }), { mode: 0o600 });
    logEvent('extraction.diagnostics_saved', { level: exitCode === 0 && !timedOut && !signal?.aborted ? 'info' : 'warn', diagnostic_id: diagnosticId, page_count: pageCount, exit_code: exitCode, provider: this.id });
    if (signal?.aborted) throw new Error(`PDF提取已取消（诊断 ${diagnosticId}）`);
-   if (timedOut) throw Object.assign(new Error(`MinerU CLI执行超过30分钟（诊断 ${diagnosticId}）`),{reason_code:'provider_timeout'});
+   if (timedOut) throw Object.assign(new Error(`MinerU CLI执行超过15分钟（诊断 ${diagnosticId}）`),{reason_code:'provider_timeout'});
    if (exitCode !== 0) throw new Error(`MinerU CLI执行失败（退出码 ${exitCode}），诊断 ${diagnosticId}`);
    let result: unknown;
    try { result = JSON.parse(stdout); }

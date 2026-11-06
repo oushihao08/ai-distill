@@ -144,6 +144,8 @@ function taskStatus(status:string){
     </Row>
     <Row wrap :gap="8" class="text-sm">
       <span>作答任务：{{ taskStatus(evaluation.answer.status) }}</span>
+      <span v-if="evaluation.answer.status==='succeeded'">内部推理：{{ typeof evaluation.answer.reasoning_tokens==='number'?`${evaluation.answer.reasoning_tokens} tokens`:'供应商未报告' }}</span>
+      <span v-if="evaluation.answer.status==='succeeded'">外部工具调用：{{ typeof evaluation.answer.completed_tool_calls==='number'?`${evaluation.answer.completed_tool_calls} 次`:'历史结果未记录' }}</span>
       <span v-if="evaluation.score">评分任务：{{ taskStatus(evaluation.score.score_status) }}</span>
       <v-btn v-if="evaluation.score?.score_attempt_id" size="small" variant="text" @click="openExecution(evaluation.score.score_attempt_id)">查看评分</v-btn>
       <span v-else>评分任务：等待执行</span>

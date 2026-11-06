@@ -54,7 +54,7 @@ bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本
 
 1. `project-group list` / `project-group phases --group UUID` 查看主项目和期次；`project show --project UUID` 核对当前期次与工作流。
 2. `library package list` 搜索全局材料包，`library package show --package UUID` 查看当前版本，`library package revisions --package UUID` 查看版本，`library package usage --package UUID` 查看使用历史。
-3. `library revision create --package UUID --version N --request-key UUID --manifest JSON` 上传文件并创建不可变 revision。清单示例（相对路径以清单文件所在目录为准）：
+3. `library revision create --package UUID --version N --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli]` 上传文件并创建不可变 revision。省略 provider 时沿用服务端环境默认；显式值随任务冻结。清单示例（相对路径以清单文件所在目录为准）：
 
    ```json
    {
@@ -66,7 +66,7 @@ bun cli/index.ts remote answer status --workflow <题目UUID> --request-key <本
    ```
 
    `files` 必须为 1–100 项；每项可省略 `redaction_mode`（默认 `model`）。提交带 `If-Match` 版本，文件上传按清单逐项读取。对相同的已知请求不要另造 request-key 重复创建；POST 结果未知时先查对应 API/任务，不盲目重放。
-4. 对 revision 执行入库、提取或脱敏：`library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID`；指定提取/前序任务时使用 `--extraction-job`、`--previous-job`。用 `library job show --job UUID` 查看任务，以当前 API/worker 状态确认完成。CLI 提交任务，处理由现有 worker 执行。
+4. 对 revision 执行入库、提取或脱敏：`library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID`；`extract` 可用 `--pdf-provider glm-ocr|mineru-api|mineru-cli` 覆盖本次任务并冻结选择；指定提取/前序任务时使用 `--extraction-job`、`--previous-job`。用 `library job show --job UUID` 查看任务，以当前 API/worker 状态确认完成。CLI 提交任务，处理由现有 worker 执行。
 5. 从 `project material candidates --project UUID [--source-mode any|redacted|original]` 找材料；`project materials load --project UUID --package UUID (--redaction UUID | --revision UUID)` 加载到当前期。按期次的出题设置选择模式，通常脱敏结果使用 `--redaction`，原文模式需指定已提取 revision。
 6. `project materials list --project UUID [--include-removed]` 查看已加载项。选版、排序、移除、恢复都要带当前 `--version`；CLI 使用 `If-Match`，冲突时先刷新再作决定。
 7. `project materials question --project UUID --link UUID --version N (--redaction UUID | --revision UUID) --title 名称 --request-key UUID` 创建题目，可选角色、场景、等级、方向和标签。它冻结本题材料来源；后续 workflow 以题目 UUID 操作，不能用 package/revision ID 派发出题、作答或评分。
@@ -334,9 +334,13 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/remote-materials.test
 
 `project settings apply`的`steps.author_question.material_processing_mode`仅支持`aliases`（默认Agent化名）和`original`（不脱敏）；历史`mask`不得重新保存为新流程；与旧`material_source_mode`同时提交时必须一致。配置仍经现有步骤API保存到数据库。`library job start --project <期次UUID>`把期次上下文交给服务器选择处理流程，不用提示词指示改流程；原文模式无需redact任务。CLI只调用API，不实现脱敏，也不把阶段文件当作已入库。模式、来源冻结与恢复边界见[材料库说明](../server/material-library/README.md#期次两种处理模式)。
 
-## OFD与超限PDF上传前准备
+## DOC/WPS/OFD与超限PDF上传前准备
 
 显式本机文件操作：`bun run ai-distill library files prepare --manifest /绝对路径/原件清单.json --out /绝对路径/新输出目录`。清单仍为`{"files":[{"path":"原件.ofd","redaction_mode":"model"}]}`，相对路径以清单目录为基准。输出目录必须不存在；保留原件，生成PDF/分片、可供`library revision create --manifest`使用的清单和逐文件来源摘要。不自动上传或启动提取/脱敏；redaction_mode为兼容声明，不意味着运行脱敏。
+
+DOC/WPS由隔离的LibreOffice进程尝试转PDF；macOS使用私有fontconfig补入当前系统字体资源，并拒绝已知的错误中文字体回退。OFD使用既有OFDRW路径，PNG/JPG/JPEG原样进入上传清单。原件不覆盖、改名或删除；转换件与`provenance.json`放在独立输出目录。任一失败时写`failed.json`且不生成`manifest.json`。`provenance.json`逐件记录源路径/SHA-256、转换器/版本、产物SHA-256/页数与抽查要求；DOC/WPS/OFD转换件须抽查，OFD转换件不继承原件数字签名验证效力。不自动安装转换器；只有DOCX可声明`declared_redacted`。
+
+直接入库格式是PDF、DOCX、TXT、MD、PNG、JPG、JPEG；DOC、WPS、OFD返回“需先转换”并指向本命令，其他格式返回“不支持直接入库”。
 
 OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；预处理不会自动安装。页数检查成功不证明视觉一致，须抽查转换页面。原OFD保留在源路径，上传清单使用转换件；来源审计只在本地provenance保存，当前数据库不新增OFD原件到PDF的来源字段。重复上传仍按版本与request-key契约处理，不得用新键盲重试。
 
@@ -415,7 +419,7 @@ bun run ai-distill library batch run --file /tmp/phase7-prepare.json
 
 原子提取入库更新：旧的先创建空package再上传revision流程已停止，POST /material-library/packages返回410。新客户端须通过multipart POST /api/material-library/imports(name,request_key,files)取得独立任务ID并查询/jobs/:id，只有succeeded后的package_id/revision_id是正式材料记录；本CLI旧package create命令不再可用于建立空包。不要通过直写数据库绕过。054迁移和新版API/worker部署前不可用。
 
-新导入命令：`library import --name 名称 --request-key UUID --manifest JSON`，清单严格为`files:[{path,redaction_mode?}]`，顶层及文件项不接受来源转换或恢复字段；返回API独立任务回执，`data`不转换为材料包成功结果。`library imports list`查最近任务；原`library revision create`现在也是异步导入任务，须先用返回ID执行`library job wait`，成功后读取package_id/revision_id，不得把初次返回ID当revision。带`recovery`标记或`source_pdf`、`characters`等字段的临时转换清单不能预处理或入库；提取失败后仍须重新提交原始PDF、DOCX、TXT或MD，不能用OCR摘录、PDF转TXT等中间产物替换原件身份。合法短TXT按原件处理，不设置任意最小字数门槛。
+新导入命令：`library import --name 名称 --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli]`，清单严格为`files:[{path,redaction_mode?}]`，顶层及文件项不接受来源转换或恢复字段；显式 provider 由 API 校验并冻结，省略时沿用服务端环境默认。返回API独立任务回执，`data`不转换为材料包成功结果。`library imports list`查最近任务；原`library revision create`现在也是异步导入任务，须先用返回ID执行`library job wait`，成功后读取package_id/revision_id，不得把初次返回ID当revision。带`recovery`标记或`source_pdf`、`characters`等字段的临时转换清单不能预处理或入库；提取失败后仍须重新提交原始PDF、DOCX、TXT或MD，不能用OCR摘录、PDF转TXT等中间产物替换原件身份。合法短TXT按原件处理，不设置任意最小字数门槛。
 
 命令的参数白名单与匹配顺序由 `commands.ts` 模块内统一维护；下载入口共用 `ApiClient.downloadTo()`，保留独占创建、0600权限和HTTP错误不落盘的边界。
 

@@ -16,6 +16,7 @@ export interface ModelAssessment {
  score_contract?:'model_report_v1';evaluation_percent?:number|null;raw_score?:number|null;full_score?:number|null;veto_triggered?:boolean|null;
  model: string;
  answer_status: 'waiting'|'running'|'succeeded'|'failed'|'skipped';
+ answer_outcome?:'qualified_timeout_unscored';
  score_status?: 'waiting'|'running'|'succeeded'|'failed';
  /** 当前题面、答案及评分的绑定是否匹配，避免把旧题分数用于新题。 */
  source_current?: boolean;
@@ -47,6 +48,11 @@ export function decideAcceptance(input:AcceptanceInput):AcceptanceResult{
   const result=byModel.get(model);
   const threshold=aggregation?.threshold??config.minimum_score_by_model[model]!;
   if(!result){scores[model]={status:'pending',threshold};pending=true;reasons.push(`required_model_missing:${model}`);continue;}
+  if(result.answer_status==='skipped'&&result.answer_outcome==='qualified_timeout_unscored'){
+   scores[model]={status:'passed',threshold,outcome:'qualified_timeout_unscored'};
+   if(aggregation)includedPercentages.push(0);
+   continue;
+  }
   if(result.answer_status!=='succeeded'){
    scores[model]={status:'pending',threshold};pending=true;reasons.push(result.answer_status==='skipped'?`required_model_unscored:${model}`:`required_model_incomplete:${model}`);continue;
   }

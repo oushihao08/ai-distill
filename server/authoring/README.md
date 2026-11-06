@@ -28,6 +28,7 @@
 | 同期题目的白名单设计摘要 | 条件进入 | `freezeAuthoringBatch()` | 只用于设计避重，不含历史题面、答案、rubric或评分。 |
 | 历史题面、历史答案、历史评分、个人记忆 | 否 | `jobs.ts`/`executor.ts`边界 | 显式人工返修建议是唯一受控文本例外。 |
 | 作答模型身份、目标分数 | 否 | 不组装 | 作者负责产出题包，不根据目标成绩反推题目。 |
+| 本期步骤5受控能力 | 是（豆包新任务） | `jobs.ts`冻结、`lifecycle/projects/doubao-projection.ts`收窄schema | 只用于如实填写`answer_requirements`，不证明工具已实际调用。 |
 
 ## 文件与调用链
 
@@ -49,6 +50,8 @@
 默认出题计划及判据文本分别复用生命周期模块的`defaultAuthoringPlan()`和`formatCriterionRule()`；Work仅覆盖项目差异。判据文本共用不改变`validateDraft()`保留作者显式criterion/rule的行为，也不添加保存拦截，详见[生命周期说明](../lifecycle/README.md)。
 
 ## 来源与设计输入
+
+材料整理候选组合的核心工作、成果用途及 `notes` 中的依赖、核验与适用边界随 `material-scope.json` 原样提供；作者提示明确要求按本包选择组合，不累加全部候选、不固定文件套餐、不为此扩读其他题包。旧结果缺少分析时依本包正文完成，不增加必填字段或建题门槛。
 
 1. 共享库快照题由`readQuestionMaterials()`读取创建时固定的脱敏正文或提取原文；若快照含材料整理结果，作者收到按文书边界拼成的完整脱敏正文投影，包含整理结果中标记为隐藏的文书，原始附件摘要仍单独冻结以核对来源。隐藏标记只影响界面和范围提示，不从出题、作答或评分输入删除正文。旧目录/旧包派生题仍要求步骤1和9成功，并读取该次脱敏数据库产物。不能从当前期次设置切换旧题来源，也不能为缺失快照静默回退旧步骤。
 2. 派发读取当前有效Skill（含期次覆盖）、步骤4配置及步骤6的评分政策。Skill仅按`skill/`集合冻结；项目`materials/`、`project.json`、旧题、答案和历史评分不是本次主动提供的业务输入。
@@ -109,7 +112,7 @@ before/after钩子由[生命周期模块](../lifecycle/README.md)处理：冻结
 
 ## 项目生命周期隔离
 
-Work专属schema、提示片段、题包同源派生、公开/私有投影和版本字段由[lifecycle/projects/work.ts](../lifecycle/projects/work.ts)注册，经`lifecycle/steps.ts`调用。公共executor不判断Work名称/目录/契约来执行业务；普通项目和豆包采用默认策略。`work-contract.ts`保留旧导入兼容，实际契约在`lifecycle/projects/work-contract.ts`。生成阅读稿的子进程调用同一接收/渲染入口，不序列化第二套项目函数。
+Work专属schema、提示片段、题包同源派生、公开/私有投影和版本字段由[lifecycle/projects/work.ts](../lifecycle/projects/work.ts)注册，经`lifecycle/steps.ts`调用。豆包在`lifecycle/projects/doubao-projection.ts`按本次冻结的步骤5策略收窄`answer_requirements`：未开启工具时只能出纯文字题；同时开启`artifact_write`/`artifact_render`时才允许文件输出，真实支持格式为TXT/MD/CSV/JSON/HTML/DOCX/XLSX，PDF和像素渲染不开放。公共executor不判断项目名称来执行业务。`work-contract.ts`保留旧导入兼容，实际契约在`lifecycle/projects/work-contract.ts`。生成阅读稿的子进程调用同一接收/渲染入口，不序列化第二套项目函数。
 
 提示正文、schema、字段投影及版本摘要的迁移回归基线位于生命周期模块；当前接收不执行内容准入或Markdown一致性拦截。
 
@@ -117,6 +120,8 @@ Work专属schema、提示片段、题包同源派生、公开/私有投影和版
 
 
 材料使用建议不是出题准入：作者可选一个或多个相容组合，`material_scope_selection`保留主组合的方向、主体、场景及交付，`additional_combinations`保存其余组合。历史单组合保持可读。已用方向/场景仅作参考，参考表缺失、重复或模型未返回选择不阻断题包接收；完整实际选择保存在尝试JSON。参考索引冲突不替代/覆盖其他题目历史。模型正文包含题目冻结的全部脱敏文书，摘要和范围提示仍保留visibility语义。
+
+有匹配的材料整理结果时，作者另收到 `material-scope.json`：提示词要求浏览总摘要、全部文书标题和支持范围，相关逐份摘要按线索读取；整理结果仅作索引，案件判断仍以完整附件正文为准。整理缺失不阻断出题。
 
 ## 本期设计参考
 

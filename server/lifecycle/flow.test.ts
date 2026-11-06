@@ -12,8 +12,13 @@ import {SyncProjectImplementations} from './project-registry';
 import {lifecycle,emitProjectLifecycle} from './index';
 import type {ScoreContext} from '../scoring/validate';
 
-test('四组固定输入逐项等于迁移前：提示词/schema/转换/版本/作答输入/评分协议',async()=>{
+test('四组固定输入保留迁移基线，仅豆包阅读稿使用普通考点编号',async()=>{
  const baseline=JSON.parse(await readFile(new URL('./fixtures/flow-baseline.json',import.meta.url),'utf8'));
+ // 保留原始基线文件；本次授权只改变这两处阅读稿标签，其余字段仍逐项对比。
+ const doubao=baseline['豆包高经济价值'];
+ const oldRubric='考点rubric\nr（1分）\n核清金额',newRubric='考点rubric\n1、核清金额';
+ doubao.result.package_text=doubao.result.package_text.replace(oldRubric,newRubric);
+ doubao.private_package=doubao.private_package.replace(oldRubric,newRubric);
  expect(await captureFlowBaseline()).toEqual(baseline);
 });
 test('项目覆盖不污染后续默认计划或输入配置，每次返回独立配置对象',()=>{

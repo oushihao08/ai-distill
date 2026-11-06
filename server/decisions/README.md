@@ -16,7 +16,7 @@
 
 ## 数据流与依赖
 
-评分 jobs.ts 在普通工作流全部评分终结后调用 decisions/jobs.ts → acceptance.ts 判定。
+评分 jobs.ts 在普通工作流全部评分终结后调用 decisions/jobs.ts → acceptance.ts 判定。作答达到冻结上限且通过严格持续生成证据门槛时，作答队列直接调用同一判定入口；该模型以 `qualified_timeout_unscored` 通过，不创建评分任务。
 
 达标结果同时保存本次评测中每个模型对应的答案尝试、评分尝试及题目／rubric 版本引用，不参与达标计算。判定前核对答案尝试、答案指纹、题面版本、rubric 版本及rubric摘要；不匹配的评分不参与通过判断。自动返修执行器和对应空表已移除。
 

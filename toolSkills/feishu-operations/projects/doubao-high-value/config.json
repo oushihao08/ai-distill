@@ -43,6 +43,28 @@
       "view_id": "vewRgfQZS9",
       "project_id": "d1cb65a1-7b73-4380-99ed-c7caa9fa481b",
       "fields": {"question_id": "题目ID", "sync_id": "系统同步ID", "expert_id": "xpert uid", "account_user": "飞书账号", "expert_source": "专家来源"}
+    },
+    {
+      "key": "eighth-period-jiuying",
+      "name": "第八期-久盈",
+      "role": "submission_update",
+      "phase": "第八期",
+      "base_token": "DuizblJJwavfGjsB4KJcPH0TnRg",
+      "table_id": "tbl5Y22Kleq8Ade6",
+      "view_id": "vewE0zskag",
+      "project_id": "6eb9d559-d802-43cb-8b34-aa01f8215476",
+      "fields": {"question_id": "题目ID", "sync_id": "系统同步ID", "expert_id": "xpert uid", "account_user": "飞书账号", "expert_source": "专家来源"}
+    },
+    {
+      "key": "eighth-period-internal",
+      "name": "第八期-内部",
+      "role": "submission_update",
+      "phase": "第八期",
+      "base_token": "DuizblJJwavfGjsB4KJcPH0TnRg",
+      "table_id": "tblERmxMpoWIDKAi",
+      "view_id": "vewFVqBCuB",
+      "project_id": "6eb9d559-d802-43cb-8b34-aa01f8215476",
+      "fields": {"question_id": "题目ID", "sync_id": "系统同步ID", "expert_id": "ID", "account_user": "姓名", "expert_source": "专家来源"}
     }
   ],
   "identity_mapping": {

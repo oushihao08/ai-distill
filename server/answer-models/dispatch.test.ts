@@ -47,6 +47,17 @@ test('dispatcher sends each OpenRouter model through its single gateway key',asy
  expect(requests).toEqual(['z-ai/glm-5.3-flash','qwen/qwen-plus','moonshotai/kimi-k2.5'].map(model=>({url:'https://openrouter.ai/api/v1/chat/completions',authorization:'Bearer router-only',model})));
 });
 
+test('tool-enabled OpenRouter answer freezes tool instructions without changing plain-text models',async()=>{
+ const requests:{url:string;body:any}[]=[];
+ const client=createAnswerClient({OPEN_ROUTER_KEY:'router-only'},async(url,init)=>{const body=JSON.parse(init!.body as string);requests.push({url,body});return url.endsWith('/responses')?Response.json({id:'resp',status:'completed',output_text:'工具答案',output:[],usage:{}}):streamResponse('普通答案');});
+ const tools=resolveAnswerConfig({provider:'openrouter',model:'qwen/qwen-plus',server_tools:['web_search','shell'],max_tool_calls:8},{});
+ const toolResult=await client.answer({config:tools,question:'题面',materials:[]});
+ const plainResult=await client.answer({config:resolveAnswerConfig({provider:'openrouter',model:'qwen/qwen-plus'},{}),question:'题面',materials:[]});
+ expect(requests[0]?.url).toBe('https://openrouter.ai/api/v1/responses');expect(requests[0]?.body.instructions).toContain('不为增加调用数');
+ expect(requests[1]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');expect(JSON.stringify(requests[1]?.body.messages)).not.toContain('<available_tools>');
+ expect(toolResult.text).toBe('工具答案');expect(plainResult.text).toBe('普通答案');
+});
+
 test('Codex Agent answer receives only the frozen question and redacted materials with selected effort',async()=>{
  let received:any;
  configureAgentAdapter(async task=>{received=task;return{result:'候选答案',session_id:'agent-session',usage:null,diagnostic_path:'private/events.jsonl',duration_ms:12,provider:'codex',model:task.model};});

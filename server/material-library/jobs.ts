@@ -18,15 +18,19 @@ import {readAgentDefaults,validateAgentModelSettings} from '../agent';
 import {resolveModelApiConfig} from '../llm-api';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
 import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
-import {GLM_OCR_VERSION} from '../materials/pdf-extraction/glm-ocr';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
 const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const LIBRARY_JOB_LEASE_MS=120_000;
 export const LIBRARY_JOB_HEARTBEAT_MS=15_000;
-// 整包外部提取预算上限；提交前失败可回退CLI，已提交任务超时不重复提交。
-export const LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS=65*60*1000;
+// 外部提取按需逐文件执行：每份最多30分钟，整包累计但不超过24小时。
+export const LIBRARY_EXTERNAL_EXTRACTION_FILE_TIMEOUT_MS=30*60*1000;
+export const LIBRARY_EXTERNAL_EXTRACTION_MAX_TIMEOUT_MS=24*60*60*1000;
+export function libraryExternalExtractionTimeoutMs(fileCount:number){
+ const count=Math.max(1,Math.min(100,Math.floor(fileCount)||1));
+ return Math.min(LIBRARY_EXTERNAL_EXTRACTION_MAX_TIMEOUT_MS,count*LIBRARY_EXTERNAL_EXTRACTION_FILE_TIMEOUT_MS);
+}
 
 /** 检查文件/正文可处理性；OCR提示保留追溯，不能等同于脱敏丢失实质内容。 */
 export function assertLibraryExtractionUsable(documents:Array<{issues:unknown;page_count?:number;pages?:Array<{text:string}>}>){
@@ -49,10 +53,11 @@ export async function hasLibraryQueueWork(pool:Pool,executor:LibraryExecutorKind
 
 export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest{
  if(!value||typeof value!=='object'||Array.isArray(value))throw new HTTPException(400,{message:'材料处理任务参数无效'});
- const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','extraction_job_id','previous_job_id','template_id','project_id','agent_settings','api_settings'];
+ const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','pdf_provider','extraction_job_id','previous_job_id','template_id','project_id','agent_settings','api_settings'];
  if(Object.keys(body).some(key=>!allowed.includes(key))||!['intake','extract','redact'].includes(String(body.kind))||typeof body.request_key!=='string'||!uuidPattern.test(body.request_key)||!['local','server'].includes(String(body.execution_target)))throw new HTTPException(400,{message:'材料处理任务参数无效'});
  if(body.kind==='redact'&&(typeof body.extraction_job_id!=='string'||!uuidPattern.test(body.extraction_job_id)))throw new HTTPException(400,{message:'脱敏任务必须明确指定成功的文本提取任务'});
  if(body.kind!=='redact'&&body.extraction_job_id!==undefined)throw new HTTPException(400,{message:'仅脱敏任务可以指定文本提取任务'});
+ if(body.pdf_provider!==undefined&&(body.kind!=='extract'||!['mineru-api','mineru-cli'].includes(String(body.pdf_provider))))throw new HTTPException(400,{message:'仅提取任务可指定MinerU provider'});
  if(body.previous_job_id!==undefined&&(typeof body.previous_job_id!=='string'||!uuidPattern.test(body.previous_job_id)))throw new HTTPException(400,{message:'重试来源任务 ID 无效'});
  if(body.template_id!==undefined&&(body.kind!=='redact'||typeof body.template_id!=='string'||! /^[a-z][a-z0-9_-]{0,47}$/.test(body.template_id)))throw new HTTPException(400,{message:'仅脱敏任务可指定有效模板'});
  if(body.project_id!==undefined&&(typeof body.project_id!=='string'||!uuidPattern.test(body.project_id)))throw new HTTPException(400,{message:'材料处理期次标识无效'});
@@ -64,12 +69,12 @@ export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest
   if(body.kind!=='redact'||!body.agent_settings||typeof body.agent_settings!=='object'||Array.isArray(body.agent_settings)||Object.keys(body.agent_settings).some(key=>!['model','reasoning_effort'].includes(key)))throw new HTTPException(400,{message:'仅化名脱敏任务可指定本次Agent模型设置'});
   agentSettings=validateAgentModelSettings(body.agent_settings);
  }
- return{...(apiSettings?{api_settings:apiSettings}:{}),...(agentSettings?{agent_settings:agentSettings}:{}),...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
+ return{...(apiSettings?{api_settings:apiSettings}:{}),...(agentSettings?{agent_settings:agentSettings}:{}),...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),...(typeof body.pdf_provider==='string'?{pdf_provider:body.pdf_provider as CreateLibraryJobRequest['pdf_provider']}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
 }
 
 export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:string;redaction_mode?:'model'|'declared_redacted'}>,settings:{provider?:string}|null,target:LibraryExecutionTarget='local'):LibraryExecutorKind{
  if(kind==='intake')return'internal';
- if(kind==='extract')return files.some(file=>file.format==='pdf'||file.format==='docx')?'api':'internal';
+ if(kind==='extract')return files.some(file=>['pdf','docx','png','jpg','jpeg'].includes(file.format))?'api':'internal';
  if(settings?.provider==='codex'){
   if(target==='server')throw new HTTPException(409,{message:'Agent 脱敏只能在本机执行'});
   return'agent';
@@ -94,7 +99,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    FROM ai_distill.library_files f JOIN ai_distill.library_blobs b ON b.id=f.blob_id WHERE f.revision_id=$1 ORDER BY f.position`,[revisionId])).rows as LibraryFileRow[];
   if(files.length!==Number(revision.file_count))throw conflict('材料文件集合清单不完整');
   if(files.some(file=>file.storage_target!==request.execution_target))throw conflict('所选执行位置无法读取文件集合中的全部原件');
-  const intent={version:1,...(request.api_settings?{api_settings:request.api_settings}:{}),...(request.agent_settings?{agent_settings:request.agent_settings}:{}),...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
+  const intent={version:1,...(request.api_settings?{api_settings:request.api_settings}:{}),...(request.agent_settings?{agent_settings:request.agent_settings}:{}),...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),...(request.pdf_provider?{pdf_provider:request.pdf_provider}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
   const requestDigest=hash(intent);
   const previousRequest=(await db.query('SELECT id,input_snapshot FROM ai_distill.library_jobs WHERE package_id=$1 AND request_key=$2',[packageId,request.request_key])).rows[0];
   if(previousRequest){
@@ -103,8 +108,9 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   }
   const settings=(await readLibraryProcessingSettings(db,storageRoot)).processing_settings as Record<string,any>;
   const projectMode=request.project_id?await readProjectMaterialProcessingMode(db,request.project_id):undefined;
-  if(request.kind==='extract'&&files.some(file=>['pdf','docx'].includes(fileFormat(file.original_name)))){
-   settings.execution={...settings.execution,task_timeout_ms:Math.max(Number(settings.execution?.task_timeout_ms)||1200000,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS)};
+  if(request.kind==='extract'&&files.some(file=>['pdf','docx','png','jpg','jpeg'].includes(fileFormat(file.original_name)))){
+   const count=files.filter(file=>['pdf','docx','png','jpg','jpeg'].includes(fileFormat(file.original_name))).length;
+   settings.execution={...settings.execution,task_timeout_ms:Math.max(Number(settings.execution?.task_timeout_ms)||1200000,libraryExternalExtractionTimeoutMs(count))};
   }
   const template=request.kind==='redact'?resolveLibraryTemplate(settings,projectMode?projectRedactionTemplate(projectMode,request.template_id):request.template_id):undefined;
   // 请求重放已在上方返回；此处只拒绝新建旧流程，不改写历史任务快照。
@@ -117,7 +123,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    settings.redaction=request.api_settings?{provider:'api',api:request.api_settings,prompt:template.redaction.prompt}:{...template.redaction,...agentSettings};
   }
   const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:file.redaction_mode})),settings.redaction,request.execution_target);
-  if(request.kind==='extract'&&executor==='api'&&!process.env.MINERU_KEY?.trim())throw conflict('文本提取服务尚未配置');
+  const pdfProvider=request.pdf_provider??process.env.PDF_EXTRACTION_PROVIDER??'mineru-api';
   if(request.previous_job_id){
    const retry=(await db.query("SELECT id,input_snapshot FROM ai_distill.library_jobs WHERE id=$1 AND package_id=$2 AND revision_id=$3 AND kind=$4 AND (status IN ('failed','cancelled') OR (kind='redact' AND status='succeeded')) FOR UPDATE",[request.previous_job_id,packageId,revisionId,request.kind])).rows[0];
    if(!retry)throw conflict('重试来源必须是同包、同文件集合、同类型且已失败或取消的任务');
@@ -140,12 +146,13 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    fileSnapshot=files.map(file=>({file_id:file.id,blob_id:file.blob_id,original_name:file.original_name,position:file.position,source_sha256:file.sha256,size_bytes:Number(file.size_bytes),content_type:file.content_type,storage_path:file.storage_path,redaction_mode:file.redaction_mode,format:fileFormat(file.original_name)}));
   }
   const inputSnapshot={...intent,...(projectMode?{material_processing_mode:projectMode}:{}),manifest_sha256:revision.manifest_sha256,request_digest:requestDigest,files:fileSnapshot};
-  const pdfProvider=process.env.PDF_EXTRACTION_PROVIDER||'mineru-api';
-  if(request.kind==='extract'&&executor==='api'&&!['glm-ocr','mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取供应商配置无效');
-  if(request.kind==='extract'&&executor==='api'&&pdfProvider==='glm-ocr'&&!process.env.ZHIPU_API_KEY?.trim())throw conflict('GLM-OCR文本提取服务未配置');
-  if(request.kind==='extract'&&executor==='api'&&pdfProvider!=='glm-ocr'&&!process.env.MINERU_KEY?.trim())throw conflict('MinerU文本提取服务未配置');
-  if(request.kind==='extract'&&executor==='api'&&files.some(file=>String(file.original_name).toLowerCase().endsWith('.docx'))&&!process.env.MINERU_KEY?.trim())throw conflict('DOCX结构化提取仍需配置MinerU');
-  const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider,pdf_ocr_version:pdfProvider==='glm-ocr'?GLM_OCR_VERSION:MINERU_OCR_VERSION}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id,text_protocol:AGENT_TEXT_REDACTION_PROTOCOL}:{})},configDigest=hash(configSnapshot),id=randomUUID();
+  if(request.kind==='extract'&&executor==='api'&&!['mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取仅支持MinerU');
+  const hasPdf=files.some(file=>/\.pdf$/i.test(String(file.original_name)));
+  if(request.kind==='extract'&&executor==='api'&&hasPdf&&!process.env.MINERU_KEY?.trim())throw conflict('MinerU文本提取服务未配置');
+  const hasMineruNative=files.some(file=>/\.(?:docx|png|jpe?g)$/i.test(String(file.original_name)));
+  if(request.kind==='extract'&&executor==='api'&&hasMineruNative&&!process.env.MINERU_KEY?.trim())throw conflict('DOCX与图片结构化提取需配置MinerU');
+  const hasImages=files.some(file=>/\.(?:png|jpe?g)$/i.test(String(file.original_name)));
+  const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider,pdf_ocr_version:MINERU_OCR_VERSION,...(hasImages?{image_ocr_version:MINERU_OCR_VERSION}:{})}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id,text_protocol:AGENT_TEXT_REDACTION_PROTOCOL}:{})},configDigest=hash(configSnapshot),id=randomUUID();
   await supersedeForeignPending(db,{kind:'library',id:revisionId,jobKind:request.kind},request.execution_target);
   const active=(await db.query("SELECT id FROM ai_distill.library_jobs WHERE revision_id=$1 AND kind<>'prepare' AND status IN ('queued','running') LIMIT 1",[revisionId])).rows[0];
   if(active)throw conflict('该文件集合已有活动任务，请等待完成或取消后重试');
@@ -202,8 +209,9 @@ export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,tar
    WHERE j.executor_kind=$1 AND j.execution_target=$2 AND ${localQueueEnabled()?"j.status IN ('queued','running')":"j.status='queued'"} ${localClaimSql('j')} AND ((j.package_id IS NOT NULL AND p.id IS NOT NULL AND p.deleted_at IS NULL) OR (j.package_id IS NULL AND j.input_snapshot ? 'atomic_import')) ${onlyJobId?'AND j.id=$3::uuid':''}
    ORDER BY j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1`,values)).rows[0];
   if(!job){await db.query('COMMIT');forgetLocalRegistrations(db);return null;}
-  const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:Record<string,unknown>)=>['pdf','docx'].includes(fileFormat(String(file.original_name??''))));
-  const ceiling=externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000;
+  const externalFiles=job.kind==='extract'&&Array.isArray(job.input_snapshot?.files)?job.input_snapshot.files.filter((file:Record<string,unknown>)=>['pdf','docx','png','jpg','jpeg'].includes(fileFormat(String(file.original_name??'')))):[];
+  const externalExtraction=externalFiles.length>0;
+  const ceiling=externalExtraction?libraryExternalExtractionTimeoutMs(externalFiles.length):1800000;
   const configuredTimeout=Number(job.config_snapshot?.settings?.execution?.task_timeout_ms)||1200000;
   const timeout=Math.max(1,(job.kind==='redact'||job.kind==='prepare')?configuredTimeout:Math.min(ceiling,configuredTimeout)),leaseToken=randomUUID();
   const claimed=await db.query(`UPDATE ai_distill.library_jobs SET status='running',lease_token=$2,started_at=now(),deadline_at=CASE WHEN status='running' THEN deadline_at ELSE now()+($3::text||' milliseconds')::interval END,heartbeat_at=now(),lease_expires_at=now()+($4::text||' milliseconds')::interval,error_code=NULL,error_message=NULL

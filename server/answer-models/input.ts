@@ -1,5 +1,5 @@
 /**
- * 职责：作答输入契约：校验成功出题结果和题目冻结来源附件引用，白名单化公开成果清单，组装无工具的文字输入及冻结呈现约定。
+ * 职责：作答输入契约：校验成功出题结果和题目冻结来源附件引用，白名单化公开成果清单，组装冻结的文字呈现约定。
  * 关键方法与用途：`authoringQuestion()` 提取可作答题面；`buildAnswerInput()` 组装允许输入；`buildAnswerMessage()` 组装实际文字作答消息；`inputDigest()` 计算冻结输入指纹。
  * 使用场景：由 `jobs.ts` 入队前调用，拒绝未完成出题或附件绑定无效的任务。
  * 项目差异：就绪与派发共用生命周期输入策略，项目独有规则在 lifecycle/projects 注册。
@@ -8,8 +8,10 @@ import {createHash} from 'node:crypto';
 import {projectStepPolicies,resolveStepProjectKey,type ProjectIdentity} from '../lifecycle/steps';
 import {canonicalJson} from '../../shared/workflow-config';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
+import {ANSWER_LOCAL_TOOLS,OPENROUTER_SERVER_TOOLS,type AnswerLocalTool,type OpenRouterServerTool} from '../../shared/types';
 export interface AnswerPresentation {mode:'text_deliverables_v1';deliverables:{name:string;description:string;required:boolean}[];instructions:string}
-export interface AnswerPackage {question_version:string;question:string;materials:{name:string;text:string}[];attachments:{id:string;sha256:string}[];system_prompt?:string;presentation?:AnswerPresentation;material_origin?:QuestionMaterialOrigin}
+export interface AnswerRequirements {input_mode:'text';output_mode:'text'|'file';tools:(OpenRouterServerTool|AnswerLocalTool)[]}
+export interface AnswerPackage {question_version:string;question:string;materials:{name:string;text:string}[];attachments:{id:string;sha256:string}[];answer_requirements?:AnswerRequirements;system_prompt?:string;presentation?:AnswerPresentation;material_origin?:QuestionMaterialOrigin}
 export interface AnswerAttachment {id:string;kind:string;sha256:string;text:string}
 export class AnswerInputError extends Error {constructor(message='题目或附件版本无效，不能作答'){super(message);}}
 /** 与就绪列表共用实际执行限制；只读取轻量能力字段，不检查或暴露答案。 */
@@ -25,11 +27,13 @@ export function authoringQuestion(raw:unknown,project:ProjectIdentity={}) {
  const value=raw as Record<string,unknown>;
  const issue=answerCapabilityIssue(value,project);if(issue)throw new AnswerInputError(issue);
  const requirements=value.answer_requirements as Record<string,unknown>|undefined;
- if(!requirements||requirements.input_mode!=='text'||requirements.output_mode!=='text'||!Array.isArray(requirements.tools)||requirements.tools.length)throw new AnswerInputError('当前Qwen执行器仅支持文字输入、文字答案且不执行工具');
+ const supportedTools=[...OPENROUTER_SERVER_TOOLS,...ANSWER_LOCAL_TOOLS];
+ if(!requirements||requirements.input_mode!=='text'||!['text','file'].includes(String(requirements.output_mode))||!Array.isArray(requirements.tools)||requirements.tools.some(tool=>typeof tool!=='string'||!supportedTools.includes(tool as any))||new Set(requirements.tools).size!==requirements.tools.length)throw new AnswerInputError('当前作答器仅支持受控文字输入及已登记的输出、工具能力');
+ if(requirements.output_mode==='file'&&(!requirements.tools.includes('artifact_write')||!requirements.tools.includes('artifact_render')))throw new AnswerInputError('文件成果必须声明 artifact_write 和 artifact_render');
  if(typeof value.question_version!=='string'||!value.question_version.trim()||typeof value.question!=='string'||!value.question.trim()||!Array.isArray(value.attachment_ids)||!value.attachment_ids.length||value.attachment_ids.some(id=>typeof id!=='string'||!id)||new Set(value.attachment_ids).size!==value.attachment_ids.length)throw new AnswerInputError();
  const presentation=answerPresentation(value);
  const material_origin=value.material_origin as QuestionMaterialOrigin|undefined;
- return {question_version:value.question_version,question:value.question,attachment_ids:value.attachment_ids as string[],...(presentation?{presentation}:{}),...(material_origin?{material_origin}:{})};
+ return {question_version:value.question_version,question:value.question,attachment_ids:value.attachment_ids as string[],answer_requirements:requirements as unknown as AnswerRequirements,...(presentation&&requirements.output_mode==='text'?{presentation}:{}),...(material_origin?{material_origin}:{})};
 }
 /** 各项目共用成果白名单；只适配呈现方式，不把专业工具要求冒充执行能力。 */
 export function answerPresentation(value:Record<string,unknown>):AnswerPresentation|undefined{
@@ -47,13 +51,17 @@ export function answerPresentation(value:Record<string,unknown>):AnswerPresentat
    description:[text(description),...(name!==undefined&&typeof name!=='string'?[`原始名称：${text(name)}`]:[]),...(!knownRequired?[`原始必交标记（未解释）：${text(required)}`]:[])].filter(Boolean).join('\n'),
    required:required===undefined||required===true||required==='true'};
  });
- return {mode:'text_deliverables_v1',deliverables,instructions:'本轮使用文字呈现成果。按成果名称分节，在回复中完整给出正文、表格及计算过程；不代表实际创建文件。保留题目的专业要求，不提供空标题或仅说明将如何办理。当前不调用外部工具，不得声称已完成外部检索、读取未提供内容或实施实际操作；无法核验处明确说明依据、条件与限制。'};
+ const tools=(value.answer_requirements as {tools?:unknown}|undefined)?.tools;
+ const instructions=Array.isArray(tools)&&tools.length
+  ?'本轮以文字呈现成果。按成果名称分节，完整给出正文、表格及计算过程；题目要求的操作使用本次声明的工具完成。只报告实际完成且可核验的检索、读取、计算或文件操作；未完成处说明依据、条件与限制。'
+  :'本轮使用文字呈现成果。按成果名称分节，在回复中完整给出正文、表格及计算过程；不代表实际创建文件。保留题目的专业要求，不提供空标题或仅说明将如何办理。当前不调用外部工具，不得声称已完成外部检索、读取未提供内容或实施实际操作；无法核验处明确说明依据、条件与限制。';
+ return {mode:'text_deliverables_v1',deliverables,instructions};
 }
 /** 实际发往模型的用户题面；原题面单独冻结，方便同版绑定与评分。 */
 export function buildAnswerMessage(input:AnswerPackage):string{
  return input.presentation?[input.question,'【本轮成果呈现方式】',input.presentation.instructions,'【成果清单】',...input.presentation.deliverables.map(d=>JSON.stringify(d))].join('\n\n'):input.question;
 }
-export function buildAnswerInput(raw:unknown,artifacts:AnswerAttachment[],project:ProjectIdentity={}):AnswerPackage {
+export function buildAnswerInput(raw:unknown,artifacts:AnswerAttachment[],project:ProjectIdentity={}):AnswerPackage&{answer_requirements:AnswerRequirements} {
  const question=authoringQuestion(raw,project);
  const selected=question.attachment_ids.map(id=>{
   const matches=artifacts.filter(a=>a.id===id);const a=matches[0];
@@ -61,7 +69,7 @@ export function buildAnswerInput(raw:unknown,artifacts:AnswerAttachment[],projec
    if(matches.length!==1||!a||a.kind!==expectedKind||!/^[a-f0-9]{64}$/.test(a.sha256)||typeof a.text!=='string'||!a.text.trim())throw new AnswerInputError();
   return a;
  });
- return {question_version:question.question_version,question:question.question,materials:selected.map((a,i)=>({name:`附件${i+1}`,text:a.text})),attachments:selected.map(a=>({id:a.id,sha256:a.sha256})),...(question.presentation?{presentation:question.presentation}:{}),...(question.material_origin?{material_origin:question.material_origin}:{})};
+ return {question_version:question.question_version,question:question.question,materials:selected.map((a,i)=>({name:`附件${i+1}`,text:a.text})),attachments:selected.map(a=>({id:a.id,sha256:a.sha256})),answer_requirements:question.answer_requirements,...(question.presentation?{presentation:question.presentation}:{}),...(question.material_origin?{material_origin:question.material_origin}:{})};
 }
 export function inputDigest(input:AnswerPackage):string {
  // 文字成果快照整体规范化；旧无presentation尝试保持原摘要算法。

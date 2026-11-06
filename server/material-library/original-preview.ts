@@ -4,28 +4,16 @@
  * LibreOffice隔离用户目录、60秒时限，按源摘要缓存；单进程串行转换避免重复预览占满资源。
  */
 import {createHash} from 'node:crypto';
-import {mkdir,mkdtemp,readFile,readdir,rename,rm,writeFile} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,rename,rm,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {readLibraryOriginal} from './preview';
+import {createLibreOfficeEnvironment} from '../materials/libreoffice';
 const pending=new Map<string,Promise<Uint8Array>>();
 let tail:Promise<unknown>=Promise.resolve();
 function validPdf(bytes:Uint8Array){return bytes.byteLength<=32*1024*1024&&Buffer.from(bytes.subarray(0,5)).toString()==='%PDF-';}
-async function conversionEnvironment(temporary:string){
- const env={...process.env};
- if(process.platform!=='darwin'||env.FONTCONFIG_FILE)return env;
- // 部分headless发行版只扫描旧的macOS Font3/Font4目录，会产生可复制但不可见的中文。
- // 在隔离转换目录补入系统当前字体资源，不修改全局字体或原DOCX。
- let assets:string[]=[];
- try{assets=(await readdir('/System/Library/AssetsV2')).filter(name=>/^com_apple_MobileAsset_Font\d+$/.test(name)).map(name=>join('/System/Library/AssetsV2',name));}
- catch(error){if(!(error&&typeof error==='object'&&'code'in error&&error.code==='ENOENT'))throw error;}
- const escape=(value:string)=>value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
- const config=join(temporary,'fonts.conf');
- await writeFile(config,`<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig>${['/System/Library/Fonts','/Library/Fonts',...assets].map(path=>`<dir>${escape(path)}</dir>`).join('')}<cachedir>${escape(join(temporary,'font-cache'))}</cachedir></fontconfig>`,{mode:0o600});
- env.FONTCONFIG_FILE=config;return env;
-}
 async function convert(root:string,key:string,bytes:Uint8Array){
  const directory=join(root,'material-library','previews');await mkdir(directory,{recursive:true,mode:0o700});
  const destination=join(directory,`${key}.pdf`);
@@ -35,7 +23,7 @@ async function convert(root:string,key:string,bytes:Uint8Array){
  try{
   await writeFile(join(temporary,'source.docx'),bytes,{mode:0o600});
   let child:ReturnType<typeof Bun.spawn>;
-  const env=await conversionEnvironment(temporary);
+  const env=await createLibreOfficeEnvironment(temporary);
   try{child=Bun.spawn([process.env.LIBREOFFICE_PATH||'soffice',`-env:UserInstallation=${pathToFileURL(join(temporary,'profile')).href}`,'--headless','--convert-to','pdf','--outdir',temporary,join(temporary,'source.docx')],{env,stdout:'ignore',stderr:'ignore'});}
   catch{throw new HTTPException(503,{message:'DOCX预览转换器未安装，请先下载原文件查看'});}
   const timer=setTimeout(()=>child.kill(),60000);

@@ -11,7 +11,7 @@
 
 | 文件 | 职责和边界 |
 | --- | --- |
-| `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；`extractPages()`以Poppler生成问题页PDF子集后调用同一provider并映回原页码。PDF必须注入冻结provider，DOCX使用MinerU结构化接口；TXT/MD本地UTF8。 |
+| `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；`extractPages()`以Poppler生成问题页PDF子集后调用同一provider并映回原页码。PDF必须注入冻结provider，DOCX使用MinerU结构化接口，PNG/JPG/JPEG原图直传MinerU API并输出单页结构；TXT/MD本地UTF8。 |
 | `jobs.ts` | 旧步骤2入队、冻结MinerU配置/转换版本、按执行端领取/缓存/发布；更新步骤1处理状态，非全局库队列。 |
 | `process.ts` | `processMaterials()`核对原件/缓存，生成私有页结构；只对可重试问题页做一次子集复识别并保留issues，无页级能力则标记不可复查，不整份重传。旧无调用的检查点清理入口已移除，不删除历史缓存。 |
 | `pdf.ts` | 当前共享Page/DocumentBlock和确定性`documentBlocksToText()`；`command()`封装Poppler；`extractPdf()`是旧Vision页级路径，非当前MinerU主入口。 |
@@ -50,7 +50,7 @@
 
 旧目录按题目入库，旧材料包先处理material_package，再由`../material-package-questions.ts`建派生题。全局库由`../material-library/questions.ts`冻结脱敏或成功提取原文，默认脱敏；创建后期次设置变化不切换旧题来源，出题/作答/评分/归档均使用同一快照。派生题不再运行旧入库/脱敏。主项目永久使用账不归本模块管理。
 
-旧提取入队冻结PDF provider及转换版本。默认MinerU API符合特定网络/服务/超时错误时才回退一次CLI；显式`glm-ocr`只调用智谱版面解析，不进入MinerU回退链。DOCX仍直接使用MinerU API，忽略图片、按原文序映射为单逻辑页；TXT/MD本地解析。MinerU需`MINERU_KEY`，GLM-OCR需`ZHIPU_API_KEY`。空白页及provider明确的异常用于局部复查；新解析不生成图片占位或推断式问题标记，历史缓存不回写。
+旧提取入队冻结PDF provider及转换版本。新提取只允许MinerU API或MinerU CLI；默认MinerU API符合特定网络/服务/超时错误时才回退一次CLI，其他provider配置直接拒绝。DOCX与图片直接使用MinerU API，DOCX按原文序映射为单逻辑页；TXT/MD本地解析。MinerU需`MINERU_KEY`。空白页及provider明确的异常用于局部复查；新解析不生成图片占位或推断式问题标记，历史缓存不回写。
 
 提取入队可复用同来源/配置的成功尝试，活动去重；执行时另选同来源/供应商配置的历史PDF产物，校验文件、SHA、结构文字投影，不等于只读取成功尝试缓存。损坏缓存可重新提取。只对OCR空白页或empty_page/truncated_response/ocr_page_error/unreadable问题做一次复查；新解析不再生成图片无文字、未知块和表格结构降级提示，历史缓存中的旧标记不会触发复查。复查通过pdfseparate/pdfunite在私有临时目录构造问题页子集，交给原provider，验证子集摘要、原件绑定及返回页数/页序后只替换指定页，正常缓存页保留复用及usage身份。缺少extractPages能力的注入提取器保留原文并添加ocr_recheck_unavailable，不降级为整份重传；结果仍有问题时保留issues，不阻断旧入库。全局库有自己的可用性判断，不套用旧队列状态。
 
@@ -84,7 +84,11 @@ DOCX渲染版本为redacted-structure-docx-v5，版本参与缓存索引；连�
 
 ## 显式材料上传预处理
 
-`prepare-library-files.ts`的`prepareLibraryFiles()`由CLI `library files prepare`调用：只读本机清单，OFD通过显式安装的本地OFDRW转PDF，PDF复用`splitLargePdf()`按大小/页数拆片，核对页数后生成新目录中的`manifest.json`及`provenance.json`。不自动上传、不修改来源、不派任务；原材料库HTTP接口的格式集合不变。失败保留`failed.json`但不发布manifest。OFD转换件须页面抽查，数字签名验证不能从原件继承。安装入口见`scripts/runtime/ofd/README.md`。
+DOC/WPS通过隔离UserInstallation的LibreOffice进程尝试转PDF；macOS转换环境复用原件预览的私有fontconfig，补入当前系统字体资源，并拒绝已知的错误中文字体回退。OFD通过本地OFDRW转PDF，PDF按大小/页数拆片，PNG/JPG/JPEG保留原字节进入清单。`provenance.json`记录源路径/SHA-256、转换器及版本、产物SHA-256/页数和抽查要求；任一失败只保留`failed.json`，不发布`manifest.json`。不自动安装转换器、上传或派任务，不覆盖、改名或删除原件。OFD转换件的数字签名效力不从原件继承。
+
+PNG/JPG/JPEG提取只使用MinerU API原图直传，不转PDF，不调用或回退CLI/GLM-OCR；输出必须为单页结构。
+
+`prepare-library-files.ts`的`prepareLibraryFiles()`由CLI `library files prepare`调用，详细产物与失败边界见上文。OFD安装入口见`scripts/runtime/ofd/README.md`。
 
 本模块local队列模式的派发归属、指定ID领取、取消及恢复接入共享[执行队列](../execution-queue/README.md)；业务输入/结果契约保留，默认兼容模式不代表业务环境已切换。
 

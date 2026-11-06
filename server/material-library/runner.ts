@@ -12,12 +12,11 @@ import {HTTPException} from 'hono/http-exception';
 import type {LibraryExecutionTarget,LibraryExecutorKind} from '../../shared/material-library';
 import {type DocumentExtractor,extractLocalDocument,ProjectDocumentExtractor} from '../materials/document';
 import {MineruCliPdfExtractor} from '../materials/pdf-extraction/mineru-cli';
-import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiPdfExtractor} from '../materials/pdf-extraction/mineru-api';
-import {GlmOcrPdfExtractor} from '../materials/pdf-extraction/glm-ocr';
+import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiImageExtractor,MineruApiPdfExtractor} from '../materials/pdf-extraction/mineru-api';
 import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
-import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS,LIBRARY_JOB_LEASE_MS,assertLibraryExtractionUsable} from './jobs';
+import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,libraryExternalExtractionTimeoutMs,LIBRARY_JOB_LEASE_MS,assertLibraryExtractionUsable} from './jobs';
 import {readLibraryBlob,cleanupRolledBackLibraryBlobs} from './storage';
 import {publishAtomicLibraryImport} from './atomic-import';
 import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-shared';
@@ -52,13 +51,13 @@ async function executeIntake(pool:Pool,root:string,job:any,signal:AbortSignal){
  });
 }
 
-async function documentExtractor(root:string,jobId:string,provider:unknown){
- if(!['glm-ocr','mineru-api','mineru-cli'].includes(String(provider)))throw new HTTPException(409,{message:'提取任务缺少冻结供应商，请创建新的提取任务'});
- if(provider==='glm-ocr'&&!process.env.ZHIPU_API_KEY?.trim())throw new HTTPException(503,{message:'GLM-OCR文本提取服务未配置'});
- if(provider!=='glm-ocr'&&!process.env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
+async function documentExtractor(root:string,jobId:string,provider:unknown,formats:string[]){
+ if(!['mineru-api','mineru-cli'].includes(String(provider)))throw new HTTPException(409,{message:'提取任务缺少冻结MinerU供应商，请创建新的提取任务'});
+ const hasPdf=formats.includes('pdf'),hasMineruNative=formats.some(format=>['docx','png','jpg','jpeg'].includes(format));
+ if((hasPdf||hasMineruNative)&&!process.env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
  const cli=new MineruCliPdfExtractor(process.env);
- const pdf=provider==='glm-ocr'?new GlmOcrPdfExtractor(process.env):provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli);
- const extractor=new ProjectDocumentExtractor(pdf,new MineruApiDocxExtractor(process.env));
+ const pdf=provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli);
+ const extractor=new ProjectDocumentExtractor(pdf,new MineruApiDocxExtractor(process.env),new MineruApiImageExtractor(process.env));
  const directory=join(jobDirectory(root,jobId),'source');
  await mkdir(directory,{recursive:true,mode:0o700});
  return{directory,extractor};
@@ -74,7 +73,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
   else if(!document){
    if(!extraction){
     if(extractorOverride){const directory=join(jobDirectory(root,job.id),'source');await mkdir(directory,{recursive:true,mode:0o700});extraction={directory,extractor:extractorOverride};}
-    else extraction=await documentExtractor(root,job.id,job.config_snapshot.pdf_provider);
+    else extraction=await documentExtractor(root,job.id,job.config_snapshot.pdf_provider,files.map(file=>String(file.format)));
    }
    const path=join(extraction.directory,`${item.file_id}.${item.format}`);
    try{await writeFile(path,Buffer.from(bytes),{mode:0o600,flag:'wx'});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST'||hash(await readFile(path))!==item.source_sha256)throw error;}
@@ -84,7 +83,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
    document=ensurePages(extracted.pages,item.source_sha256);actualProvider=extracted.provider;
   }
   if(signal.aborted)throw signal.reason;
-  await writeExtractionCheckpoint(root,job,item,document,actualProvider,item.format==='pdf'?job.config_snapshot?.pdf_ocr_version:undefined);
+  await writeExtractionCheckpoint(root,job,item,document,actualProvider,item.format==='pdf'?job.config_snapshot?.pdf_ocr_version:['png','jpg','jpeg'].includes(item.format)?job.config_snapshot?.image_ocr_version:undefined);
   const issues=document.pages.flatMap(page=>[
    ...(page.issues??[]).map(kind=>({page:page.page,kind})),
    ...(!page.text.trim()?[{page:page.page,kind:'empty_page'}]:[]),
@@ -123,8 +122,9 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
  const context={component:'material_library',operation:`library_${job.kind}`,library_package_id:job.package_id,library_revision_id:job.revision_id,library_job_id:job.id};
  const restore=enterLogContext(context);const local=new AbortController(),abort=()=>local.abort(stopReason('worker_shutdown'));signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
  const agentPlan=job.config_snapshot?.redaction_template?.workflow==='codex_plan';
- const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:any)=>['pdf','docx'].includes(String(file.original_name??'').split('.').at(-1)?.toLowerCase()??''));
- const deadline=agentPlan?new Date(job.deadline_at).getTime():Math.min(new Date(job.deadline_at).getTime(),Date.now()+(externalExtraction?LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS:1800000));
+ const externalExtraction=job.kind==='extract'&&job.input_snapshot?.files?.some((file:any)=>['pdf','docx','png','jpg','jpeg'].includes(String(file.original_name??'').split('.').at(-1)?.toLowerCase()??''));
+ const externalFileCount=externalExtraction?job.input_snapshot.files.filter((file:any)=>['pdf','docx','png','jpg','jpeg'].includes(String(file.original_name??'').split('.').at(-1)?.toLowerCase())).length:0;
+ const deadline=agentPlan?new Date(job.deadline_at).getTime():Math.min(new Date(job.deadline_at).getTime(),Date.now()+(externalExtraction?libraryExternalExtractionTimeoutMs(externalFileCount):1800000));
  const deadlineTimer=setTimeout(()=>local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded')),Math.max(0,deadline-Date.now()));
  if(deadline<=Date.now())local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded'));
  // 仅在最后已确认的租约内容忍瞬时数据库故障；独立计时器也覆盖查询悬挂。

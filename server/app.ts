@@ -37,6 +37,7 @@ import {enqueueProjectSkill,listProjectSkillAttempts} from './skill-generation/j
 import {enqueueAnswer} from './answer-models/jobs';
 import {listAnswerModels,registerAnswerModel,setAnswerModelEnabled,readProjectModelSet,saveProjectModelSet,initializeDefaultAnswerModel} from './answer-models/model-set';
 import {mergeAnswerGenerationPolicyIntoStepConfig,parseAnswerGenerationPolicyMinutes,readAnswerGenerationPolicyFromStepConfig,serializeAnswerGenerationPolicyMinutes} from './answer-models/generation-policy';
+import {mergeAnswerToolPolicyIntoStepConfig,parseAnswerToolPolicy,readAnswerToolPolicyFromStepConfig} from './answer-models/tool-policy';
 import {runAcceptance} from './decisions/jobs';
 import {readPublicationHistory,readSiriserArchive,withdrawPublication} from './publishing/jobs';
 import {buildProjectExport,verifyProjectAuthoringRules,workbookSha256,withProjectExportLock} from './reporting/export';
@@ -57,6 +58,7 @@ import {registerWorkflowHookRoutes} from './workflow-hook-routes';
 import {registerWorkflowExecutionRoutes} from './workflow-execution-routes';
 import {registerRemoteMaterialRoutes} from './remote-material-routes';
 import {readSystemStepPrompts,saveSystemStepPrompts,readSystemAuthoringDefaults,validateAuthoringDefaults} from './system-step-prompts';
+import {lockProjectPromptScope,propagateProjectGroupPrompt,readProjectGroupPrompts,sharedPromptOrdinal} from './project-step-prompts';
 import {registerMaterialLibraryRoutes} from './material-library/routes';
 import {registerProjectLibraryRoutes} from './material-library/projects-routes';
 import {recoverCreatedProject} from './project-creation-recovery';
@@ -104,10 +106,11 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   'post:/api/projects/:id/loaded-materials/:linkId/questions':{operation:'project.library_question.create',fields:['request_key','redaction_id','title','scenario','role_perspective','target_level','authoring_direction','question_tags']},
   'patch:/api/projects/:id':{operation:'project.update',fields:['name','description','material_root','local_skill_path','workspace_path']},
   'delete:/api/projects/:id':{operation:'project.delete',fields:[]},
-  'post:/api/answer-models':{operation:'answer_model.register',fields:['provider','model','reasoning_effort']},
+  'post:/api/answer-models':{operation:'answer_model.register',fields:['provider','model','reasoning_effort','server_tools','max_tool_calls']},
   'put:/api/answer-models/:id':{operation:'answer_model.update',fields:['enabled']},
   'put:/api/projects/:id/answer-models':{operation:'project_answer_models.update',fields:['models']},
   'put:/api/projects/:id/answer-generation-policy':{operation:'project_answer_generation_policy.update',fields:['request_timeout_minutes','reasoning_threshold_minutes','skip_scoring_on_qualified_timeout']},
+  'put:/api/projects/:id/answer-tools':{operation:'project_answer_tools.update',fields:['server_tools','local_tools','max_tool_calls']},
   'put:/api/projects/:id/steps/:ordinal/config':{operation:'project_step_config.update',fields:['config']},
   'put:/api/agent/projects/:id/steps/:ordinal/config':{operation:'agent_step_config.update',fields:['config']},
   'delete:/api/projects/:id/steps/:ordinal/config':{operation:'project_step_config.reset',fields:['config']},
@@ -189,17 +192,15 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.put('/api/projects/:id/steps/:ordinal/prompt',async c=>{
   const id=uuid(c.req.param('id')),ordinal=Number(c.req.param('ordinal'));
   if(ordinal===9)throw new HTTPException(409,{message:'旧字段映射提示词设置已退役，请编辑材料库Agent化名模板'});
-  if(![4,5,6].includes(ordinal))throw new HTTPException(400,{message:'此步骤不支持提示词设置'});
+  if(!sharedPromptOrdinal(ordinal))throw new HTTPException(400,{message:'此步骤不支持提示词设置'});
   const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
   if(typeof body?.prompt!=='string'||!body.prompt.trim()||body.prompt.length>12000)throw new HTTPException(400,{message:'请填写有效的步骤提示词'});
   const db=await pool.connect();
   try{
    await db.query('BEGIN');
-   if(!(await db.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[id])).rowCount)throw new HTTPException(404,{message:'项目不存在'});
-   const current=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=$2 FOR UPDATE',[id,ordinal])).rows[0]?.config??{};
-   const next={...current,prompt:body.prompt};
-   const saved=await db.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)
-    ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(next)]);
+   await lockProjectPromptScope(db,id,ordinal,body?.expected_prompt);
+   await propagateProjectGroupPrompt(db,id,ordinal,body.prompt);
+   const saved=await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=$2',[id,ordinal]);
    await db.query('COMMIT');return c.json(saved.rows[0]);
   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  });
@@ -309,6 +310,31 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    await db.query('COMMIT');return c.json(serializeAnswerGenerationPolicyMinutes(policy,'project'));
   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  });
+ app.get('/api/projects/:id/answer-tools',async c=>{
+  const id=uuid(c.req.param('id'));
+  const stored=await pool.query(`SELECT p.id,c.config FROM ai_distill.projects p
+   LEFT JOIN ai_distill.project_step_configs c ON c.project_id=p.id AND c.ordinal=5
+   WHERE p.id=$1 AND p.deleted_at IS NULL`,[id]);
+  if(!stored.rowCount)throw new HTTPException(404,{message:'项目不存在'});
+  const policy=readAnswerToolPolicyFromStepConfig(stored.rows[0]?.config);
+  return c.json(policy?{...policy,source:'project'}:{server_tools:[],local_tools:[],source:'default'});
+ });
+ app.put('/api/projects/:id/answer-tools',async c=>{
+  const id=uuid(c.req.param('id'));
+  const raw=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
+  let policy;
+  try{policy=parseAnswerToolPolicy(raw);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'OpenRouter作答工具设置无效'});}
+  const db=await pool.connect();
+  try{
+   await db.query('BEGIN');
+   if(!(await db.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[id])).rowCount)throw new HTTPException(404,{message:'项目不存在'});
+   const current=await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5 FOR UPDATE',[id]);
+   const config=mergeAnswerToolPolicyIntoStepConfig(current.rows[0]?.config,policy);
+   const saved=await db.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config,updated_at=now() RETURNING config`,[id,5,JSON.stringify(config)]);
+   if(!saved.rowCount)throw new HTTPException(404,{message:'项目不存在'});
+   await db.query('COMMIT');return c.json({...policy,source:'project',applies_to:'new_attempts'});
+  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+ });
  app.get('/api/projects', async c => {
    try { const result = await pool.query(`SELECT p.*, counts.workflow_count,counts.material_package_count,counts.question_count FROM ai_distill.projects p CROSS JOIN LATERAL (
     SELECT count(*)::int AS workflow_count,count(*) FILTER (WHERE w.workflow_kind='material_package')::int AS material_package_count,
@@ -370,9 +396,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     const phaseNo=body?.phase_no===undefined?(materialBackend==='library_v1'?1:null):validatePhaseNumber(body.phase_no);
     const result = await db.query('INSERT INTO ai_distill.projects(id,name,description,material_root,local_skill_path,parent_name,phase_name,material_mode,question_tags,material_backend,workspace_path,project_group_id,phase_no) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',[id,name,description,materialRoot,skillPath,parentName,phaseName,materialMode,tags,materialBackend,workspacePath,group.id,phaseNo]);
     const prompts=await readSystemStepPrompts(db);
+    const groupPrompts=await readProjectGroupPrompts(db,group.id);
     const authoringDefaults=body?.authoring_defaults===undefined?await readSystemAuthoringDefaults(db):validateAuthoringDefaults(body.authoring_defaults);
     const promptOrdinals:readonly (4|5|6|9)[]=materialBackend==='library_v1'?[4,5,6]:[4,5,6,9];
-    for(const ordinal of promptOrdinals)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:prompts[ordinal],...(ordinal===4?{...authoringDefaults,material_processing_mode:'aliases',material_source_mode:'redacted'}:{})})]);
+    for(const ordinal of promptOrdinals)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:ordinal===9?prompts[ordinal]:groupPrompts[ordinal]??prompts[ordinal],...(ordinal===4?{...authoringDefaults,material_processing_mode:'aliases',material_source_mode:'redacted'}:{})})]);
     await initializeDefaultAnswerModel(db,id);
     if(materialRoot)await registerQuestionFolders(db,id,name,questions,materialMode);
     await db.query('COMMIT'); return c.json(result.rows[0],201);
@@ -402,6 +429,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      (SELECT status FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal NOT IN (2,3,10) AND (s.status NOT IN ('succeeded','skipped') OR (s.ordinal=7 AND s.result->>'decision'='repair')) ORDER BY display_position LIMIT 1) AS current_status,
      (SELECT result->>'decision' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=7) AS current_decision,
      (SELECT s.result FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=7 AND s.status='succeeded' AND s.result->>'decision'='accepted') AS acceptance_result,
+     (SELECT s.result->>'task_name' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4) AS current_task_name,
      (SELECT s.result->>'question_version' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4) AS current_question_version,
      (SELECT s.result->>'rubric_version' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4) AS current_rubric_version,
      (SELECT ${answerModelSummaryProjection('s')} FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=5) AS answer_models,
@@ -632,12 +660,27 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    if(c.req.path.startsWith('/api/agent/')&&![4,6,9].includes(ordinal))throw new HTTPException(404,{message:'此步骤不使用Agent配置'});
    if(ordinal===9)throw new HTTPException(409,{message:'旧字段映射脱敏配置已退役，请使用材料库Agent化名设置'});
    const raw=await c.req.json().catch(() => { throw new HTTPException(400,{message:'请提交有效JSON'}); });
-   const config=validateStepConfig(ordinal,raw);
+   const {expected_prompt:expectedPrompt,...configInput}=raw??{};
+   const config=validateStepConfig(ordinal,configInput);
+   const hasExplicitPrompt=typeof configInput?.prompt==='string';
    if(ordinal!==7){
-    const saved=ordinal===5
-     ?await pool.query(`INSERT INTO ai_distill.project_step_configs AS current_config(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config || CASE WHEN current_config.config ? 'answer_generation_policy' THEN jsonb_build_object('answer_generation_policy',current_config.config->'answer_generation_policy') ELSE '{}'::jsonb END || CASE WHEN current_config.config ? 'preserve_answer_model_snapshots' THEN jsonb_build_object('preserve_answer_model_snapshots',current_config.config->'preserve_answer_model_snapshots','previous_answer_models',current_config.config->'previous_answer_models') ELSE '{}'::jsonb END,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)])
-     :await pool.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)]);
-    if(!saved.rowCount)throw new HTTPException(404,{message:'项目不存在'});return c.json(saved.rows[0]);
+    if(sharedPromptOrdinal(ordinal)&&!hasExplicitPrompt){
+     const saved=ordinal===5
+      ?await pool.query(`INSERT INTO ai_distill.project_step_configs AS current_config(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config || CASE WHEN current_config.config ? 'prompt' THEN jsonb_build_object('prompt',current_config.config->'prompt') ELSE '{}'::jsonb END || CASE WHEN current_config.config ? 'answer_generation_policy' THEN jsonb_build_object('answer_generation_policy',current_config.config->'answer_generation_policy') ELSE '{}'::jsonb END || CASE WHEN current_config.config ? 'preserve_answer_model_snapshots' THEN jsonb_build_object('preserve_answer_model_snapshots',current_config.config->'preserve_answer_model_snapshots','previous_answer_models',current_config.config->'previous_answer_models') ELSE '{}'::jsonb END,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)])
+      :await pool.query(`INSERT INTO ai_distill.project_step_configs AS current_config(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config || CASE WHEN current_config.config ? 'prompt' THEN jsonb_build_object('prompt',current_config.config->'prompt') ELSE '{}'::jsonb END,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(config)]);
+     if(!saved.rowCount)throw new HTTPException(404,{message:'项目不存在'});return c.json(saved.rows[0]);
+    }
+    const db=await pool.connect();try{
+     await db.query('BEGIN');
+     if(sharedPromptOrdinal(ordinal))await lockProjectPromptScope(db,id,ordinal,expectedPrompt);
+     const savedConfig=config;
+     const saved=ordinal===5
+      ?await db.query(`INSERT INTO ai_distill.project_step_configs AS current_config(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config || CASE WHEN current_config.config ? 'answer_generation_policy' THEN jsonb_build_object('answer_generation_policy',current_config.config->'answer_generation_policy') ELSE '{}'::jsonb END || CASE WHEN current_config.config ? 'preserve_answer_model_snapshots' THEN jsonb_build_object('preserve_answer_model_snapshots',current_config.config->'preserve_answer_model_snapshots','previous_answer_models',current_config.config->'previous_answer_models') ELSE '{}'::jsonb END,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(savedConfig)])
+      :await db.query(`INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) SELECT id,$2,$3 FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL ON CONFLICT(project_id,ordinal) DO UPDATE SET config=EXCLUDED.config,updated_at=now() RETURNING config`,[id,ordinal,JSON.stringify(savedConfig)]);
+     if(!saved.rowCount)throw new HTTPException(404,{message:'项目不存在'});
+     if(sharedPromptOrdinal(ordinal)&&hasExplicitPrompt)await propagateProjectGroupPrompt(db,id,ordinal,(savedConfig as {prompt:string}).prompt);
+     await db.query('COMMIT');return c.json(saved.rows[0]);
+    }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
    }
    const db=await pool.connect();try{
     await db.query('BEGIN');
@@ -656,10 +699,14 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   if(c.req.path.startsWith('/api/agent/')&&![4,6,9].includes(ordinal))throw new HTTPException(404,{message:'此步骤不使用Agent配置'});
   if(ordinal===9)throw new HTTPException(409,{message:'旧字段映射脱敏设置已退役，不再恢复旧API默认'});
   if(![4,6].includes(ordinal))throw new HTTPException(400,{message:'此步骤不支持恢复默认'});
-  const project=await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[id]);
-  if(!project.rowCount)throw new HTTPException(404,{message:'项目不存在'});
-  await pool.query('DELETE FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=$2',[id,ordinal]);
-  return c.json({reset:true});
+  const body=await c.req.json().catch(()=>({}));
+  const db=await pool.connect();try{
+   await db.query('BEGIN');
+   await lockProjectPromptScope(db,id,ordinal as 4|6,body?.expected_prompt);
+   const prompt=(await db.query("SELECT config->>'prompt' AS prompt FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=$2",[id,ordinal])).rows[0]?.prompt;
+   await db.query('UPDATE ai_distill.project_step_configs SET config=jsonb_build_object(\'prompt\',$3::text),updated_at=now() WHERE project_id=$1 AND ordinal=$2',[id,ordinal,prompt]);
+   await db.query('COMMIT');return c.json({reset:true});
+  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  });
  app.get('/api/projects/:id/rules',async c=>{
    try{return c.json(await readProjectRules(pool,uuid(c.req.param('id'))));}catch(error){throw error;}
@@ -720,7 +767,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
        pool.query("SELECT id,original_name,sha256,size_bytes,content_type,processing_status,redaction_mode,created_at FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL ORDER BY created_at,id", [id]),
        pool.query(`SELECT ordinal,step_key,display_position,enabled,name,status,implemented,${stepResultProjection('s',content)} AS result,error,started_at,finished_at,${executionAttemptProjection('s')} AS execution_attempts FROM ai_distill.steps s WHERE workflow_id=$1 ORDER BY display_position NULLS LAST,ordinal`, [id]),
        readWorkflowAttempts(pool,id,content),
-       pool.query("SELECT ar.id,ar.kind,ar.attempt_id,ar.created_at,CASE WHEN ar.kind IN ('redacted_docx','original_docx') THEN regexp_replace(ar.storage_path,'^.*/','') END AS filename,a.result->>'question_version' AS question_version FROM ai_distill.artifacts ar LEFT JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE ar.workflow_id=$1 AND ar.kind IN ('source_markdown','source_index','redacted_markdown','redacted_index','redacted_docx','original_docx','authored_question','model_answer','score_report','published_result') ORDER BY ar.created_at DESC,ar.id", [id]),
+       pool.query("SELECT ar.id,ar.kind,ar.attempt_id,ar.created_at,CASE WHEN ar.kind IN ('redacted_docx','original_docx','model_answer_file') THEN regexp_replace(ar.storage_path,'^.*/','') END AS filename,a.result->>'question_version' AS question_version FROM ai_distill.artifacts ar LEFT JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id WHERE ar.workflow_id=$1 AND ar.kind IN ('source_markdown','source_index','redacted_markdown','redacted_index','redacted_docx','original_docx','authored_question','model_answer','model_answer_file','score_report','published_result') ORDER BY ar.created_at DESC,ar.id", [id]),
        workflowData.workflow_kind==='material_package'
         ? pool.query("SELECT id,title,created_at,source_redaction_attempt_id,source_redaction_sha256 FROM ai_distill.workflows WHERE source_workflow_id=$1 AND deleted_at IS NULL ORDER BY created_at,id",[id])
         : Promise.resolve({rows:[]}),
@@ -1064,7 +1111,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.get('/api/artifacts/:id/download', async c => {
    try {
      const artifactId=uuid(c.req.param('id'));
-     const result = await pool.query("SELECT kind,storage_path,sha256,content FROM ai_distill.artifacts WHERE id=$1 AND kind IN ('source_markdown','source_index','redacted_markdown','redacted_index','model_answer','score_report','authored_question','published_result','redacted_docx','original_docx')", [artifactId]);
+     const result = await pool.query("SELECT kind,storage_path,sha256,content FROM ai_distill.artifacts WHERE id=$1 AND kind IN ('source_markdown','source_index','redacted_markdown','redacted_index','model_answer','model_answer_file','score_report','authored_question','published_result','redacted_docx','original_docx')", [artifactId]);
      if(['redacted_docx','original_docx'].includes(result.rows[0]?.kind)){
       const docx=await readCurrentMaterialDocx(pool,artifactId,assetExportRoot);
       if(!docx)throw new HTTPException(404,{message:'产物不存在或不允许下载'});
@@ -1074,16 +1121,19 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      if (!result.rowCount) throw new HTTPException(404, { message: '产物不存在或不允许下载' });
      const fileKind=result.rows[0].kind;
      logEvent('file.read.started',{level:'info',component:'artifacts',artifact_id:artifactId,file_kind:fileKind});
-     if(typeof result.rows[0].content==='string'){
+     const storedName=String(result.rows[0].storage_path??'').split('/').at(-1)??'';
+     const binaryAnswerFile=fileKind==='model_answer_file'&&/\.(?:docx|xlsx)$/i.test(storedName);
+     if(typeof result.rows[0].content==='string'&&!binaryAnswerFile){
       if(createHash('sha256').update(result.rows[0].content).digest('hex')!==result.rows[0].sha256){logEvent('file.read.failed',{level:'error',component:'artifacts',artifact_id:artifactId,file_kind:fileKind,reason_code:'digest_mismatch'});throw new HTTPException(404,{message:'产物内容指纹校验失败'});}
-      const filename=['redacted_markdown','source_markdown'].includes(result.rows[0].kind)?'materials.md':['redacted_index','source_index'].includes(result.rows[0].kind)?'pages.json':`${result.rows[0].kind}.txt`;
+      const filename=result.rows[0].kind==='model_answer_file'?result.rows[0].storage_path.split('/').at(-1):['redacted_markdown','source_markdown'].includes(result.rows[0].kind)?'materials.md':['redacted_index','source_index'].includes(result.rows[0].kind)?'pages.json':`${result.rows[0].kind}.txt`;
       logEvent('file.read.completed',{level:'info',component:'artifacts',artifact_id:artifactId,file_kind:fileKind,output_bytes:Buffer.byteLength(result.rows[0].content)});
       return new Response(result.rows[0].content,{headers:{'Content-Type':'text/plain; charset=utf-8','Content-Disposition':`attachment; filename="${filename}"`,'Cache-Control':'no-store'}});
      }
      const file = Bun.file(join(resolve(storageRoot), result.rows[0].storage_path));
      if (!await file.exists()) {logEvent('file.read.failed',{level:'error',component:'artifacts',artifact_id:artifactId,file_kind:fileKind,reason_code:'file_missing'});throw new HTTPException(404, { message: '产物文件缺失' });}
      logEvent('file.read.completed',{level:'info',component:'artifacts',artifact_id:artifactId,file_kind:fileKind,output_bytes:file.size});
-     const filename = result.rows[0].kind === 'published_result' ? 'published.json' : result.rows[0].kind === 'authored_question' ? 'authoring.txt' : result.rows[0].kind === 'score_report' ? 'score.json' : result.rows[0].kind === 'model_answer' ? 'answer.txt' : result.rows[0].kind === 'redacted_markdown' ? 'materials.md' : 'pages.json';
+     const filename = result.rows[0].kind === 'model_answer_file'?storedName:result.rows[0].kind === 'published_result' ? 'published.json' : result.rows[0].kind === 'authored_question' ? 'authoring.txt' : result.rows[0].kind === 'score_report' ? 'score.json' : result.rows[0].kind === 'model_answer' ? 'answer.txt' : result.rows[0].kind === 'redacted_markdown' ? 'materials.md' : 'pages.json';
+     if(binaryAnswerFile){const bytes=Buffer.from(await file.arrayBuffer());if(createHash('sha256').update(bytes).digest('hex')!==result.rows[0].sha256)throw new HTTPException(404,{message:'产物内容指纹校验失败'});const contentType=filename.toLowerCase().endsWith('.docx')?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';return new Response(Uint8Array.from(bytes).buffer,{headers:{'Content-Type':contentType,'Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,'Cache-Control':'no-store'}});}
      return new Response(file, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"`, 'Cache-Control': 'no-store' } });
    } catch (error) { throw error; }
  });

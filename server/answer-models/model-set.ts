@@ -77,10 +77,10 @@ export async function registerAnswerModel(db:Pool,raw:unknown){
    VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,model.name,model.config.provider,model.config.base_url,model.config.model,JSON.stringify(model.config)]);
   return saved.rows[0];
  }
- if(Object.keys(value).some(key=>key!=='model_id')||typeof value.model_id!=='string'||!value.model_id.trim())throw new HTTPException(400,{message:'请填写OpenRouter模型ID'});
+ if(Object.keys(value).some(key=>!['model_id','server_tools','max_tool_calls'].includes(key))||typeof value.model_id!=='string'||!value.model_id.trim())throw new HTTPException(400,{message:'请填写OpenRouter模型ID'});
  const modelId=value.model_id.trim();
  const id=crypto.randomUUID();
- const model=validateModelSet([{model_id:id,name:modelId,minimum_score:0,config:{provider:'openrouter',model:modelId}}])[0]!;
+ const model=validateModelSet([{model_id:id,name:modelId,minimum_score:0,config:{provider:'openrouter',model:modelId,...(value.server_tools!==undefined?{server_tools:value.server_tools}:{}),...(value.max_tool_calls!==undefined?{max_tool_calls:value.max_tool_calls}:{})}}])[0]!;
  if(model.config.provider==='codex')throw new HTTPException(400,{message:'OpenRouter模型配置无效'});
  const saved=await db.query(`INSERT INTO ai_distill.system_answer_models(id,name,provider,base_url,model,config)
   VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,model.name,model.config.provider,model.config.base_url,model.config.model,JSON.stringify(model.config)]);

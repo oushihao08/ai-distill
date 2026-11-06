@@ -56,3 +56,13 @@ test('local text documents expose a structure whose projection retains source wh
  const result=extractLocalDocument(new TextEncoder().encode(source),'txt');
  expect(result.pages[0]?.structure).toEqual([{id:'p1-b1',kind:'paragraph',text:source}]);
 });
+
+test('image extraction sends the original bytes to the dedicated provider and requires one page',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'document-image-')),path=join(root,'scan.png'),source=new Uint8Array([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);let received='';
+ try{
+  await writeFile(path,source);
+  const provider={id:'mineru-api' as const,async extract(input:string){received=createHash('sha256').update(Buffer.from(await Bun.file(input).arrayBuffer())).digest('hex');return{provider:'mineru-api' as const,sha256:received,pages:[{page:1,text:'图片正文',method:'ocr' as const}]};}};
+  const result=await new ProjectDocumentExtractor(undefined,undefined,provider).extract(path);
+  expect(received).toBe(createHash('sha256').update(source).digest('hex'));expect(result).toMatchObject({format:'png',provider:'mineru-api',pages:[{page:1,text:'图片正文'}]});
+ }finally{await rm(root,{recursive:true,force:true});}
+});

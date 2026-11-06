@@ -13,6 +13,7 @@ import type {RevisionAdviceView} from '../../../shared/revision-advice';
 import RevisionAdvice from './RevisionAdvice.vue';
 import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
 import ModelEvaluationSummary from './ModelEvaluationSummary.vue';
+import AcceptedQuestionDetail from './AcceptedQuestionDetail.vue';
 
 const props=defineProps<{workflows:Workflow[];packages:Workflow[];projectId:string;workflowStatus?:Record<string,ProjectWorkflowStatus>;materialPackagesEnabled?:boolean}>();
 const emit=defineEmits<{refresh:[]}>();
@@ -60,6 +61,7 @@ const selectedDecisionFlow=shallowRef<Workflow|null>(null);
 const selectedDecisionAttempt=shallowRef<Attempt|null>(null);
 const decisionDetailLoading=shallowRef(false),decisionDetailError=shallowRef('');
 const history=shallowRef<{workflowId:string;title:string;ordinal:number;stepName:string}|null>(null);
+const selectedQuestion=shallowRef<Workflow|null>(null);
 const scoreDetailOpen=shallowRef(false),scoreDetailLoading=shallowRef(false),scoreDetailError=shallowRef('');
 const scoreDetailFlow=shallowRef<Workflow|null>(null),scoreDetail=shallowRef<Pick<WorkflowDetail,'steps'|'attempts'>|null>(null);
 let scoreRequestVersion=0;
@@ -68,9 +70,10 @@ const selectedAggregate=computed(()=>{const result=selectedDecisionAttempt.value
 const packageNames=computed(()=>Object.fromEntries(props.packages.map(item=>[item.id,item.title])));
 function sourceName(flow:Workflow){return flow.library_package_name||(flow.source_workflow_id?packageNames.value[flow.source_workflow_id]:null)||'旧题目目录';}
 const tagOptions=computed(()=>[...new Set(props.workflows.flatMap(displayTags))].sort((a,b)=>a.localeCompare(b,'zh-CN')));
+function searchableQuestionText(flow:Workflow){return [flow.title,flow.current_task_name,sourceName(flow)].filter(Boolean).join('\n').toLowerCase();}
 const filteredWorkflows=computed(()=>{
  const keyword=(search.value??'').trim().toLowerCase();
- return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&(flow.title.toLowerCase().includes(keyword)||sourceName(flow).toLowerCase().includes(keyword)))
+ return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&searchableQuestionText(flow).includes(keyword))
   .filter(flow=>statusFilters.value.every(filter=>!filter.value||stepState(flow,filter.ordinal).label===filter.value));
 });
 const adviceCoverageSummary=computed(()=>{
@@ -366,7 +369,7 @@ onBeforeUnmount(()=>adviceCoverageController?.abort());
     <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visibleWorkflows" :key="flow.id">
-      <td class="max-w-260px"><Column :gap="4"><Row :gap="4"><RouterLink :to="`/workflows/${flow.id}`" class="link-text font-medium line-clamp-2" :title="flow.title">{{ flow.title }}</RouterLink><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Row><RevisionAdvice :workflow-id="flow.id" :disabled="details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision==='accepted'||details[flow.id]?.steps.some(step=>[4,5,6].includes(step.ordinal)&&step.active)"/></Column></td>
+      <td class="max-w-260px"><Column :gap="4"><Row :gap="4"><button type="button" class="link-text cursor-pointer border-none bg-transparent p-0 text-left font-medium line-clamp-2" :title="`查看题目详情：${flow.title}`" @click="selectedQuestion=flow">{{ flow.title }}</button><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Row><RevisionAdvice :workflow-id="flow.id" :disabled="details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision==='accepted'||details[flow.id]?.steps.some(step=>[4,5,6].includes(step.ordinal)&&step.active)"/></Column></td>
       <td class="max-w-220px"><RouterLink v-if="flow.library_package_id" :to="`/materials/${flow.library_package_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><RouterLink v-else-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap"><v-btn variant="text" :disabled="!flow.material_count" @click="openMaterials(flow)">查看附件 · {{ flow.material_count??0 }} 份</v-btn></td>
       <td v-for="stage in stageColumns" :key="stage.ordinal" :class="stage.ordinal===6?'min-w-180px':'whitespace-nowrap'"><Column :gap="2"><Row wrap y="center" :gap="2"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn><v-btn v-if="stage.ordinal===6&&scoreModels(flow).length" size="small" variant="text" color="primary" @click="showScoreDetail(flow)">查看评分</v-btn><v-btn v-if="stage.ordinal===7&&details[flow.id]?.steps.find(step=>step.ordinal===7)?.result?.decision" size="small" variant="text" color="primary" @click="showDecisionDetail(flow)">详情</v-btn></Row><template v-if="stage.ordinal===6&&scoreModels(flow).length"><span v-for="(model,index) in scoreModels(flow)" :key="model.model_id??index" class="text-xs text-muted whitespace-nowrap">{{ modelScoreText(model) }}</span></template></Column></td>
@@ -398,6 +401,7 @@ onBeforeUnmount(()=>adviceCoverageController?.abort());
     </Column>
    </Column>
   </v-dialog>
+  <AcceptedQuestionDetail v-if="selectedQuestion" :workflow-id="selectedQuestion.id" :title="selectedQuestion.title" :acceptance-result="selectedQuestion.acceptance_result" @close="selectedQuestion=null" />
   <Row x="between" wrap y="center" :gap="8">
    <span class="text-xs text-muted">第 {{ page }} / {{ pageCount }} 页</span>
    <v-pagination v-model="page" :length="pageCount" :total-visible="5" :disabled="pageCount<=1" aria-label="题目记录分页" />

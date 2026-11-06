@@ -9,10 +9,12 @@ import {SYSTEM_STEP_PROMPTS} from '../../shared/step-prompts';
 import {runAgent} from '../agent/runner';
 import {validateAgentModelSettings} from '../agent/config';
 import {mkdir} from 'node:fs/promises';
+import {answerLocalToolDefinitions,createAnswerLocalToolExecutor} from './local-tools';
 import {resolve} from 'node:path';
 import type {CodexAnswerConfig,AnswerExecutionConfig} from './provider';
 export type ResolvedAnswerConfig=AnswerExecutionConfig;
 export const ANSWER_SYSTEM_PROMPT=SYSTEM_STEP_PROMPTS[5];
+const TOOL_SYSTEM_PROMPT='\n\n<available_tools>\n按题面真实需要使用本次实际提供的工具，不为增加调用数而调用。联网结论在正文标明可访问的来源链接。Shell用于计算、检索和校验，不等于操作用户设备。题面要求文件成果且提供 artifact_write 时，必须生成真实受管文件并用 artifact_render 读回校验；回复正文列出实际文件名、格式和关键内容，不得把计划、文件名或文本预览冒充已生成文件。artifact_render 对 DOCX/XLSX 只验证OOXML结构、摘要和规范化生成源，不代表像素级版式验收。\n</available_tools>';
 export function resolveAnswerConfig(raw:unknown,env:NodeJS.ProcessEnv=process.env):ResolvedAnswerConfig{
  if(raw===undefined||raw===null||typeof raw==='object'&&!Array.isArray(raw)&&Object.keys(raw).length===0)return readModelApiDefaults(env);
  const provider=raw&&typeof raw==='object'&&!Array.isArray(raw)?(raw as Record<string,unknown>).provider:undefined;
@@ -41,10 +43,13 @@ export function createAnswerClient(env:NodeJS.ProcessEnv=process.env,request:(in
    const started=Date.now();
    const agent=await runAgent<string>({task_type:'model_answer',directory:input.directory,prompt:JSON.stringify({messages}),model:config.model,reasoning_effort:config.reasoning_effort,output_format:'text',timeout_ms:input.timeout_ms,signal:input.signal,call_id:input.call_id,validate(value){return typeof value==='string'?value:String(value??'');}});
    const finished=Date.now();
-   return{text:agent.result,requested_model:config.model,model:agent.returned_model??null,request_id:null,completion_id:agent.session_id,usage:agent.usage&&typeof agent.usage==='object'?agent.usage as Record<string,unknown>:null,started_at:new Date(started).toISOString(),finished_at:new Date(finished).toISOString(),duration_ms:agent.duration_ms,execution_mode:'agent',reasoning_effort:config.reasoning_effort,agent_session_id:agent.session_id};
+   return{text:agent.result,requested_model:config.model,model:agent.returned_model??null,request_id:null,completion_id:agent.session_id,usage:agent.usage&&typeof agent.usage==='object'?agent.usage as Record<string,unknown>:null,reasoning_tokens:null,completed_tool_calls:0,started_at:new Date(started).toISOString(),finished_at:new Date(finished).toISOString(),duration_ms:agent.duration_ms,execution_mode:'agent',reasoning_effort:config.reasoning_effort,agent_session_id:agent.session_id};
   }
   const messages=answerMessages(input);
-  const {provider,...result}=await api.complete({config,messages,timeout_ms:input.timeout_ms,signal:input.signal,...(input.call_id?{call_id:input.call_id}:{}),...(input.observe_reasoning?{observe_reasoning:true}:{})});
+  if(config.server_tools?.length||config.local_tools?.length)messages[0]={...messages[0]!,content:messages[0]!.content+TOOL_SYSTEM_PROMPT};
+  if(config.local_tools?.length&&(!input.directory||!input.materials.length))throw new ModelApiError('configuration');
+  const local=config.local_tools?.length?{function_tools:answerLocalToolDefinitions(config.local_tools),execute_function_tool:createAnswerLocalToolExecutor({materials:input.materials,directory:input.directory!,enabled:config.local_tools})}:{};
+  const {provider,...result}=await api.complete({config,messages,timeout_ms:input.timeout_ms,signal:input.signal,...local,...(input.call_id?{call_id:input.call_id}:{}),...(input.observe_reasoning?{observe_reasoning:true}:{})});
   return{...result,execution_mode:'api'};
  }catch(error){throw error;}}};
 }

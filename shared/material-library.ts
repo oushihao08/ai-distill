@@ -11,6 +11,7 @@ export type LibraryExecutorKind = 'internal' | 'api' | 'agent';
 export type LibraryExecutionTarget = 'local' | 'server';
 export type LibraryRedactionMode = 'model' | 'declared_redacted';
 export type QuestionMaterialMode = 'redacted' | 'original';
+export type PdfExtractionProviderId = 'glm-ocr' | 'mineru-api' | 'mineru-cli';
 
 /** 永久使用账不依赖题目；页面在本期材料行内展示，历史事件按原时间保留。 */
 export interface MaterialUseRecord {
@@ -163,6 +164,8 @@ export interface CreateLibraryJobRequest {
   kind: LibraryJobKind;
   request_key: string;
   execution_target: LibraryExecutionTarget;
+  /** 仅提取任务可显式选择 PDF OCR；省略时沿用服务端环境默认。 */
+  pdf_provider?: PdfExtractionProviderId;
   extraction_job_id?: string;
   previous_job_id?: string;
   template_id?: string;

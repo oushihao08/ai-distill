@@ -108,7 +108,7 @@ test('a timed-out submitted MinerU task preserves the pending phase and is not r
   await logger.flush();
   const logRoot=join(root,'logs',new Date().toISOString().slice(0,10));
   const records=(await Promise.all((await readdir(logRoot)).map(file=>readFile(join(logRoot,file),'utf8')))).join('').trim().split('\n').map(line=>JSON.parse(line));
-  expect(records.find(row=>row.event==='extraction.api.failed')).toMatchObject({failure_phase:'poll_result',state:'pending',reason_code:'timeout'});
+  expect(records.find(row=>row.event==='extraction.api.failed')).toMatchObject({failure_phase:'poll_result',state:'pending',reason_code:'provider_timeout',page_count:1,attempt_count:600,timeout_ms:30*60*1000,provider_task_submitted:true,local_aborted:false,parent_aborted:false});
   expect(records.find(row=>row.event==='extraction.cli.fallback.skipped')).toMatchObject({reason_code:'provider_task_submitted_timeout',failure_phase:'poll_result',state:'pending'});
  }finally{await logger.close();await rm(root,{recursive:true,force:true});}
 });

@@ -238,7 +238,8 @@ test('无材料整理时独立提供批次参考，元数据不进入公开或�
   const result=await runAuthoring({...options(root,async(call:any)=>{
    expect(await Bun.file(join(call.directory,'input/batch-context.json')).json()).toEqual(batch);
    expect(await Bun.file(join(call.directory,'input/material-scope.json')).exists()).toBe(false);
-   expect(call.prompt).toContain('本期设计参考');
+   expect(call.prompt).toContain('本期设计记录');
+   expect(call.prompt).toContain('不作为本题选题、成果或表达方式的比较依据');
    const delivery=await Bun.file(join(call.directory,'input/delivery.json')).json();expect(delivery.schema.properties.material_scope_selection.properties).toHaveProperty('core_work');
    return{result:value,session_id:'fixture',usage:null,duration_ms:1};
   }),batch_context:batch});

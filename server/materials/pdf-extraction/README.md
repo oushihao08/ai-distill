@@ -8,7 +8,7 @@
 | 文件 | 说明 |
 | --- | --- |
 | `mineru-cli.ts` | MinerU CLI PDF 适配器：限制子进程环境、解析带页码 JSON 并支持超时和取消。 |
-| `mineru-api.ts` | MinerU v4 API 适配器与 API 优先／CLI 回退组合；管理上传、轮询、结构读取、超时和取消。 |
+| `mineru-api.ts` | MinerU v4 API 适配器与 PDF API 优先／CLI 回退组合；DOCX、PNG、JPG、JPEG原件直接走API，图片校验单页结构且不进入回退链。 |
 | `glm-ocr.ts` | 智谱 `layout_parsing` 独立适配器；严格核对页数，将全部带正文的布局块转换为当前 `DocumentBlock`，不经过 MinerU 回退链。 |
 | `types.ts` | PDF 提取供应商契约：统一页级文本、来源指纹和供应商标识。 |
 
@@ -25,6 +25,8 @@ types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtrac
 本模块的 `*.test.ts` 保留既有验证意图；存在测试文件不表示本次运行。执行与授权遵循 [项目规则](../../../AGENTS.md)。
 
 ## MinerU 转换与诊断
+
+PNG/JPG/JPEG原件检查点使用`mineru-open-api-first-structured-v4`，同时绑定原件SHA-256和具体图片格式，不得跨扩展名复用。图片原字节直传MinerU API，解析结果必须是单页，不转PDF或进入CLI/GLM-OCR回退链。
 
 解析按原块顺序保存正文、标题层级、列表、表格行列/合并关系、公式、图注和脚注；文字投影从同一结构生成。HTML 表格仅作为输入解析，不在前端执行。新解析不为图片无文字、占位符、空结构块、未知块类型及表格降级生成推断式提示；空白页仍保留为可复查信号。图像路径和图像载荷不进入下游文档结构。
 
@@ -46,7 +48,7 @@ API下载结果后暂存`result.zip`及`response.json`；成功返回会删除�
 
 结果ZIP通过`readMineruResultZip()`边读边累计字节，最多120MiB；超限、空响应或取消不进入解压，超限及取消会停止响应流。成功提取后的诊断目录删除失败仅记录安全错误及诊断ID，保留目录，不覆盖有效提取结果，也不因此触发CLI回退。此限制约束应用读取的累计字节，不保证网络栈预读或单个响应块的分配大小。
 
-API的上传/轮询/下载由30分钟AbortSignal与轮询截止控制；`runUnzip`子进程接入API同一取消/截止信号，读取时累计检查输出上限，超限回收本次子进程；没有额外放宽时限。CLI自身及本地外层均设置30分钟；PDF预检还依赖Poppler。文档中的时限不保证所有子进程总耗时严格封顶。
+API的上传、轮询和下载由30分钟AbortSignal与轮询截止控制；`runUnzip`子进程接入API同一取消/截止信号，读取时累计检查输出上限，超限回收本次子进程。材料库外层按外部文件数累计30分钟预算并封顶24小时；CLI仍保持自身15分钟上限。到期按技术失败终结并释放执行槽，不自动重试。PDF预检仍依赖Poppler。
 
 API在申请上传地址前建立私有诊断目录，`metadata.json`只保存来源摘要、页数、输入格式、云端batch ID、当前阶段及供应商状态，不保存令牌、上传/下载签名地址或正文；成功删除目录，失败保留以便只读查询原批次。安全日志持久化上传/轮询/下载阶段与供应商状态变化，同一排队状态不重复写日志；失败使用`reason_code`、`failure_phase`及`diagnostic_id`。结果下载失败还记录安全的`failure_stage`、HTTP状态或标准网络错误码，以区分请求、HTTP响应和响应流读取；不记录错误消息、响应正文或签名地址。`mineru-diagnostics.test.ts`用HTTP替身验证这些证据与敏感内容隔离。
 

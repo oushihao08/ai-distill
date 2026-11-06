@@ -42,7 +42,7 @@ watch(()=>props.modelValue,open=>{
  <v-dialog :model-value="modelValue" :persistent="busy" max-width="600" @update:model-value="value=>{if(!value)close()}">
   <Column class="surface-card p-20" :gap="16">
    <h2 class="section-title">从材料文件夹建立材料包</h2>
-   <p class="text-sm text-muted">把同一案件或主题的 PDF、DOCX 放在一个文件夹中，选择该文件夹导入。也支持 TXT、MD。</p>
+   <p class="text-sm text-muted">直接支持 PDF、DOCX、TXT、MD、PNG、JPG、JPEG；DOC、WPS、OFD 请先使用 <code>library files prepare</code> 预处理后导入。</p>
    <input ref="folderInput" type="file" webkitdirectory multiple class="hidden" :disabled="busy" @change="selectFolder"/>
    <v-btn variant="outlined" :disabled="busy" @click="folderInput?.click()">选择材料文件夹</v-btn>
    <template v-if="files.length"><strong>{{ folderName }} · {{ files.length }} 份材料</strong><Column class="max-h-240 overflow-y-auto" :gap="4"><p v-for="file in files" :key="file.webkitRelativePath||file.name" class="text-sm break-all">{{ file.webkitRelativePath||file.name }}</p></Column></template>

@@ -257,12 +257,12 @@ export async function createLibraryRevision(pool:Pool,storageRoot:string,id:stri
   const original_name=normalizeLibraryFilename(file.original_name),redaction_mode=file.redaction_mode??'model';
   if(!['model','declared_redacted'].includes(redaction_mode))throw new HTTPException(400,{message:'材料脱敏声明无效'});
   const extension=original_name.split('.').at(-1)?.toLowerCase();
-  if(!['pdf','docx','txt','md'].includes(extension??''))throw new HTTPException(400,{message:'只支持PDF、DOCX、TXT和MD材料'});
+  if(!['pdf','docx','txt','md','png','jpg','jpeg'].includes(extension??''))throw new HTTPException(400,{message:'只支持PDF、DOCX、TXT、MD、PNG、JPG和JPEG材料'});
   total+=file.bytes.byteLength;
   if(file.bytes.byteLength>MAX_FILE||total>MAX_FOLDER_BATCH)throw new HTTPException(413,{message:'材料包大小超过限制'});
   const bytes=new Uint8Array(file.bytes),fileBuffer=new ArrayBuffer(bytes.byteLength);new Uint8Array(fileBuffer).set(bytes);
   const sourceFile=new File([fileBuffer],original_name);validateFile(sourceFile,bytes);
-  const content_type=extension==='pdf'?'application/pdf':extension==='docx'?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':extension==='md'?'text/markdown':'text/plain';
+  const content_type=extension==='pdf'?'application/pdf':extension==='docx'?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':extension==='png'?'image/png':extension==='jpg'||extension==='jpeg'?'image/jpeg':extension==='md'?'text/markdown':'text/plain';
   return{original_name,bytes,position:index+1,redaction_mode,content_type,sha256:hash(bytes),size_bytes:bytes.byteLength};
  });
  if(new Set(prepared.map(file=>file.original_name)).size!==prepared.length)throw new HTTPException(400,{message:'同一材料集合中的文件名不能重复'});

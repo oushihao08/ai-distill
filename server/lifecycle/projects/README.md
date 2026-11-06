@@ -7,6 +7,7 @@
 | `work.ts` | Work的身份匹配、建题/出题/转换/渲染/作答/评分/交付投影注册，以及原准备/五件套入口 | `../steps.ts`、`../project-delivery.ts` |
 | `work-contract.ts` | Work schema、字段类型、同源投影与交付结构要求；原路径保留转出兼容 | Work注册与既有项目交付代码 |
 | `doubao.ts` | `豆包高经济价值`：保留归档前脚本路径；归档后同步对应期次飞书，检查最终回执 | `../project-delivery.ts`、`../publication.ts` |
+| `doubao-projection.ts` | 豆包题包与飞书共用的普通数字考点展示；新出题按本次冻结的步骤5工具策略收窄`answer_requirements` schema，只开放真实可用的文字、工具和文件能力 | `../steps.ts`、`../../publishing/feishu-verification.ts` |
 
 ## 代码边界
 
@@ -35,7 +36,7 @@ Work 必需交付失败时不写本地归档成功。豆包飞书要求先有本
 
 ## 注册规则与维护清单
 
-豆包在出题/作答/评分采用默认通用实现，不为对称性复制一套空实现。需要新增项目事件时，在项目独立文件中导出注册函数，由lifecycle/index装配到公共LifecycleRegistry；订阅填写project_key，不用每期复制代码。
+豆包沿用通用出题执行、作答和评分队列，通过 `registerDoubaoProjections()` 定制阅读稿考点编号及新题能力schema；能力schema是同步纯策略，只读取出题任务已冻结的步骤5策略，不访问数据库或发请求。需要新增项目事件时，在项目独立文件中导出注册函数，由lifecycle/index装配到公共LifecycleRegistry；订阅填写project_key，不用每期复制代码。
 
 修改时核对：匹配条件、输入白名单、返回值、执行顺序、失败时机及历史输入摘要。纯策略不能访问数据库或发网络请求，必须同步返回；外部动作须逐个await并复用原检查点/回执。不把专业准入偷偷放进出题或作答返回后的策略。类型上的work_legal_v1仍是历史数据协议，不是公共步骤中的项目分支。
 

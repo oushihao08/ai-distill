@@ -12,12 +12,11 @@ import {registerLocalJob,forgetLocalRegistrations,releaseRolledBackRegistrations
 import {hash,jobDirectory} from './execution-shared';
 import {validateLibraryPackageInput,buildLibraryManifest,type LibraryFileInput} from './service';
 import {readLibraryProcessingSettings} from './settings';
-import {chooseLibraryExecutor,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS} from './jobs';
+import {chooseLibraryExecutor,libraryExternalExtractionTimeoutMs} from './jobs';
 import {installLibraryBlob,lockLibraryBlobWrites,normalizeLibraryFilename,readLibraryBlob} from './storage';
 import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
-import {GLM_OCR_VERSION} from '../materials/pdf-extraction/glm-ocr';
 
-export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKey:string,value:unknown,uploads:LibraryFileInput[],target?:{package_id:string;lock_version:number}){
+export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKey:string,value:unknown,uploads:LibraryFileInput[],target?:{package_id:string;lock_version:number},requestedPdfProvider?:string){
  uuid(requestKey);if(target)uuid(target.package_id);
  const schema=(await pool.query("SELECT to_regprocedure('ai_distill.guard_atomic_library_job()') IS NOT NULL AS available")).rows[0];
  if(!schema?.available)throw new HTTPException(503,{message:'原子提取入库尚未部署：需先审核并应用054迁移及更新API/worker'});
@@ -30,12 +29,15 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
   if(bytes.length>MAX_FILE||total>MAX_FOLDER_BATCH)throw new HTTPException(413,{message:'材料包大小超过限制'});
   validateFile(new File([Buffer.from(bytes)],name),bytes);
   const redaction_mode=file.redaction_mode??'model';
-  if(!['pdf','docx','txt','md'].includes(format)||!['model','declared_redacted'].includes(redaction_mode)||(redaction_mode==='declared_redacted'&&format!=='docx'))throw new HTTPException(400,{message:'材料格式或脱敏声明无效'});
-  const content_type=format==='pdf'?'application/pdf':format==='docx'?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':format==='md'?'text/markdown':'text/plain';
+  if(!['pdf','docx','txt','md','png','jpg','jpeg'].includes(format)||!['model','declared_redacted'].includes(redaction_mode)||(redaction_mode==='declared_redacted'&&format!=='docx'))throw new HTTPException(400,{message:'材料格式或脱敏声明无效'});
+  const content_type=format==='pdf'?'application/pdf':format==='docx'?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':format==='png'?'image/png':format==='jpg'||format==='jpeg'?'image/jpeg':format==='md'?'text/markdown':'text/plain';
   return{file_id:randomUUID(),original_name:name,position:index+1,source_sha256:hash(bytes),size_bytes:bytes.length,redaction_mode,format,content_type,bytes};
  });
  if(new Set(files.map(f=>f.original_name)).size!==files.length)throw new HTTPException(400,{message:'材料文件名不能重复'});
- const manifest=buildLibraryManifest(files.map(f=>({...f,sha256:f.source_sha256}))),requestDigest=hash({input:target?null:input,target:target??null,manifest:manifest.sha256});
+ if(requestedPdfProvider!==undefined&&!['mineru-api','mineru-cli'].includes(requestedPdfProvider))throw new HTTPException(400,{message:'PDF OCR provider 仅支持MinerU'});
+ const pdfProvider=requestedPdfProvider??process.env.PDF_EXTRACTION_PROVIDER??'mineru-api';
+ if(!['mineru-api','mineru-cli'].includes(pdfProvider))throw new HTTPException(503,{message:'当前文本提取仅支持MinerU'});
+ const manifest=buildLibraryManifest(files.map(f=>({...f,sha256:f.source_sha256}))),requestDigest=hash({input:target?null:input,target:target??null,manifest:manifest.sha256,pdf_provider:pdfProvider});
  const id=randomUUID(),directory=join(jobDirectory(root,id),'import-source'),db=await pool.connect();let commitAttempted=false;
  try{
   await db.query('BEGIN');await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`atomic-library-import:${requestKey}`]);
@@ -44,16 +46,19 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
   if(target){const pkg=(await db.query('SELECT lock_version FROM ai_distill.library_packages WHERE id=$1 AND deleted_at IS NULL',[target.package_id])).rows[0];if(Number(pkg?.lock_version)!==target.lock_version)throw new HTTPException(409,{message:'材料包不存在或版本已变化'});}
   const settings=(await readLibraryProcessingSettings(db,root)).processing_settings as any;
   const executor=chooseLibraryExecutor('extract',files.map(f=>({format:f.format as any,redaction_mode:f.redaction_mode})),settings.redaction,'local');
-  const pdf_provider=process.env.PDF_EXTRACTION_PROVIDER||'mineru-api';
-  const requiresMineruDocx=files.some(file=>file.format==='docx');
-  const providerReady=(pdf_provider==='glm-ocr'?Boolean(process.env.ZHIPU_API_KEY?.trim()):['mineru-api','mineru-cli'].includes(pdf_provider)&&Boolean(process.env.MINERU_KEY?.trim()))&&(!requiresMineruDocx||Boolean(process.env.MINERU_KEY?.trim()));
+  const hasPdf=files.some(file=>file.format==='pdf'),requiresMineruNative=files.some(file=>['docx','png','jpg','jpeg'].includes(file.format));
+  const pdfProviderReady=!hasPdf||Boolean(process.env.MINERU_KEY?.trim());
+  const providerReady=pdfProviderReady&&(!requiresMineruNative||Boolean(process.env.MINERU_KEY?.trim()));
   if(executor==='api'&&!providerReady)throw new HTTPException(503,{message:'文本提取服务尚未正确配置'});
-  if(executor==='api')settings.execution={...settings.execution,task_timeout_ms:Math.max(Number(settings.execution?.task_timeout_ms)||1200000,LIBRARY_EXTERNAL_EXTRACTION_TIMEOUT_MS)};
+  if(executor==='api'){
+   const count=files.filter(file=>['pdf','docx','png','jpg','jpeg'].includes(file.format)).length;
+   settings.execution={...settings.execution,task_timeout_ms:Math.max(Number(settings.execution?.task_timeout_ms)||1200000,libraryExternalExtractionTimeoutMs(count))};
+  }
   await mkdir(directory,{recursive:true,mode:0o700});
   const staged=[];
   for(const file of files){const {bytes,...metadata}=file,path=join(directory,file.file_id);await writeFile(path,bytes,{flag:'wx',mode:0o600});staged.push({...metadata,storage_path:relative(root,path)});}
   const snapshot={version:1,request_digest:requestDigest,manifest_sha256:manifest.sha256,files:staged,atomic_import:{package_id:target?.package_id??randomUUID(),revision_id:randomUUID(),package_input:input,expected_version:target?.lock_version??null}};
-  const config={version:1,settings,pdf_provider,pdf_ocr_version:pdf_provider==='glm-ocr'?GLM_OCR_VERSION:MINERU_OCR_VERSION};
+  const config={version:1,settings,pdf_provider:pdfProvider,pdf_ocr_version:MINERU_OCR_VERSION,...(files.some(file=>['png','jpg','jpeg'].includes(file.format))?{image_ocr_version:MINERU_OCR_VERSION}:{})};
   await db.query(`INSERT INTO ai_distill.library_jobs(id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
    VALUES($1,'extract','queued',$2,$3,$4::jsonb,$5,$6::jsonb,$7,'local')`,[id,requestKey,hash(snapshot),JSON.stringify(snapshot),hash(config),JSON.stringify(config),executor]);
   await registerLocalJob(db,id,'library',executor,'library:extract');commitAttempted=true;

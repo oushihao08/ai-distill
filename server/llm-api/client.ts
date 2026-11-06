@@ -1,11 +1,11 @@
 /**
- * 职责：独立的纯文字大模型 API 客户端，统一消息调用、JSON 输出、完整响应、安全错误、超时和取消。
+ * 职责：独立的大模型 API 客户端，统一文字／JSON输出及显式OpenRouter服务端工具调用的完整响应、安全错误、超时和取消。
  * 关键入口：createModelApiClient().complete() / completeJson()；由作答、API评分及项目钩子复用，不访问工作目录或Agent。
  * 只调用冻结配置指定的供应商；不自动换模型或供应商，不在模块内重试收费请求。
  */
 import {withModelApiSlot} from './concurrency';
 import {resolveModelApiConfig,readModelApiKey} from './config';
-import {ModelApiError,type ModelApiErrorKind,type ModelApiConfig,type ModelApiRequest,type ModelApiResult,type ReasoningActivityEvidence} from './types';
+import {ModelApiError,type FunctionToolDefinition,type ModelApiErrorKind,type ModelApiConfig,type ModelApiMessage,type ModelApiRequest,type ModelApiResult,type ReasoningActivityEvidence,type ServerToolCallEvidence,type SourceCitation} from './types';
 import {classifyLogError,logEvent,withLogContext} from '../logging';
 function record(value:unknown):value is Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function callerAbortError(signal?:AbortSignal):ModelApiError{
@@ -61,6 +61,15 @@ function unsupportedMessageReason(message:Record<string,unknown>):string|undefin
  if((message.tool_calls!=null&&(!Array.isArray(message.tool_calls)||message.tool_calls.length>0))||message.function_call!=null)return 'unexpected_tool_call';
  if(message.refusal!=null)return 'refusal_response';
 }
+function reasoningTokens(usage:unknown):number|null{
+ if(!record(usage))return null;
+ for(const details of [usage.completion_tokens_details,usage.output_tokens_details]){
+  if(!record(details))continue;
+  const value=details.reasoning_tokens;
+  if(Number.isSafeInteger(value)&&Number(value)>=0)return Number(value);
+ }
+ return null;
+}
 function parseCompletion(data: unknown, response: Response, config: ModelApiConfig, started_at: string, started: number): ModelApiResult {
  const invalid = (reason_code:string) => new ModelApiError('invalid_response', false, response.status, null, requestId(response, data),reason_code);
  if (!record(data) || data.error !== undefined || !Array.isArray(data.choices)) throw invalid('invalid_response_shape');
@@ -73,12 +82,100 @@ function parseCompletion(data: unknown, response: Response, config: ModelApiConf
  if(message.role!=='assistant')throw invalid('invalid_message_role');
  if(typeof message.content!=='string'||!message.content.trim())throw invalid('empty_content');
  const unsupported=unsupportedMessageReason(message);if(unsupported)throw invalid(unsupported);
+ const usage=record(data.usage)?data.usage:null;
  return {
   provider:config.provider,text: message.content, requested_model: config.model, model: typeof data.model === 'string' ? data.model : null,
   request_id: requestId(response, data), completion_id: typeof data.id === 'string' ? data.id : null,
-  usage: record(data.usage) ? data.usage : null,
+  usage,reasoning_tokens:reasoningTokens(usage),completed_tool_calls:0,
   started_at, finished_at: new Date().toISOString(), duration_ms: Math.max(0, Math.round(performance.now() - started)),
  };
+}
+
+const responseToolTypes:Record<string,ServerToolCallEvidence['type']>={
+ web_search_call:'web_search','openrouter:web_search':'web_search',
+ web_fetch_call:'web_fetch','openrouter:web_fetch':'web_fetch',
+ shell_call:'shell','openrouter:shell':'shell',
+};
+function responseStatus(value:unknown):ServerToolCallEvidence['status']{
+ if(value==='incomplete')return'failed';
+ return value==='completed'||value==='failed'||value==='in_progress'?value:'unknown';
+}
+function safeUrl(value:unknown):string|null{
+ if(typeof value!=='string'||value.length>4096)return null;
+ try{const url=new URL(value);return url.protocol==='https:'||url.protocol==='http:'?url.href:null;}catch{return null;}
+}
+function parseResponseCompletion(data:unknown,response:Response,config:ModelApiConfig,started_at:string,started:number):ModelApiResult{
+ const invalid=(reason_code:string)=>new ModelApiError('invalid_response',false,response.status,null,requestId(response,data),reason_code);
+ if(!record(data)||data.error!=null||data.status!=='completed'||!Array.isArray(data.output))throw invalid(data&&record(data)&&data.status==='incomplete'?'incomplete_finish_reason':'invalid_response_shape');
+ const calls:ServerToolCallEvidence[]=[];const citations:SourceCitation[]=[];let assembled='';let refused=false;
+ for(const item of data.output){
+  if(!record(item)||typeof item.type!=='string')continue;
+  const toolType=responseToolTypes[item.type];
+  if(toolType){calls.push({id:typeof item.id==='string'&&item.id.length<=256?item.id:null,type:toolType,status:responseStatus(item.status)});continue;}
+  if(item.type!=='message'||item.role!=='assistant'||!Array.isArray(item.content))continue;
+  for(const part of item.content){
+   if(!record(part))continue;
+   if(part.type==='refusal'){refused=true;continue;}
+   if(part.type!=='output_text'||typeof part.text!=='string')continue;
+   assembled+=part.text;
+   if(!Array.isArray(part.annotations))continue;
+   for(const annotation of part.annotations){
+    if(!record(annotation)||annotation.type!=='url_citation')continue;
+    const url=safeUrl(annotation.url);if(!url)continue;
+    const title=typeof annotation.title==='string'&&annotation.title.length<=500?annotation.title:null;
+    const start_index=Number.isSafeInteger(annotation.start_index)&&Number(annotation.start_index)>=0?Number(annotation.start_index):null;
+    const end_index=Number.isSafeInteger(annotation.end_index)&&Number(annotation.end_index)>=0?Number(annotation.end_index):null;
+    citations.push({url,title,start_index,end_index});
+   }
+  }
+ }
+ const text=typeof data.output_text==='string'&&data.output_text.trim()?data.output_text:assembled;
+ if(refused)throw invalid('refusal_response');
+ if(!text.trim())throw invalid('empty_content');
+ const serverUsage:Record<string,number>={};
+ const rawServerUsage=record(data.usage)&&(record(data.usage.server_tool_use_details)?data.usage.server_tool_use_details:record(data.usage.server_tool_use)?data.usage.server_tool_use:null);
+ if(record(rawServerUsage))for(const [key,value] of Object.entries(rawServerUsage))if(/^[a-z][a-z0-9_]{0,79}$/.test(key)&&Number.isSafeInteger(value)&&Number(value)>=0)serverUsage[key]=Number(value);
+ const completed=calls.filter(call=>call.status==='completed').length,failed=calls.filter(call=>call.status==='failed').length;
+ const usage=record(data.usage)?data.usage:null;
+ return{
+  provider:config.provider,text,requested_model:config.model,model:typeof data.model==='string'?data.model:null,
+  request_id:requestId(response,data),completion_id:typeof data.id==='string'?data.id:null,usage,
+  reasoning_tokens:reasoningTokens(usage),completed_tool_calls:completed,
+  started_at,finished_at:new Date().toISOString(),duration_ms:Math.max(0,Math.round(performance.now()-started)),
+  tool_trace:{api:'responses',calls,usage:serverUsage},
+  execution_steps:{method:'completed_tool_calls',observed:calls.length,completed,failed,effective_steps:calls.length?completed:null},
+  ...(citations.length?{source_citations:[...new Map(citations.map(item=>[JSON.stringify(item),item])).values()]}:{}),
+ };
+}
+
+function responseTools(config:ModelApiConfig){
+ return config.server_tools?.map(tool=>tool==='shell'?{type:'openrouter:shell',parameters:{engine:'openrouter'}}:{type:`openrouter:${tool}`})??[];
+}
+function functionCalls(data:unknown){
+ if(!record(data)||!Array.isArray(data.output))return[];
+ return data.output.filter((item):item is Record<string,unknown>=>record(item)&&item.type==='function_call'&&typeof item.call_id==='string'&&typeof item.name==='string'&&typeof item.arguments==='string');
+}
+function safeFunctionTools(value:unknown):FunctionToolDefinition[]{
+ if(value===undefined)return[];if(!Array.isArray(value)||value.length>20)throw new ModelApiError('configuration');
+ return value.map(tool=>{onlyFields(tool,['type','name','description','strict','parameters']);if(tool.type!=='function'||typeof tool.name!=='string'||!/^[a-z][a-z0-9_]{0,63}$/.test(tool.name)||typeof tool.description!=='string'||!tool.description.trim()||tool.strict!==true||!record(tool.parameters))throw new ModelApiError('configuration');return tool as unknown as FunctionToolDefinition;});
+}
+function addUsage(target:Record<string,unknown>,value:unknown){if(!record(value))return;for(const key of ['input_tokens','output_tokens','total_tokens'])if(Number.isSafeInteger(value[key])&&Number(value[key])>=0)target[key]=Number(target[key]??0)+Number(value[key]);}
+async function completeResponses(options:{request:(input:string,init?:RequestInit)=>Promise<Response>;config:ModelApiConfig;messages:ModelApiMessage[];functionTools:FunctionToolDefinition[];execute?:ModelApiRequest['execute_function_tool'];signal:AbortSignal;key:string;started_at:string;started:number}){
+ const {request,config,messages,functionTools,execute,signal,key,started_at,started}=options;
+ if(functionTools.length&&!execute)throw new ModelApiError('configuration');
+ let input:unknown[]=messages.filter(message=>message.role!=='system'),round=0;const max=config.max_tool_calls??20,calls:ServerToolCallEvidence[]=[],usage:Record<string,unknown>={};let reasoning=0,reasoningObserved=false,lastResponse:Response|null=null,lastData:unknown;
+ while(true){
+  if(signal.aborted)throw new ModelApiError('cancelled',false,null,null,null,'caller_cancelled');
+  const response=await request(config.base_url+'/responses',{method:'POST',redirect:'error',signal,timeout:false,headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:config.model,stream:false,instructions:messages.filter(message=>message.role==='system').map(message=>message.content).join('\n\n')||undefined,input,tools:[...responseTools(config),...functionTools],tool_choice:'auto',...(config.max_tool_calls!==undefined?{max_tool_calls:config.max_tool_calls}:{}),...(config.enable_thinking!==undefined?{reasoning:{enabled:config.enable_thinking}}:{}),...(config.provider_options?{provider:{...config.provider_options,require_parameters:true}}:{}),...(config.max_tokens!==undefined?{max_output_tokens:config.max_tokens}:{})})} as RequestInit&{timeout:false});
+  lastResponse=response;let data:unknown;try{data=await response.json();}catch{throw new ModelApiError('invalid_response',false,response.status,null,requestId(response,null),'invalid_json');}lastData=data;if(!response.ok)throw providerError(response,data,config);addUsage(usage,record(data)?data.usage:null);const rt=reasoningTokens(record(data)?data.usage:null);if(rt!==null){reasoning+=rt;reasoningObserved=true;}
+  if(record(data)&&Array.isArray(data.output))for(const item of data.output){if(!record(item)||typeof item.type!=='string')continue;const serverType=responseToolTypes[item.type];if(serverType)calls.push({id:typeof item.id==='string'?item.id:null,type:serverType,status:responseStatus(item.status)});}
+  const pending=functionCalls(data);if(!pending.length)break;
+  if(round+pending.length>max)throw new ModelApiError('invalid_response',false,response.status,null,requestId(response,data),'tool_call_limit_exceeded');round+=pending.length;
+  const outputs=[];for(const call of pending){let args:unknown;try{args=JSON.parse(call.arguments as string);}catch{args=null;}let output:string,status:'completed'|'failed'='completed';try{output=await execute!(call.name as string,args);}catch(error){status='failed';output=JSON.stringify({error:error instanceof Error&&/^[a-z_]+$/.test(error.message)?error.message:'tool_execution_failed'});}calls.push({id:call.call_id as string,type:call.name as ServerToolCallEvidence['type'],status});outputs.push({type:'function_call_output',call_id:call.call_id,output});}
+  input=[...input,...(record(data)&&Array.isArray(data.output)?data.output:[]),...outputs];
+ }
+ if(!lastResponse)throw new ModelApiError('invalid_response');const parsed=parseResponseCompletion(lastData,lastResponse,config,started_at,started),completed=calls.filter(call=>call.status==='completed').length,failed=calls.filter(call=>call.status==='failed').length;
+ return{...parsed,usage:Object.keys(usage).length?usage:parsed.usage,reasoning_tokens:reasoningObserved?reasoning:parsed.reasoning_tokens,completed_tool_calls:completed,tool_trace:{api:'responses' as const,calls,usage:parsed.tool_trace?.usage??{}},execution_steps:{method:'completed_tool_calls' as const,observed:calls.length,completed,failed,effective_steps:calls.length?completed:null}};
 }
 
 function hasOpenRouterReasoningText(value:unknown):boolean{
@@ -162,12 +259,12 @@ async function parseStreamingCompletion(response:Response,config:ModelApiConfig,
  }
  if(!finished)throw Object.assign(invalid('incomplete_finish_reason'),{finish_reason:'missing'});
  if(!text.trim())throw invalid('empty_content');
- return{provider:config.provider,text,requested_model:config.model,model,request_id:requestId(response,{id:completion_id}),completion_id,usage,started_at,finished_at:new Date().toISOString(),duration_ms:Math.max(0,Math.round(performance.now()-started)),...(activity()?{generation_activity:activity()!}:{})};
+ return{provider:config.provider,text,requested_model:config.model,model,request_id:requestId(response,{id:completion_id}),completion_id,usage,reasoning_tokens:reasoningTokens(usage),completed_tool_calls:0,started_at,finished_at:new Date().toISOString(),duration_ms:Math.max(0,Math.round(performance.now()-started)),...(activity()?{generation_activity:activity()!}:{})};
 }
 
 export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, request: (input: string, init?: RequestInit) => Promise<Response> = fetch) {
  const client={ async complete(input: ModelApiRequest): Promise<ModelApiResult> {
-  onlyFields(input,['config','messages','timeout_ms','queue_timeout_ms','signal','response_format','call_id','observe_reasoning']);
+  onlyFields(input,['config','messages','timeout_ms','queue_timeout_ms','signal','response_format','call_id','observe_reasoning','function_tools','execute_function_tool']);
   if(input.observe_reasoning!==undefined&&typeof input.observe_reasoning!=='boolean')throw new ModelApiError('configuration');
   if(!Array.isArray(input.messages)||!input.messages.length)throw new ModelApiError('configuration');
   const messages=input.messages.map(message=>{
@@ -175,6 +272,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
    if(typeof message.role!=='string'||!['system','user','assistant'].includes(message.role)||typeof message.content!=='string'||!message.content.trim())throw new ModelApiError('configuration');
    return{role:message.role,content:message.content};
   });
+  const functionTools=safeFunctionTools(input.function_tools);
   if(input.response_format!==undefined){
    onlyFields(input.response_format,['type','json_schema']);
    if(input.response_format.type==='json_schema'){
@@ -192,7 +290,8 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   const key=readModelApiKey(config,env);
   // OpenRouter与SiliconFlow长答案使用已有SSE解析器，避免长时间等待单个JSON响应；
   // 传输方式不改变作答输入、模型路由或完整性门槛。
-  const stream=router||input.observe_reasoning===true||config.provider==='siliconflow';
+  const useResponses=router&&Boolean(config.server_tools?.length||functionTools.length);
+  const stream=!useResponses&&(router||input.observe_reasoning===true||config.provider==='siliconflow');
   const started_at = new Date().toISOString(); const started = performance.now();
   const controller = new AbortController();
   let abortKind: 'timeout' | 'cancelled' | undefined;
@@ -208,12 +307,24 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
   const callContext={component:'llm_api',provider:config.provider,model:config.model,call_id:input.call_id??crypto.randomUUID()};
   try {
    withLogContext(callContext,()=>logEvent('model_api.call.started',{level:'info',timeout_ms:timeout}));
-   const response = await request(config.base_url + '/chat/completions', {
+   if(useResponses&&functionTools.length){
+    const result=await completeResponses({request,config,messages,functionTools,execute:input.execute_function_tool,signal:controller.signal,key,started_at,started});
+    withLogContext(callContext,()=>logEvent('model_api.call.completed',{level:'info',elapsed_ms:result.duration_ms,token_usage:result.usage,output_bytes:Buffer.byteLength(result.text),completed_tool_calls:result.completed_tool_calls}));return result;
+   }
+   const response = await request(config.base_url + (useResponses?'/responses':'/chat/completions'), {
     method: 'POST', redirect: 'error', signal: controller.signal,
     // Bun默认空闲超时独立于AbortSignal；统一由上面的业务总时限和取消信号控制。
     timeout: false,
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body: JSON.stringify(useResponses?{
+     model:config.model,stream:false,
+     instructions:messages.filter(message=>message.role==='system').map(message=>message.content).join('\n\n')||undefined,
+     input:messages.filter(message=>message.role!=='system'),tools:responseTools(config),tool_choice:'auto',
+     ...(config.max_tool_calls!==undefined?{max_tool_calls:config.max_tool_calls}:{}),
+     ...(config.enable_thinking!==undefined?{reasoning:{enabled:config.enable_thinking}}:{}),
+     ...(config.provider_options?{provider:{...config.provider_options,require_parameters:true}}:{}),
+     ...(config.max_tokens!==undefined?{max_output_tokens:config.max_tokens}:{}),
+    }:{
      model: config.model, stream,
      ...(stream&&(router||config.provider==='siliconflow')?{stream_options:{include_usage:true}}:{}),
      ...(config.enable_thinking !== undefined ? (router ? {reasoning:{enabled:config.enable_thinking}} : {enable_thinking:config.enable_thinking}) : {}),
@@ -225,7 +336,8 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
    } as RequestInit & {timeout:false});
    receivedResponse=response;
    if (abortKind) throw abortError();
-   if(stream&&response.ok){
+   const responseIsJson=response.headers.get('content-type')?.toLowerCase().includes('application/json')===true;
+   if(stream&&!responseIsJson&&response.ok){
     try{
      const result=await parseStreamingCompletion(response,config,started_at,started,controller.signal);
      generationActivity=result.generation_activity;
@@ -243,7 +355,7 @@ export function createModelApiClient(env: NodeJS.ProcessEnv = process.env, reque
    }
    if (abortKind) throw abortError();
    if (!response.ok) throw providerError(response, data,config);
-   const result=parseCompletion(data,response,config,started_at,started);
+   const result=useResponses?parseResponseCompletion(data,response,config,started_at,started):parseCompletion(data,response,config,started_at,started);
    withLogContext(callContext,()=>logEvent('model_api.call.completed',{level:'info',elapsed_ms:result.duration_ms,token_usage:result.usage,output_bytes:Buffer.byteLength(result.text)}));
    return result;
   } catch (error) {

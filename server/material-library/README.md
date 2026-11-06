@@ -4,7 +4,9 @@
 
 # 独立材料库
 
-提取发布（含MinerU桌面结果导入）通过`storeExtractedDocument()`显式启用共用英文整段过滤：完整纯英文句及至少八词、含小写字母的纯英文OCR截断段清空；全大写标题、数字、网址、邮箱、编号、单位及中英混排保留，不按任意无中文字段删除；表格逐单元格、列表逐项处理，ID、页序及合并关系保留。删除沿用原始OCR副本和精确坐标审计；结构与正文投影同步发布。历史结果不回写，已有成功任务不自动重跑。Agent计划编译的默认扫描噪声规则不因此扩大。
+提取发布（含MinerU桌面结果和GLM-OCR结构结果导入）通过`storeExtractedDocument()`显式启用共用英文整段过滤：完整纯英文句及至少八词、含小写字母的纯英文OCR截断段清空；全大写标题、数字、网址、邮箱、编号、单位及中英混排保留，不按任意无中文字段删除；表格逐单元格、列表逐项处理，ID、页序及合并关系保留。删除沿用原始OCR副本和精确坐标审计；结构与正文投影同步发布。历史结果不回写，已有成功任务不自动重跑。Agent计划编译的默认扫描噪声规则不因此扩大。
+
+`POST /api/material-library/revisions/:id/glm-extractions`接收`request_key`及同版完整`files:[{file_id,source_sha256,pages}]`；DOCX文件另须提供`rendered_sha256`。PDF直接核对原件页数；DOCX复用只读PDF预览转换，核对原件摘要、渲染副本摘要和页数，保留DOCX原件身份。接口还校验页级结构与正文投影，在单事务写入成功提取任务和材料正文；任务来源标记为`glm-ocr`、`model_invoked:true`，不冒记为MinerU结果。重复请求键只复用完全相同的已保存结果。该入口只导入已取得的结构化结果，本身不发起模型调用；运行服务需加载新路由后才能使用。
 
 本模块管理不属于任何项目的材料包和不可变文件集合。同一包可加载到多个项目（包括既有 legacy 项目）。期次出题设置默认选择成功脱敏版本，也可选择已完成 MinerU 提取的原文版本；题目级 `question_library_sources` 冻结来源模式、版本与正文/索引，后续出题、作答、评分和交付均按该快照读取。原文模式只发送已提取文本与结构，不发送原始二进制。未绑定共享库快照的旧题继续走原步骤 1/9，旧目录建题流程仍只支持脱敏；共享材料快照题可用于新旧项目，项目 `material_backend` 不因此改变。入库/提取/脱敏不创建旧材料包工作流，也不向 legacy 材料表写库级原件。
 
@@ -39,6 +41,7 @@ HTTP入口为`GET /api/material-library/redactions/:id/name-revision-source?proj
 | `worker-once.ts` | 验收入口，只消费HTTP已创建的指定本机Agent材料job UUID，复用共享Agent槽位与正式事务，不领取其他任务 |
 | `prepared-import.ts` | 导入Codex已审阅的原文编辑/分册计划：校验完整提取来源、精确编辑、范围覆盖与请求幂等，在同一事务保存新任务及脱敏结果；不OCR、不调用模型、不改旧结果 |
 | `mineru-import.ts` | 导入MinerU桌面端content_list：核对完整版本原件摘要与PDF页数，复用结构转换，事务保存提取文档与来源摘要；不重跑OCR、不脱敏 |
+| `glm-import.ts` | 导入已完成的GLM-OCR页级结构：核对同版完整PDF/DOCX集合、原件及DOCX渲染副本摘要、页数和结构投影，事务保存并保留真实provider来源；不再次调用模型 |
 | `preview.ts` | 按文件/成功提取任务/成功脱敏结果身份按需读取正文，校验摘要；单文件脱敏通过索引定位，拒绝任意blob读取 |
 | `original-preview.ts` | PDF/TXT等原件直接查看，DOCX由隔离LibreOffice生成只读PDF副本；串行转换、60秒时限、按源摘要和渲染版本缓存 |
 | `projects.ts`、`questions.ts` | 项目加载与选版/移除；按期次所选模式从脱敏结果或 MinerU 提取版本建立完整题目私有快照 |
@@ -61,9 +64,11 @@ Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symli
 
 包名称/说明/标签与处理设置分开。历史`library_packages.processing_settings`保留兼容初始快照，不再作为新任务执行配置，也不从包详情返回；包创建/更新接口拒绝单包处理配置写入。未保存共用配置时，从数据库系统提示词与当前系统模型/提取默认组合完整配置。保存后的共用设置只影响之后派发的新任务，历史任务与题目快照不回写。
 
-新默认`extraction.provider_config`为空兼容对象；既有旧Vision配置可读，不自动删除已保存设置。实际PDF供应商、转换版本由任务`pdf_provider`与`pdf_ocr_version`冻结；显式`glm-ocr`和MinerU请求链互不回退。调整未来有效提取配置时须同时更新检查点身份，不能跨供应商或转换版本复用续作检查点。
+新默认`extraction.provider_config`为空兼容对象；既有旧Vision配置可读，不自动删除已保存设置。实际PDF供应商、转换版本由任务`pdf_provider`与`pdf_ocr_version`冻结；新导入或单次extract只允许`mineru-api`或`mineru-cli`，省略时使用MinerU API默认。环境或请求指定其他provider时直接拒绝。调整未来有效提取配置时须同时更新检查点身份，不能跨供应商或转换版本复用续作检查点。
 
-PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API的30分钟时限后还有一次最多30分钟的CLI回退及处理余量；纯文本提取和脱敏任务仍按共用设置执行，Agent整包脱敏沿用冻结执行预算，不再另设10分钟上限。该预算是整包总时限，多文件处理仍可能因供应商慢而失败。
+PNG/JPG/JPEG始终将原图直传`mineru-api`并解析为单页文档，不转PDF、不调用或回退GLM-OCR/CLI。图片检查点绑定原件SHA-256、PNG/JPG/JPEG格式、provider及MinerU版本，不能跨文件或格式复用。
+
+PDF/DOCX/图片外部提取按需逐文件执行，每份冻结30分钟预算，整包预算按外部文件数累计并封顶24小时；到期以技术失败终结并释放本地执行槽，不自动重试。上传成功后若供应商持续返回等待状态，到期也不会继续刷新任务寿命或改走CLI重复提交。纯文本提取和脱敏任务仍按共用设置执行，Agent整包脱敏沿用冻结执行预算。
 
 ## 期次两种处理模式
 
@@ -87,7 +92,7 @@ PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API
 
 `POST /revisions/:id/prepared-redactions` 接收 `{request_key,plan}`，由 CLI `library documents import` 调用。协议与坐标见 `cli/README.md`；原文编辑/代称计划私有保存在任务配置，不由普通任务详情返回。安全分册正文和范围进入不可变脱敏索引 `prepared_documents`，随题目来源冻结。带 `codex_plan` 模板摘要的计划按MinerU已提取结构保存分册文书；旧版不带模板的计划继续按提取页文本兼容导入，标记 `structure_mode=extracted-page-text`，不宣称保留表格合并结构。`usable_for_question` 表示机械校验可处理，不能证明主体归并、脱敏或OCR内容人工验收通过。
 
-材料库从本机文件夹导入PDF/DOCX/TXT/MD，手动执行入库、识别和脱敏。页面默认以文件为中心：原文件、识别原文、单文件脱敏文本、对应版本对照；历史任务放在“处理记录”，按题目汇总使用状态，展开才显示归档/撤回时间线。更新文件创建新集合，不修改旧文件。
+材料库从本机文件夹直接导入PDF/DOCX/TXT/MD/PNG/JPG/JPEG；DOC/WPS/OFD须先用CLI `library files prepare`预处理。页面默认以文件为中心：原文件、识别原文、单文件脱敏文本、对应版本对照；历史任务放在“处理记录”，按题目汇总使用状态，展开才显示归档/撤回时间线。更新文件创建新集合，不修改旧文件。
 
 - `GET/PUT /processing-settings`：读取/保存全库共用处理配置；PUT必传If-Match版本，首次保存版本为0，冲突409。
 - `GET /processing-defaults`：当前系统默认，仅显式应用到共用设置草稿。
@@ -147,7 +152,7 @@ PDF/DOCX提取任务的冻结执行预算至少为65分钟，使PDF在MinerU API
 | 操作/来源 | 实际执行入口 | 结果及后续 |
 | --- | --- | --- |
 | 上传文件集合 → 入库 | `createLibraryRevision()` → `intake`内部任务 | 校验原件和清单；不自动提取或脱敏 |
-| PDF/DOCX提取 | `extract`任务的API执行通道 → 冻结的PDF provider；DOCX仍为MinerU | 冻结提取文档；不冒记为已脱敏 |
+| PDF/DOCX/图片提取 | `extract`任务的API执行通道 → PDF使用冻结provider，DOCX与PNG/JPG/JPEG使用MinerU API | 冻结提取文档；图片为单页结构；不冒记为已脱敏 |
 | TXT/MD提取 | `extract`内部任务 → 本地解析 | 同一提取文档契约，不调用OCR模型 |
 | 整包化名模板（默认） | Agent消费池 → 语义计划编译 → 既有结果事务 | 人名保留姓氏、名字同音或近音换字；单位字号谐音替换，类型/行业/组织形式保留；法院保留、精确编辑与结构分册；按冻结执行预算，私有进度保留 |
 | 原文建题 | 成功提取版本 → `createLibraryQuestion()` | 冻结`original`来源；可不脱敏 |
@@ -240,6 +245,8 @@ Agent自检、宿主发布及显式复核共用同一编译器。成功表示原
 本机明确新派发可在同一事务替代他机尚未开始的同范围待办；运行、结果未知和续作仍受保护，新派发失败则旧意图变更回滚。适用范围、共享状态兼容与验证边界见[执行队列的跨机准入](../execution-queue/README.md#他机未开始待办与本机明确派发)。
 
 ## 材料整理与使用范围
+
+候选工作分析复用组合的 `core_work`、`deliverables`、`notes`：分别记录待处理工作、成果接收人与用途、实际依赖及适用核验。材料整理页在“候选工作分析与任务组合”直接展示工作、成果用途及说明；旧记录无说明时显示缺失提示。建题继续随整理结果冻结并传入 `material-scope.json`，不增加数据库字段、模型调用或跨题读取。旧整理结果不自动补分析；新提示词须由运行进程加载后用于新整理调用，已保存结果及完整检查点仍按既有复用规则处理。
 
 `preparation.ts`复用`library_jobs(kind=prepare)`及本机Agent槽位，读取成功提取或脱敏结构，单次Agent读取固定目录与正文，一次返回逐份描述、可见性、总摘要、组合及整包出题支持度；规则直接内联，不再读取scene-rules.md，不自动补调，保存材料包总摘要、每份材料摘要/类型/标签，以及多组由材料支持的方向、主体/立场、相容场景/时点、核心工作和多项交付。整理不作默认选择、不裁剪材料，也不增加步骤编号或前置审批；缺失、失败或摘要不完整时，原建题流程继续。prepare不参与提取/脱敏的revision互斥；仍共享现有Agent容量，默认不自动派发。
 

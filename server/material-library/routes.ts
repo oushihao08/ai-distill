@@ -20,6 +20,7 @@ import {resolveLibraryTemplate} from './templates';
 import {importPreparedLibraryMaterials} from './prepared-import';
 import {revalidateAgentLibraryRedaction} from './redaction-review';
 import {importMineruExtraction} from './mineru-import';
+import {importGlmExtraction} from './glm-import';
 import {readNameRevisionSource,previewNameRevision,applyNameRevision} from './name-revisions';
 import {reviewNameMappings} from './name-mapping-review';
 import type {AgentResult,AgentTask} from '../agent';
@@ -29,6 +30,11 @@ function versionHeader(value:string|undefined){
  const parsed=Number(value.replace(/^W\//,'').replace(/^"|"$/g,''));
  if(!Number.isSafeInteger(parsed)||parsed<1)throw new HTTPException(400,{message:'If-Match 材料包版本无效'});
  return parsed;
+}
+function pdfProvider(value:FormDataEntryValue|null){
+ if(value===null)return undefined;
+ if(typeof value!=='string'||!['mineru-api','mineru-cli'].includes(value))throw new HTTPException(400,{message:'PDF OCR provider 仅支持MinerU'});
+ return value;
 }
 async function jsonBody(c:any){try{return await c.req.json();}catch{throw new HTTPException(400,{message:'请求必须是有效JSON'});}}
 
@@ -90,14 +96,14 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
  });
  app.post(`${prefix}/imports`,async c=>{
   let form:FormData;try{form=await c.req.formData();}catch{throw new HTTPException(400,{message:'导入须为multipart/form-data'});}
-  const key=form.get('request_key'),name=form.get('name');if(typeof key!=='string'||typeof name!=='string')throw new HTTPException(400,{message:'缺少导入名称或request_key'});
+  const key=form.get('request_key'),name=form.get('name'),provider=pdfProvider(form.get('pdf_provider'));if(typeof key!=='string'||typeof name!=='string')throw new HTTPException(400,{message:'缺少导入名称或request_key'});
   const uploads=form.getAll('files').filter((file):file is File=>file instanceof File);
   if(!uploads.length||uploads.length>100)throw new HTTPException(400,{message:'请选择1至100份材料'});
   let modes:unknown=[];const modeField=form.get('redaction_modes');
   if(typeof modeField==='string'){try{modes=JSON.parse(modeField);}catch{throw new HTTPException(400,{message:'脱敏声明无效'});}}
   if(!Array.isArray(modes)||(modes.length&&modes.length!==uploads.length)||modes.some(mode=>!['model','declared_redacted'].includes(mode)))throw new HTTPException(400,{message:'脱敏声明无效'});
   const files=await Promise.all(uploads.map(async (file,index)=>({original_name:file.name,bytes:new Uint8Array(await file.arrayBuffer()),redaction_mode:(modes[index]??'model') as 'model'|'declared_redacted'})));
-  const result=await enqueueAtomicLibraryImport(pool,storageRoot,key,{name,tags:[]},files);return c.json(result,result.reused?200:202);
+  const result=await enqueueAtomicLibraryImport(pool,storageRoot,key,{name,tags:[]},files,undefined,provider);return c.json(result,result.reused?200:202);
  });
  app.get(`${prefix}/packages/:id`,async c=>c.json(await readLibraryPackage(pool,uuid(c.req.param('id')))));
  app.get(`${prefix}/packages/:id/usage`,async c=>c.json(await readLibraryPackageUsage(pool,uuid(c.req.param('id')))));
@@ -119,11 +125,12 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
  app.get(`${prefix}/jobs/:id`,async c=>c.json(await readLibraryJob(pool,uuid(c.req.param('id')))));
  app.post(`${prefix}/revisions/:id/prepared-redactions`,async c=>c.json(await importPreparedLibraryMaterials(pool,uuid(c.req.param('id')),await jsonBody(c),storageRoot),201));
  app.post(`${prefix}/revisions/:id/mineru-extractions`,async c=>{const result=await importMineruExtraction(pool,storageRoot,uuid(c.req.param('id')),await jsonBody(c));return c.json(result,result.reused?200:201);});
+ app.post(`${prefix}/revisions/:id/glm-extractions`,async c=>{const result=await importGlmExtraction(pool,storageRoot,uuid(c.req.param('id')),await jsonBody(c));return c.json(result,result.reused?200:201);});
  app.post(`${prefix}/jobs/:id/cancel`,async c=>c.json(await cancelLibraryJob(pool,uuid(c.req.param('id')))));
  app.post(`${prefix}/packages/:id/revisions`,async c=>{
   const packageId=uuid(c.req.param('id')),ifMatch=versionHeader(c.req.header('If-Match'));
   let form:FormData;try{form=await c.req.formData();}catch{throw new HTTPException(400,{message:'文件集合必须使用 multipart/form-data'});}
-  const requestKey=form.get('request_key');
+  const requestKey=form.get('request_key'),provider=pdfProvider(form.get('pdf_provider'));
   if(typeof requestKey!=='string')throw new HTTPException(400,{message:'缺少文件集合幂等 request_key'});
   uuid(requestKey);
   const modeField=form.get('redaction_modes');let modes:unknown=[];
@@ -134,7 +141,7 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
   if(modes.length&&modes.length!==uploads.length)throw new HTTPException(400,{message:'脱敏声明数量须与文件数一致'});
   const files:LibraryFileInput[]=await Promise.all(uploads.map(async(file,index)=>({original_name:file.name,bytes:new Uint8Array(await file.arrayBuffer()),redaction_mode:(modes[index]??'model') as LibraryFileInput['redaction_mode']})));
   const pkg=await readLibraryPackage(pool,packageId);
-  const result=await enqueueAtomicLibraryImport(pool,storageRoot,requestKey,{name:pkg.name,description:pkg.description,tags:pkg.tags},files,{package_id:packageId,lock_version:ifMatch});
+  const result=await enqueueAtomicLibraryImport(pool,storageRoot,requestKey,{name:pkg.name,description:pkg.description,tags:pkg.tags},files,{package_id:packageId,lock_version:ifMatch},provider);
   return c.json(result,result.reused?200:202);
  });
 }

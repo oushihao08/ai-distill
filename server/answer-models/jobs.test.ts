@@ -72,17 +72,19 @@ test('API 与 Codex Agent 作答 worker 按冻结 provider 分流领取和中断
 });
 test('enqueue pins safe input and configuration, duplicate does not create attempt',async()=>fixture(async root=>{const a=fake();await enqueueAnswer(a.pool,'workflow',root);const inserted=a.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;expect(JSON.parse(inserted.values[2])).toMatchObject({question_attempt_id:'author',question_version:'v1',materials:[{name:'附件1',text:'脱敏'}]});expect(inserted.values.join(' ')).not.toContain('OPEN_ROUTER_KEY');const b=fake({reuse:true});expect(await enqueueAnswer(b.pool,'workflow',root)).toEqual({id:'existing',reused:true});expect(b.calls.some(c=>c.sql.startsWith('INSERT'))).toBe(false);}));
 test('enqueue uses current database text by attachment identity despite an old content digest',async()=>fixture(async root=>{const {pool,calls}=fake({content:'更新的数据库正文'});await enqueueAnswer(pool,'workflow',root);const inserted=calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'));expect(JSON.parse(inserted!.values[2]).materials[0].text).toBe('更新的数据库正文');expect(calls.some(c=>c.sql==='COMMIT')).toBe(true);}));
-test('enqueue freezes timeout settings but disables unverified automatic score skipping',async()=>fixture(async root=>{
+test('enqueue freezes timeout settings and qualified-timeout policy',async()=>fixture(async root=>{
  const policy={request_timeout_ms:5_400_000,reasoning_threshold_ms:2_700_000,skip_scoring_on_qualified_timeout:true};
  const {pool,calls}=fake({projectConfig:{...config,answer_generation_policy:policy}});
  await enqueueAnswer(pool,'workflow',root);
  const inserted=calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;
- expect(JSON.parse(inserted.values[2]).answer_generation_policy).toEqual({...policy,skip_scoring_on_qualified_timeout:false});
+ expect(JSON.parse(inserted.values[2]).answer_generation_policy).toEqual(policy);
  expect(JSON.parse(inserted.values[3])).toEqual(config);
 }));
 test('enqueue uses the database redacted text rather than a local file copy',async()=>fixture(async root=>{await writeFile(join(root,'source.md'),'本地文件不作为脱敏正文来源');const {pool,calls}=fake();await enqueueAnswer(pool,'workflow',root);const inserted=calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'));expect(JSON.parse(inserted!.values[2]).materials).toEqual([{name:'附件1',text:'脱敏'}]);}));
 test('idle worker does not invoke provider',async()=>{const {pool}=fake({empty:true});let called=false;expect(await runNextAnswer(pool,'unused',async()=>{called=true;return answer();})).toBe(false);expect(called).toBe(false);});
 test('worker persists exact answer and usage with immutable config',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,answer);const saved=calls.find(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'));expect(saved?.values[1]).toBe('succeeded');expect(JSON.parse(saved?.values[2])).toMatchObject({text:'答案',usage:{total_tokens:8},model:'actual'});}));
+test('worker persists audited tool trace and effective step evidence',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,async()=>({...await answer(),tool_trace:{api:'responses',calls:[{id:'call-1',type:'web_search',status:'completed'}],usage:{web_search_requests:1}},execution_steps:{method:'completed_server_tool_calls',observed:1,completed:1,failed:0,effective_steps:1},source_citations:[{url:'https://example.com/',title:'来源',start_index:0,end_index:2}]} as any));const saved=calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));expect(JSON.parse(saved!.values[1])).toMatchObject({execution_steps:{effective_steps:1},tool_trace:{calls:[{type:'web_search',status:'completed'}]},source_citations:[{url:'https://example.com/'}]});}));
+test('worker publishes managed answer artifacts with hashes and filenames',async()=>fixture(async root=>{const {pool,calls,job}=fake();job.config={provider:'openrouter',base_url:'https://openrouter.ai/api/v1',model:'qwen/test',local_tools:['artifact_write'],max_tool_calls:2};await runNextAnswer(pool,root,async request=>{await mkdir(join(request.directory!,'artifacts'),{recursive:true});await writeFile(join(request.directory!,'artifacts','意见.md'),'# 意见\n正文');return answer();});const inserts=calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.artifacts'));expect(inserts).toHaveLength(2);expect(inserts[1]!.values[3]).toBe('model_answer_file');expect(inserts[1]!.values[4]).toEndWith('/artifacts/意见.md');const saved=calls.find(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));expect(JSON.parse(saved!.values[1]).generated_artifacts[0]).toMatchObject({filename:'意见.md',size_bytes:Buffer.byteLength('# 意见\n正文')});}));
 test.each([{inactive:true},{authorId:'new-author'}])('cancelled tasks or changed author attempt identity cannot publish',async options=>fixture(async root=>{const {pool,calls}=fake(options);await runNextAnswer(pool,root,answer);expect(calls.some(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2'))).toBe(false);expect(calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);}));
 test('publication requires the claimed attempt to remain running',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,answer);expect(calls.some(c=>c.sql.startsWith("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE"))).toBe(true);}));
 test('provider errors are bounded and do not publish success',async()=>fixture(async root=>{const {pool,calls}=fake();await runNextAnswer(pool,root,async()=>{throw new Error('secret provider response');});expect(JSON.stringify(calls)).not.toContain('secret provider response');expect(calls.some(c=>c.values[1]==='succeeded')).toBe(false);}));
@@ -139,11 +141,11 @@ test('interrupted attempts from an older question cannot replace the current sum
  expect(calls.some(c=>c.sql.startsWith('UPDATE ai_distill.steps SET status=$2,result=$3'))).toBe(false);
 });
 test('worker uses frozen attempt config without querying project defaults',async()=>fixture(async root=>{const {pool,calls,job}=fake();job.config.model='qwen/frozen-model';let dispatchedModel:string|undefined;await runNextAnswer(pool,root,async input=>{dispatchedModel=input.config.model;return answer();});expect(dispatchedModel).toBe('qwen/frozen-model');expect(calls.some(c=>c.sql.startsWith('SELECT config'))).toBe(false);}));
-test('worker preserves frozen timeout and does not enable reasoning observation before provider timing validation',async()=>fixture(async root=>{
+test('worker preserves frozen timeout and observes reasoning for qualified-timeout evidence',async()=>fixture(async root=>{
  const {pool,job}=fake();job.input.answer_generation_policy={request_timeout_ms:5_400_000,reasoning_threshold_ms:2_700_000,skip_scoring_on_qualified_timeout:true};
  let dispatched:Parameters<NonNullable<Parameters<typeof runNextAnswer>[2]>>[0]|undefined;
  await runNextAnswer(pool,root,async input=>{dispatched=input;return answer();});
- expect(dispatched?.timeout_ms).toBe(5_400_000);expect(dispatched?.observe_reasoning).toBeUndefined();
+ expect(dispatched?.timeout_ms).toBe(5_400_000);expect(dispatched?.observe_reasoning).toBe(true);
 }));
 test('unverified reasoning stream timeout remains a technical failure and creates no fake answer artifact',async()=>fixture(async root=>{
  const {pool,calls,job}=fake();job.input.answer_generation_policy={request_timeout_ms:5_400_000,reasoning_threshold_ms:2_700_000,skip_scoring_on_qualified_timeout:true};
@@ -176,6 +178,16 @@ test('project model set creates one isolated attempt per selected model with a s
  expect(first.model_id).toBe(qwenRow.model_id);expect(second.model_id).toBe(deepseekRow.model_id);
  expect(first.model_set_digest).toBe(second.model_set_digest);expect(first.model_set).toHaveLength(2);
  expect(inserts.map(call=>JSON.parse(call.values[3]).model)).toEqual(['qwen/qwen-plus','deepseek-chat']);
+}));
+
+test('project tool policy freezes into new OpenRouter attempts without affecting native models',async()=>fixture(async root=>{
+ const router={model_id:'11111111-1111-4111-8111-111111111111',name:'Qwen Plus',minimum_score:'8',config:{provider:'openrouter' as const,base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'},enabled:true};
+ const native={model_id:'22222222-2222-4222-8222-222222222222',name:'DeepSeek',minimum_score:'7',config:{provider:'deepseek' as const,base_url:'https://api.deepseek.com',model:'deepseek-chat'},enabled:true};
+ const {pool,calls}=fake({models:[router,native],projectConfig:{answer_server_tools:{server_tools:['web_search','shell'],max_tool_calls:9}}});
+ await enqueueAnswer(pool,'workflow',root);
+ const configs=calls.filter(call=>call.sql.startsWith('INSERT INTO ai_distill.step_attempts')).map(call=>JSON.parse(call.values[3]));
+ expect(configs[0]).toMatchObject({provider:'openrouter',server_tools:['web_search','shell'],max_tool_calls:9});
+ expect(configs[1]).toEqual(native.config);
 }));
 
 test('answer retry reuses successful model attempts and queues only failed models',async()=>fixture(async root=>{

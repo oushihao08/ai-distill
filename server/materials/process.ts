@@ -1,5 +1,5 @@
 /**
- * 职责：PDF/DOCX 材料处理与产物落盘：校验来源和缓存指纹，生成私有逐页文本并保留识别问题。
+ * 职责：PDF/DOCX/PNG/JPEG 材料处理与产物落盘：校验来源和缓存指纹，生成私有逐页文本并保留识别问题。
  * 关键入口：processMaterials校验原件与缓存，生成私有结构与issues；只对可重试的问题页做一次子集复识别。
  * 使用场景：旧步骤2提取worker调用；不是全局材料库任务入口，不清理历史Vision检查点。
  */
@@ -31,7 +31,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    if(sourceSha256!==material.sha256){await rm(directory,{recursive:true,force:true});throw new Error('原件指纹变化，已清理未发布的提取结果');}
    const format=material.storage_path.split('.').at(-1)?.toLowerCase()??'';
    let pages:Page[]|undefined,provider='glm-ocr',mode:'fresh'|'cached'='fresh',from_attempt_id:string|null=null,from_material_id:string|null=null,cache_error:'missing_or_invalid'|undefined;
-   if(format!=='pdf'&&format!=='docx')throw new Error('仅PDF/DOCX进入结构化提取队列');
+   if(!['pdf','docx','png','jpg','jpeg'].includes(format))throw new Error('仅PDF/DOCX/PNG/JPEG进入结构化提取队列');
    if(format==='pdf'&&material.extraction_cache){
     try{
      const cache=material.extraction_cache,path=resolve(root,cache.storage_path),within=relative(resolve(root),path);

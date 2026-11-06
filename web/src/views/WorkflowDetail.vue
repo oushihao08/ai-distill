@@ -8,7 +8,7 @@ import {usePageBreadcrumbs} from '../composables/usePageBreadcrumbs';
 import { api } from '../api/client';
 import { useResource } from '../composables/useResource';
 import {workflowStepDisplay} from '../utils/workflow-status';
-import { dateLabel, fileSize } from '../utils/format';
+import { dateLabel, fileSize, numberedRubric } from '../utils/format';
 import { readAnswerStepResult, statusLabels, type Attempt, type WorkflowDetail, type Step, type RedactionProgress } from '../types/api';
 import RevisionAdvice from '../components/RevisionAdvice.vue';
 import WorkflowHookRecords from '../components/WorkflowHookRecords.vue';
@@ -87,7 +87,7 @@ const currentStep=computed(()=>visibleSteps.value.find(step=>!['succeeded','skip
 const currentStepLabel=computed(()=>{
  const step=currentStep.value;
  if(!step)return '全部完成';
- if(step.ordinal===6){const models=readAnswerStepResult(visibleSteps.value.find(item=>item.ordinal===5)?.result)?.models;if(models?.length&&models.every(model=>model.status==='skipped'&&model.outcome==='qualified_timeout_unscored'))return '本轮免评分，不能判定达标';}
+ if(step.ordinal===6){const models=readAnswerStepResult(visibleSteps.value.find(item=>item.ordinal===5)?.result)?.models;if(models?.length&&models.every(model=>model.status==='skipped'&&model.outcome==='qualified_timeout_unscored'))return '持续生成达到上限，本轮免评分并直接通过';}
  return workflowStepDisplay(data.value??undefined,step.ordinal).label;
 });
 
@@ -166,7 +166,7 @@ function questionSections(step:Step){
  const header=result.header&&typeof result.header==='object'?result.header as Record<string,unknown>:{};
  const labels:Record<string,string>={industry_l1:'一级行业',industry_l2:'二级行业',task_form:'任务形式',occupation_l1:'L1 职业簇',occupation_l2:'L2 职业'};
  const headerText=[`题目 ID：${text(result.question_id)}`,...Object.entries(labels).map(([key,label])=>`${label}：${header[key]==='single_round'?'单轮':text(header[key])}`)].join('\n');
- const rubric=Array.isArray(result.rubric)?result.rubric.map((item:Record<string,unknown>)=>{const m=item.metadata as Record<string,unknown>|undefined;return `${text(item.id)}（${m?.priority==='Veto'?'独立否决':`${typeof m?.score==='number'?m.score:typeof item.max_score==='number'?item.max_score:'—'}分`}）\n${text(m?.statement??item.criterion)}${item.rule?`\n${text(item.rule)}`:''}${m?`\n${JSON.stringify(m,null,2)}`:''}`;}).join('\n\n'):'';
+ const rubric=data.value?.project.parent_name==='豆包高经济价值'?numberedRubric(result.rubric):Array.isArray(result.rubric)?result.rubric.map((item:Record<string,unknown>)=>{const m=item.metadata as Record<string,unknown>|undefined;return `${text(item.id)}（${m?.priority==='Veto'?'独立否决':`${typeof m?.score==='number'?m.score:typeof item.max_score==='number'?item.max_score:'—'}分`}）\n${text(m?.statement??item.criterion)}${item.rule?`\n${text(item.rule)}`:''}${m?`\n${JSON.stringify(m,null,2)}`:''}`;}).join('\n\n'):'';
  const workSections=result.content_contract==='work_legal_v1'?['task_metadata','input_files','deliverables','reference_outputs','research_records','task_requirements','content_status'].map((key,index)=>({title:['整题信息与等级依据','输入材料清单','成果清单','逐份完整标准成果','作者检索记录','任务能力要求','内容完成状态'][index]!,content:JSON.stringify(result[key],null,2)??'尚未保存'})):[];
  return [{title:'表头',content:headerText},{title:'任务名称',content:text(result.task_name)},{title:'任务类型',content:text(result.task_type)},{title:'题面 prompt',content:text(result.question)},{title:'考点 rubric',content:rubric||'尚未保存'},{title:'作答思路',content:text(result.answer_approach)},{title:'标准答案',content:text(result.reference_answer)},...workSections];
 }

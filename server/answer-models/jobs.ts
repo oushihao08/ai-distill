@@ -25,11 +25,14 @@ import {resolveAnswerConfig,createAnswerClient,type ResolvedAnswerConfig} from '
 import type {AnswerRequest,AnswerResult} from './provider';
 import {answerModelSetDigest,readProjectModelSet,type RegisteredAnswerModel} from './model-set';
 import {DEFAULT_ANSWER_GENERATION_POLICY,answerProviderConfigFromStepConfig,isQualifiedLongGenerationTimeout,readAnswerGenerationPolicyFromStepConfig,resolveAnswerCallSettings,resolveAnswerGenerationPolicy} from './generation-policy';
+import {applyAnswerToolPolicy,readAnswerToolPolicyFromStepConfig,requiredAnswerToolPolicy} from './tool-policy';
+import {readGeneratedAnswerArtifacts} from './local-tools';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import type {AnswerStepModelSummary,AnswerStepResult} from '../../shared/workflow-results';
 import {SYSTEM_STEP_PROMPTS} from '../../shared/step-prompts';
 import {readQuestionMaterials} from '../question-materials';
 import {resolveEffectiveProjectSkill} from '../rule-files';
+import {runAcceptance} from '../decisions/jobs';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 const activeWorkflow="SELECT w.project_id,p.local_skill_path,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
 async function currentQuestion(db:PoolClient,id:string,project:import('../lifecycle/step-types').ProjectIdentity={}){
@@ -80,7 +83,7 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
    const artifacts=await db.query("SELECT ar.id,ar.kind,ar.sha256,ar.storage_path,ar.content FROM ai_distill.artifacts ar JOIN ai_distill.step_attempts a ON a.id=ar.attempt_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=9 WHERE ar.workflow_id=$1 AND ar.id=ANY($2::uuid[]) AND ar.kind='redacted_markdown' AND a.ordinal=9 AND a.status='succeeded' AND s.status='succeeded'",[id,question.attachment_ids]);
    for(const artifact of artifacts.rows)sources.push({...artifact,text:await readAnswerAttachment(root,artifact)});
   }
-  const input=buildAnswerInput({...question,answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}},sources);
+  const input=buildAnswerInput(question,sources,workflow);
   const rawStepConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5',[workflow.project_id])).rows[0]?.config??{};
   const systemPrompt=typeof rawStepConfig.prompt==='string'&&rawStepConfig.prompt.trim()?rawStepConfig.prompt:SYSTEM_STEP_PROMPTS[5];
   const answerInput={...input,system_prompt:systemPrompt,...(materialOrigin?{material_origin:materialOrigin}:{})};
@@ -91,10 +94,15 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   const skill=needsHooks?await resolveEffectiveProjectSkill(workflow):undefined;
   const hooks=skill?await freezeStageHooks(dirname(skill.path),workflowConfig):undefined;
   const hookDigest=hooks?createHash('sha256').update(canonicalJson(hooks)).digest('hex'):undefined;
-  const generationPolicy=readAnswerGenerationPolicyFromStepConfig(rawStepConfig),overrides=answerProviderConfigFromStepConfig(rawStepConfig);
+  const generationPolicy=readAnswerGenerationPolicyFromStepConfig(rawStepConfig),overrides=answerProviderConfigFromStepConfig(rawStepConfig);let toolPolicy;
+  try{toolPolicy=requiredAnswerToolPolicy(readAnswerToolPolicyFromStepConfig(rawStepConfig),input.answer_requirements.tools);}catch(error){throw new HTTPException(409,{message:error instanceof Error?error.message:'题目需要的作答工具未启用'});}
   const selected=await readProjectModelSet(db,workflow.project_id);const hasModelSet=selected.length>0;
   if(executionTarget==='server'&&selected.some(model=>model.config.provider==='codex'))throw new HTTPException(409,{message:'Codex Agent 作答只支持本机执行'});
-  const models:RegisteredAnswerModel[]=selected.length?selected:[{model_id:'',name:'',minimum_score:0,config:resolveAnswerConfig(overrides)}];
+  const models:RegisteredAnswerModel[]=(selected.length?selected:[{model_id:'',name:'',minimum_score:0,config:resolveAnswerConfig(overrides)}]).map(model=>({...model,config:model.config.provider==='codex'?model.config:applyAnswerToolPolicy(model.config,toolPolicy)}));
+  if(input.answer_requirements.tools.length){
+   const unsupported=models.filter(model=>{const config=model.config as any,enabled=new Set([...(config.server_tools??[]),...(config.local_tools??[])]);return config.provider==='codex'||input.answer_requirements.tools.some(tool=>!enabled.has(tool));});
+   if(unsupported.length)throw new HTTPException(409,{message:'当前作答模型不能执行题目声明的工具；请调整新尝试的模型或项目工具设置'});
+  }
   const modelSetDigest=answerModelSetDigest(models);
   const modelSet=models.map(({model_id,name,minimum_score,config})=>({model_id,name,minimum_score,config}));
   const queued:{id:string;reused:boolean}[]=[];
@@ -135,7 +143,7 @@ async function matchesModelSet(db:PoolClient,job:any){
 type AnswerAggregationRow={
  id:string;status:import('../../shared/types').StepStatus;
  input:{model_id?:string|null}|null;
- result:{text?:string|null;answer_sha256?:string|null;outcome?:string;reason_code?:string;generation_activity?:unknown}|null;
+ result:{text?:string|null;answer_sha256?:string|null;outcome?:string;reason_code?:string;generation_activity?:unknown;reasoning_tokens?:number|null;completed_tool_calls?:number;execution_steps?:unknown;tool_trace?:unknown;source_citations?:unknown[]}|null;
 };
 type AnswerAggregationJob={
  id:string;workflow_id:string;status:import('../../shared/types').StepStatus;
@@ -151,14 +159,14 @@ export async function refreshAnswerStep(db: PoolClient, job: AnswerAggregationJo
         return latest.rowCount;
     }
     // 只传回同一输入下各模型最新尝试；完整当前答案仍供详情展示。
-    const rows = await db.query<AnswerAggregationRow>("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input->>'model_id') id,jsonb_build_object('model_id',input->'model_id') AS input,jsonb_build_object('text',result->'text','answer_sha256',result->'answer_sha256','outcome',result->'outcome','reason_code',result->'reason_code','generation_activity',result->'generation_activity') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND input->>'model_set_digest'=$2 AND input->>'question_attempt_id'=$3 AND input->>'input_digest'=$4 ORDER BY input->>'model_id',attempt DESC) latest", [job.workflow_id, job.input.model_set_digest, job.input.question_attempt_id, job.input.input_digest]);
+    const rows = await db.query<AnswerAggregationRow>("SELECT id,input,result,status FROM (SELECT DISTINCT ON (input->>'model_id') id,jsonb_build_object('model_id',input->'model_id') AS input,jsonb_build_object('text',result->'text','answer_sha256',result->'answer_sha256','outcome',result->'outcome','reason_code',result->'reason_code','generation_activity',result->'generation_activity','reasoning_tokens',result->'reasoning_tokens','completed_tool_calls',result->'completed_tool_calls','execution_steps',result->'execution_steps','tool_trace',result->'tool_trace','source_citations',result->'source_citations') AS result,status FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND input->>'model_set_digest'=$2 AND input->>'question_attempt_id'=$3 AND input->>'input_digest'=$4 ORDER BY input->>'model_id',attempt DESC) latest", [job.workflow_id, job.input.model_set_digest, job.input.question_attempt_id, job.input.input_digest]);
     const latest = new Map<string, AnswerAggregationRow>();
     for (const row of rows.rows) {
         const id = row.input?.model_id;
         if (typeof id === 'string' && id && !latest.has(id))
             latest.set(id, row);
     }
-    const models: AnswerStepModelSummary[] = job.input.model_set.map((model: RegisteredAnswerModel) => { const row = latest.get(model.model_id); return { model_id: model.model_id, name: model.name, minimum_score: model.minimum_score, attempt_id: row?.id ?? null, status: row?.status ?? 'waiting', answer_sha256: row?.result?.answer_sha256 ?? null, answer: row?.status === 'succeeded' ? row.result!.text : null, ...(row?.result?.outcome === 'qualified_timeout_unscored' ? { outcome: row.result.outcome, reason_code: row.result.reason_code, generation_activity: row.result.generation_activity } : {}) }; });
+    const models: AnswerStepModelSummary[] = job.input.model_set.map((model: RegisteredAnswerModel) => { const row = latest.get(model.model_id); return { model_id: model.model_id, name: model.name, minimum_score: model.minimum_score, attempt_id: row?.id ?? null, status: row?.status ?? 'waiting', answer_sha256: row?.result?.answer_sha256 ?? null, answer: row?.status === 'succeeded' ? row.result!.text : null, ...(row?.status==='succeeded'?{reasoning_tokens:row.result?.reasoning_tokens??null,...(row.result?.completed_tool_calls===undefined?{}:{completed_tool_calls:row.result.completed_tool_calls}),execution_steps:row.result?.execution_steps,tool_trace:row.result?.tool_trace,source_citations:row.result?.source_citations}:{}), ...(row?.result?.outcome === 'qualified_timeout_unscored' ? { outcome: row.result.outcome, reason_code: row.result.reason_code, generation_activity: row.result.generation_activity } : {}) }; });
     const settled = models.every((model) => ['succeeded', 'failed', 'skipped'].includes(model.status));
     const active = models.some((model) => model.status === 'running');
     const status = settled ? (models.every((model) => model.status === 'succeeded') ? 'succeeded' : models.every((model) => model.status === 'skipped') ? 'skipped' : 'failed') : active ? 'running' : 'waiting';
@@ -178,14 +186,14 @@ function buildAnswerFailure(error: unknown, job: {
     if (error instanceof StageHookError)
         message = '项目钩子执行失败，可查看钩子记录后续跑';
     else if (qualifiedTimeout)
-        message = '已观测到推理增量超过设置阈值后本地请求截止；本次未得到完整答案，不计分';
+        message = '已观测到持续推理增量直至本地冻结请求上限；本次按免评分规则直接通过';
     else if (error instanceof QwenError || error instanceof DomesticError || error instanceof AnswerInputError)
         message = error.message;
     else
         message = '模型作答失败，请检查服务配置或存储状态';
     let result: unknown = null;
     if (qualifiedTimeout) {
-        // 仅保留既有时长策略的终态协议；资格仍由generation-policy判断，本函数不能开启免评分。
+        // 只格式化已由generation-policy严格认定的终态；本函数不能自行开启免评分。
         const activity = error as {
             generation_activity?: unknown;
             request_id?: unknown;
@@ -262,7 +270,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
     try {
         resumeStepFailure();
         // 调用前校验冻结请求；模型完成后直接保存返回结果，不再复核当前题目或模型集合。
-        const packaged: AnswerPackage = { question_version: job.input.question_version, question: job.input.question, materials: job.input.materials, attachments: job.input.attachments, ...(typeof job.input.system_prompt === 'string' ? { system_prompt: job.input.system_prompt } : {}), ...(job.input.presentation ? { presentation: job.input.presentation } : {}), ...(job.input.material_origin ? { material_origin: job.input.material_origin } : {}) };
+        const packaged: AnswerPackage = { question_version: job.input.question_version, question: job.input.question, materials: job.input.materials, attachments: job.input.attachments, ...(job.input.answer_requirements?{answer_requirements:job.input.answer_requirements}:{}), ...(typeof job.input.system_prompt === 'string' ? { system_prompt: job.input.system_prompt } : {}), ...(job.input.presentation ? { presentation: job.input.presentation } : {}), ...(job.input.material_origin ? { material_origin: job.input.material_origin } : {}) };
         const before = await pool.connect();
         try {
             await before.query('BEGIN');
@@ -283,7 +291,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         await emitLifecycle(pool,'before', {stage:'answer',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'answer' as const, binding_digest: createHash('sha256').update(canonicalJson({ input: job.input.input_digest, config: job.config, generation_policy: generationPolicy })).digest('hex'), input: { question: buildAnswerMessage(packaged), materials: packaged.materials }, hooks: job.input.hooks, signal };
         const answerConfig = resolveAnswerConfig(job.config), attemptDirectory = join(resolve(root), job.workflow_id, job.id);
-        const result = await executeWithStageHooks({ ...hookContext, runMain: () => runExternalCall({ attempt_id: job.id, operation: 'answer' }, call_id => answer({ config: answerConfig, question: buildAnswerMessage(packaged), materials: packaged.materials, system_prompt: job.input.system_prompt, signal, call_id, timeout_ms: callSettings.timeout_ms, ...(answerConfig.provider === 'codex' ? { directory: attemptDirectory } : {}), ...(callSettings.observe_reasoning ? { observe_reasoning: true } : {}) })), outputForHooks: value => ({ text: value.text }) });
+        const result = await executeWithStageHooks({ ...hookContext, runMain: () => runExternalCall({ attempt_id: job.id, operation: 'answer' }, call_id => answer({ config: answerConfig, question: buildAnswerMessage(packaged), materials: packaged.materials, system_prompt: job.input.system_prompt, signal, call_id, timeout_ms: callSettings.timeout_ms, ...((answerConfig.provider === 'codex'||answerConfig.local_tools?.length) ? { directory: attemptDirectory } : {}), ...(callSettings.observe_reasoning ? { observe_reasoning: true } : {}) })), outputForHooks: value => ({ text: value.text }) });
         const directory = join(resolve(root), job.workflow_id, job.id);
         await mkdir(directory, { recursive: true });
         const bytes = Buffer.from(result.text);
@@ -293,7 +301,13 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         await writeFile(path, bytes, { mode: 0o600 });
         logEvent('file.write.completed', { level: 'info', file_kind: 'model_answer', output_bytes: bytes.length });
         const answer_sha256 = createHash('sha256').update(bytes).digest('hex');
-        const publication = { ...result, provider: answerConfig.provider ?? 'qwen', mode: result.execution_mode === 'agent' ? `agent:${result.reasoning_effort ?? 'configured'}` : job.config.enable_thinking === undefined ? 'provider_default' : job.config.enable_thinking ? 'thinking_enabled' : 'thinking_disabled', model_id: job.input.model_id ?? null, model_name: job.input.model_name ?? null, answer_sha256, input_digest: job.input.input_digest, question_version: job.input.question_version, question_attempt_id: job.input.question_attempt_id, output_mode: 'text', execution_steps: null, ...(job.input.presentation ? { answer_presentation: job.input.presentation } : {}) };
+        const generatedArtifacts=answerConfig.provider!=='codex'&&answerConfig.local_tools?.includes('artifact_write')?await readGeneratedAnswerArtifacts(attemptDirectory):[];
+        if(job.input.answer_requirements?.output_mode==='file'){
+            const calls=Array.isArray(result.tool_trace?.calls)?result.tool_trace.calls:[];
+            if(!generatedArtifacts.length||!calls.some(call=>call.type==='artifact_write'&&call.status==='completed')||!calls.some(call=>call.type==='artifact_render'&&call.status==='completed'))throw new Error('文件型作答未完成受管生成与读回校验');
+        }
+        const artifactMetadata=generatedArtifacts.map(item=>({filename:item.filename,format:item.format,media_type:item.media_type,sha256:item.sha256,source_sha256:item.source_sha256,size_bytes:item.size_bytes}));
+        const publication = { ...result, provider: answerConfig.provider ?? 'qwen', mode: result.execution_mode === 'agent' ? `agent:${result.reasoning_effort ?? 'configured'}` : job.config.enable_thinking === undefined ? 'provider_default' : job.config.enable_thinking ? 'thinking_enabled' : 'thinking_disabled', model_id: job.input.model_id ?? null, model_name: job.input.model_name ?? null, answer_sha256, input_digest: job.input.input_digest, question_version: job.input.question_version, question_attempt_id: job.input.question_attempt_id, output_mode: job.input.answer_requirements?.output_mode??'text', execution_steps: result.execution_steps ?? null,generated_artifacts:artifactMetadata, ...(job.input.presentation ? { answer_presentation: job.input.presentation } : {}) };
         const tx = await pool.connect();
         try {
             await tx.query('BEGIN');
@@ -301,6 +315,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
             const owner=await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' FOR UPDATE", [job.id]);
             if(!owner.rows.length)throw new Error('作答任务已取消或移除');
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'model_answer', relative(resolve(root), path), answer_sha256, bytes.length, executionTarget === 'server' ? result.text : null]);
+            for(const item of generatedArtifacts)await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[crypto.randomUUID(),job.workflow_id,job.id,'model_answer_file',relative(resolve(root),join(attemptDirectory,'artifacts',item.filename)),item.sha256,item.size_bytes,item.content]);
             await tx.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE id=$1", [job.id, JSON.stringify(publication)]);
             job.status = 'succeeded';
             job.result = publication;
@@ -365,6 +380,13 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         finally {
             tx.release();
         }
+        if (qualifiedTimeout)
+            try {
+                await runAcceptance(pool, job.workflow_id);
+            }
+            catch (decisionError) {
+                logEvent('acceptance.auto_failed', { level: 'error', workflow_id: job.workflow_id, ...classifyLogError(decisionError) });
+            }
     }
     finally {
         cancellation.dispose();

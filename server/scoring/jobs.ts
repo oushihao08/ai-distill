@@ -246,7 +246,7 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
                     model_report_reading_instructions: frozenReading ?? '',
                     signal,
                     call_id,
-                    timeout_ms: 1800000
+                    timeout_ms: 900000
                 } : {
                     hook_additions: additions,
                     legacy_text_preflight: false,
@@ -257,7 +257,7 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
                     model_report_reading_instructions: frozenReading ?? '',
                     signal,
                     call_id,
-                    timeout_ms: 1800000
+                    timeout_ms: 900000
                 };
                 return grade(job.input.context, scoreOptions);
             }),

@@ -15,7 +15,8 @@ import {command} from './pdf';
 import {currentTaskSignal,withTaskSignal} from '../task-signal';
 import {logEvent} from '../logging';
 
-export interface DocumentExtraction { format: 'pdf' | 'docx' | 'txt' | 'md'; pages: Page[]; provider: 'glm-ocr' | 'mineru-api' | 'mineru-cli' | 'local'; sha256: string }
+export type DocumentFormat='pdf'|'docx'|'txt'|'md'|'png'|'jpg'|'jpeg';
+export interface DocumentExtraction { format: DocumentFormat; pages: Page[]; provider: 'glm-ocr' | 'mineru-api' | 'mineru-cli' | 'local'; sha256: string }
 export interface DocumentExtractor {
  extract(path: string, signal?: AbortSignal): Promise<DocumentExtraction>;
  /** 只提交指定PDF页；结果绑定原件SHA，返回原页码，禁止以整份重传冒充页级复识别。 */
@@ -48,7 +49,7 @@ function extractDocxXml(xml: string) {
  return paragraphs;
 }
 export class ProjectDocumentExtractor implements DocumentExtractor {
- constructor(private readonly pdfProvider?:PdfExtractionProvider,private readonly docxProvider?:PdfExtractionProvider){}
+ constructor(private readonly pdfProvider?:PdfExtractionProvider,private readonly docxProvider?:PdfExtractionProvider,private readonly imageProvider?:PdfExtractionProvider){}
  /** 本地生成问题页子集后仍调用原provider；不扩充云API参数、不修改原件，正常页不再次上传。 */
  async extractPages(path:string,pages:number[],signal?:AbortSignal):Promise<DocumentExtraction>{
   if(!this.pdfProvider||!path.toLowerCase().endsWith('.pdf'))throw new Error('PDF页级提取器未配置');
@@ -83,7 +84,7 @@ export class ProjectDocumentExtractor implements DocumentExtractor {
  async extract(path:string,signal?:AbortSignal):Promise<DocumentExtraction>{
   const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex'),extension=path.split('.').at(-1)?.toLowerCase();
   if(extension==='pdf'){
-   if(!this.pdfProvider)throw new Error('PDF解析器未配置');
+   if(!this.pdfProvider)throw new Error('MinerU PDF解析器未配置');
    const result=await this.pdfProvider.extract(path,signal);
    return{format:'pdf',...result};
   }
@@ -91,8 +92,13 @@ export class ProjectDocumentExtractor implements DocumentExtractor {
    const result=await this.docxProvider.extract(path,signal);
    return{format:'docx',...result};
   }
+  if((extension==='png'||extension==='jpg'||extension==='jpeg')&&this.imageProvider){
+   const result=await this.imageProvider.extract(path,signal);
+   if(result.pages.length!==1||result.pages[0]?.page!==1)throw new Error('图片提取结果必须为单页结构');
+   return{format:extension,...result};
+  }
   if(extension==='docx'||extension==='txt'||extension==='md')return extractLocalDocument(bytes,extension);
-  throw new HTTPException(400,{message:'只支持PDF、DOCX、TXT和MD材料'});
+  throw new HTTPException(400,{message:'只支持PDF、DOCX、TXT、MD、PNG、JPG和JPEG材料'});
  }
 }
 

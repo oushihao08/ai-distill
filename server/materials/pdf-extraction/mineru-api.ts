@@ -1,6 +1,6 @@
 /**
  * 职责：直接调用 MinerU v4 上传、解析和结果轮询 API，并复用 MinerU 块结构转换器。
- * 关键入口：`MineruApiPdfExtractor.extract()` 处理 PDF；`MineruApiDocxExtractor.extract()` 处理无 PDF 页码的 DOCX；`readMineruResultZip()` 有界读取下载流。
+ * 关键入口：`MineruApiPdfExtractor.extract()` 处理 PDF；DOCX 与原图适配器直接上传原件并投影为单逻辑页；`readMineruResultZip()` 有界读取下载流。
  * 使用场景：PDF 由 API 优先适配器调用并按原策略回退 CLI；DOCX 直接复用 API 上传与轮询。
  */
 import {storageDirectory} from '../../paths';
@@ -117,6 +117,7 @@ function providerTimeoutError(phase:string,state:string|undefined,taskSubmitted:
 }
 
 function safeFailureReason(error: unknown) {
+ if(isRecord(error)&&error.reason_code==='provider_timeout')return'provider_timeout';
  const knownReason=isRecord(error)&&typeof error.reason_code==='string'&&error.reason_code.startsWith('download_')?error.reason_code:'';
  if(/^[a-z][a-z0-9_]{0,79}$/.test(knownReason))return knownReason;
  const message = error instanceof Error ? error.message : '';
@@ -199,7 +200,7 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
  private readonly now: () => number;
  private readonly sleep: (ms: number, signal: AbortSignal) => Promise<void>;
 
- constructor(private readonly env: NodeJS.ProcessEnv = process.env, options: MineruApiOptions = {}, private readonly inputFormat: 'pdf' | 'docx' = 'pdf') {
+ constructor(private readonly env: NodeJS.ProcessEnv = process.env, options: MineruApiOptions = {}, private readonly inputFormat: 'pdf' | 'docx' | 'image' = 'pdf') {
   this.fetcher = options.fetcher ?? fetch;
   this.now = options.now ?? Date.now;
   this.sleep = options.sleep ?? defaultSleep;
@@ -311,15 +312,18 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    let raw: unknown;
    try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content)); }
    catch { throw new Error('MinerU API content_list.json无效'); }
-   const pages = this.inputFormat === 'docx' ? parseMineruDocxJson(raw) : parseMineruJson(raw, pageCount);
+   const pages = this.inputFormat === 'pdf' ? parseMineruJson(raw, pageCount) : parseMineruDocxJson(raw);
+   if(this.inputFormat==='image'&&(pages.length!==1||pages[0]?.page!==1))throw new Error('MinerU图片结果不是单页结构');
    logEvent('extraction.api.completed', { level: 'info', provider: this.id, page_count: pages.length, duration_ms: Math.max(0, this.now() - startedAt) });
    completed=true;
    return { pages, sha256, provider: this.id };
   } catch (error) {
-   try{await writeFile(resolve(diagnosticDirectory,'failure-context.json'),JSON.stringify({observed_at:new Date().toISOString(),phase,provider_state:providerState,batch_id:batchId,poll_count:pollCount,last_request_started_at:lastRequestStartedAt,last_request_finished_at:lastRequestFinishedAt,request_in_flight:lastRequestStartedAt>lastRequestFinishedAt,elapsed_ms:Math.max(0,this.now()-startedAt),timeout_ms:API_TIMEOUT_MS,local_aborted:controller.signal.aborted,parent_aborted:signal?.aborted??false,parent_reason:isRecord(signal?.reason)?signal.reason.reason_code:undefined,network_error_code:safeNetworkErrorCode(error)}),{mode:0o600});}catch{logEvent('extraction.diagnostics_save_failed',{level:'error',diagnostic_id:diagnosticId,reason_code:'diagnostics_write_failed'});}
-   logEvent('extraction.api.failed', { level: 'error', provider: this.id, reason_code: safeFailureReason(error),failure_phase:phase,state:providerState,diagnostic_id:diagnosticId,...(isRecord(error)&&typeof error.failure_stage==='string'?{failure_stage:error.failure_stage}:{}),...(isRecord(error)&&typeof error.response_status==='number'?{response_status:error.response_status}:{}),...(isRecord(error)&&typeof error.network_error_code==='string'?{network_error_code:error.network_error_code}:{}),duration_ms:Math.max(0,this.now()-startedAt) });
-   if(controller.signal.aborted&&!signal?.aborted)throw providerTimeoutError(phase,providerState,taskSubmitted);
-   throw error;
+   const localTimeout=controller.signal.aborted&&!signal?.aborted;
+   const reportedError=localTimeout?providerTimeoutError(phase,providerState,taskSubmitted):error;
+   const durationMs=Math.max(0,this.now()-startedAt);
+   try{await writeFile(resolve(diagnosticDirectory,'failure-context.json'),JSON.stringify({observed_at:new Date().toISOString(),phase,provider_state:providerState,batch_id:batchId,poll_count:pollCount,last_request_started_at:lastRequestStartedAt,last_request_finished_at:lastRequestFinishedAt,request_in_flight:lastRequestStartedAt>lastRequestFinishedAt,elapsed_ms:durationMs,timeout_ms:API_TIMEOUT_MS,local_aborted:controller.signal.aborted,parent_aborted:signal?.aborted??false,parent_reason:isRecord(signal?.reason)?signal.reason.reason_code:undefined,network_error_code:safeNetworkErrorCode(reportedError)}),{mode:0o600});}catch{logEvent('extraction.diagnostics_save_failed',{level:'error',diagnostic_id:diagnosticId,reason_code:'diagnostics_write_failed'});}
+   logEvent('extraction.api.failed', { level: 'error', provider: this.id, reason_code: safeFailureReason(reportedError),failure_phase:phase,state:providerState,diagnostic_id:diagnosticId,page_count:pageCount,attempt_count:pollCount,timeout_ms:API_TIMEOUT_MS,provider_task_submitted:taskSubmitted,local_aborted:controller.signal.aborted,parent_aborted:signal?.aborted??false,...(isRecord(reportedError)&&typeof reportedError.failure_stage==='string'?{failure_stage:reportedError.failure_stage}:{}),...(isRecord(reportedError)&&typeof reportedError.response_status==='number'?{response_status:reportedError.response_status}:{}),...(isRecord(reportedError)&&typeof reportedError.network_error_code==='string'?{network_error_code:reportedError.network_error_code}:{}),duration_ms:durationMs });
+   throw reportedError;
   } finally {
    clearTimeout(timer);
    signal?.removeEventListener('abort', abort);
@@ -334,6 +338,11 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
 /** DOCX reuses the verified v4 transport and maps native document blocks to one logical page. */
 export class MineruApiDocxExtractor extends MineruApiPdfExtractor {
  constructor(env: NodeJS.ProcessEnv = process.env, options: MineruApiOptions = {}) { super(env, options, 'docx'); }
+}
+
+/** PNG/JPEG 原件直传 MinerU API，不转PDF，不经CLI或其他OCR provider回退。 */
+export class MineruApiImageExtractor extends MineruApiPdfExtractor {
+ constructor(env: NodeJS.ProcessEnv = process.env, options: MineruApiOptions = {}) { super(env, options, 'image'); }
 }
 
 export class MineruApiFirstPdfExtractor implements PdfExtractionProvider {

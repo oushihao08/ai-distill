@@ -38,10 +38,12 @@ export function sourceKey(value: unknown) {
 }
 export function validateFile(file: File, bytes: Uint8Array) {
   const extension=file.name.split('.').at(-1)?.toLowerCase();
-  if (!['pdf','docx','txt','md'].includes(extension??'')) throw new HTTPException(400, { message: '仅支持PDF、DOCX、TXT和MD文件' });
+  if (!['pdf','docx','txt','md','png','jpg','jpeg'].includes(extension??'')) throw new HTTPException(400, { message: '仅支持PDF、DOCX、TXT、MD、PNG、JPG和JPEG文件' });
   if (file.size > MAX_FILE) throw new HTTPException(400, { message: `单个文件不能超过${MAX_FILE/1024/1024}MB` });
   if(extension==='pdf'&&new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-')throw new HTTPException(400,{message:'文件缺少PDF标识，请提供有效PDF'});
   if(extension==='docx'&& (bytes.length<4||new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(0,true)!==0x04034b50))throw new HTTPException(400,{message:'DOCX文件缺少有效压缩包标识'});
+  if(extension==='png'&&(bytes.length<8||![0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a].every((value,index)=>bytes[index]===value)))throw new HTTPException(400,{message:'PNG文件标识与扩展名不匹配'});
+  if((extension==='jpg'||extension==='jpeg')&&(bytes.length<4||bytes[0]!==0xff||bytes[1]!==0xd8||bytes.at(-2)!==0xff||bytes.at(-1)!==0xd9))throw new HTTPException(400,{message:'JPEG文件标识与扩展名不匹配'});
   if(extension==='txt'||extension==='md')try{new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new HTTPException(400,{message:`${extension.toUpperCase()}文件不是有效UTF-8文本`});}
   // Parsing belongs to ingestion; validation checks type and bounded file size only.
 }

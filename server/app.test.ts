@@ -79,6 +79,15 @@ test('workflow detail returns the frozen shared material source mode',async()=>{
  const body=await response.json() as {question_material_origin:{kind:string;material_mode:string;package_id:string;revision_id:string;redaction_id:string|null;snapshot_digest:string}|null};
  expect(body.question_material_origin).toEqual({kind:'library_v1',material_mode:'original',package_id:packageId,revision_id:'revision-1',redaction_id:null,snapshot_digest:'snapshot-digest'});
 });
+
+test('图片扩展名必须与PNG/JPEG文件签名一致',()=>{
+ const png=new Uint8Array([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,1]);
+ const jpeg=new Uint8Array([0xff,0xd8,1,2,0xff,0xd9]);
+ expect(()=>validateFile(new File([png],'scan.png'),png)).not.toThrow();
+ expect(()=>validateFile(new File([jpeg],'scan.jpeg'),jpeg)).not.toThrow();
+ expect(()=>validateFile(new File([jpeg],'scan.png'),jpeg)).toThrow('不匹配');
+ expect(()=>validateFile(new File([png],'scan.jpg'),png)).toThrow('不匹配');
+});
 function upload(files: File[], sourceKey?: string) {
  const form = new FormData(); form.append('title', '案件材料'); for (const file of files) form.append('files', file);
  if (sourceKey !== undefined) form.append('source_key', sourceKey);
@@ -462,8 +471,8 @@ test('answer generation policy GET is read-only and PUT preserves provider setti
   const initial=await app.request(`/api/projects/${projectId}/answer-generation-policy`);
   expect(initial.status).toBe(200);expect(await initial.json()).toEqual({request_timeout_minutes:60,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:false,source:'project'});
   expect(calls.some(call=>call.sql.startsWith('INSERT'))).toBe(false);
-  const unverified=await app.request(`/api/projects/${projectId}/answer-generation-policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_timeout_minutes:75,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:true})});
-  expect(unverified.status).toBe(400);expect(await unverified.json()).toMatchObject({error:'供应商／模型的推理流连续性尚未验证，自动免评分暂不可用'});expect(config).toMatchObject({answer_generation_policy:{skip_scoring_on_qualified_timeout:false}});
+  const enabled=await app.request(`/api/projects/${projectId}/answer-generation-policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_timeout_minutes:75,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:true})});
+  expect(enabled.status).toBe(200);expect(await enabled.json()).toMatchObject({request_timeout_minutes:75,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:true,source:'project'});expect(config).toMatchObject({answer_generation_policy:{skip_scoring_on_qualified_timeout:true}});
   const saved=await app.request(`/api/projects/${projectId}/answer-generation-policy`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_timeout_minutes:75,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:false})});
   const savedBody=await saved.json();expect({status:saved.status,body:savedBody,queries:calls.map(call=>call.sql)}).toMatchObject({status:200,body:{request_timeout_minutes:75,reasoning_threshold_minutes:45,skip_scoring_on_qualified_timeout:false,source:'project'}});
   expect(config).toMatchObject({provider:'qwen',model:'qwen/qwen-plus',answer_generation_policy:{request_timeout_ms:4_500_000,reasoning_threshold_ms:2_700_000,skip_scoring_on_qualified_timeout:false}});

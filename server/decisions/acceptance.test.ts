@@ -43,3 +43,8 @@ test('stale questions and incomplete answers do not pass',()=>{
  expect(decideAcceptance({...valid,question_current:false}).decision).toBe('quarantine');
  expect(decideAcceptance({...valid,models:valid.models.map(m=>({...m,answer_status:'failed'}))}).decision).toBe('waiting');
 });
+test('a qualified long generation passes without a score while ordinary skipped answers wait',()=>{
+ const qualified={...valid,models:valid.models.map(model=>({...model,answer_status:'skipped' as const,answer_outcome:'qualified_timeout_unscored' as const,score:undefined,max_score:undefined}))};
+ expect(decideAcceptance(qualified)).toMatchObject({decision:'accepted',model_scores:{qwen:{status:'passed',outcome:'qualified_timeout_unscored'},kimi:{status:'passed',outcome:'qualified_timeout_unscored'}}});
+ expect(decideAcceptance({...qualified,models:qualified.models.map(model=>({...model,answer_outcome:undefined}))}).decision).toBe('waiting');
+});

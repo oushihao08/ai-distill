@@ -43,3 +43,4 @@ export async function reviseQuestionOpening(pool:Pool,workflowId:string,raw:unkn
   return{changed:true,attempt_id:id,question_version:version,rubric_version:q.rubric_version,invalidated_ordinals:[5,6,7,8]};
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
+

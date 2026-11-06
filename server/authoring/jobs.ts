@@ -29,11 +29,12 @@ import type {QuestionMaterialOrigin} from '../../shared/material-library';
 import {readQuestionMaterials,type QuestionMaterials} from '../question-materials';
 import type {AuthoringBatchContext,MaterialScopeSelection,MaterialScopeContext} from '../../shared/material-preparation-result';
 import {renderPublicQuestionPackage,runAuthoring,FRESH_AUTHORING_CONTRACT,type AuthoringResult,type AuthoringRule} from './executor';
+import {readAnswerToolPolicyFromStepConfig,type AnswerToolPolicy} from '../answer-models/tool-policy';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 const stableDesignContext=(context:NonNullable<FrozenInput['design_context']>)=>({...('scenario'in context?{scenario:context.scenario}:{}),...('role_perspective'in context?{role_perspective:context.role_perspective}:{}),...('target_level'in context?{target_level:context.target_level}:{}),...('question_tags'in context?{question_tags:context.question_tags}:{})});
 const workflowSql="SELECT w.*,p.name AS project_name,p.local_skill_path,p.material_root,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot,s1.status AS ingestion_status,s9.status AS redaction_status\n FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL\n LEFT JOIN ai_distill.steps s1 ON s1.workflow_id=w.id AND s1.ordinal=1 LEFT JOIN ai_distill.steps s9 ON s9.workflow_id=w.id AND s9.ordinal=9\n WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
-interface FrozenInput {revision_advice?:FrozenAdvice;content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;scoring_policy?:ScoringPolicy;system_authoring_prompt?:string;project_name?:string;authoring_contract?:string;title:string;authoring_direction?:string;material_scope?:MaterialScopeContext;batch_context?:AuthoringBatchContext;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];model_materials?:{id:string;sha256:string}[];digest:string}
+interface FrozenInput {revision_advice?:FrozenAdvice;content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;scoring_policy?:ScoringPolicy;system_authoring_prompt?:string;project_name?:string;answer_capabilities?:AnswerToolPolicy;authoring_contract?:string;title:string;authoring_direction?:string;material_scope?:MaterialScopeContext;batch_context?:AuthoringBatchContext;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];model_materials?:{id:string;sha256:string}[];digest:string}
 const materialIdentity=(input:Pick<FrozenInput,'redaction_attempt_id'|'material_origin'>)=>input.material_origin?.kind==='library_v1'?{material_origin:{kind:input.material_origin.kind,material_mode:input.material_origin.material_mode,...(input.material_origin.material_processing_mode?{material_processing_mode:input.material_origin.material_processing_mode}:{}),package_id:input.material_origin.package_id,revision_id:input.material_origin.revision_id,redaction_id:input.material_origin.redaction_id,snapshot_digest:input.material_origin.snapshot_digest}}:{redaction_attempt_id:input.material_origin?.kind==='legacy'?input.material_origin.redaction_attempt_id:input.redaction_attempt_id};
 const designContext=(workflow:any)=>{const context={...(workflow.scenario?{scenario:String(workflow.scenario)}:{}),...(workflow.role_perspective?{role_perspective:String(workflow.role_perspective)}:{}),...(workflow.target_level?{target_level:String(workflow.target_level)}:{}),...(Array.isArray(workflow.question_tags)&&workflow.question_tags.length?{question_tags:workflow.question_tags.map(String)}:{})};return Object.keys(context).length?context:undefined;};
 const sourceFiles=(workflow:any):{name:string;path:string}[]=>Array.isArray(workflow.source_manifest)?workflow.source_manifest.filter((file:any)=>typeof file?.name==='string'&&typeof file?.path==='string').map((file:any)=>({name:file.name,path:file.path})):[];
@@ -44,6 +45,7 @@ export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.str
     ...(input.content_contract ? { content_contract: input.content_contract } : {}),
     ...(input.system_authoring_prompt ? { system_authoring_prompt: input.system_authoring_prompt } : {}),
     ...(input.project_name !== undefined ? { project_name: input.project_name } : {}),
+    ...(input.answer_capabilities ? { answer_capabilities: input.answer_capabilities } : {}),
     title: input.title,
     ...(input.design_context ? { design_context: stableDesignContext(input.design_context) } : {}),
     ...(input.authoring_direction ? { authoring_direction: input.authoring_direction } : {}),
@@ -67,6 +69,7 @@ export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.str
     ...(input.content_contract ? { content_contract: input.content_contract } : {}),
     ...(input.system_authoring_prompt ? { system_authoring_prompt: input.system_authoring_prompt } : {}),
     ...(input.project_name !== undefined ? { project_name: input.project_name } : {}),
+    ...(input.answer_capabilities ? { answer_capabilities: input.answer_capabilities } : {}),
     title: input.title,
     ...(input.design_context ? { design_context: stableDesignContext(input.design_context) } : {}),
     ...(input.authoring_direction ? { authoring_direction: input.authoring_direction } : {}),
@@ -166,6 +169,8 @@ export async function enqueueAuthoring(pool:Pool,id:string){
   const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[source.workflow.project_id])).rows[0]?.config;
   const config=validateStepConfigForExecution(4,mergeCodexDefaults(raw,await readProjectAgentDefaults(db,source.workflow.project_id)));
   const scoreConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[source.workflow.project_id])).rows[0]?.config;
+  const answerConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5',[source.workflow.project_id])).rows[0]?.config;
+  const answerCapabilities=readAnswerToolPolicyFromStepConfig(answerConfig)??{server_tools:[],local_tools:[]};
   const scoreWorkflow=validateWorkflowConfig(scoreConfig?.workflow);
   const scoringPolicy:ScoringPolicy|undefined=scoreWorkflow?.contract==='model_report_v1'?{contract:scoreWorkflow.contract,rules_text:scoreWorkflow.rules_text,reference_answer:scoreWorkflow.reference_answer}:undefined;
   const hooks=await freezeStageHooks(dirname(source.skill_path),config.workflow);
@@ -173,7 +178,7 @@ export async function enqueueAuthoring(pool:Pool,id:string){
   const advice=await frozenRevisionAdvice(db,id);
   const batchContext=await freezeAuthoringBatch(db,source.workflow.project_id,id);
   const materialScope=freezeMaterialScope('loaded_materials' in source?source.loaded_materials?.material_scope:undefined,batchContext);
-  const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),batch_context:batchContext,question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
+  const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,answer_capabilities:answerCapabilities,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),batch_context:batchContext,question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};
   await supersedeForeignPending(db,{kind:'step',id,ordinal:4});
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND input->>'digest'=$2 AND config=$3::jsonb AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id,input.digest,JSON.stringify(config)])).rows[0];
@@ -375,6 +380,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     workspace_path: resolveProjectPath(job.input.project_prompt.workspace_path),
                     root: join(directory, 'private'),
                     project_name: job.input.project_name,
+                    answer_capabilities: job.input.answer_capabilities,
                     question: job.input.title,
                     authoring_direction: authoringDirection,
                     question_id: job.input.question_id ?? job.input.title,
@@ -393,9 +399,9 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                         + hookAdditionText(additions),
                     model: job.config.model,
                     reasoning_effort: job.config.reasoning_effort,
-                    ...(job.config.timeout_ms ? {
-                        timeout_ms: job.config.timeout_ms
-                    } : {}),
+                    // 业务心跳只证明执行器存活，不能让始终没有完整结果的调用无限占槽。
+                    // 出题单次墙钟时间硬限制为 30 分钟；到线后由现有失败结算释放本机容量。
+                    timeout_ms: Math.min(job.config.timeout_ms ?? 1_800_000, 1_800_000),
                     signal,
                     execute: options => runExternalCall({
                         attempt_id: job.id, operation: 'author'
