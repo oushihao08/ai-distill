@@ -13,6 +13,7 @@ import type {LibraryExecutionTarget,LibraryExecutorKind} from '../../shared/mate
 import {type DocumentExtractor,extractLocalDocument,ProjectDocumentExtractor} from '../materials/document';
 import {MineruCliPdfExtractor} from '../materials/pdf-extraction/mineru-cli';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiImageExtractor,MineruApiPdfExtractor} from '../materials/pdf-extraction/mineru-api';
+import {mineruToken} from '../materials/pdf-extraction/mineru-credentials';
 import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
@@ -54,7 +55,7 @@ async function executeIntake(pool:Pool,root:string,job:any,signal:AbortSignal){
 async function documentExtractor(root:string,jobId:string,provider:unknown,formats:string[]){
  if(!['mineru-api','mineru-cli'].includes(String(provider)))throw new HTTPException(409,{message:'提取任务缺少冻结MinerU供应商，请创建新的提取任务'});
  const hasPdf=formats.includes('pdf'),hasMineruNative=formats.some(format=>['docx','png','jpg','jpeg'].includes(format));
- if((hasPdf||hasMineruNative)&&!process.env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
+ if((hasPdf||hasMineruNative)&&!mineruToken())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
  const cli=new MineruCliPdfExtractor(process.env);
  const pdf=provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli);
  const extractor=new ProjectDocumentExtractor(pdf,new MineruApiDocxExtractor(process.env),new MineruApiImageExtractor(process.env));

@@ -10,7 +10,7 @@ import {randomUUID} from 'node:crypto';
 import {assertMaterialUse,claimMaterialUse,indexLegacyMaterialUse,readPackageSignature} from './uses';
 
 type Db=Pool|PoolClient;
-type LoadedLink={selected_version_usable?:boolean;id:string;project_id:string;package_id:string;package_name:string;selected_revision_id:string|null;selected_redaction_id:string|null;current_revision_id:string|null;position:number;lock_version:number;removed_at:string|null;created_at:string;updated_at:string;material_use_id?:string|null;usage_status?:'in_use'|'submitted';use_lock_version?:number};
+type LoadedLink={selected_version_usable?:boolean;id:string;project_id:string;package_id:string;package_name:string;selected_revision_id:string|null;selected_redaction_id:string|null;current_revision_id:string|null;position:number;lock_version:number;removed_at:string|null;created_at:string;updated_at:string;material_use_id?:string|null;usage_status?:'in_use'|'submitted';use_lock_version?:number;reuse_source_workflow_id?:string|null;reuse_direction?:string|null};
 const conflict=(message:string)=>new HTTPException(409,{message});
 const notFound=(message:string)=>new HTTPException(404,{message});
 
@@ -61,7 +61,7 @@ async function withTransaction<T>(pool:Pool,operation:(db:PoolClient)=>Promise<T
 }
 
 export async function readLoadedLibraryPackages(pool:Pool,projectId:string,options:{includeRemoved?:boolean}={}):Promise<LoadedLink[]>{
- const result=await pool.query(`SELECT l.id,l.project_id,l.package_id,p.name AS package_name,l.selected_revision_id,l.selected_redaction_id,
+ const result=await pool.query(`SELECT l.id,l.project_id,l.package_id,p.name AS package_name,l.selected_revision_id,l.selected_redaction_id,l.reuse_source_workflow_id,l.reuse_direction,
    p.current_revision_id,l.position,l.lock_version,l.removed_at,l.created_at,l.updated_at,l.material_use_id,u.status AS usage_status,u.lock_version AS use_lock_version,
    CASE WHEN l.selected_redaction_id IS NULL THEN 'original'
     WHEN red_job.config_snapshot->'redaction_template'->>'workflow'='codex_plan' OR red.validation_report->>'redaction_template_id'='aliases' THEN 'aliases'
@@ -87,21 +87,29 @@ export async function readLoadedLibraryPackages(pool:Pool,projectId:string,optio
  return result.rows.map(row=>({...row,lock_version:Number(row.lock_version),...(row.use_lock_version==null?{}:{use_lock_version:Number(row.use_lock_version)})})) as LoadedLink[];
 }
 
-export async function loadLibraryPackage(pool:Pool,projectId:string,packageId:string,redactionValue?:string|null,revisionValue?:string|null){
+export async function loadLibraryPackage(pool:Pool,projectId:string,packageId:string,redactionValue?:string|null,revisionValue?:string|null,reuse?:{source_workflow_id:string;direction:string}){
  const redactionId=validateSelection(redactionValue);
  const result=await withTransaction(pool,async db=>{
   const {project}=await lockPackageProject(db,projectId,packageId);
   const selection=revisionValue!==undefined?await selectedExtraction(db,packageId,revisionValue):await selectedRedaction(db,packageId,redactionId);
   const signature=project.project_group_id?await readPackageSignature(db,packageId,selection.revision_id):null;
   const historical=signature?await indexLegacyMaterialUse(db,project,packageId,signature):null;
-  if(historical)return{blocked_reason:`该材料已在${historical.phase_name||'历史期次'}使用，已登记原期占用，不能在本项目其他期次重复加载`};
-  const use=signature?await claimMaterialUse(db,project,packageId,signature):null;
-  const current=(await db.query(`SELECT id,project_id,package_id,selected_revision_id,selected_redaction_id,position,lock_version,removed_at,material_use_id
+  if(historical&&!reuse)return{blocked_reason:`该材料已在${historical.phase_name||'历史期次'}使用，已登记原期占用，不能在本项目其他期次重复加载`};
+  // 显式复用只借用原期的永久占用，不新建或转移使用账；来源题和新方向随加载关系冻结。
+  const source=reuse?(await db.query(`SELECT w.id,w.authoring_direction,w.project_id,u.id AS use_id,u.owner_phase_id
+   FROM ai_distill.workflows w JOIN ai_distill.question_library_sources q ON q.workflow_id=w.id
+   JOIN ai_distill.projects p ON p.id=w.project_id JOIN ai_distill.project_material_uses u ON u.package_id=q.package_id AND u.project_group_id=p.project_group_id
+   JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=4 AND s.status='succeeded'
+   WHERE w.id=$1 AND q.package_id=$2 AND p.project_group_id=$3 AND w.project_id<>$4 AND w.deleted_at IS NULL`,[reuse.source_workflow_id,packageId,project.project_group_id,projectId])).rows[0]:null;
+  if(reuse&&(!source||source.owner_phase_id!==source.project_id||reuse.direction.trim()===String(source.authoring_direction??'').trim()))throw conflict('跨期复用须指定同主项目原期成功题目和不同的新出题方向');
+  const use=reuse?{id:source.use_id}:signature?await claimMaterialUse(db,project,packageId,signature):null;
+  const current=(await db.query(`SELECT id,project_id,package_id,selected_revision_id,selected_redaction_id,position,lock_version,removed_at,material_use_id,reuse_source_workflow_id,reuse_direction
     FROM ai_distill.project_library_packages WHERE project_id=$1 AND package_id=$2 AND removed_at IS NULL FOR UPDATE`,[projectId,packageId])).rows[0];
   if(current){
+   if(reuse&&(current.reuse_source_workflow_id!==reuse.source_workflow_id||current.reuse_direction!==reuse.direction))throw conflict('本期已加载该材料，跨期复用来源或方向不可改写');
    if(use&&!current.material_use_id){await db.query('UPDATE ai_distill.project_library_packages SET material_use_id=$2 WHERE id=$1',[current.id,use.id]);current.material_use_id=use.id;}
    if(current.selected_revision_id!==selection.revision_id||current.selected_redaction_id!==selection.redaction_id){
-    if(use)await assertMaterialUse(db,projectId,packageId,use.id);
+    if(use)await assertMaterialUse(db,projectId,packageId,use.id,current.id);
     const updated=(await db.query(`UPDATE ai_distill.project_library_packages SET selected_revision_id=$4,selected_redaction_id=$5,
       lock_version=lock_version+1,updated_at=now() WHERE id=$1 AND project_id=$2 AND package_id=$3 RETURNING *`,
       [current.id,projectId,packageId,selection.revision_id,selection.redaction_id])).rows[0];
@@ -114,10 +122,10 @@ export async function loadLibraryPackage(pool:Pool,projectId:string,packageId:st
    if(removed)throw conflict('本项目已经使用过该材料，请在原期次恢复原引用，不可重复加载');
   }
   const nextPosition=Number((await db.query('SELECT COALESCE(max(position),0)+1 AS next_position FROM ai_distill.project_library_packages WHERE project_id=$1 AND removed_at IS NULL',[projectId])).rows[0]?.next_position??1);
-  const result=await db.query(`INSERT INTO ai_distill.project_library_packages(id,project_id,package_id,selected_revision_id,selected_redaction_id,position,material_use_id)
-    VALUES($1,$2,$3,$4,$5,$6,$7)
+  const result=await db.query(`INSERT INTO ai_distill.project_library_packages(id,project_id,package_id,selected_revision_id,selected_redaction_id,position,material_use_id,reuse_source_workflow_id,reuse_direction)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
     RETURNING id,project_id,package_id,selected_revision_id,selected_redaction_id,position,lock_version,removed_at`,
-    [randomUUID(),projectId,packageId,selection.revision_id,selection.redaction_id,nextPosition,use?.id??null]);
+    [randomUUID(),projectId,packageId,selection.revision_id,selection.redaction_id,nextPosition,use?.id??null,reuse?.source_workflow_id??null,reuse?.direction??null]);
   return{...result.rows[0],reused:false} as LoadedLink&{reused:boolean};
  });
  // 旧期占用是新发现的真实历史，应持久保存；409只表示本次加载未成功，不回滚旧期索引。
@@ -149,7 +157,7 @@ export async function updateLoadedLibraryPackage(pool:Pool,projectId:string,link
   if(!identity)throw notFound('项目加载的材料包不存在');
   const {project}=await lockPackageProject(db,projectId,String(identity.package_id));
   const link=await lockLoadedLink(db,projectId,linkId);
-  if(project.project_group_id)await assertMaterialUse(db,projectId,link.package_id,link.material_use_id);
+  if(project.project_group_id)await assertMaterialUse(db,projectId,link.package_id,link.material_use_id,link.id);
   if(Number(link.lock_version)!==expectedVersion)throw conflict('项目材料加载关系已更新，请刷新后重试');
   const selection='revision_id'in input?await selectedExtraction(db,link.package_id,input.revision_id??null):await selectedRedaction(db,link.package_id,'redaction_id'in input?input.redaction_id??null:link.selected_redaction_id);
   const position=input.position??link.position;
@@ -185,7 +193,7 @@ export async function restoreLoadedLibraryPackage(pool:Pool,projectId:string,lin
   await lockPackageProject(db,projectId,identity.package_id);
   const link=(await db.query('SELECT * FROM ai_distill.project_library_packages WHERE id=$1 AND project_id=$2 FOR UPDATE',[linkId,projectId])).rows[0];
   if(Number(link.lock_version)!==expectedVersion)throw conflict('材料引用已更新，请刷新后重试');
-  await assertMaterialUse(db,projectId,link.package_id,link.material_use_id);
+  await assertMaterialUse(db,projectId,link.package_id,link.material_use_id,link.id);
   const saved=await db.query('UPDATE ai_distill.project_library_packages SET removed_at=NULL,lock_version=lock_version+1,updated_at=now() WHERE id=$1 AND project_id=$2 RETURNING *',[linkId,projectId]);
   return saved.rows[0];
  });

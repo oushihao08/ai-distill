@@ -61,7 +61,7 @@ workflow-config.ts 的可选 content_contract=work_legal_v1 供出题阶段显�
 
 `material-library.ts`区分当前可保存两模式`NewMaterialProcessingMode`与含历史mask的`MaterialProcessingMode`及兼容解析/来源映射/结果分类函数，供后端和页面共用。处理意图与original/redacted快照来源是不同层次：mask和aliases均冻结redacted，原文冻结original；执行后端不写进处理方式枚举。
 
-`scan-noise.ts`通过`findScanNoiseEdits()`及`cleanScanNoisePages()`提供结构化清理：将明确OCR占位标记、数字前缀扫描时间戳、扫描/打印时间标签替换为空串；普通独立数字行（包括`-22-`）默认保留，保留换行；支持大小写和常见空格/下划线变体。固定列表包括NO TEXT、NO TEXT DETECTED、NO TEXT FOUND、QR Code、Image、Barcode、Bar Code、UNREADABLE等，不泛删`[证据1]`等正文。数字行不作用于表格/列表/公式/代码块；已被Agent编辑覆盖的纯数字候选不重复清理；页角数字仍按扫描证据处理，不能把技术通过视为业务数字已全面核验。普通正文日期、带单位金额、小数和`1、`条目不匹配。
+`scan-noise.ts`通过`findScanNoiseEdits()`及`cleanScanNoisePages()`提供结构化清理：将明确OCR占位标记、数字前缀扫描时间戳、扫描/打印时间标签替换为空串；仅独立位于页首或页尾的扫描全能王品牌行按来源水印删除，正文中提及该软件时保留；页尾无正文的成对Markdown代码围栏删除，带实际代码或JSON正文的围栏保留。普通独立数字行（包括`-22-`）默认保留，保留换行；支持大小写和常见空格/下划线变体。固定列表包括NO TEXT、NO TEXT DETECTED、NO TEXT FOUND、QR Code、Image、Barcode、Bar Code、UNREADABLE等，不泛删`[证据1]`等正文。数字行不作用于表格/列表/公式/代码块；已被Agent编辑覆盖的纯数字候选不重复清理；页角数字仍按扫描证据处理，不能把技术通过视为业务数字已全面核验。普通正文日期、带单位金额、小数和`1、`条目不匹配。
 
 `findScanNoiseEdits()`复用`materialMarkupEdits()`清除材料文本中的标签外壳（含中文/未知/错配标签）及多层实体残留，保留标签内正文；法规名称尖括号转书名号，数字比较符号保留。标签与实体使用局部精确编辑，不以整字段替换覆盖化名或号码遮盖。它将清理和确定格式还原转为原文精确坐标，供Agent计划编译并验证文书覆盖；`cleanScanNoisePages()`按结构字段生成副本，供新提取正文发布前复用并重建正文/索引。两者不改传入结构或既有发布结果；提取发布的原始OCR与编辑审计由材料库执行器保存。普通数字行保留；C类角码需处于页边界且同文件已有重复扫描签名证据，其他数字需跨页页角证据。条码编号只在“数字+[Barcode]”独占同一字段行时一起清理，业务编号与标记相邻不等于垃圾。文字格式还原覆盖Unicode、星号/下划线/引号等转义、字面换行/制表符及真实材料出现的LaTeX角度/百分号排版；不反推OCR本来应是什么数字。Windows路径只规范分隔符，代码和公式保留其语法转义。实体支持缺分号的常见残留，XML声明、命名空间标签和CDATA外壳清除，内部正文保留。测试覆盖坐标、幂等、单位/日期、表格和映射后编号保留。
 

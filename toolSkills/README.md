@@ -4,6 +4,7 @@
 
 | 目录 | 用途 |
 | --- | --- |
+| [materials-full-capacity-dispatch](materials-full-capacity-dispatch/SKILL.md) | 已授权材料批次的全量候选扫描、实时容量回读与持续补位；空槽须有逐项依据 |
 | [phase8-materials-full-capacity](phase8-materials-full-capacity/SKILL.md) | 第八期八个固定来源材料包的 Agent/API 双 lane 满载补位与逐包追溯 |
 | [ai-distill-scheduled-runner](ai-distill-scheduled-runner/SKILL.md) | 按用户指定间隔逐题对账、主动补位，推进材料、出题、作答、评分与有限返修 |
 | [feishu-operations](feishu-operations/SKILL.md) | 通用飞书表格/字段/记录/视图、附件操作CLI与工具包，豆包交付复用；支持官方CLI透传 |

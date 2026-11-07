@@ -14,6 +14,7 @@
     "start:iterm": "bash scripts/runtime/start-iterm.sh"
   },
   "dependencies": {
+    "@alicloud/docmind-api20220711": "1.4.16",
     "docx": "9.9.0",
     "hono": "4.13.13",
     "pg": "8.23.1"

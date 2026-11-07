@@ -84,10 +84,19 @@ export async function claimMaterialUse(db:PoolClient,phase:Phase,packageId:strin
  return use;
 }
 
-export async function assertMaterialUse(db:PoolClient,phaseId:string,packageId:string,useId:string|null|undefined){
+export async function assertMaterialUse(db:PoolClient,phaseId:string,packageId:string,useId:string|null|undefined,linkId?:string){
  if(!useId)throw conflict('该材料尚未建立主项目使用关联，请先核对历史来源');
  const use=(await db.query('SELECT * FROM ai_distill.project_material_uses WHERE id=$1 FOR UPDATE',[useId])).rows[0];
- if(!use||use.owner_phase_id!==phaseId||use.package_id!==packageId)throw conflict('材料使用记录不属于本期加载关系');
+ if(!use||use.package_id!==packageId)throw conflict('材料使用记录不属于本期加载关系');
+ if(use.owner_phase_id!==phaseId){
+  const grant=linkId?(await db.query(`SELECT l.id FROM ai_distill.project_library_packages l
+   JOIN ai_distill.workflows w ON w.id=l.reuse_source_workflow_id
+   JOIN ai_distill.question_library_sources q ON q.workflow_id=w.id AND q.package_id=l.package_id
+   WHERE l.id=$1 AND l.project_id=$2 AND l.package_id=$3 AND l.material_use_id=$4
+    AND w.project_id=$5 AND l.reuse_direction IS NOT NULL AND length(btrim(l.reuse_direction))>0`,[linkId,phaseId,packageId,useId,use.owner_phase_id])).rows[0]:null;
+  if(!grant)throw conflict('材料使用记录不属于本期加载关系');
+  return use;
+ }
  if(use.status==='submitted')throw conflict('该材料已提交；如需返修，请先在原期次将状态退回使用中');
  return use;
 }

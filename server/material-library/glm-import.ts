@@ -17,6 +17,7 @@ import {assertLibraryExtractionUsable} from './jobs';
 import {readLibraryBlob} from './storage';
 import {readLibraryOriginalPreview} from './original-preview';
 import {logEvent} from '../logging';
+import {cleanScanNoisePages,findExtractionResidues} from '../../shared/scan-noise';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
 
@@ -67,6 +68,9 @@ export async function importGlmExtraction(pool:Pool,root:string,revisionId:strin
    if(pageCount>(isDocx?1000:200)||pageCount!==input.pages.length)throw conflict('GLM-OCR页数与原件或DOCX渲染副本不一致');
    let document;
    try{document=ensurePages(input.pages as Parameters<typeof ensurePages>[0],file.sha256);}catch{throw new HTTPException(400,{message:'GLM-OCR页级结构无法完整转换'});}
+   const cleaned=cleanScanNoisePages(document.pages.map(page=>({file_id:file.id,page:page.page,blocks:page.structure!})),{englishOnlyParagraphs:true});
+   const residues=findExtractionResidues(cleaned.pages);
+   if(residues.length)throw conflict(`GLM-OCR正文仍有格式残留，请复核第${[...new Set(residues.map(item=>item.page))].join('、')}页`);
    assertLibraryExtractionUsable([{issues:[],pages:document.pages}]);
    const issues=document.pages.flatMap(page=>(page.issues??[]).map(kind=>({page:page.page,kind})));
    prepared.push({file,document,issues});

@@ -50,7 +50,7 @@
 
 旧目录按题目入库，旧材料包先处理material_package，再由`../material-package-questions.ts`建派生题。全局库由`../material-library/questions.ts`冻结脱敏或成功提取原文，默认脱敏；创建后期次设置变化不切换旧题来源，出题/作答/评分/归档均使用同一快照。派生题不再运行旧入库/脱敏。主项目永久使用账不归本模块管理。
 
-旧提取入队冻结PDF provider及转换版本。新提取只允许MinerU API或MinerU CLI；默认MinerU API符合特定网络/服务/超时错误时才回退一次CLI，其他provider配置直接拒绝。DOCX与图片直接使用MinerU API，DOCX按原文序映射为单逻辑页；TXT/MD本地解析。MinerU需`MINERU_KEY`。空白页及provider明确的异常用于局部复查；新解析不生成图片占位或推断式问题标记，历史缓存不回写。
+旧提取入队冻结PDF provider及转换版本。新提取只允许MinerU API或MinerU CLI；默认MinerU API符合特定网络/服务/超时错误时才回退一次CLI，其他provider配置直接拒绝。DOCX与图片直接使用MinerU API，DOCX按原文序映射为单逻辑页；TXT/MD本地解析。MinerU主用Token为`MINERU_KEY`，可选预备Token与切换方式见[pdf-extraction说明](pdf-extraction/README.md#维护边界)。空白页及provider明确的异常用于局部复查；新解析不生成图片占位或推断式问题标记，历史缓存不回写。
 
 提取入队可复用同来源/配置的成功尝试，活动去重；执行时另选同来源/供应商配置的历史PDF产物，校验文件、SHA、结构文字投影，不等于只读取成功尝试缓存。损坏缓存可重新提取。只对OCR空白页或empty_page/truncated_response/ocr_page_error/unreadable问题做一次复查；新解析不再生成图片无文字、未知块和表格结构降级提示，历史缓存中的旧标记不会触发复查。复查通过pdfseparate/pdfunite在私有临时目录构造问题页子集，交给原provider，验证子集摘要、原件绑定及返回页数/页序后只替换指定页，正常缓存页保留复用及usage身份。缺少extractPages能力的注入提取器保留原文并添加ocr_recheck_unavailable，不降级为整份重传；结果仍有问题时保留issues，不阻断旧入库。全局库有自己的可用性判断，不套用旧队列状态。
 

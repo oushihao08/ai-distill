@@ -116,7 +116,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务意图、执行归属和
 - `server` 必须是server目标，处理服务器材料/人工声明和无本地钩子的API作答，不运行Agent和评分。
 - 可选 `WORKER_WORKFLOW_IDS` 接收逗号分隔的工作流 UUID；设置后，仅处理范围内工作流的出题、作答、评分及交付；local队列还允许显式返修建议。材料、脱敏、项目Skill和历史hook任务不进入该范围。未设置时保持上述默认行为。该范围只限制领取和中断恢复，不改变已冻结任务输入。
 
-新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发逐项优先读取 `.env`／进程环境中的 `AGENT_CONCURRENCY`、`LLM_API_CONCURRENCY`（1–32），未设置或空白才读取 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，均缺失时默认Agent2/API8；非法环境值直接报错，两项均配置时不读取持久设置。修改环境变量后须重启API和worker；页面保存的是回退设置，被环境变量覆盖的项不因保存而改变生效值；页面可设置Agent 1–14、API 1–16；范围以 `concurrency.ts` 的常量为准，环境兼容范围另见该文件，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
+新材料库任务按internal/API/Agent lane加入相应公平队列；legacy任务还检查provider、execution_target和钩子归属。配置保存不代表每个进程已经加载。并发逐项优先读取 `.env`／进程环境中的 `AGENT_CONCURRENCY`、`LLM_API_CONCURRENCY`（1–32），未设置或空白才读取 `STORAGE_DIR/.concurrency/agent-slots.sqlite3` 中的持久设置，均缺失时默认Agent2/API8；非法环境值直接报错，两项均配置时不读取持久设置。修改环境变量后须重启API和worker；页面保存的是回退设置，被环境变量覆盖的项不因保存而改变生效值；页面可设置Agent 1–14、API 1–20；范围以 `concurrency.ts` 的常量为准，环境兼容范围另见该文件，变更后按接口的restart_required核对进程。Agent槽位协调同一存储下的进程；API传输槽位见llm-api模块，不宣称跨机器全局限制。内存监控可能暂停新领取，不终止已执行任务。
 
 `steps`是当前状态，`step_attempts`是尝试历史。`waiting`须结合活动尝试、就绪原因和worker归属判断；HTTP202只表示已接受或等待未终结。按原attempt/job/request key恢复，不因超时重新派发。单题与批量资格分别由入口及业务模块复核；批量一题失败不把其余结果改成失败。独立评分已完成但缺少明确可比较分数、且达标仍waiting时，可由用户显式重新评分；旧validation标记本身不是达标门槛。已有达标或归档结果仍受重复派发保护，不自动重试。
 

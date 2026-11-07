@@ -17,6 +17,23 @@ test('preserves unproven numeric lines while removing explicit watermarks',()=>{
  expect(text).toContain('2025-03-26 15:27:50');expect(text).toContain('记录8836_2025-03-26 15:27:51作为业务流水号');
  expect(text).toMatch(/^10000$/m);expect((out.pages[1]!.blocks.at(-1) as any).rows[0].cells[1].text).toBe('2');
 });
+test('removes only standalone scanner-brand lines at page edges',()=>{
+ const input=[page(1,['扫描全能王','合同约定使用扫描全能王归档','正文金额130069元','CS 扫描全能王 3亿人都在用的扫描App']),page(2,['正文','3亿人都在用的扫描App'])];
+ const output=cleanScanNoisePages(input);
+ const texts=output.pages.map(p=>documentBlocksToText(p.blocks));
+ expect(texts[0]).toContain('合同约定使用扫描全能王归档');
+ expect(texts[0]).toContain('正文金额130069元');
+ expect(texts[0]).not.toContain('CS 扫描全能王');
+ expect(texts[1]).not.toContain('3亿人都在用的扫描App');
+ expect(output.edits).toHaveLength(3);
+});
+test('removes empty trailing OCR fences without deleting source code or JSON text',()=>{
+ const input=[page(1,['正文','```markdown','```']),page(2,['原件中的代码示例','```json','{"amount":130069}','```'])];
+ const output=cleanScanNoisePages(input);
+ expect(documentBlocksToText(output.pages[0]!.blocks)).toBe('正文\n\n');
+ expect(documentBlocksToText(output.pages[1]!.blocks)).toContain('{"amount":130069}');
+ expect(output.edits).toHaveLength(2);
+});
 test('cross-page corner evidence removes page numbers, preserving other numeric fields',()=>{
  const pages=[1,2,3].map(n=>page(n,['12345','付款金额','1000',String(n).padStart(3,'0')]));
  for(const p of pages)p.blocks.unshift({id:'stamp',kind:'paragraph',text:`8836_2025-03-26 15:27:5${p.page}`});

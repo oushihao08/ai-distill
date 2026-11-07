@@ -11,6 +11,7 @@ import { command } from '../pdf';
 import { logEvent } from '../../logging';
 import { DOCUMENT_STRUCTURE_VERSION, documentBlocksToText, type DocumentBlock, type DocumentCell, type DocumentRow, type Page } from '../pdf';
 import type { PdfExtractionProvider, PdfExtractionResult } from './types';
+import { mineruToken } from './mineru-credentials';
 
 // Increment when conversion semantics change: old text-only caches are incomplete.
 export const MINERU_OCR_VERSION = 'mineru-open-api-first-structured-v4';
@@ -187,7 +188,7 @@ export function parseMineruDocxJson(value: unknown): Page[] {
   page.blocks.push(...toBlocks(block, ordinal++));
  }
  const text = documentBlocksToText(page.blocks);
- if (!text.trim()) throw new Error('MinerU DOCX没有可提取文字');
+ if (!text.trim()) throw Object.assign(new Error('MinerU DOCX没有可提取文字'), { reason_code: 'ocr_empty' });
  return [{ page: 1, text, structure: page.blocks, method: 'text' }];
 }
 
@@ -201,8 +202,8 @@ export class MineruCliPdfExtractor implements PdfExtractionProvider {
   const info = await command(['pdfinfo', path]);
   const pageCount = Number(info.match(/^Pages:\s+(\d+)/m)?.[1]);
   if (!Number.isInteger(pageCount) || pageCount < 1) throw new Error('PDF页数无效');
-  const token = this.env.MINERU_KEY;
-  if (!token) throw new Error('未配置 MINERU_KEY');
+  const token = mineruToken(this.env);
+  if (!token) throw new Error('未配置当前选中的 MinerU API Token');
   if (signal?.aborted) throw new Error('PDF提取已取消');
 
   const diagnosticId = crypto.randomUUID();

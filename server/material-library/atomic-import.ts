@@ -15,6 +15,7 @@ import {readLibraryProcessingSettings} from './settings';
 import {chooseLibraryExecutor,libraryExternalExtractionTimeoutMs} from './jobs';
 import {installLibraryBlob,lockLibraryBlobWrites,normalizeLibraryFilename,readLibraryBlob} from './storage';
 import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
+import {mineruToken} from '../materials/pdf-extraction/mineru-credentials';
 
 export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKey:string,value:unknown,uploads:LibraryFileInput[],target?:{package_id:string;lock_version:number},requestedPdfProvider?:string){
  uuid(requestKey);if(target)uuid(target.package_id);
@@ -37,7 +38,9 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
  if(requestedPdfProvider!==undefined&&!['mineru-api','mineru-cli'].includes(requestedPdfProvider))throw new HTTPException(400,{message:'PDF OCR provider 仅支持MinerU'});
  const pdfProvider=requestedPdfProvider??process.env.PDF_EXTRACTION_PROVIDER??'mineru-api';
  if(!['mineru-api','mineru-cli'].includes(pdfProvider))throw new HTTPException(503,{message:'当前文本提取仅支持MinerU'});
- const manifest=buildLibraryManifest(files.map(f=>({...f,sha256:f.source_sha256}))),requestDigest=hash({input:target?null:input,target:target??null,manifest:manifest.sha256,pdf_provider:pdfProvider});
+ const executionTarget=process.env.ATOMIC_IMPORT_EXECUTION_TARGET??'local';
+ if(executionTarget!=='local'&&executionTarget!=='server')throw new HTTPException(503,{message:'ATOMIC_IMPORT_EXECUTION_TARGET 仅支持 local 或 server'});
+ const manifest=buildLibraryManifest(files.map(f=>({...f,sha256:f.source_sha256}))),requestDigest=hash({input:target?null:input,target:target??null,manifest:manifest.sha256,pdf_provider:pdfProvider,...(executionTarget==='server'?{execution_target:'server'}:{})});
  const id=randomUUID(),directory=join(jobDirectory(root,id),'import-source'),db=await pool.connect();let commitAttempted=false;
  try{
   await db.query('BEGIN');await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`atomic-library-import:${requestKey}`]);
@@ -47,8 +50,8 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
   const settings=(await readLibraryProcessingSettings(db,root)).processing_settings as any;
   const executor=chooseLibraryExecutor('extract',files.map(f=>({format:f.format as any,redaction_mode:f.redaction_mode})),settings.redaction,'local');
   const hasPdf=files.some(file=>file.format==='pdf'),requiresMineruNative=files.some(file=>['docx','png','jpg','jpeg'].includes(file.format));
-  const pdfProviderReady=!hasPdf||Boolean(process.env.MINERU_KEY?.trim());
-  const providerReady=pdfProviderReady&&(!requiresMineruNative||Boolean(process.env.MINERU_KEY?.trim()));
+  const pdfProviderReady=!hasPdf||Boolean(mineruToken());
+  const providerReady=pdfProviderReady&&(!requiresMineruNative||Boolean(mineruToken()));
   if(executor==='api'&&!providerReady)throw new HTTPException(503,{message:'文本提取服务尚未正确配置'});
   if(executor==='api'){
    const count=files.filter(file=>['pdf','docx','png','jpg','jpeg'].includes(file.format)).length;
@@ -60,7 +63,7 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
   const snapshot={version:1,request_digest:requestDigest,manifest_sha256:manifest.sha256,files:staged,atomic_import:{package_id:target?.package_id??randomUUID(),revision_id:randomUUID(),package_input:input,expected_version:target?.lock_version??null}};
   const config={version:1,settings,pdf_provider:pdfProvider,pdf_ocr_version:MINERU_OCR_VERSION,...(files.some(file=>['png','jpg','jpeg'].includes(file.format))?{image_ocr_version:MINERU_OCR_VERSION}:{})};
   await db.query(`INSERT INTO ai_distill.library_jobs(id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
-   VALUES($1,'extract','queued',$2,$3,$4::jsonb,$5,$6::jsonb,$7,'local')`,[id,requestKey,hash(snapshot),JSON.stringify(snapshot),hash(config),JSON.stringify(config),executor]);
+   VALUES($1,'extract','queued',$2,$3,$4::jsonb,$5,$6::jsonb,$7,$8)`,[id,requestKey,hash(snapshot),JSON.stringify(snapshot),hash(config),JSON.stringify(config),executor,executionTarget]);
   await registerLocalJob(db,id,'library',executor,'library:extract');commitAttempted=true;
   await db.query('COMMIT');forgetLocalRegistrations(db);return{id,status:'queued',package_id:null,revision_id:null,reused:false};
  }catch(error){

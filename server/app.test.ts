@@ -85,6 +85,10 @@ test('图片扩展名必须与PNG/JPEG文件签名一致',()=>{
  const jpeg=new Uint8Array([0xff,0xd8,1,2,0xff,0xd9]);
  expect(()=>validateFile(new File([png],'scan.png'),png)).not.toThrow();
  expect(()=>validateFile(new File([jpeg],'scan.jpeg'),jpeg)).not.toThrow();
+ const scannerJpeg=new Uint8Array([...jpeg,...new Uint8Array(24).fill(0x31)]);
+ expect(()=>validateFile(new File([scannerJpeg],'scanner.jpg'),scannerJpeg)).not.toThrow();
+ const noEndMarker=new Uint8Array([0xff,0xd8,1,2,...new Uint8Array(24).fill(0x31)]);
+ expect(()=>validateFile(new File([noEndMarker],'broken.jpg'),noEndMarker)).toThrow('不匹配');
  expect(()=>validateFile(new File([jpeg],'scan.png'),jpeg)).toThrow('不匹配');
  expect(()=>validateFile(new File([png],'scan.jpg'),png)).toThrow('不匹配');
 });

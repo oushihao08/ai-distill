@@ -57,10 +57,12 @@ export function registerProjectLibraryRoutes(app:Hono,pool:Pool,storageRoot:stri
  app.get('/api/projects/:id/loaded-materials',async c=>c.json({items:await readLoadedLibraryPackages(pool,uuid(c.req.param('id')),{includeRemoved:c.req.query('include_removed')==='true'})}));
  app.post('/api/projects/:id/loaded-materials',async c=>{
   const projectId=uuid(c.req.param('id')),body=await jsonBody(c);
-  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['package_id','redaction_id','revision_id'].includes(key))||typeof body.package_id!=='string'||('redaction_id'in body&&'revision_id'in body))throw new HTTPException(400,{message:'加载材料包参数无效'});
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['package_id','redaction_id','revision_id','reuse_source_workflow_id','reuse_direction'].includes(key))||typeof body.package_id!=='string'||('redaction_id'in body&&'revision_id'in body))throw new HTTPException(400,{message:'加载材料包参数无效'});
   if(body.redaction_id!==undefined&&typeof body.redaction_id!=='string')throw new HTTPException(400,{message:'脱敏结果标识无效'});
   if(body.revision_id!==undefined&&typeof body.revision_id!=='string')throw new HTTPException(400,{message:'提取版本标识无效'});
-  const result=await loadLibraryPackage(pool,projectId,uuid(body.package_id),body.redaction_id===undefined?undefined:body.redaction_id,body.revision_id===undefined?undefined:uuid(body.revision_id));
+  if((body.reuse_source_workflow_id===undefined)!==(body.reuse_direction===undefined))throw new HTTPException(400,{message:'跨期复用须同时指定原题和新出题方向'});
+  if(body.reuse_direction!==undefined&&(typeof body.reuse_direction!=='string'||!body.reuse_direction.trim()||body.reuse_direction.length>10000))throw new HTTPException(400,{message:'跨期复用出题方向无效'});
+  const result=await loadLibraryPackage(pool,projectId,uuid(body.package_id),body.redaction_id===undefined?undefined:body.redaction_id,body.revision_id===undefined?undefined:uuid(body.revision_id),body.reuse_source_workflow_id===undefined?undefined:{source_workflow_id:uuid(body.reuse_source_workflow_id),direction:body.reuse_direction.trim()});
   return c.json(result,result.reused?200:201);
  });
  app.patch('/api/projects/:id/loaded-materials/:linkId',async c=>c.json(await updateLoadedLibraryPackage(

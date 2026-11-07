@@ -36,6 +36,15 @@ export function sourceKey(value: unknown) {
   }
   return key;
 }
+/** JPEG允许相机/扫描软件在结束标记后附加少量元数据；仍要求真实SOI/EOI，不能仅凭扩展名放行。 */
+function hasJpegSignature(bytes: Uint8Array): boolean {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return false;
+  // 只检查末尾64字节，避免把正文中的FF D9误当作文件结束。
+  for (let i = bytes.length - 2; i >= Math.max(2, bytes.length - 66); i--) {
+    if (bytes[i] === 0xff && bytes[i + 1] === 0xd9) return true;
+  }
+  return false;
+}
 export function validateFile(file: File, bytes: Uint8Array) {
   const extension=file.name.split('.').at(-1)?.toLowerCase();
   if (!['pdf','docx','txt','md','png','jpg','jpeg'].includes(extension??'')) throw new HTTPException(400, { message: '仅支持PDF、DOCX、TXT、MD、PNG、JPG和JPEG文件' });
@@ -43,7 +52,7 @@ export function validateFile(file: File, bytes: Uint8Array) {
   if(extension==='pdf'&&new TextDecoder().decode(bytes.slice(0,5))!=='%PDF-')throw new HTTPException(400,{message:'文件缺少PDF标识，请提供有效PDF'});
   if(extension==='docx'&& (bytes.length<4||new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(0,true)!==0x04034b50))throw new HTTPException(400,{message:'DOCX文件缺少有效压缩包标识'});
   if(extension==='png'&&(bytes.length<8||![0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a].every((value,index)=>bytes[index]===value)))throw new HTTPException(400,{message:'PNG文件标识与扩展名不匹配'});
-  if((extension==='jpg'||extension==='jpeg')&&(bytes.length<4||bytes[0]!==0xff||bytes[1]!==0xd8||bytes.at(-2)!==0xff||bytes.at(-1)!==0xd9))throw new HTTPException(400,{message:'JPEG文件标识与扩展名不匹配'});
+  if((extension==='jpg'||extension==='jpeg')&&!hasJpegSignature(bytes))throw new HTTPException(400,{message:'JPEG文件标识与扩展名不匹配'});
   if(extension==='txt'||extension==='md')try{new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw new HTTPException(400,{message:`${extension.toUpperCase()}文件不是有效UTF-8文本`});}
   // Parsing belongs to ingestion; validation checks type and bounded file size only.
 }

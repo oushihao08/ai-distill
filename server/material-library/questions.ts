@@ -93,7 +93,7 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
  const packageLevel=/(?:^|[-_\s])L([2-5])(?=$|[-_\s])/i.exec(String(pkg.name))?.[1];
  if(packageLevel&&input.target_level!==`L${packageLevel}`)throw conflict(`材料包标题标注为L${packageLevel}，题目目标等级须为L${packageLevel}`);
  if(input.question_tags.some(tag=>!Array.isArray(project.question_tags)||!project.question_tags.includes(tag)))throw conflict('项目出题标签已变化，请刷新后重试');
- const link=(await db.query(`SELECT id,project_id,package_id,selected_revision_id,selected_redaction_id,lock_version,removed_at,material_use_id
+ const link=(await db.query(`SELECT id,project_id,package_id,selected_revision_id,selected_redaction_id,lock_version,removed_at,material_use_id,reuse_source_workflow_id,reuse_direction
   FROM ai_distill.project_library_packages WHERE id=$1 AND project_id=$2 FOR UPDATE`,[linkId,projectId])).rows[0];
  if(!link||link.removed_at||link.package_id!==packageId)throw conflict('项目材料加载关系已移除或已变化');
  const activeQuestion=(await db.query(`SELECT q.workflow_id
@@ -101,7 +101,8 @@ async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,pa
   WHERE q.project_id=$1 AND q.package_id=$2 AND w.deleted_at IS NULL LIMIT 1`,[projectId,packageId])).rows[0];
  const projectIssue=projectStepPolicies.materialQuestion.execute(resolveStepProjectKey({parent_name:project.parent_name,name:project.name}),{project,active:!!activeQuestion});
  if(projectIssue)throw conflict(projectIssue);
- if(project.project_group_id)await assertMaterialUse(db,projectId,packageId,link.material_use_id);
+ if(project.project_group_id)await assertMaterialUse(db,projectId,packageId,link.material_use_id,linkId);
+ if(link.reuse_source_workflow_id&&input.authoring_direction?.trim()!==link.reuse_direction)throw conflict('跨期复用题目须使用加载时冻结的不同出题方向');
  if(Number(link.lock_version)!==input.expected_link_version)throw conflict('材料选择已更新，请刷新项目后重试');
  const authorConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[projectId])).rows[0]?.config;
  const processingMode=resolveMaterialProcessingMode(authorConfig),materialMode=materialProcessingSourceMode(processingMode);

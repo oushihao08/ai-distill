@@ -10,11 +10,27 @@ import {materialMarkupEdits} from './material-markup';
 import {isEnglishOnlyParagraph} from './material-paragraph-filter';
 export interface ScanNoisePage {file_id:string;page:number;blocks:DocumentBlock[]}
 export interface ScanNoiseEdit {file_id:string;page:number;start:number;end:number;source_text:string;replacement_text:string}
+export interface ExtractionResidue {file_id:string;page:number;kind:'code_fence'|'bracket_code'|'template_expression'|'markup_tag'|'json_wrapper'}
+/** 清理后仍残留的技术包装只报告位置，不猜测业务正文，也不输出原文。 */
+export function findExtractionResidues(pages:ScanNoisePage[]):ExtractionResidue[]{
+ const patterns:Record<ExtractionResidue['kind'],RegExp>={
+  code_fence:/```/u,
+  bracket_code:/\[\/?(?:code|json|xml)\]/iu,
+  template_expression:/\$\{[^{}\r\n]{1,200}\}/u,
+  markup_tag:/<\/?[A-Za-z][\w:-]*(?:\s+[^<>]{0,200})?\s*\/?>/u,
+  json_wrapper:/^\s*\{\s*"(?:text|content|result|md_results|layout_details|data_info)"\s*:/mu,
+ };
+ return pages.flatMap(page=>{
+  const text=documentBlocksToText(page.blocks);
+  return(Object.entries(patterns) as [ExtractionResidue['kind'],RegExp][]).filter(([,pattern])=>pattern.test(text)).map(([kind])=>({file_id:page.file_id,page:page.page,kind}));
+ });
+}
 const placeholder=/\\?\[[ \t]*(?:NO[ _-]+TEXT(?:[ _-]+(?:DETECTED|FOUND)(?:[ _-]+IN[ _-]+IMAGE\.?)?)?|QR[ _-]*CODE|IMAGE|BAR[ _-]*CODE|UNREADABLE|无法识别|无文字)[ \t]*\\?\]/giu;
 const date='(?:19|20)\\d{2}(?:[-/.]\\d{1,2}[-/.]\\d{1,2}|年\\d{1,2}月\\d{1,2}日)';
 const time='(?:[01]?\\d|2[0-3])[:：][0-5]\\d(?:[:：][0-5]\\d)?(?:\\.\\d{1,3})?';
 const watermark=new RegExp(`(?<![\\p{L}\\p{N}])(?:\\d{3,10}(?:\\\\?[_＿]|[ \\t.])+|(?:扫描时间|扫描日期|打印时间)[ \\t]*[:：]?[ \\t]*)${date}[ Tt]+${time}(?!\\d)`,'gu');
 const numberLine=/^(?:[0-9０-９]+|[-－—][ \t]*[0-9０-９]+[ \t]*[-－—])$/u;
+const scannerBrandLine=/^(?:(?:CS\s*)?扫描全能王(?:\s*3亿人都在用的扫描\s*App)?|3亿人都在用的扫描\s*App)$/iu;
 /** 共用独立数字行识别；入库仍结合扫描证据/业务标签，材料DOCX仅用于独立正文段落，不清空表格单元格。 */
 export function isStandaloneNumberLine(text:string):boolean{return numberLine.test(text.trim());}
 interface NoiseRange {start:number;end:number}
@@ -74,6 +90,12 @@ export function findScanNoiseEdits(pages:ScanNoisePage[],sensitiveEdits:Pick<Sca
  const addProjection=(entry:typeof entries[number],a:number,b:number)=>{if(b>a&&!edits.some(edit=>edit.file_id===entry.file_id&&edit.page===entry.page&&edit.start===entry.start+a&&edit.end===entry.start+b))edits.push({file_id:entry.file_id,page:entry.page,start:entry.start+a,end:entry.start+b,source_text:entry.projection.slice(a,b),replacement_text:''});};
  // AI返回后仅清理固定占位符与时间戳；普通数字保留，页角数字由下方跨页证据判断。
  for(const entry of entries){
+  // 只清理独立位于页首或页尾的扫描软件品牌行，正文提及该软件时保留。
+  if(entry.block.kind!=='table'&&entry.block.kind!=='list'&&(entry.index===0||entry.index===entry.blocks.length-1)&&scannerBrandLine.test(entry.text.trim()))add(entry);
+  // GLM偶尔在页尾追加空的Markdown代码容器；只删除成对且无正文的围栏。
+  const next=entry.blocks[entry.index+1];
+  if(entry.index===entry.blocks.length-2&&/^```(?:markdown|json|xml)?$/i.test(entry.text.trim())&&next?.kind==='paragraph'&&next.text?.trim()==='```')add(entry);
+  if(entry.index===entry.blocks.length-1&&entry.block.kind==='paragraph'&&entry.text.trim()==='```'&&entry.blocks.at(-2)?.kind==='paragraph'&&/^```(?:markdown|json|xml)?$/i.test(entry.blocks.at(-2)!.text?.trim()??''))add(entry);
   // 固定噪声只在单个结构字段内匹配，不能拼接相邻单元格/列表项的业务值。
   for(const field of documentFieldRanges([entry.block])){
    const text=entry.projection.slice(field.start,field.end);

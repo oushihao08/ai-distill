@@ -7,3 +7,5 @@
 `ai-trace-review` 指向 `../../toolSkills/ai-trace-review`，审查题目/交付残留与命名雷同；仅在明确授权后使用改名工具，不自动修改业务状态。
 
 `phase8-materials-full-capacity` 指向 `../../toolSkills/phase8-materials-full-capacity`，仅用于第八期八个来源目录的三阶段材料处理与双 lane 满载补位。
+
+`materials-full-capacity-dispatch` 指向 `../../toolSkills/materials-full-capacity-dispatch`，用于已授权材料批次按实时容量和全量候选持续补位。

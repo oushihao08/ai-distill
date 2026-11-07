@@ -18,6 +18,7 @@ import {readAgentDefaults,validateAgentModelSettings} from '../agent';
 import {resolveModelApiConfig} from '../llm-api';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
 import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
+import {mineruToken} from '../materials/pdf-extraction/mineru-credentials';
 
 const conflict=(message:string)=>new HTTPException(409,{message});
 const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -148,9 +149,9 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   const inputSnapshot={...intent,...(projectMode?{material_processing_mode:projectMode}:{}),manifest_sha256:revision.manifest_sha256,request_digest:requestDigest,files:fileSnapshot};
   if(request.kind==='extract'&&executor==='api'&&!['mineru-api','mineru-cli'].includes(pdfProvider))throw conflict('当前文本提取仅支持MinerU');
   const hasPdf=files.some(file=>/\.pdf$/i.test(String(file.original_name)));
-  if(request.kind==='extract'&&executor==='api'&&hasPdf&&!process.env.MINERU_KEY?.trim())throw conflict('MinerU文本提取服务未配置');
+  if(request.kind==='extract'&&executor==='api'&&hasPdf&&!mineruToken())throw conflict('MinerU文本提取服务未配置');
   const hasMineruNative=files.some(file=>/\.(?:docx|png|jpe?g)$/i.test(String(file.original_name)));
-  if(request.kind==='extract'&&executor==='api'&&hasMineruNative&&!process.env.MINERU_KEY?.trim())throw conflict('DOCX与图片结构化提取需配置MinerU');
+  if(request.kind==='extract'&&executor==='api'&&hasMineruNative&&!mineruToken())throw conflict('DOCX与图片结构化提取需配置MinerU');
   const hasImages=files.some(file=>/\.(?:png|jpe?g)$/i.test(String(file.original_name)));
   const inputDigest=hash(inputSnapshot),configSnapshot={version:1,settings,...(template?{redaction_template:template}:{}),...(request.kind==='extract'?{pdf_provider:pdfProvider,pdf_ocr_version:MINERU_OCR_VERSION,...(hasImages?{image_ocr_version:MINERU_OCR_VERSION}:{})}:{}),...(request.kind==='redact'?{extraction_job_id:request.extraction_job_id,text_protocol:AGENT_TEXT_REDACTION_PROTOCOL}:{})},configDigest=hash(configSnapshot),id=randomUUID();
   await supersedeForeignPending(db,{kind:'library',id:revisionId,jobKind:request.kind},request.execution_target);

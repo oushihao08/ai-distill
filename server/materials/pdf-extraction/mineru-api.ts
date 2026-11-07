@@ -8,8 +8,9 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { logEvent } from '../../logging';
-import { command } from '../pdf';
+import { command, documentBlocksToText } from '../pdf';
 import { parseMineruDocxJson, parseMineruJson } from './mineru-cli';
+import { mineruToken } from './mineru-credentials';
 import type { PdfExtractionProvider, PdfExtractionResult } from './types';
 
 const API_ROOT = 'https://mineru.net/api/v4';
@@ -62,24 +63,30 @@ export async function readMineruResultZip(response:Response,signal:AbortSignal,m
  }
 }
 
-/** curl 显式绕过环境代理；继续复用有界流读取，取消或超限时终止子进程。 */
+/** curl 显式绕过环境代理；TLS/网络瞬断只重试结果下载，不再次上传原件。 */
 export async function downloadMineruResultZip(url:string,signal:AbortSignal):Promise<Uint8Array>{
  signal.throwIfAborted();
- const child=Bun.spawn(['curl','--noproxy','*','--fail','--silent','--location','--proto','=https','--proto-redir','=https','--connect-timeout','30','--max-time','1800',url],{stdout:'pipe',stderr:'ignore'});
- const abort=()=>child.kill();
- signal.addEventListener('abort',abort,{once:true});
- if(signal.aborted)abort();
- try{
-  const bytes=await readMineruResultZip(new Response(child.stdout),signal);
-  const exitCode=await child.exited;
-  signal.throwIfAborted();
-  if(exitCode!==0)throw Object.assign(new Error('MinerU结果直连下载失败'),{reason_code:'download_transport_failed',failure_stage:'download_request',exit_code:exitCode});
-  return bytes;
- }finally{
-  signal.removeEventListener('abort',abort);
-  child.kill();
-  await child.exited;
+ for(let attempt=1;attempt<=3;attempt++){
+  const child=Bun.spawn(['curl','--noproxy','*','--fail','--silent','--location','--proto','=https','--proto-redir','=https','--connect-timeout','30','--max-time','1800',url],{stdout:'pipe',stderr:'ignore'});
+  const abort=()=>child.kill();
+  signal.addEventListener('abort',abort,{once:true});
+  if(signal.aborted)abort();
+  try{
+   let bytes:Uint8Array|undefined,readError:unknown;
+   try{bytes=await readMineruResultZip(new Response(child.stdout),signal);}catch(error){readError=error;}
+   const exitCode=await child.exited;
+   signal.throwIfAborted();
+   if(exitCode===0){if(readError)throw readError;return bytes!;}
+   if(attempt===3||![6,7,28,35,56].includes(exitCode))throw Object.assign(new Error('MinerU结果直连下载失败'),{reason_code:'download_transport_failed',failure_stage:'download_request',exit_code:exitCode});
+   logEvent('extraction.api.download_retry',{level:'warn',provider:'mineru-api',reason_code:'download_transport_failed',attempt_count:attempt,exit_code:exitCode});
+  }finally{
+   signal.removeEventListener('abort',abort);
+   child.kill();
+   await child.exited;
+  }
+  await defaultSleep(attempt*2000,signal);
  }
+ throw new Error('MinerU结果下载未完成');
 }
 
 async function defaultSleep(ms: number, signal: AbortSignal) {
@@ -118,7 +125,7 @@ function providerTimeoutError(phase:string,state:string|undefined,taskSubmitted:
 
 function safeFailureReason(error: unknown) {
  if(isRecord(error)&&error.reason_code==='provider_timeout')return'provider_timeout';
- const knownReason=isRecord(error)&&typeof error.reason_code==='string'&&error.reason_code.startsWith('download_')?error.reason_code:'';
+ const knownReason=isRecord(error)&&typeof error.reason_code==='string'&&(error.reason_code.startsWith('download_')||error.reason_code==='ocr_empty')?error.reason_code:'';
  if(/^[a-z][a-z0-9_]{0,79}$/.test(knownReason))return knownReason;
  const message = error instanceof Error ? error.message : '';
  const status = /HTTP (\d{3})/.exec(message)?.[1];
@@ -128,6 +135,17 @@ function safeFailureReason(error: unknown) {
  if (message.includes('解析任务失败')) return 'task_failed';
  if (message.includes('content_list')) return 'invalid_structure';
  return 'request_or_response_failed';
+}
+
+function providerFailureCode(value:unknown):string|undefined{
+ if(typeof value==='number'&&Number.isInteger(value)&&value<=0&&value>=-99999)return String(value);
+ if(typeof value==='string'&&/^-\d{1,5}$/.test(value))return value;
+ return undefined;
+}
+
+function privateProviderMessage(value:unknown):string|undefined{
+ if(typeof value!=='string'||!value.trim())return undefined;
+ return value.slice(0,2048).replace(/Bearer\s+\S+/gi,'Bearer [REDACTED]').replace(/sk-[A-Za-z0-9_-]{8,}/g,'[REDACTED_TOKEN]').replace(/https?:\/\/\S+/gi,'[REDACTED_URL]');
 }
 
 function safeNetworkErrorCode(error:unknown):string|undefined{
@@ -141,7 +159,8 @@ function safeNetworkErrorCode(error:unknown):string|undefined{
 }
 
 function addDownloadFailureContext(error:unknown,failure_stage:string,reason_code?:string,response_status?:number){
- const context={failure_stage,...(reason_code?{reason_code}:{}),...(response_status?{response_status}:{}),...(safeNetworkErrorCode(error)?{network_error_code:safeNetworkErrorCode(error)}:{})};
+ const networkErrorCode=safeNetworkErrorCode(error);
+ const context={failure_stage,...(reason_code?{reason_code}:{}),...(response_status?{response_status}:{}),...(networkErrorCode?{network_error_code:networkErrorCode}:{})};
  if(error instanceof Error){
   try{return Object.assign(error,context);}catch(assignmentError){return Object.assign(new Error('MinerU结果下载失败',{cause:assignmentError}),context);}
  }
@@ -215,8 +234,8 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    if (!Number.isInteger(pageCount) || pageCount < 1) throw new Error('PDF页数无效');
   }
   if (pageCount > 200 || bytes.byteLength > 200 * 1024 * 1024) throw new Error('文件超过MinerU API单文件限制');
-  const token = this.env.MINERU_KEY;
-  if (!token) throw new Error('未配置 MINERU_KEY');
+  const token = mineruToken(this.env);
+  if (!token) throw new Error('未配置当前选中的 MinerU API Token');
   if (signal?.aborted) throw new Error('PDF提取已取消');
 
   const controller = new AbortController();
@@ -237,27 +256,32 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
   };
   try {
    await mkdir(diagnosticDirectory,{recursive:true,mode:0o700});
-   await recordPhase('request_upload_url');
-   const request = await this.fetcher(`${API_ROOT}/file-urls/batch`, {
-    ...fetchOptions, method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: [{ name: basename(path), data_id: sha256 }], model_version: 'vlm' }),
-   });
-   const uploadData = responseData(await checkedJson(request, '上传地址申请'));
-   const urls = uploadData.file_urls;
-   if (typeof uploadData.batch_id !== 'string' || !Array.isArray(urls) || typeof urls[0] !== 'string') throw new Error('MinerU API上传地址响应缺字段');
-   batchId=uploadData.batch_id;
-   const uploadUrl = new URL(urls[0]);
-   if (uploadUrl.protocol !== 'https:') throw new Error('MinerU API上传地址无效');
-   await recordPhase('upload_file');
-   const upload = await this.fetcher(uploadUrl, { ...fetchOptions, method: 'PUT', body: bytes });
-   if (!upload.ok) throw new Error(`MinerU API文件上传返回HTTP ${upload.status}`);
-   taskSubmitted=true;
-   logEvent('extraction.api.upload_completed',{provider:this.id,diagnostic_id:diagnosticId,http_status:upload.status,input_bytes:bytes.byteLength,page_count:pageCount,duration_ms:Math.max(0,this.now()-startedAt)});
-   await recordPhase('poll_result');
-
    let zipUrl: string | undefined;
    const deadline = startedAt + API_TIMEOUT_MS;
-   while (this.now() < deadline) {
+   // 只在供应商明确返回 failed 后重传；本地超时或未知回执须由上层先核实旧任务，
+   // 再以新 request_key 和完整原件集合发起新的原子导入。
+   for(let uploadAttempt=1;uploadAttempt<=2&&!zipUrl;uploadAttempt++){
+    if(controller.signal.aborted||this.now()>=deadline)throw providerTimeoutError(phase,providerState,taskSubmitted);
+    providerState=undefined;
+    await recordPhase('request_upload_url');
+    const request = await this.fetcher(`${API_ROOT}/file-urls/batch`, {
+     ...fetchOptions, method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+     body: JSON.stringify({ files: [{ name: basename(path), data_id: sha256, is_ocr: true }], model_version: 'vlm' }),
+    });
+    const uploadData = responseData(await checkedJson(request, '上传地址申请'));
+    const urls = uploadData.file_urls;
+    if (typeof uploadData.batch_id !== 'string' || !Array.isArray(urls) || typeof urls[0] !== 'string') throw new Error('MinerU API上传地址响应缺字段');
+    batchId=uploadData.batch_id;
+    const uploadUrl = new URL(urls[0]);
+    if (uploadUrl.protocol !== 'https:') throw new Error('MinerU API上传地址无效');
+    await recordPhase('upload_file');
+    const upload = await this.fetcher(uploadUrl, { ...fetchOptions, method: 'PUT', body: bytes });
+    if (!upload.ok) throw new Error(`MinerU API文件上传返回HTTP ${upload.status}`);
+    taskSubmitted=true;
+    logEvent('extraction.api.upload_completed',{provider:this.id,diagnostic_id:diagnosticId,http_status:upload.status,input_bytes:bytes.byteLength,page_count:pageCount,attempt_count:uploadAttempt,duration_ms:Math.max(0,this.now()-startedAt)});
+    await recordPhase('poll_result');
+    let terminalFailure=false;
+    while (this.now() < deadline) {
     if (controller.signal.aborted) throw new Error(signal?.aborted ? 'PDF提取已取消' : 'MinerU API任务超过30分钟');
     lastRequestStartedAt=this.now();
     const poll = await this.fetcher(`${API_ROOT}/extract-results/batch/${encodeURIComponent(batchId)}`, { ...fetchOptions, headers });
@@ -281,10 +305,23 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
     }
     if(state!==providerState)await recordPhase('poll_result',state);
     if (isRecord(item)) {
-     if (item.state === 'failed') throw new Error('MinerU API解析任务失败');
+     if (item.state === 'failed') {
+      const providerCode=providerFailureCode(item.err_code);
+      const providerMessage=privateProviderMessage(item.err_msg);
+      try{await writeFile(resolve(diagnosticDirectory,`provider-failure-${uploadAttempt}.json`),JSON.stringify({observed_at:new Date().toISOString(),batch_id:batchId,upload_attempt:uploadAttempt,trace_id:safeId(envelope.trace_id),request_id:safeId(poll.headers.get('x-request-id')),source_sha256:sha256,provider_code:providerCode,provider_message:providerMessage}),{mode:0o600});}
+      catch{logEvent('extraction.diagnostics_save_failed',{level:'error',diagnostic_id:diagnosticId,reason_code:'diagnostics_write_failed'});}
+      if(uploadAttempt===1){
+       logEvent('extraction.api.reupload.started',{level:'warn',provider:this.id,diagnostic_id:diagnosticId,reason_code:'task_failed',attempt_count:uploadAttempt,provider_error_code:providerCode});
+       terminalFailure=true;
+       break;
+      }
+      throw Object.assign(new Error('MinerU API解析任务失败'),{reason_code:'task_failed',provider_error_code:providerCode});
+     }
      if (item.state === 'done') { zipUrl = resultZipUrl({ extract_result: [item] }); break; }
     }
     await this.sleep(POLL_INTERVAL_MS, controller.signal);
+   }
+    if(!zipUrl&&!terminalFailure)throw providerTimeoutError(phase,providerState,taskSubmitted);
    }
    if (!zipUrl) throw providerTimeoutError(phase,providerState,taskSubmitted);
 
@@ -312,7 +349,32 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    let raw: unknown;
    try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content)); }
    catch { throw new Error('MinerU API content_list.json无效'); }
-   const pages = this.inputFormat === 'pdf' ? parseMineruJson(raw, pageCount) : parseMineruDocxJson(raw);
+   let pages;
+   if(this.inputFormat==='pdf')pages=parseMineruJson(raw,pageCount);
+   else if(this.inputFormat==='image')pages=parseMineruDocxJson(raw);
+   else {
+    try{pages=parseMineruDocxJson(raw);}
+    catch(error){
+     if(!isRecord(error)||error.reason_code!=='ocr_empty'||!Array.isArray(raw))throw error;
+     const images=raw.filter(isRecord);
+     if(!images.length||images.some(item=>item.type!=='image'))throw error;
+     const blocks=[] as NonNullable<ReturnType<typeof parseMineruDocxJson>[number]['structure']>;
+     const imageExtractor=new MineruApiImageExtractor(this.env,{fetcher:this.fetcher,now:this.now,sleep:this.sleep});
+     for(const [index,item] of images.entries()){
+      const imagePath=item.img_path;
+      if(typeof imagePath!=='string'||!/^images\/[A-Za-z0-9._/-]+\.(?:png|jpe?g)$/i.test(imagePath)||imagePath.split('/').includes('..')||!entries.includes(imagePath))throw Object.assign(new Error('MinerU DOCX嵌入图片路径无效'),{reason_code:'ocr_empty'});
+      const imageBytes=await runUnzip(['-p',tempZipPath,imagePath],200*1024*1024,controller.signal);
+      const imageSha=createHash('sha256').update(imageBytes).digest('hex');
+      const imageFile=resolve(diagnosticDirectory,`embedded-${index}-${imageSha.slice(0,12)}.${imagePath.toLowerCase().endsWith('.png')?'png':'jpg'}`);
+      await writeFile(imageFile,imageBytes,{mode:0o600,flag:'wx'});
+      const result=await imageExtractor.extract(imageFile,controller.signal);
+      const imageBlocks=result.pages[0]?.structure??[];
+      if(!documentBlocksToText(imageBlocks).trim())throw Object.assign(new Error('MinerU DOCX嵌入图片无可提取文字'),{reason_code:'ocr_empty'});
+      blocks.push(...imageBlocks.map(block=>({...block,id:`embedded-${index}-${imageSha.slice(0,12)}-${block.id}`})));
+     }
+     pages=[{page:1,text:documentBlocksToText(blocks),structure:blocks,method:'ocr',model:'mineru-vlm'}];
+    }
+   }
    if(this.inputFormat==='image'&&(pages.length!==1||pages[0]?.page!==1))throw new Error('MinerU图片结果不是单页结构');
    logEvent('extraction.api.completed', { level: 'info', provider: this.id, page_count: pages.length, duration_ms: Math.max(0, this.now() - startedAt) });
    completed=true;
@@ -322,7 +384,7 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
    const reportedError=localTimeout?providerTimeoutError(phase,providerState,taskSubmitted):error;
    const durationMs=Math.max(0,this.now()-startedAt);
    try{await writeFile(resolve(diagnosticDirectory,'failure-context.json'),JSON.stringify({observed_at:new Date().toISOString(),phase,provider_state:providerState,batch_id:batchId,poll_count:pollCount,last_request_started_at:lastRequestStartedAt,last_request_finished_at:lastRequestFinishedAt,request_in_flight:lastRequestStartedAt>lastRequestFinishedAt,elapsed_ms:durationMs,timeout_ms:API_TIMEOUT_MS,local_aborted:controller.signal.aborted,parent_aborted:signal?.aborted??false,parent_reason:isRecord(signal?.reason)?signal.reason.reason_code:undefined,network_error_code:safeNetworkErrorCode(reportedError)}),{mode:0o600});}catch{logEvent('extraction.diagnostics_save_failed',{level:'error',diagnostic_id:diagnosticId,reason_code:'diagnostics_write_failed'});}
-   logEvent('extraction.api.failed', { level: 'error', provider: this.id, reason_code: safeFailureReason(reportedError),failure_phase:phase,state:providerState,diagnostic_id:diagnosticId,page_count:pageCount,attempt_count:pollCount,timeout_ms:API_TIMEOUT_MS,provider_task_submitted:taskSubmitted,local_aborted:controller.signal.aborted,parent_aborted:signal?.aborted??false,...(isRecord(reportedError)&&typeof reportedError.failure_stage==='string'?{failure_stage:reportedError.failure_stage}:{}),...(isRecord(reportedError)&&typeof reportedError.response_status==='number'?{response_status:reportedError.response_status}:{}),...(isRecord(reportedError)&&typeof reportedError.network_error_code==='string'?{network_error_code:reportedError.network_error_code}:{}),duration_ms:durationMs });
+   logEvent('extraction.api.failed', { level: 'error', provider: this.id, reason_code: safeFailureReason(reportedError),failure_phase:phase,state:providerState,diagnostic_id:diagnosticId,page_count:pageCount,attempt_count:pollCount,timeout_ms:API_TIMEOUT_MS,provider_task_submitted:taskSubmitted,local_aborted:controller.signal.aborted,parent_aborted:signal?.aborted??false,...(isRecord(reportedError)&&typeof reportedError.failure_stage==='string'?{failure_stage:reportedError.failure_stage}:{}),...(isRecord(reportedError)&&typeof reportedError.response_status==='number'?{response_status:reportedError.response_status}:{}),...(isRecord(reportedError)&&typeof reportedError.network_error_code==='string'?{network_error_code:reportedError.network_error_code}:{}),...(isRecord(reportedError)&&typeof reportedError.provider_error_code==='string'?{error_code:reportedError.provider_error_code}:{}),duration_ms:durationMs });
    throw reportedError;
   } finally {
    clearTimeout(timer);

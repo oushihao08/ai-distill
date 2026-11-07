@@ -9,6 +9,7 @@ import {runExternalCall} from '../external-call';
 import {ProjectDocumentExtractor,type DocumentExtractor} from './document';
 import {invalidateMaterialResults} from './state';
 import {MINERU_DOCX_VERSION,MINERU_OCR_VERSION,MineruCliPdfExtractor} from './pdf-extraction/mineru-cli';
+import {mineruToken} from './pdf-extraction/mineru-credentials';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiImageExtractor,MineruApiPdfExtractor} from './pdf-extraction/mineru-api';
 import {watchTaskCancellation,withTaskSignal} from '../task-signal';
 import type { Pool } from 'pg';
@@ -20,7 +21,7 @@ import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../loggi
 export function resolvePdfProvider(env:NodeJS.ProcessEnv=process.env):'mineru-api'|'mineru-cli'{
  const provider=env.PDF_EXTRACTION_PROVIDER||'mineru-api';
  if(provider!=='mineru-api'&&provider!=='mineru-cli')throw new HTTPException(503,{message:'当前文本提取仅支持MinerU'});
- if(!env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'使用MinerU前请配置MINERU_KEY'});
+ if(!mineruToken(env))throw new HTTPException(503,{message:'使用MinerU前请配置当前选中的API Token'});
  return provider;
 }
 export async function enqueueExtraction(pool: Pool, id: string, executionTarget:'local'|'server'='local') {
@@ -37,7 +38,7 @@ export async function enqueueExtraction(pool: Pool, id: string, executionTarget:
   if(!['succeeded','waiting','running','failed'].includes(steps.rows[0].status)) throw new HTTPException(409,{message:'材料入库尚未完成'});
   const materials=(await client.query("SELECT id,sha256 FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL AND (lower(original_name) LIKE '%.pdf' OR lower(original_name) LIKE '%.docx' OR lower(original_name) ~ '\\.(png|jpe?g)$') ORDER BY id",[id])).rows;
   const pdfProvider=resolvePdfProvider();
-  if((materialCheck.rows[0]?.docxs||materialCheck.rows[0]?.images)&&!process.env.MINERU_KEY?.trim())throw new HTTPException(503,{message:'DOCX与图片结构化提取需要配置MINERU_KEY'});
+  if((materialCheck.rows[0]?.docxs||materialCheck.rows[0]?.images)&&!mineruToken())throw new HTTPException(503,{message:'DOCX与图片结构化提取需要配置当前选中的MinerU API Token'});
   const pdfConfig={pdf_provider:pdfProvider,model:'mineru-vlm',base_url:'https://mineru.net',ocr_version:MINERU_OCR_VERSION,processor:'pdf-text-ingestion-structured-v1'};
   const config=materialCheck.rows[0]?.docxs||materialCheck.rows[0]?.images?{...pdfConfig,...(materialCheck.rows[0]?.docxs?{docx_version:MINERU_DOCX_VERSION}:{}),...(materialCheck.rows[0]?.images?{image_version:MINERU_OCR_VERSION}:{})}:pdfConfig;
   await supersedeForeignPending(client,{kind:'step',id,ordinal:2},executionTarget);

@@ -7,6 +7,33 @@ import {join} from 'node:path';
 import {configureLogger} from '../../logging';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor} from './mineru-api';
 
+test('terminal provider failure creates one fresh upload while pending stays on its batch',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'mineru-reupload-')),path=join(root,'input.docx');
+ const uploads:string[]=[],polls:string[]=[];
+ try{
+  await writeFile(path,'synthetic docx');
+  const contentPath=join(root,'content_list.json'),zipPath=join(root,'result.zip');
+  await writeFile(contentPath,JSON.stringify([{type:'text',text:'重传后的正文'}]));
+  expect(await Bun.spawn(['zip','-qj',zipPath,contentPath],{stdout:'ignore',stderr:'ignore'}).exited).toBe(0);
+  const zip=await readFile(zipPath);
+  const fetcher=(async(input:unknown,options:any)=>{
+   const url=String(input);
+   if(options?.method==='POST')return Response.json({code:0,data:{batch_id:`batch-${uploads.length+1}`,file_urls:[`https://upload.example/${uploads.length+1}`]}});
+   if(options?.method==='PUT'){uploads.push(url);return new Response(null,{status:200});}
+   if(url.includes('/extract-results/batch/')){
+    polls.push(url);
+    const state=url.endsWith('batch-1')?(polls.length===1?'pending':'failed'):'done';
+    return Response.json({code:0,data:{extract_result:[{file_name:'input.docx',state,...(state==='done'?{full_zip_url:'https://download.example/result.zip'}:{})}]}});
+   }
+   return new Response(zip);
+  }) as typeof fetch;
+  const result=await new MineruApiDocxExtractor({MINERU_KEY:'synthetic',STORAGE_DIR:root},{fetcher,sleep:async()=>{}}).extract(path);
+  expect(result.pages[0]?.text).toBe('重传后的正文');
+  expect(uploads).toEqual(['https://upload.example/1','https://upload.example/2']);
+  expect(polls.map(url=>url.split('/').at(-1))).toEqual(['batch-1','batch-1','batch-2']);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
 test('retains private batch identity and durable failure phase without logging unchanged polls or secrets',async()=>{
  const root=await mkdtemp(join(tmpdir(),'mineru-diagnostics-')),path=join(root,'input.docx');
  const logger=configureLogger({root,service:'worker'});let polls=0;

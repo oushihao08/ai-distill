@@ -131,13 +131,13 @@ PDF/DOCX/图片外部提取按需逐文件执行，每份冻结30分钟预算，
 
 ## 主项目期次与历史入库衔接
 
-`uses.ts`维护独立于题目生命周期的材料使用账：同主项目跨期禁止重复使用，同原期允许返修；submitted回到in_use必须填写原因并保留事件。`legacy-import.ts`提供旧材料预检、入库原件/提取结果导入及原期关系激活，不导入旧脱敏成功状态，不修改题目私有快照。来源映射保存在legacy_material_imports，不能替代question_library_sources。
+`uses.ts`维护独立于题目生命周期的材料使用账：普通加载仍禁止同主项目跨期重复使用，同原期允许返修；submitted回到in_use必须填写原因并保留事件。显式跨期复用可在`POST /api/projects/:id/loaded-materials`同时提交`reuse_source_workflow_id`和`reuse_direction`，原题须属于同主项目原期、使用同包且步骤4成功，新方向不能为空且不得与原题已记录的方向相同。复用关系只引用原期永久占用，不转移、释放或新建使用账；来源和方向写入加载关系后不可更改。随后建题请求须使用完全相同的`authoring_direction`，按当前期次冻结附件和配置；模型不读取原题内容，实际任务差异仍须人工复核。此入口未提供页面或CLI快捷选项。`legacy-import.ts`提供旧材料预检、入库原件/提取结果导入及原期关系激活，不导入旧脱敏成功状态，不修改题目私有快照。来源映射保存在legacy_material_imports，不能替代question_library_sources。
 
 历史同步通过HTTP的legacy-material-imports接口执行；预检摘要用于apply时重验。上传平台事实只能按真实回执另行登记，归档成功不等于提交成功。
 
 ## 使用账与执行位置的准确边界
 
-- 主项目内的占用按同一 `package_id` 或完整原件集合签名判断。签名对原件 SHA/大小去重排序，不受文件名和顺序影响；它不是任意部分重叠检测。同一期每个活动材料包只能创建一道活动题；软删除旧题后可创建替代题，历史仍保留。包名明确标注L2–L5时，建题目标等级必须一致。同一主项目其他期不能重新占用；返修回到原所属期，事件账独立于题目保留。
+- 主项目内的占用按同一 `package_id` 或完整原件集合签名判断。签名对原件 SHA/大小去重排序，不受文件名和顺序影响；它不是任意部分重叠检测。同一期每个活动材料包只能创建一道活动题；软删除旧题后可创建替代题，历史仍保留。包名明确标注L2–L5时，建题目标等级必须一致。同一主项目其他期普通加载不能重新占用；显式跨期复用须记录原题及新出题方向，仍以原期为占用者。返修回到原所属期，事件账独立于题目保留。
 - 使用状态更新必须带原因和乐观版本。登记 `submitted` 时，`evidence` 必须包含非空的 `platform`、`project_id`、`task_id`、可解析的 `submitted_at`、`receipt`；字段完整性校验不等于系统已向外部平台验证真实性。
 - 普通上传当前将原件安装为 `storage_target=local`。任务要求所有原件目标与 `execution_target` 一致，服务器执行并不自动搬运原件；题目来源私有复制当前也要求本机可读来源。旧 remote-material 同步接口处理旧工作流，不负责搬运全局材料库 blob。
 - 建题请求用 `request_key` 防重，同时校验 `expected_link_version`；来源字段为 `redaction_id` 或 `revision_id` 二选一，并与本期出题模式一致。成功后冻结快照，后改期次设置不切换旧题来源。
@@ -285,6 +285,8 @@ CLI的start/resume/diagnose使用同一HTTP契约；diagnose只返回状态、�
 
 
 ## 原子提取入库（054，源码已接入；应用迁移并加载新版API/worker后生效）
+
+独立材料 API 可设 `ATOMIC_IMPORT_EXECUTION_TARGET=server`，新原子导入任务归属 `server`，由同一存储目录上 `WORKER_MODE=materials`、`MATERIAL_EXECUTION_TARGET=server` 的 worker 领取。默认仍为 `local`；执行目标参与新请求的幂等摘要，切换目标不复用旧 request-key。该设置仅影响新提交任务，不迁移已有任务或对象，且要求 API 与 worker 共享本机 `STORAGE_DIR`。
 
 新上传不再先创建包或文件集合。`POST /api/material-library/imports`接收multipart的`name`、UUID `request_key`和1–100份`files`，返回独立提取任务ID及202；原件只放私有任务暂存目录，正式`library_packages/revisions/files/blobs/documents`尚无新增数据。共用设置及供应商冻结后复用原API/internal槽位，不另建worker、不超额执行。
 
