@@ -7,6 +7,16 @@ const config={provider:'openrouter' as const,base_url:'https://openrouter.ai/api
 const input={config,messages:[{role:'user' as const,content:'合成输入'}]};
 const event=(delta:Record<string,unknown>,finish_reason:string|null=null)=>`data: ${JSON.stringify({choices:[{delta,finish_reason}]})}\n\n`;
 
+test('NVIDIA完整端点归一化并从服务环境读取凭证',async()=>{
+ let url='',authorization='',body:any;
+ const client=createModelApiClient({NVIDIA_API_KEY:'fixture-key'},async(input,init)=>{
+  url=input;authorization=new Headers(init?.headers).get('Authorization')??'';body=JSON.parse(String(init?.body));
+  return Response.json({model:'minimaxai/minimax-m3.1-flash',choices:[{finish_reason:'stop',message:{role:'assistant',content:'{"ok":true}'}}]});
+ });
+ const result=await client.complete({config:{provider:'nvidia',base_url:'https://integrate.api.nvidia.com/v1/chat/completions',model:'minimaxai/minimax-m3.1-flash'},messages:[{role:'user',content:'合成输入'}],response_format:{type:'json_object'}});
+ expect(url).toBe('https://integrate.api.nvidia.com/v1/chat/completions');expect(authorization).toBe('Bearer fixture-key');expect(body.response_format).toEqual({type:'json_object'});expect(body.stream).toBe(false);expect(result.text).toBe('{"ok":true}');
+});
+
 test.each([
  {fields:{tool_calls:[{id:'PRIVATE_TOOL',function:{name:'PRIVATE_NAME'}}]},reason:'unexpected_tool_call'},
  {fields:{tool_calls:{}},reason:'unexpected_tool_call'},

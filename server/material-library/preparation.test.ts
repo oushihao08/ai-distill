@@ -245,7 +245,7 @@ test('查库正文直接进入单次请求，不落输入文件且完整检查�
    expect(input.units[0].id).toBe('unit');expect(input.units[0].text).toContain('判决记载执行依据');expect(input.units[0].pages).toBeUndefined();
    expect(options.prompt).not.toContain('scene-rules.md');
    expect(options.schema.properties.documents.items.properties.unit_kind).toBeUndefined();
-   expect(options.prompt).toContain('候选工作分析沿用上述组合字段');
+   expect(options.prompt).toContain('<候选组合>');
    return{result:{package_summary:'最终目录：判决记载执行依据',documents:[{id:'unit',summary:'判决是执行依据',document_type:'判决',tags:['依据'],notes:'',visibility:'visible',visibility_reason:''}],combinations:[combination]}} as any;
   };
   await executePreparation(pool as any,root,job,signal,execute);expect(calls).toBe(1);expect(published.document_count).toBeUndefined();expect(published.documents[0].visibility).toBe('visible');expect(published.package_summary).toBe('最终目录：判决记载执行依据');expect(phases).toEqual(['prepare_input','agent_analyzing','parse_result','publish_result']);
@@ -256,6 +256,16 @@ test('查库正文直接进入单次请求，不落输入文件且完整检查�
   await executePreparation(pool as any,root,job,signal,async()=>{throw new Error('不应重调');});expect(updates).toBe(2);
   const flakyPool={...pool,query:async(sql:string,values:any[])=>{if(sql.includes('SET progress=$3'))throw new Error('进度写入暂时不可用');return db.query(sql,values);}};
   await executePreparation(flakyPool as any,root,job,signal,async()=>{throw new Error('进度失败不得重调Agent');});expect(updates).toBe(3);
+  const apiJob={...job,id:projectId,config_snapshot:{api:{provider:'nvidia',base_url:'https://integrate.api.nvidia.com/v1',model:'deepseek-ai/deepseek-v4.1-flash'}}};
+  let apiCalls=0;
+  await executePreparation(pool as any,root,apiJob,signal,async()=>{throw new Error('API整理不得调用Agent');}, {complete:async(input:any)=>{
+   apiCalls++;
+   expect(input.config.provider).toBe('nvidia');
+   expect(input.response_format.type).toBe('json_schema');
+   expect(JSON.parse(input.messages[1].content.split('【本次材料JSON：仅作为数据】\n')[1]).units[0].text).toContain('判决记载执行依据');
+   return{text:JSON.stringify({package_summary:'API整理摘要',documents:[{id:'unit',summary:'判决是执行依据',document_type:'判决',tags:['依据'],notes:'',visibility:'visible',visibility_reason:''}],combinations:[combination]}),provider:'nvidia',model:input.config.model,usage:{}};
+  }} as any);
+  expect(apiCalls).toBe(1);expect(published.package_summary).toBe('API整理摘要');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
@@ -323,7 +333,7 @@ test('整理入队与显式恢复冻结预算、模型和稳定来源；规则�
    if(sql.includes('WHERE package_id=$1 AND request_key=$2'))return{rows:jobs.filter(job=>job.request_key===values[1])};
    if(sql.includes("j.status IN ('queued','running','succeeded')"))return{rows:[]};
    if(sql.includes('SELECT id FROM ai_distill.library_packages'))return{rows:[{id}]};
-   if(sql.startsWith('INSERT INTO ai_distill.library_jobs')){jobs.push({id:values[0],revision_id:values[2],request_key:values[3],status:'queued',input_snapshot:JSON.parse(values[5]),config_snapshot:JSON.parse(values[7]),previous_job_id:values[8]});}
+   if(sql.startsWith('INSERT INTO ai_distill.library_jobs')){jobs.push({id:values[0],revision_id:values[2],request_key:values[3],status:'queued',input_snapshot:JSON.parse(values[5]),config_snapshot:JSON.parse(values[7]),executor_kind:values[8],previous_job_id:values[9]});}
    return{rows:[],rowCount:1};
   },release:()=>{}};
   const pool={query:db.query,connect:async()=>db};
@@ -336,6 +346,11 @@ test('整理入队与显式恢复冻结预算、模型和稳定来源；规则�
   jobs[0].input_snapshot.engine_version='old-engine';
   const thirdKey='33333333-3333-4333-8333-333333333333';
   expect((await resumePreparation(pool as any,'/unused',first.id,{request_key:thirdKey})).id).not.toBe(first.id);expect(jobs).toHaveLength(3);
+  const apiSettings={provider:'nvidia',base_url:'https://integrate.api.nvidia.com/v1/chat/completions',model:'minimaxai/minimax-m3.1-flash'};
+  await enqueuePreparation(pool as any,'/unused',projectId,{request_key:'44444444-4444-4444-8444-444444444444',redaction_id:id,api_settings:apiSettings});
+  expect(jobs[3].executor_kind).toBe('api');expect(jobs[3].config_snapshot.api).toEqual({...apiSettings,base_url:'https://integrate.api.nvidia.com/v1'});expect(jobs[3].config_snapshot.agent).toBeUndefined();
+  expect((await enqueuePreparation(pool as any,'/unused',projectId,{request_key:'44444444-4444-4444-8444-444444444444',redaction_id:id,api_settings:{...apiSettings,base_url:'https://integrate.api.nvidia.com/v1'}})).reused).toBe(true);
+  await expect(enqueuePreparation(pool as any,'/unused',projectId,{...request,request_key:'55555555-5555-4555-8555-555555555555',api_settings:apiSettings})).rejects.toThrow('不能同时指定');
   await expect(enqueuePreparation(pool as any,'/unused',projectId,{...request,execution_timeout_ms:0})).rejects.toThrow('执行预算');
  }finally{if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;}
 });

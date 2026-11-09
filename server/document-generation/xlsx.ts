@@ -6,6 +6,8 @@
 import {deflateRawSync} from 'node:zlib';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
+export interface WorkbookFormula {formula:string;cached_value:number|null}
+const formula=(value:unknown):value is WorkbookFormula=>Boolean(value&&typeof value==='object'&&'formula'in value);
 export interface WorkbookHyperlink {text:string;target:string}
 export interface WorkbookSheet {name:string;columns:string[];rows:Record<string,unknown>[];columnWidths?:Record<string,number>;rowHeight?:number}
 const hyperlink=(value:unknown):value is WorkbookHyperlink=>Boolean(value&&typeof value==='object'&&'text'in value&&typeof value.text==='string'&&'target'in value&&typeof value.target==='string');
@@ -37,6 +39,11 @@ function sheetXml(sheet:WorkbookSheet){
   const linked=hyperlink(value);
   if(linked){if(!/^(file|https?):\/\//i.test(value.target))throw new Error('Excel附件链接无效');links.push({ref,id:`link${links.length+1}`,target:value.target});}
   const style=r===0?2:linked?3:1;
+  if(formula(value)){
+   const expression=typeof value.formula==='string'?value.formula.replace(/^=/,''):'';
+   if(!expression.trim()||expression.length>8192||/[\x00-\x1f\[\]]/.test(expression)||expression.includes('#REF!')||(value.cached_value!==null&&(typeof value.cached_value!=='number'||!Number.isFinite(value.cached_value))))throw new Error('Excel公式或缓存值无效');
+   return `<c r="${ref}" s="${style}"><f>${xml(expression)}</f>${value.cached_value===null?'':`<v>${value.cached_value}</v>`}</c>`;
+  }
   if(typeof value==='number'&&Number.isFinite(value))return `<c r="${ref}" s="${style}"><v>${value}</v></c>`;
   if(typeof value==='boolean')return `<c r="${ref}" s="${style}" t="b"><v>${value?1:0}</v></c>`;
   return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xml(linked?value.text:String(value??''))}</t></is></c>`;
@@ -58,8 +65,10 @@ function zip(files:{name:string;data:string}[]){
 export function buildXlsx(sheets:WorkbookSheet[]):Uint8Array{
  if(!Array.isArray(sheets)||!sheets.length||sheets.length>200)throw new Error('Excel工作表数量无效');
  const names=uniqueSheetNames(sheets);
+ const hasFormulas=sheets.some(sheet=>sheet.rows.some(row=>Object.values(row).some(formula)));
+ if(hasFormulas&&(sheets.some((sheet,i)=>sheet.name!==names[i])||sheets.some(sheet=>sheet.rows.some(row=>Object.values(row).some(v=>typeof v==='string'&&v.length>MAX_CELL)))))throw new Error('含公式工作簿不能自动重命名工作表或拆列，以免改变引用');
  const contentTypes=`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
- const workbook=`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${names.map((name,i)=>`<sheet name="${xml(name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets></workbook>`;
+ const workbook=`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${names.map((name,i)=>`<sheet name="${xml(name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets><calcPr calcId="0" calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/></workbook>`;
  const relationships=`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="styles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
  const styles=`<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><u/><color rgb="FF0563C1"/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
  return zip([{name:'[Content_Types].xml',data:contentTypes},{name:'_rels/.rels',data:'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'},{name:'xl/workbook.xml',data:workbook},{name:'xl/_rels/workbook.xml.rels',data:relationships},{name:'xl/styles.xml',data:styles},...sheets.flatMap((sheet,i)=>{const rendered=sheetXml(sheet);return [{name:`xl/worksheets/sheet${i+1}.xml`,data:rendered.xml},...(rendered.relationships?[{name:`xl/worksheets/_rels/sheet${i+1}.xml.rels`,data:rendered.relationships}]:[])];})]);

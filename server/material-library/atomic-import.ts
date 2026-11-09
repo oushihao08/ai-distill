@@ -1,6 +1,6 @@
-/** 职责：上传仅保存独立提取任务和私有暂存文件；全部提取完成后在原发布事务创建正式包/版本/原件。
- * 入口：enqueueAtomicLibraryImport由HTTP调用，publishAtomicLibraryImport由extract发布回调调用。
- * 失败不创建正式材料行；暂存任务与原request_key保留用于对账，不自动重提取或迁移历史数据。
+/** 职责：核对完整上传集合并保存独立提取任务与私有暂存文件；全部文件提取成功后才原子创建正式包、revision、原件及正文。
+ * 入口：enqueueAtomicLibraryImport由HTTP调用，publishAtomicLibraryImport由extract发布回调调用；HTTP 202仅代表任务入队，须回读succeeded及正式ID。
+ * 失败不创建正式材料行；回执未知先用原request_key对账，确认终态后才用新键显式重传，不自动重提取或迁移历史数据。
  */
 import {randomUUID} from 'node:crypto';
 import {mkdir,writeFile,rm} from 'node:fs/promises';

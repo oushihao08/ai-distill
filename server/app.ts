@@ -40,6 +40,7 @@ import {mergeAnswerGenerationPolicyIntoStepConfig,parseAnswerGenerationPolicyMin
 import {mergeAnswerToolPolicyIntoStepConfig,parseAnswerToolPolicy,readAnswerToolPolicyFromStepConfig} from './answer-models/tool-policy';
 import {runAcceptance} from './decisions/jobs';
 import {readPublicationHistory,readSiriserArchive,withdrawPublication} from './publishing/jobs';
+import {buildSkillDependencyPackage} from '../projects/Skill Dependency/scripts/direct-package';
 import {buildProjectExport,verifyProjectAuthoringRules,workbookSha256,withProjectExportLock} from './reporting/export';
 import {enqueuePublication} from './publishing/tasks';
 import {syncArchivedWorkflowToFeishu,syncAuthoredWorkflowToFeishu} from './publishing/feishu';
@@ -1085,6 +1086,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.get('/api/workflows/:id/siriser-zip',async c=>{
   const {bytes,filename}=await readSiriserArchive(pool,uuid(c.req.param('id')),assetExportRoot);
   return new Response(Uint8Array.from(bytes).buffer,{headers:{'Content-Type':'application/zip','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,'Cache-Control':'no-store'}});
+ });
+ app.get('/api/workflows/:id/skill-dependency-package',async c=>{
+  const {bytes,filename,sha256}=await buildSkillDependencyPackage(pool,uuid(c.req.param('id')),storageRoot);
+  return new Response(Uint8Array.from(bytes).buffer,{headers:{'Content-Type':'application/zip','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,'Cache-Control':'no-store','X-Content-SHA256':sha256}});
  });
  registerFeishuTargetRoutes(app,pool);
  registerWorkflowHookRoutes(app,pool);

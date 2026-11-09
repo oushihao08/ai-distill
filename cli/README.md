@@ -382,11 +382,11 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 `bun cli/index.ts queue diagnose --json`并行读取现有队列与监控API，报告有排队却无运行、出题/评分入队超过15分钟及异常worker快照。`elapsed_ms`是自入队的总时长，包含排队，不是模型生成时长；running心跳不重置此计时。只输出任务ID和安全状态，不读取正文，不取消、重派或重启。单worker快照无法证明所有消费者存活，告警须结合原attempt和日志定位。实现见`queue-diagnostics.ts`；查询失败直接报错，不返回健康。
 
-## 可选材料整理
+## 材料整理
 
-`library prepare start/list/show/resume/diagnose`调用材料库可选整理接口，`library job show/wait/cancel`沿用现有任务；确切参数以HELP为准。start必须明确提取任务或脱敏结果，可带项目上下文及本次Agent模型。只调用HTTP，不读取业务数据库、不自行调用模型。wait到期只停止等待，不取消或重派。
+`library prepare start/list/show/resume/diagnose`调用材料库整理接口，`library job show/wait/cancel`沿用现有任务；确切参数以HELP为准。start明确绑定成功`redaction_id`或`extraction_job_id`，可带项目上下文及本次Agent模型。整理可跳过，加载不要求整理结果。只调用HTTP，不读取业务数据库、不自行调用模型。wait到期只停止等待，不取消或重派。
 
-`project materials question`不接收整理结果、候选或文书筛选参数。建题时服务端按材料包、版本、来源摘要和项目匹配最近成功整理结果，并把它冻结进本题来源快照；未整理或整理失败时仍使用完整材料。出题Agent读取可见材料包摘要、逐份摘要/标签、多组支持范围和本期已用方向+场景参考；自主选择一个或多个相容组合，主组合及`additional_combinations`保存在出题结果中，重复方向/场景不拦保存。作答、评分与材料DOCX使用冻结快照中的可见正文，不拼接隐藏的现成目标成果。整理入口、迁移和数据边界见[材料库说明](../server/material-library/README.md#材料整理与使用范围)。
+`project materials question`不接收整理结果、候选或文书筛选参数。建题时服务端按材料包、版本、来源摘要和项目匹配最近成功整理结果，并把它冻结进本题来源快照；没有匹配整理结果时仍使用完整原材料。出题Agent读取可见材料包摘要、逐份摘要/标签、多组支持范围和本期已用方向+场景参考；自主选择一个或多个相容组合，主组合及`additional_combinations`保存在出题结果中，重复方向/场景不拦保存。作答、评分与材料DOCX使用冻结快照中的可见正文，不拼接隐藏的现成目标成果。完整处理顺序见[材料库说明](../server/material-library/README.md#新材料处理顺序与可跳过步骤)。
 
 
 材料整理的执行预算与恢复：

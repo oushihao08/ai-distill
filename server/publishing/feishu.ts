@@ -55,6 +55,8 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
   // 生成器自行管理事务；先归还连接再导出，避免占满池后等待第二条连接。
   db.release();connectionHeld=false;
   if(!initial.authoring_input)throw new VerificationError('feishu_authoring_materials_missing',['材料来源']);
+  // 以本次有效出题attempt的冻结输入校验材料来源，再由导出器按来源决定附件数量：
+  // 普通豆包材料按项目布局合册；选用材料快照逐文书导出。这里不自行拼接正文或改变顺序。
   let exported:Awaited<ReturnType<typeof exportCurrentMaterialDocx>>;
   try{exported=await exportCurrentMaterialDocx(pool,workflowId,storageRoot,assetRoot,undefined,{expectedAuthoringInput:initial.authoring_input});}
   catch(error){if(error instanceof HTTPException&&error.status===409)throw new VerificationError('feishu_material_validation_failed',['附件数量/大小/版本/SHA-256']);throw error;}
@@ -110,6 +112,8 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
   // 普通重试保留已上传旧版编号，不因展示改版覆盖正文；仍逐字符验证同版全部字段。
   const legacyExpected=feishuTextFields(workflowId,initial.question,stage==='draft'?'未完成':'已完成','legacy');
   if(existing&&!revisionAttemptId&&existing.fields?.['考点rubric']===legacyExpected['考点rubric'])expected['考点rubric']=legacyExpected['考点rubric']!;
+  // 飞书附件名按实际DOCX字节摘要生成；多个导出件依导出顺序逐个上传到同一题的“输入附件”。
+  // 名称供已有记录比对，不代表远端文件字节已重新下载核验。
   const currentAttachmentNames=files.map(file=>`材料-${createHash('sha256').update(file.bytes).digest('hex').slice(0,16)}.docx`);
   const hasAttachmentNames=(value:unknown,names:string[])=>Array.isArray(value)&&value.length===names.length&&value.every((file:any,index:number)=>file?.name===names[index]);
   const uploadCurrentAttachments=async()=>{
@@ -127,6 +131,8 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
    const latest=await snapshot();
    if(!latest||snapshotKey(latest)!==archiveId||(stage==='archived'&&latest.archive_attempt_id!==archiveAttemptId)||canonicalJson(latest.question)!==canonicalJson(initial.question)||canonicalJson(latest.authoring_input)!==canonicalJson(initial.authoring_input))throw new VerificationError('feishu_source_changed',['题目版本']);
   };
+  // 新记录回读本次上传token；已有记录回读摘要文件名、数量及顺序，并逐字符核对题目字段。
+  // 此处不下载飞书附件，故成功回执只证明记录字段和附件关联的回读结果。
   const verify=async(recordId:string,uploadedTokens?:string[])=>{
    let readback=await remote.call(path+'/records/'+recordId),actual=readback.record?.fields??{};
    const compare=()=>{

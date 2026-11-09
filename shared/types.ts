@@ -25,7 +25,7 @@ export interface RedactionProgress {
  active_requests:number;request_count:number;retry_count:number;started_at:string;last_progress_at:string;deadline_at:string;
  request_duration_ms:number;queue_wait_ms:number;validation_duration_ms:number;checkpoint_duration_ms:number;wall_elapsed_ms:number;
 }
-export const MODEL_API_PROVIDERS=['qwen','kimi','deepseek','doubao','openrouter','siliconflow'] as const;
+export const MODEL_API_PROVIDERS=['qwen','kimi','deepseek','doubao','openrouter','siliconflow','nvidia'] as const;
 export type ModelApiProvider=typeof MODEL_API_PROVIDERS[number];
 export const DEFAULT_MODEL_API_MODEL='deepseek/deepseek-v4.1-flash';
 export const OPENROUTER_SERVER_TOOLS=['web_search','web_fetch','shell'] as const;

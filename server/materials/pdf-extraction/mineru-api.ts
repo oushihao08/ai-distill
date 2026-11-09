@@ -1,7 +1,7 @@
 /**
  * 职责：直接调用 MinerU v4 上传、解析和结果轮询 API，并复用 MinerU 块结构转换器。
  * 关键入口：`MineruApiPdfExtractor.extract()` 处理 PDF；DOCX 与原图适配器直接上传原件并投影为单逻辑页；`readMineruResultZip()` 有界读取下载流。
- * 使用场景：PDF 由 API 优先适配器调用并按原策略回退 CLI；DOCX 直接复用 API 上传与轮询。
+ * 使用场景：PDF 由 API 优先适配器调用并按原策略回退 CLI；DOCX和图片直接复用API上传与轮询。远端pending/running只供跟踪，成功ZIP转换为有效正文后才向材料任务返回成功。
  */
 import {storageDirectory} from '../../paths';
 import { createHash } from 'node:crypto';

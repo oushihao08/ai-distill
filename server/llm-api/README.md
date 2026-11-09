@@ -2,11 +2,13 @@
 
 与 `server/agent/` 并列。统一管理大模型 API 的配置、端点、凭证选择、文字/JSON 请求、完整响应、用量、安全错误、超时与取消。由模型作答、API独立评分及项目钩子复用；不依赖 Agent 或作答模块，不管理业务队列、文件目录和产物发布。
 
+NVIDIA NIM 使用`provider:nvidia`、`base_url:https://integrate.api.nvidia.com/v1`和服务进程环境变量`NVIDIA_API_KEY`；完整的`/v1/chat/completions`地址也会归一化为API根地址。模型名保留供应商前缀，例如`deepseek-ai/deepseek-v4.1-flash`或`minimaxai/minimax-m3.1-flash`。密钥不进入任务配置或持久化快照。供应商请求成功只证明接口可用，材料脱敏和整理仍须经各自的业务校验后发布。
+
 | 文件 | 职责 |
 | --- | --- |
 | `index.ts` | 公共入口，导出客户端、配置解析及契约 |
 | `types.ts` | 消息、响应格式、结果及安全错误；供应商配置共用 shared 类型 |
-| `config.ts` | Qwen、Kimi、DeepSeek、豆包、OpenRouter、SiliconFlow 的端点、模型与参数校验；服务端密钥和环境默认值 |
+| `config.ts` | Qwen、Kimi、DeepSeek、豆包、OpenRouter、SiliconFlow、NVIDIA 的端点、模型与参数校验；服务端密钥和环境默认值 |
 | `models.ts` | `/api/llm-api/models` 的模型选项和默认配置，复用已登记系统模型，沿用现有表，不新增目录 |
 | `concurrency.ts` | 默认 HTTP 传输共享的本机 SQLite 请求槽位及有界排队 |
 | `client.ts` | `complete()` 默认纯文字调用；显式 OpenRouter `server_tools` 走 Responses 并收集安全轨迹；`completeJson()` JSON 解析及调用方校验；HTTP、取消、超时、usage 和安全日志 |

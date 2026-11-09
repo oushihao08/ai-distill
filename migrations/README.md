@@ -79,3 +79,5 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 - `057_finalize_atomic_import_on_job_success.sql`：移除依赖后续任务成功状态的包/版本/文件插入循环触发器，由提取任务成功事件统一核对版本ready、当前版本、文件数和提取正文数；任一不完整仍整个事务回滚。
 - `058_remove_document_insert_success_cycle.sql`：移除正文插入时反查后续任务成功状态的循环触发器；正文数已由057的任务成功门禁统一校验，数量不完整仍回滚。
 - `059_allow_atomic_revision_seal.sql`：原子导入版本不再要求不存在的独立intake任务；其ready状态、当前版本、文件数和正文数由057的提取任务成功门禁核对，普通历史版本仍保留intake校验。
+- `061_library_load_eligibility.sql`：按revision、成功提取任务及评估算法版本保存完整材料合并后的DOCX估算页数和生成的加载资格字段；不回填、删除或改写既有期次关系。只有迁移与新版API均在目标环境生效后，新加载、选版和恢复门槛才可用。
+- `062_prepare_api_executor.sql`：仅允许可选材料整理任务选择本机API执行池；原Agent整理及其他材料任务约束不变。应用后新API整理任务才能成功入队。

@@ -5,8 +5,9 @@
 | 文件 | 公开入口及职责 |
 | --- | --- |
 | `docx.ts` | `buildDocx(textOrStructure, options)`生成DOCX；`preparedTextDocument()`将制表符文本转成结构。默认连续排版；`pagination: source`显式保留源页分页。渲染版本参与材料导出缓存；章节标题或版式改变时递增版本。 |
+| `material-math-docx.ts` | `materialMathRuns()`在材料DOCX显式启用`materialMath`时转换OCR圈号与可解析公式为Word原生内容；解析失败时将已知命令转成可读文本，无法判断的指数显示“指数待核对”，调用方仍须核对原件。 |
 | `table-layout.ts` | `planTableLayout()`设置确定列宽；异常超宽或越界OCR跨度按原行及单元格顺序保留非空文字，不猜测原表格几何，不改冻结数据。 |
-| `xlsx.ts` | `buildXlsx(sheets)`返回XLSX字节，`writeXlsx(path,sheets)`写文件；支持多表、列宽、换行、超长文字分列、数值/布尔及链接。 |
+| `xlsx.ts` | `buildXlsx(sheets)`返回XLSX字节，`writeXlsx(path,sheets)`写文件；支持多表、列宽、换行、超长文字分列、数值/布尔、链接及显式 `{formula,cached_value}` 公式对象。普通字符串保留文本；公式工作簿禁止自动改表名或拆列，打开时要求重算，生成器本身不计算公式。 |
 
 材料模块的`redacted-docx.ts`及报表模块的`xlsx.ts`只保留兼容导出。新增项目应直接使用本目录的公开方法，不能复制Office包生成实现。项目交付脚本仍负责自身字段、文件名和目录；公共生成器不能保证某个项目尚未实现的交付契约。
 

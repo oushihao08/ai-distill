@@ -8,6 +8,7 @@
 | `work-contract.ts` | Work schema、字段类型、同源投影与交付结构要求；原路径保留转出兼容 | Work注册与既有项目交付代码 |
 | `doubao.ts` | `豆包高经济价值`：保留归档前脚本路径；归档后同步对应期次飞书，检查最终回执 | `../project-delivery.ts`、`../publication.ts` |
 | `doubao-projection.ts` | 豆包题包与飞书共用的普通数字考点展示；新出题按本次冻结的步骤5工具策略收窄`answer_requirements` schema，只开放真实可用的文字、工具和文件能力 | `../steps.ts`、`../../publishing/feishu-verification.ts` |
+| `skill-dependency.ts` | Skill Dependency 的逐题 Skill、平台Metadata/Rubric、依赖检查及核验声明；扩展字段参与版本摘要，沿用通用保存且不增加保存准入 | `../steps.ts` |
 
 ## 代码边界
 
@@ -42,4 +43,4 @@ Work 必需交付失败时不写本地归档成功。豆包飞书要求先有本
 
 新旧注册须有普通项目、豆包、旧Work、新Work的隔离和回退用例。迁移前基线在`../fixtures/flow-baseline.json`，由改动前源码及合成输入采集，不可为让测试通过直接重生成；行为变化必须另行明确授权。该基线不包含用户题目、凭证或业务数据库数据。
 
-`doubao-materials.ts` 为纯材料布局注册，独立于飞书模块，由 `../material-docx.ts` 装配；默认项目逐文书，豆包保留合并。Work无需注册重复默认值。
+`doubao-materials.ts` 为纯材料布局注册，独立于飞书模块，由 `../material-docx.ts` 装配；默认项目逐文书，豆包普通来源保留合并。新材料库选用材料快照由导出器强制逐文书，优先于项目布局；Work无需注册重复默认值。来源顺序与文书边界见[材料DOCX说明](../../materials/README.md#材料docx布局与来源顺序)。

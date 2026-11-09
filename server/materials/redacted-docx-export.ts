@@ -19,13 +19,23 @@ import {REDACTED_DOCX_RENDERER_VERSION,buildDocx,preparedTextDocument,type Redac
 import {documentBlocksToText} from './pdf';
 import {readQuestionMaterials} from '../question-materials';
 import {filterEnglishOnlyBlocks,filterEnglishOnlyText} from '../../shared/material-paragraph-filter';
+import {documentBlockFields} from '../../shared/prepared-structure';
 import {isStandaloneNumberLine} from '../../shared/scan-noise';
+
+/** 仅移除独占一行的模型包装；不删代码内容、行内标记或业务正文。 */
+function stripMaterialWrapperLines(text:string):string{
+ return text.split(/(\r\n|\r|\n)/).map(line=>/^\s*(?:\[\/?(?:code|json|xml)\]|```(?:code|json|xml|markdown)?)\s*$/i.test(line)?'':line).join('');
+}
 
 /** 材料导出专属投影，不修改冻结来源；标准成果等非材料DOCX不应用这条过滤规则。 */
 export function filterMaterialDocxSource(source:string|RedactedDocumentStructure):string|RedactedDocumentStructure{
  return typeof source==='string'
-  ?filterEnglishOnlyText(source).split(/(\r\n|\r|\n)/).map(line=>isStandaloneNumberLine(line)?'':line).join('')
-  :{...source,pages:source.pages.map(page=>({...page,blocks:filterEnglishOnlyBlocks(page.blocks).filter(block=>block.kind==='table'||block.kind==='list'||!isStandaloneNumberLine(block.text))}))};
+  ?stripMaterialWrapperLines(filterEnglishOnlyText(source)).split(/(\r\n|\r|\n)/).map(line=>isStandaloneNumberLine(line)?'':line).join('')
+  :{...source,pages:source.pages.map(page=>{
+   const blocks=filterEnglishOnlyBlocks(page.blocks).filter(block=>block.kind==='table'||block.kind==='list'||!isStandaloneNumberLine(block.text));
+   for(const block of blocks)for(const field of documentBlockFields(block))field.set(stripMaterialWrapperLines(field.text));
+   return{...page,blocks};
+  })};
 }
 
 const digest=(bytes:string|Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
@@ -344,7 +354,9 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
    const target=join(location.originalDir,`${material.id.slice(0,8)}_${name}`);if(!beneath(location.questionDir,target))throw new HTTPException(409,{message:'附件归档路径无效'});
    await installFile(target,bytes,material.sha256,changes);
   }
-  // 生命周期选择逐文书或合并交付；仅操作显示副本，不改冻结脱敏材料。
+  // 整理结果存在时只用可见文书及其顺序；否则按原件顺序取冻结正文/结构。
+  // 选用材料快照强制逐文书导出，其他来源才采用项目布局（豆包为合册）。
+  // 合册只操作显示副本，不去重、不改冻结正文或原始附件。
   const preparedSections=context.prepared_documents?.map(doc=>({id:doc.id,title:doc.title,duplicate_of:doc.duplicate_of??null,document:doc.document??preparedTextDocument(doc.text,doc.id)}));
   if(context.preparation_applied&&!preparedSections?.length)throw new HTTPException(409,{message:'材料整理结果没有可见文书，不能生成DOCX'});
   const sourceSections=preparedSections?.length?preparedSections:context.originals.map(material=>({id:material.id,title:material.original_name,duplicate_of:null,document:context.materialDocuments.get(material.id)?.document??preparedTextDocument(context.materialMarkdown.get(material.id)!,material.id)}));
@@ -362,7 +374,7 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
    if(current?.attempt_id===context.attempt_id&&current.storage_path===storagePath&&manifestMatches){
     try{const existing=await readSafeFile(projectExportsRoot,storagePath);if(digest(existing)===current.sha256){artifacts.push({artifact_id:String(current.id),material_id:material.id,filename,sha256:current.sha256,reused:true});manifestMaterials.push({material_id:material.id,source_sha256:material.sha256,document_sha256,docx_artifact_id:String(current.id),docx_sha256:current.sha256});continue;}}catch(error){if(!(error instanceof HTTPException&&error.status===404))throw error;}
    }
-   const docx=await buildDocx(filterMaterialDocxSource(document?.document??context.materialMarkdown.get(material.id)!)),sha256=digest(docx);
+   const docx=await buildDocx(filterMaterialDocxSource(document?.document??context.materialMarkdown.get(material.id)!),{materialMath:true}),sha256=digest(docx);
    await installFile(docxPath,docx,sha256,changes);
    const artifactId=current?String(current.id):randomUUID();
    if(current)await db.query('UPDATE ai_distill.artifacts SET attempt_id=$2,storage_path=$3,sha256=$4,size_bytes=$5,content=NULL,created_at=now() WHERE id=$1',[artifactId,context.attempt_id,storagePath,sha256,docx.byteLength]);

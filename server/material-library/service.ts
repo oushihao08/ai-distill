@@ -4,6 +4,7 @@
  * 边界：所有写入只涉及 library_* 表；上传原件写入独立受管 blob 目录，不创建项目或题目工作流。
  */
 import {redactionJobCurrentValidationSql} from './processing-policy';
+import {LIBRARY_LOAD_ASSESSMENT_VERSION} from './load-eligibility';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -109,7 +110,7 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
  const sourceModeParam=usageProjectId?'$9::text':'$8::text';
  const params:unknown[]=[q,pageSize,(page-1)*pageSize,options.ready_only===true,state,projectIds,options.archived_only===true];
  if(usageProjectId)params.push(usageProjectId);
- params.push(sourceMode);
+ params.push(sourceMode,LIBRARY_LOAD_ASSESSMENT_VERSION);
  const result=await pool.query(`SELECT p.id,p.name,p.description,p.tags,p.current_revision_id,p.lock_version,p.deleted_at,p.created_at,p.updated_at,
   COALESCE(r.file_count,0)::int AS file_count,r.state AS revision_state,
   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='intake' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),CASE WHEN r.state='ready' THEN 'succeeded' ELSE 'not_started' END) AS intake_status,
@@ -117,6 +118,7 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='redact' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS redaction_status,
   available.count AS available_redaction_count,
   extracted.count AS available_extraction_count,
+  load_check.estimated_page_count AS load_estimated_docx_pages,load_check.load_eligible,
   ${usageProjection}
   (SELECT count(*)::int FROM ai_distill.project_library_packages l JOIN ai_distill.projects project ON project.id=l.project_id AND project.deleted_at IS NULL WHERE l.package_id=p.id AND l.removed_at IS NULL) AS loaded_project_count,
   count(*) OVER()::int AS total_count
@@ -130,6 +132,12 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
    JOIN ai_distill.library_jobs e ON e.revision_id=v.id AND e.kind='extract' AND e.status='succeeded'
    WHERE v.package_id=p.id AND v.state='ready'
     AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=v.id AND d.extraction_job_id=e.id) = v.file_count) extracted
+  LEFT JOIN LATERAL (SELECT eligibility.estimated_page_count,eligibility.load_eligible FROM ai_distill.library_jobs extraction_job
+   LEFT JOIN ai_distill.library_load_eligibility eligibility ON eligibility.extraction_job_id=extraction_job.id
+    AND eligibility.revision_id=r.id AND eligibility.assessment_version=$${params.length}
+   WHERE extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
+    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=extraction_job.id)=r.file_count
+   ORDER BY extraction_job.finished_at DESC,extraction_job.id DESC LIMIT 1) load_check ON true
   ${usageJoin}
   WHERE (($7::boolean=false AND p.deleted_at IS NULL) OR ($7::boolean=true AND p.deleted_at IS NOT NULL))
   ${preparationFilter}
@@ -165,9 +173,16 @@ export async function readLibraryPackage(pool:Pool,id:string){
   FROM ai_distill.library_packages p WHERE p.id=$1 AND p.deleted_at IS NULL`,[id]);
  if(!result.rowCount)throw new HTTPException(404,{message:'材料包不存在'});
  const revisions=await pool.query(`SELECT r.id,r.package_id,r.parent_revision_id,r.state,r.manifest_sha256,r.file_count,r.created_at,r.sealed_at,
+  load_check.estimated_page_count AS load_estimated_docx_pages,load_check.load_eligible,
   COALESCE(jsonb_agg(jsonb_build_object('id',f.id,'revision_id',f.revision_id,'original_name',f.original_name,'position',f.position,'sha256',b.sha256,'size_bytes',b.size_bytes,'content_type',b.content_type,'redaction_mode',f.redaction_mode,'created_at',f.created_at) ORDER BY f.position) FILTER(WHERE f.id IS NOT NULL),'[]'::jsonb) AS files
   FROM ai_distill.library_revisions r LEFT JOIN ai_distill.library_files f ON f.revision_id=r.id LEFT JOIN ai_distill.library_blobs b ON b.id=f.blob_id
-  WHERE r.package_id=$1 GROUP BY r.id ORDER BY r.created_at DESC,r.id`,[id]);
+  LEFT JOIN LATERAL (SELECT eligibility.estimated_page_count,eligibility.load_eligible FROM ai_distill.library_jobs extraction_job
+   LEFT JOIN ai_distill.library_load_eligibility eligibility ON eligibility.extraction_job_id=extraction_job.id
+    AND eligibility.revision_id=r.id AND eligibility.assessment_version=$2
+   WHERE extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
+    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=extraction_job.id)=r.file_count
+   ORDER BY extraction_job.finished_at DESC,extraction_job.id DESC LIMIT 1) load_check ON true
+  WHERE r.package_id=$1 GROUP BY r.id,load_check.estimated_page_count,load_check.load_eligible ORDER BY r.created_at DESC,r.id`,[id,LIBRARY_LOAD_ASSESSMENT_VERSION]);
  return{...result.rows[0],revisions:revisions.rows};
 }
 
@@ -175,14 +190,23 @@ export async function readLibraryRevisions(pool:Pool,id:string){
  const visible=await pool.query('SELECT id FROM ai_distill.library_packages WHERE id=$1 AND deleted_at IS NULL',[id]);
  if(!visible.rowCount)throw new HTTPException(404,{message:'材料包不存在'});
  return(await pool.query(`SELECT r.id,r.package_id,r.parent_revision_id,r.state,r.manifest_sha256,r.file_count,r.created_at,r.sealed_at,
+  load_check.estimated_page_count AS load_estimated_docx_pages,load_check.load_eligible,
   COALESCE(jsonb_agg(jsonb_build_object('id',f.id,'original_name',f.original_name,'position',f.position,'sha256',b.sha256,'size_bytes',b.size_bytes,'content_type',b.content_type,'redaction_mode',f.redaction_mode) ORDER BY f.position) FILTER(WHERE f.id IS NOT NULL),'[]'::jsonb) AS files,
-  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',red.id,'extraction_job_id',red.extraction_job_id,'redaction_job_id',red.redaction_job_id,'output_digest',red.output_digest,'redaction_template_id',red.validation_report->>'redaction_template_id','redaction_template_workflow',COALESCE(red.validation_report->>'redaction_template_workflow',(SELECT j.config_snapshot->'redaction_template'->>'workflow' FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id)),'redaction_template_name',red.validation_report->>'redaction_template_name','usable_for_question',(red.validation_report->>'usable_for_question'='true' AND r.state='ready'
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',red.id,'extraction_job_id',red.extraction_job_id,'redaction_job_id',red.redaction_job_id,'output_digest',red.output_digest,'redaction_template_id',red.validation_report->>'redaction_template_id','redaction_template_workflow',COALESCE(red.validation_report->>'redaction_template_workflow',(SELECT j.config_snapshot->'redaction_template'->>'workflow' FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id)),'redaction_template_name',red.validation_report->>'redaction_template_name','load_estimated_docx_pages',red_check.estimated_page_count,'load_eligible',red_check.load_eligible,'usable_for_question',(red.validation_report->>'usable_for_question'='true' AND r.state='ready'
      AND EXISTS(SELECT 1 FROM ai_distill.library_jobs e WHERE e.id=red.extraction_job_id AND e.revision_id=r.id AND e.kind='extract' AND e.status='succeeded')
      AND EXISTS(SELECT 1 FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id AND j.revision_id=r.id AND j.kind='redact' AND j.status='succeeded' AND ${redactionJobCurrentValidationSql('j')})),'created_at',red.created_at) ORDER BY red.created_at DESC,red.id)
-    FROM ai_distill.library_redactions red WHERE red.revision_id=r.id),'[]'::jsonb) AS redactions,
+    FROM ai_distill.library_redactions red LEFT JOIN ai_distill.library_load_eligibility red_check
+     ON red_check.revision_id=red.revision_id AND red_check.extraction_job_id=red.extraction_job_id AND red_check.assessment_version=$2
+    WHERE red.revision_id=r.id),'[]'::jsonb) AS redactions,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id',j.id,'kind',j.kind,'status',j.status,'origin',j.origin,'created_at',j.created_at,'finished_at',j.finished_at) ORDER BY j.created_at DESC) FROM ai_distill.library_jobs j WHERE j.revision_id=r.id),'[]'::jsonb) AS jobs
   FROM ai_distill.library_revisions r LEFT JOIN ai_distill.library_files f ON f.revision_id=r.id LEFT JOIN ai_distill.library_blobs b ON b.id=f.blob_id
-  WHERE r.package_id=$1 GROUP BY r.id ORDER BY r.created_at DESC,r.id`,[id])).rows;
+  LEFT JOIN LATERAL (SELECT eligibility.estimated_page_count,eligibility.load_eligible FROM ai_distill.library_jobs extraction_job
+   LEFT JOIN ai_distill.library_load_eligibility eligibility ON eligibility.extraction_job_id=extraction_job.id
+    AND eligibility.revision_id=r.id AND eligibility.assessment_version=$2
+   WHERE extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
+    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=extraction_job.id)=r.file_count
+   ORDER BY extraction_job.finished_at DESC,extraction_job.id DESC LIMIT 1) load_check ON true
+  WHERE r.package_id=$1 GROUP BY r.id,load_check.estimated_page_count,load_check.load_eligible ORDER BY r.created_at DESC,r.id`,[id,LIBRARY_LOAD_ASSESSMENT_VERSION])).rows;
 }
 
 export async function updateLibraryPackage(pool:Pool,id:string,expectedVersion:number,value:unknown){

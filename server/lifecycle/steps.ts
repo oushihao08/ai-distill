@@ -9,6 +9,7 @@ import {defaultAuthoringPlan} from './default-authoring-plan';
 import type {ProjectIdentity,StepRegistries} from './step-types';
 import {registerWorkSteps} from './projects/work';
 import {registerDoubaoProjections} from './projects/doubao-projection';
+import {registerSkillDependencySteps} from './projects/skill-dependency';
 export type {ProjectIdentity} from './step-types';
 const projectKeys=new ProjectKeyRegistry<ProjectIdentity>();
 /** 显式key优先；兼容名称/契约/目录的项目识别只在项目实现中维护。 */
@@ -31,4 +32,5 @@ export const projectStepPolicies:StepRegistries={
 };
 registerWorkSteps(projectStepPolicies,projectKeys);
 registerDoubaoProjections(projectStepPolicies);
+registerSkillDependencySteps(projectStepPolicies);
 // 豆包定制阅读稿投影及新题可声明的受控作答能力；飞书仍在独立交付注册中维护。

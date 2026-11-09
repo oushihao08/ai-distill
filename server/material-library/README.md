@@ -4,6 +4,31 @@
 
 # 独立材料库
 
+## 新材料处理顺序与可跳过步骤
+
+本节供材料操作与维护人员使用。正式包和revision须由完整原件集合原子提取成功后发布；脱敏和材料整理是可选步骤。任务排队、运行或供应商`pending`都不能作为成功依据，以HTTP任务详情和正式结果回读为准。
+
+| 阶段 | 成功依据 | 可跳过路径与失败处理 |
+| --- | --- | --- |
+| 原子提取入库 | 提取任务`succeeded`，回读正式`package_id`、`revision_id`及完整文件集合 | 入库不可跳过；运行或回执未知只对账。终态失败且无正式版本时，可核对原件后以新请求键重传；失败不发布半包 |
+| aliases整包脱敏 | 同版脱敏任务`succeeded`并取得`redaction_id` | 可选择原文来源跳过脱敏；选择aliases来源时必须先有可用脱敏结果。失败不能冒充成功 |
+| Agent材料整理 | 以成功`redaction_id`或`extraction_job_id`提交prepare，任务`succeeded`且结果匹配来源 | 可跳过，不阻止加载或建题；失败或来源不匹配时建题仍使用完整来源材料 |
+| 加载期次 | 按期次来源模式选择同版提取结果或脱敏结果，先快速评估该版完整提取正文合并DOCX是否超过10页，再保存加载关系和`lock_version` | 估算10页及以下的版本禁止加载任何期次；不要求整理结果；已有加载及题目冻结来源不因后续处理自动变化 |
+
+默认aliases流程可依次执行提取、脱敏、整理、加载；原文模式直接从提取结果加载，也可在加载前整理原文。整理也可以在加载后显式执行，但已冻结题目不会因此自动更新。
+
+提取路径有两层身份：`request_key`用于同一请求的幂等对账，任务ID用于查询执行状态；正式包和revision只在整包提取发布成功后出现。PDF/DOCX/PNG/JPG/JPEG由MinerU处理，TXT/MD走本地解析；DOC/WPS/OFD先按可追溯映射生成受管输入，保留原件SHA与输出摘要。每个逻辑包必须一次提交完整原件集合；技术切片属于包内输入，不应分别发布正式包。供应商任务`pending`只说明远端尚无终态，本地任务`running`也不能证明远端已经产生正文。已有正式版本的显式`previous_job_id`续作可在逐文件身份和产物校验通过后复用检查点；独立原子导入失败后的新上传不能假定继承旧任务的文件ID或检查点，最终仍须整包原子发布。
+
+提取的实际顺序是：①上传入口校验文件名、格式/签名、单文件及整包大小，冻结原件字节、来源摘要、处理设置和请求键；②返回独立job ID及`queued`，worker领取后才进入`running`；③每份外部格式原件由MinerU申请上传地址、上传、轮询、下载结果ZIP并转换页/块结构，TXT/MD走本地解析；④核验每份正文、结构、原件摘要及整包文件数，全部通过后在事务中发布正式包、revision、文件和正文。任一文件失败、截止或取消时，不能把已完成的部分发布成正式包。供应商`task_failed`、`provider_timeout`、HTTP拒绝与本地队列/事务失败须按各自阶段查任务详情及安全诊断，不能一律当成OCR质量问题；具体MinerU轮询、诊断及回退边界见[PDF provider 契约](../materials/pdf-extraction/README.md)。
+
+脱敏与整理不构成全局加载门槛。通用库允许无期次上下文的显式原文整理；显式原文期次不执行aliases脱敏。旧加载关系及其已建题目保持原冻结来源，不自动补做整理或重建题目。OCR结构和任务成功不等于文字质量验收，issues、原件及provenance须保留。
+
+### 拼接DOCX页数加载门槛
+
+本门槛适用于新建加载关系、已加载关系切换版本，以及移除后恢复，覆盖所有项目期次。以所选revision的**完整成功提取任务**为来源，在内存中复用材料DOCX的文书合并和包装清理；按当前11磅正文、约42个中文全宽字/行和46行/页估算连续排版，表格按最宽单元格及行高计入。**估算1–10页标记`load_eligible=false`，禁止加载；11页及以上标记`true`。**评估不生成DOCX/PDF、不启动LibreOffice，避免加载请求长时间等待。它不等于真实Word分页，不用原件PDF页数、OCR页码或文件数替代。脱敏与整理可跳过，且不改变这个包版本的基础页数门槛；整理的可见性筛选也不用于评估。
+
+结果按`revision_id + extraction_job_id + 评估算法版本`记录于`library_load_eligibility`，保存`source_digest`、`estimated_page_count`、`load_eligible`和评估时间。列表及版本接口返回`load_estimated_docx_pages`和`load_eligible`；`null`表示尚未评估或算法版本变化，并不代表合格。首次加载前快速计算并持久化，写事务再次核对确切提取任务；来源结构缺失或评估失败时保持未知并拒绝加载。新revision和新成功提取任务须分别判定。页数靠近10页时可能受字体、表格和Word实际换行影响，结果仅为快速规则评估，**不是OCR准确度、材料实质质量或题目可用性的验收**；已加载的历史关系及题目不自动移除。
+
 提取发布（含MinerU桌面结果和GLM-OCR结构结果导入）通过`storeExtractedDocument()`显式启用共用英文整段过滤：完整纯英文句及至少八词、含小写字母的纯英文OCR截断段清空；全大写标题、数字、网址、邮箱、编号、单位及中英混排保留，不按任意无中文字段删除；表格逐单元格、列表逐项处理，ID、页序及合并关系保留。删除沿用原始OCR副本和精确坐标审计；结构与正文投影同步发布。历史结果不回写，已有成功任务不自动重跑。Agent计划编译的默认扫描噪声规则不因此扩大。
 
 `POST /api/material-library/revisions/:id/glm-extractions`接收`request_key`及同版完整`files:[{file_id,source_sha256,pages}]`；DOCX文件另须提供`rendered_sha256`。PDF直接核对原件页数；DOCX复用只读PDF预览转换，核对原件摘要、渲染副本摘要和页数，保留DOCX原件身份。接口还校验页级结构与正文投影，在单事务写入成功提取任务和材料正文；任务来源标记为`glm-ocr`、`model_invoked:true`，不冒记为MinerU结果。重复请求键只复用完全相同的已保存结果。该入口只导入已取得的结构化结果，本身不发起模型调用；运行服务需加载新路由后才能使用。
@@ -37,13 +62,14 @@ HTTP入口为`GET /api/material-library/redactions/:id/name-revision-source?proj
 | `agent-redaction-artifacts.ts` | 私有输入、同源检查点、固定结果文件及本地校验工具准备 |
 | `agent-redaction-validator.ts` | 打包到任务内的只读校验CLI，供Agent在同次调用内修正错误；不写库 |
 | `redaction-review.ts` | 显式复核Agent已发布产物，将当前结论及历史追加到job.result_summary，不改不可变产物或任务成功历史 |
-| `preparation.ts` | 可跳过的材料整理任务：按冻结的提取/脱敏来源单次生成总摘要、逐份摘要、文书可见性和支持范围；不自动补调，原文保留在材料库及人工预览 |
+| `preparation.ts` | 可跳过的材料整理任务：按冻结的提取/脱敏来源单次生成总摘要、逐份摘要、文书可见性和支持范围；不自动补调 |
 | `worker-once.ts` | 验收入口，只消费HTTP已创建的指定本机Agent材料job UUID，复用共享Agent槽位与正式事务，不领取其他任务 |
 | `prepared-import.ts` | 导入Codex已审阅的原文编辑/分册计划：校验完整提取来源、精确编辑、范围覆盖与请求幂等，在同一事务保存新任务及脱敏结果；不OCR、不调用模型、不改旧结果 |
 | `mineru-import.ts` | 导入MinerU桌面端content_list：核对完整版本原件摘要与PDF页数，复用结构转换，事务保存提取文档与来源摘要；不重跑OCR、不脱敏 |
 | `glm-import.ts` | 导入已完成的GLM-OCR页级结构：核对同版完整PDF/DOCX集合、原件及DOCX渲染副本摘要、页数和结构投影，事务保存并保留真实provider来源；不再次调用模型 |
 | `preview.ts` | 按文件/成功提取任务/成功脱敏结果身份按需读取正文，校验摘要；单文件脱敏通过索引定位，拒绝任意blob读取 |
 | `original-preview.ts` | PDF/TXT等原件直接查看，DOCX由隔离LibreOffice生成只读PDF副本；串行转换、60秒时限、按源摘要和渲染版本缓存 |
+| `load-eligibility.ts` | 按完整提取结构快速估算合并DOCX页数并记录版本级加载资格；不生成DOCX/PDF，所有期次加载写入口复核 |
 | `projects.ts`、`questions.ts` | 项目加载与选版/移除；按期次所选模式从脱敏结果或 MinerU 提取版本建立完整题目私有快照 |
 | `projects-routes.ts`、`uses.ts` | 本期材料候选分页、加载引用/恢复、题目创建入口及本期使用状态/单条事件读取 |
 | `atomic-import.ts` | 独立上传任务、暂存文件及整包提取后的原子发布；成功前不建立正式包/版本，复用现有执行队列和槽位 |
@@ -82,7 +108,7 @@ PDF/DOCX/图片外部提取按需逐文件执行，每份冻结30分钟预算，
 
 材料任务请求可带`project_id`：服务端从该期次配置选流程，拒绝不一致的客户端模板，原文模式不派脱敏；新任务冻结模式及处理配置，历史任务不切换。未带项目上下文的全局库操作仍可显式选择模板，供不同项目共享已处理版本。旧字段映射模型配置不再用于派发或执行。化名方法与执行适配器分离：当前接`runAgent`，未来API Agent后端可实现同一任务/结果接口，尚未宣称该后端已实现。
 
-本期可先加载已提取、尚待脱敏的材料，点击“处理材料”进入带期次上下文的材料页。处理成功后选择匹配版本再建题；不恢复通用自动推进。改变本期模式只影响新题；既有题目依然按题目快照执行，禁止作答/评分临时重读当前模式并切换材料。成功消息或阶段文件不等于发布成功：以library_jobs.succeeded和library_redactions可读结果为准。
+本期可先加载已提取、尚待脱敏的材料，点击“处理材料”进入带期次上下文的材料页；选择aliases来源时须取得整包脱敏结果，整理可选。改变本期模式只影响新题；既有题目依然按题目快照执行，禁止作答/评分临时重读当前模式并切换材料。成功消息或阶段文件不等于发布成功：以library_jobs.succeeded和对应正式结果可读为准。
 
 ## 页面与接口
 
@@ -248,9 +274,9 @@ Agent自检、宿主发布及显式复核共用同一编译器。成功表示原
 
 候选工作分析复用组合的 `core_work`、`deliverables`、`notes`：分别记录待处理工作、成果接收人与用途、实际依赖及适用核验。材料整理页在“候选工作分析与任务组合”直接展示工作、成果用途及说明；旧记录无说明时显示缺失提示。建题继续随整理结果冻结并传入 `material-scope.json`，不增加数据库字段、模型调用或跨题读取。旧整理结果不自动补分析；新提示词须由运行进程加载后用于新整理调用，已保存结果及完整检查点仍按既有复用规则处理。
 
-`preparation.ts`复用`library_jobs(kind=prepare)`及本机Agent槽位，读取成功提取或脱敏结构，单次Agent读取固定目录与正文，一次返回逐份描述、可见性、总摘要、组合及整包出题支持度；规则直接内联，不再读取scene-rules.md，不自动补调，保存材料包总摘要、每份材料摘要/类型/标签，以及多组由材料支持的方向、主体/立场、相容场景/时点、核心工作和多项交付。整理不作默认选择、不裁剪材料，也不增加步骤编号或前置审批；缺失、失败或摘要不完整时，原建题流程继续。prepare不参与提取/脱敏的revision互斥；仍共享现有Agent容量，默认不自动派发。
+`preparation.ts`复用`library_jobs(kind=prepare)`读取成功提取或脱敏结构，一次返回逐份描述、可见性、总摘要、组合及整包出题支持度。默认走本机Agent；单次请求显式传`api_settings`时改走API槽位，`api_settings`与`agent_settings`互斥，来源绑定、输出schema、编译和发布共用原路径。API配置不保存密钥，执行时从服务进程环境读取；失败不自动切回Agent或重复调用。整理不作默认选择、不裁剪材料，也不增加步骤编号或前置审批；原文整理绑定成功提取任务，脱敏整理绑定成功脱敏结果；缺失、失败或摘要不完整时，建题仍可使用完整材料。prepare不参与提取/脱敏的revision互斥，默认不自动派发。
 
-HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`redaction_id`或`extraction_job_id`，可选`project_id`及`agent_settings`；`GET /api/material-library/packages/:id/preparations`列出最近结果，`GET /api/material-library/preparations/:id?include_content=true`读取完整文书。状态和取消沿用jobs接口。同请求键恢复原ID；同来源/项目/模型及规则的成功结果或本机在途整理复用；成功结果可只读复用，不认领他机在途任务。新任务按来源目录固定材料ID、标题、顺序及全部结构块，Agent只返回描述信息，不接收重分册的块ID或标题。已有脱敏分册直接沿用；未分册原文按原文件保留，不在整理阶段拆合。摘要缺失不自动补调或新增材料，保持空值并生成技术提示；边界疑点记入notes，交回上游处理。未知或重复描述不替换来源正文，不阻断建题；模型结果未知不自动重调。
+HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`redaction_id`或`extraction_job_id`，可选`project_id`、`agent_settings`或`api_settings`；`GET /api/material-library/packages/:id/preparations`列出最近结果，`GET /api/material-library/preparations/:id?include_content=true`读取完整文书。状态和取消沿用jobs接口。同请求键恢复原ID；同来源/项目/模型及规则的成功结果或本机在途整理复用；成功结果可只读复用，不认领他机在途任务。新任务按来源目录固定材料ID、标题、顺序及全部结构块，模型只返回描述信息，不接收重分册的块ID或标题。已有脱敏分册直接沿用；未分册原文按原文件保留，不在整理阶段拆合。摘要缺失不自动补调或新增材料，保持空值并生成技术提示；边界疑点记入notes，交回上游处理。未知或重复描述不替换来源正文，不阻断建题；模型结果未知不自动重调。
 
 总摘要由Agent根据最终目录、逐份描述及原文概括法律关系、材料构成、主要事实和程序状态，不写整理数量或处理进度；数量由程序计算。单次调用使用本次deadline及完整响应检查点。组合须明确主体、工作、信息时点、交付用途及可见依据；分别处理事件、凭证申请、取得及送达时间，时间不明时注明阶段或适用条件，不猜精确时点。多组选用须同一服务主体、案件与工作关联、场景相容；程序只核验字段和可见引用，不将结构校验冒充语义审查或增加整包准入门槛。
 
@@ -262,7 +288,7 @@ HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`
 
 新整理结果的`document_count`只数完整文书；未归类分组及其结构块单独计数。来源已有类别时沿用，否则Agent只判断现有整条记录的类别，不改变边界；空白、残片、无法确认完整文书或未分册合订文件按未归类保留，全空记录由程序排除完整文书计数。旧结果没有`unit_kind`，其`documents.length`只是整理记录条数，不能当作真实文书份数；详情会显示记录条数、摘要非空数和真实份数未知。出题Agent实际采用的方向、主体、场景及`deliverables`保存在`step_attempts.result.material_scope_selection`（步骤投影也返回该字段）；主组合与`additional_combinations`附加组合均保存在该JSON中；历史单组合仍兼容。`question_material_scope_uses`只保留方向+场景参考索引，冲突不阻断题目保存；每题实际交付以尝试JSON为准。无需新增数据库列或迁移。无法可靠解析的历史题不自动回填；整理结果需要051；053参考索引缺失不阻断整理上下文冻结或出题保存。旧题快照不追溯改变。
 
-`preparation.test.ts`以SQL/Agent替身和临时文件验证摘要编译、材料完整性、作者输入和组合重复登记；不证明真实Agent分析质量或业务环境已经迁移。CLI语法见[CLI说明](../../cli/README.md#可选材料整理)。
+`preparation.test.ts`以SQL/Agent替身和临时文件验证摘要编译、材料完整性、作者输入和组合重复登记；不证明真实Agent分析质量或业务环境已经迁移。CLI语法见[CLI说明](../../cli/README.md#材料整理)。
 
 ### 整理显式恢复与预算
 
@@ -270,7 +296,7 @@ prepare请求可带`execution_timeout_ms`（1000至86400000毫秒，默认30分�
 
 单次完整响应在私有preparation目录原子保存`checkpoint.json`。显式续作在稳定来源相同时复用具有完整`response`的检查点，不再比对引擎、规则、模型、提示词或schema指纹；当前结果编译仍校验字段、ID及结构。未完成调用或残缺文件不复用。每次复用复制到本次私有目录；不自动重试、不启动worker、不延长原任务deadline。
 
-CLI的start/resume/diagnose使用同一HTTP契约；diagnose只返回状态、停止原因及结果计数，不输出正文、摘要、备注或模型私有事件。CLI语法唯一来源见[CLI说明](../../cli/README.md#可选材料整理)。隔离测试证明检查点身份和调用次数，不能证明正在运行的服务已加载新代码。
+CLI的start/resume/diagnose使用同一HTTP契约；diagnose只返回状态、停止原因及结果计数，不输出正文、摘要、备注或模型私有事件。CLI语法唯一来源见[CLI说明](../../cli/README.md#材料整理)。隔离测试证明检查点身份和调用次数，不能证明正在运行的服务已加载新代码。
 
 ### 心跳瞬时故障边界
 

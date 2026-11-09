@@ -6,7 +6,7 @@
 import {ModelApiError,type ModelApiConfig} from './types';
 import {ANSWER_LOCAL_TOOLS,DEFAULT_MODEL_API_MODEL,OPENROUTER_SERVER_TOOLS,type AnswerLocalTool,type OpenRouterServerTool} from '@shared/types';
 export type QwenApiConfig=ModelApiConfig&{provider:'qwen'};
-export type OtherApiConfig=ModelApiConfig&{provider:'kimi'|'deepseek'|'doubao'|'openrouter'|'siliconflow'};
+export type OtherApiConfig=ModelApiConfig&{provider:'kimi'|'deepseek'|'doubao'|'openrouter'|'siliconflow'|'nvidia'};
 function record(value: unknown): value is Record<string, unknown> {
  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -45,15 +45,18 @@ const endpoints:Record<OtherApiConfig['provider'], {base:string;hosts:string[];p
  doubao:{base:'https://ark.cn-beijing.volces.com/api/v3',hosts:['ark.cn-beijing.volces.com'],path:/^\/api\/v3\/?$/,keys:['DOUBAO_API_KEY','ARK_API_KEY']},
  openrouter:{base:'https://openrouter.ai/api/v1',hosts:['openrouter.ai'],path:/^\/api\/v1\/?$/,keys:['OPEN_ROUTER_KEY']},
  siliconflow:{base:'https://api.siliconflow.com/v1',hosts:['api.siliconflow.com'],path:/^\/v1\/?$/,keys:['SILICONFLOW_API_KEY']},
+ nvidia:{base:'https://integrate.api.nvidia.com/v1',hosts:['integrate.api.nvidia.com'],path:/^\/v1\/?$/,keys:['NVIDIA_API_KEY']},
 };
 export function resolveOtherApiConfig(raw:unknown,env:NodeJS.ProcessEnv=process.env):OtherApiConfig {
  onlyFields(raw,['provider','base_url','model','max_tokens','enable_thinking','provider_options','server_tools','local_tools','max_tool_calls']);
  if(raw.enable_thinking!==undefined&&((raw.provider!=='openrouter'&&raw.provider!=='siliconflow')||typeof raw.enable_thinking!=='boolean'))throw new ModelApiError('configuration');
- if(raw.provider!=='kimi' && raw.provider!=='deepseek' && raw.provider!=='doubao' && raw.provider!=='openrouter' && raw.provider!=='siliconflow') throw new ModelApiError('configuration');
+ if(raw.provider!=='kimi' && raw.provider!=='deepseek' && raw.provider!=='doubao' && raw.provider!=='openrouter' && raw.provider!=='siliconflow' && raw.provider!=='nvidia') throw new ModelApiError('configuration');
  const provider=raw.provider,spec=endpoints[provider],prefix=provider.toUpperCase();
- const base=raw.base_url===undefined ? env[prefix+'_BASE_URL']?.trim() || spec.base : raw.base_url;
+ // NVIDIA examples use both the API root and the full chat-completions URL; store one canonical root.
+ const suppliedBase=raw.base_url===undefined ? env[prefix+'_BASE_URL']?.trim() || spec.base : raw.base_url;
+ const base=provider==='nvidia'&&typeof suppliedBase==='string'?suppliedBase.replace(/\/chat\/completions\/?$/,''):suppliedBase;
  const model=raw.model===undefined ? env[prefix+'_MODEL']?.trim() : raw.model;
- const modelPattern=provider==='openrouter'||provider==='siliconflow'?/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/:/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+ const modelPattern=provider==='openrouter'||provider==='siliconflow'||provider==='nvidia'?/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/:/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
  if(typeof base!=='string' || typeof model!=='string' || !modelPattern.test(model)) throw new ModelApiError('configuration');
  let url:URL;try {url=new URL(base);} catch {throw new ModelApiError('configuration');}
  if(url.protocol!=='https:' || !spec.hosts.includes(url.hostname) || url.port || url.username || url.password || url.search || url.hash || !spec.path.test(url.pathname)) throw new ModelApiError('configuration');
