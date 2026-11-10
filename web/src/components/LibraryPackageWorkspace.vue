@@ -53,7 +53,7 @@ const processingStatuses=computed(()=>[
    <v-select v-if="props.processingMode!=='original'&&props.processingMode!=='mask'" v-model="templateId" label="脱敏模板" :items="templates.map(t=>({title:t.name,value:t.id}))" hide-details class="w-full sm:w-220px sm:flex-none"/>
    <span v-if="revisions.length===1" class="text-sm text-muted whitespace-nowrap">第 1 版 · {{ revision.file_count }} 份文件</span>
    <v-select v-else v-model="revisionSelection" label="文件版本" :items="revisions.map((item,index)=>({title:`第 ${revisions.length-index} 版 · ${dateLabel(item.created_at)}`,value:item.id}))" hide-details class="w-full sm:w-220px sm:flex-none"/>
-   <v-select v-model="fileSelection" label="选择文件" :items="revision.files.map(item=>({title:item.original_name,value:item.id}))" hide-details class="w-full sm:w-240px sm:flex-none"/>
+   <v-select v-model="fileSelection" label="选择文件" :items="revision.files.map(item=>({title:`${item.original_name}${item.image_review_required?' · 需要核心图片':''}`,value:item.id}))" hide-details class="w-full sm:w-240px sm:flex-none"/>
    <v-select v-if="(fileMode==='redacted'||fileMode==='compare')&&revision.redactions.length" v-model="redactionSelection" label="脱敏版本" :items="redactionItems" hide-details class="w-full sm:w-260px sm:flex-none"/>
   </template>
  </Row>

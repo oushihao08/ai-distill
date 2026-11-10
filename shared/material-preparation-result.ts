@@ -13,14 +13,15 @@ export interface PreparationUnit {id:string;title:string;pages:{page:number;bloc
 export interface PreparationBlock {id:string;unit_id:string;page:number;block:DocumentBlock}
 export type PreparationVisibility='visible'|'hidden';
 export type PreparationDocumentKind='document'|'unassigned';
-export interface PreparationDocument {id:string;title:string;block_ids:string[];summary:string;document_type:string;tags:string[];notes:string;unit_kind?:PreparationDocumentKind;visibility?:PreparationVisibility;visibility_reason?:string}
+/** hidden_texts 是整理 Agent 对显示副本的逐段隐藏建议，不是脱敏编辑；只记录已精确命中来源段落的原文和理由。 */
+export interface PreparationDocument {id:string;title:string;block_ids:string[];summary:string;document_type:string;tags:string[];notes:string;unit_kind?:PreparationDocumentKind;visibility?:PreparationVisibility;visibility_reason?:string;hidden_texts?:Array<{source_text:string;reason:string}>}
 export interface PreparationSummaryTask {id:string;title:string;block_ids:string[];kind:'existing'|'document'|'unassigned';raw_index?:number}
 export interface PreparationScene {scene:string;as_of:string}
 export interface PreparationCombination {id:string;direction:string;party:string;scenes:PreparationScene[];core_work:string;deliverables:string[];document_ids:string[];notes:string}
 export type QuestionSupportStatus='usable'|'limited'|'dangerous'|'preparation_error';
 export interface QuestionSupportDimensions {task_actor:number;factual_basis:number;professional_judgment:number;deliverable_viability:number;information_boundary:number}
 export interface QuestionSupport {score:number;status:QuestionSupportStatus;dimensions:QuestionSupportDimensions;reason:string;allowed_task_types:string[];unsupported_conclusions:string[]}
-export interface MaterialPreparationResult {summary_scope?:'visible';format:'material-preparation-v2';package_summary:string;documents:PreparationDocument[];combinations:PreparationCombination[];question_support?:QuestionSupport;warnings:string[];document_count?:number;unassigned_group_count?:number;unassigned_block_count?:number}
+export interface MaterialPreparationResult {summary_scope?:'visible';format:'material-preparation-v2';package_summary:string;documents:PreparationDocument[];combinations:PreparationCombination[];question_support?:QuestionSupport;warnings:string[];document_count?:number;unassigned_group_count?:number;unassigned_block_count?:number;image_decisions?:Array<{file_id:string;image_id:string;page:number;sha256:string;keep:boolean;reason:string}>}
 export interface MaterialScopeSelection {business_goal?:string;core_work?:string;deliverable_use?:string;direction:string;party:string;scenes:string[];deliverables:string[];additional_combinations?:Omit<MaterialScopeSelection,'additional_combinations'>[]}
 /** 同期当前成功题目的设计参考，不包含历史题面、答案或评分；缺失元数据不推断。 */
 export interface AuthoringBatchContext {captured_at:string;total:number;included:number;missing:number;truncated:boolean;selections:MaterialScopeSelection[]}
@@ -148,6 +149,15 @@ export function compileFixedPreparation(raw:any,units:PreparationUnit[],inheritK
  }
  const documents:PreparationDocument[]=units.map(unit=>{
   const item=duplicates.has(unit.id)?undefined:metadata.get(unit.id),selected=blocks.filter(block=>block.unit_id===unit.id);
+  // Agent 判断广告、水印或分页是否无关；编译器只核对本份材料的完整独立段落，不用关键词或页码正则代替语义判断。
+  const hidden_texts:Array<{source_text:string;reason:string}>=[];
+  for(const proposal of Array.isArray(item?.hidden_texts)?item.hidden_texts:[]){
+   const source_text=text(proposal?.source_text),reason=text(proposal?.reason).trim();
+   if(!source_text.trim()||!reason||!selected.some(entry=>entry.block.kind==='paragraph'&&entry.block.text===source_text)){
+    warnings.push(`材料“${unit.title}”隐藏文字未精确命中独立段落，已保留原文`);continue;
+   }
+   if(!hidden_texts.some(entry=>entry.source_text===source_text))hidden_texts.push({source_text,reason});
+  }
   const summary=text(item?.summary).trim(),hasContent=selected.some(block=>documentBlocksToText([block.block]).trim());
   const unit_kind=hasContent?(unit.unit_kind??(inheritKindsOnly?undefined:preparationUnitKind(item??{})??'unassigned')):'unassigned';
   const reason=text(item?.visibility_reason).trim(),visibility=item?.visibility==='hidden'&&!!reason?'hidden':'visible';
@@ -156,7 +166,7 @@ export function compileFixedPreparation(raw:any,units:PreparationUnit[],inheritK
   if(!strings(item?.tags).length)warnings.push(`材料“${unit.title}”标签为空`);
   if(!summary)warnings.push(`材料“${unit.title}”摘要为空`);
   if(item?.visibility==='hidden'&&!reason)warnings.push(`材料“${unit.title}”缺少目标成果隐藏理由，按可见处理`);
-  return{id:unit.id,title:unit.title,block_ids:selected.map(block=>block.id),summary,document_type:text(item?.document_type).trim(),tags:strings(item?.tags),notes:text(item?.notes).trim(),unit_kind,visibility,visibility_reason:visibility==='hidden'?reason:''};
+  return{id:unit.id,title:unit.title,block_ids:selected.map(block=>block.id),summary,document_type:text(item?.document_type).trim(),tags:strings(item?.tags),notes:text(item?.notes).trim(),unit_kind,visibility,visibility_reason:visibility==='hidden'?reason:'',...(hidden_texts.length?{hidden_texts}:{})};
  });
  const byId=new Map(documents.map(document=>[document.id,document])),combinationIds=new Set<string>(),combinations:PreparationCombination[]=[];
  for(const item of Array.isArray(raw.combinations)?raw.combinations:[]){
@@ -185,16 +195,21 @@ export function compileFixedPreparation(raw:any,units:PreparationUnit[],inheritK
 export function materializePreparation(result:MaterialPreparationResult,units:PreparationUnit[]):PreparedSelectionDocument[]{
  const blocks=preparationBlocks(units),byId=new Map(blocks.map(b=>[b.id,b]));
  return result.documents.map(d=>{
+  // 投影时复制来源块；隐藏只作用于整理显示结果，来源结构、冻结正文及原始提取记录保持原样。
   const pages:{page:number;blocks:DocumentBlock[]}[]=[];let lastUnit='';
-  for(const id of d.block_ids){const b=byId.get(id);if(!b)throw new Error('整理结果与确切来源结构不匹配');const last=pages.at(-1);if(last&&lastUnit===b.unit_id&&last.page===b.page)last.blocks.push(structuredClone(b.block));else pages.push({page:b.page,blocks:[structuredClone(b.block)]});lastUnit=b.unit_id;}
+  for(const id of d.block_ids){const b=byId.get(id);if(!b)throw new Error('整理结果与确切来源结构不匹配');if(isHiddenPreparationBlock(b.block,d.hidden_texts))continue;const last=pages.at(-1);if(last&&lastUnit===b.unit_id&&last.page===b.page)last.blocks.push(structuredClone(b.block));else pages.push({page:b.page,blocks:[structuredClone(b.block)]});lastUnit=b.unit_id;}
   const document:RedactedDocumentStructure={format:'redacted-structure-v1',pages};
   return{id:d.id,title:d.title,text:pages.map(p=>documentBlocksToText(p.blocks)).join('\n\n'),document,source_refs:[...new Set(d.block_ids.map(id=>byId.get(id)!.unit_id))].map(id=>units.find(u=>u.id===id)?.source_refs??[]),unit_kind:d.unit_kind,visibility:preparationVisibility(d),visibility_reason:d.visibility_reason??''};
  });
 }
+/** 仅隐藏Agent明确指出且程序在来源中精确验证的独立段落；旧整理结果保持原样。 */
+export function isHiddenPreparationBlock(block:DocumentBlock,hidden:PreparationDocument['hidden_texts']):boolean{
+ return block.kind==='paragraph'&&hidden?.some(item=>item.source_text===block.text)===true;
+}
 const str={type:'string'},scoreDimension={type:'integer',minimum:0,maximum:2},arr=(items:unknown)=>({type:'array',items}),obj=(properties:Record<string,unknown>)=>({type:'object',additionalProperties:false,properties,required:Object.keys(properties)});
 export const QUESTION_SUPPORT_SCHEMA=obj({dimensions:obj({task_actor:scoreDimension,factual_basis:scoreDimension,professional_judgment:scoreDimension,deliverable_viability:scoreDimension,information_boundary:scoreDimension}),reason:str,allowed_task_types:arr(str),unsupported_conclusions:arr(str)});
 export const MATERIAL_PREPARATION_SCHEMA=obj({package_summary:str,documents:arr(obj({id:str,title:str,block_ids:arr(str),summary:str,document_type:str,tags:arr(str),notes:str,visibility:{type:'string',enum:['visible','hidden']},visibility_reason:str})),combinations:arr(obj({id:str,direction:str,party:str,scenes:arr(obj({scene:str,as_of:str})),core_work:str,deliverables:arr(str),document_ids:arr(str),notes:str}))});
-export const MATERIAL_PREPARATION_SUMMARY_SCHEMA=obj({documents:arr(obj({id:str,summary:str,document_type:str,tags:arr(str),notes:str,visibility:{type:'string',enum:['visible','hidden']},visibility_reason:str}))});
+export const MATERIAL_PREPARATION_SUMMARY_SCHEMA=obj({documents:arr(obj({id:str,summary:str,document_type:str,tags:arr(str),notes:str,visibility:{type:'string',enum:['visible','hidden']},visibility_reason:str,hidden_texts:arr(obj({source_text:str,reason:str}))}))});
 /** 固定目录只允许回传元数据；不接收可用于重新划分正文的块ID或标题。 */
 export const MATERIAL_PREPARATION_FIXED_DOCUMENTS_SCHEMA=obj({documents:arr(obj({id:str,summary:str,document_type:str,tags:arr(str),notes:str,unit_kind:{type:'string',enum:['document','unassigned']},visibility:{type:'string',enum:['visible','hidden']},visibility_reason:str}))});
 export const MATERIAL_PREPARATION_OVERVIEW_SCHEMA=obj({package_summary:str,combinations:MATERIAL_PREPARATION_SCHEMA.properties.combinations});

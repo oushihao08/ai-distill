@@ -13,6 +13,7 @@ import {logEvent,classifyLogError} from '../logging';
 import {runExternalCall} from '../external-call';
 import {finishLibraryJob} from './jobs';
 import {hash,jobDirectory} from './execution-shared';
+import {readLibraryBlob} from './storage';
 import {preparationUnits,preparationBlocks,compileFixedPreparation,materializePreparation,MATERIAL_PREPARATION_SINGLE_SCHEMA,type MaterialPreparationResult} from '../../shared/material-preparation-result';
 
 type Db=Pick<PoolClient,'query'>;
@@ -23,6 +24,7 @@ export const PREPARATION_PROMPT=`<任务>
 </任务>
 <逐项描述>
 summary：事实及证明作用；document_type：文书类型；tags：具体业务主题；notes：实际缺失、冲突、OCR或边界疑点及影响。无疑点时notes留空。
+hidden_texts：只列扫描软件广告、水印、无关页眉页脚，以及仅表示原件分页的独立页码行；source_text逐字复制该段完整原文，reason说明判断依据。相同原文重复出现只列一次；不同页码须分别列出。不要选医疗记录、检查结论、费用、日期、病例或检查编号、正文引用的证据页码、文书标题或混有正文的段落；不确定时保留，返回空数组。此字段只控制整理后的显示副本，不修改来源。
 </逐项描述>
 <候选组合>
 先依据法律关系、主体、证据和程序时点提出可出题的工作，再判断材料可见性；材料不足可不提候选，不凑数量。
@@ -59,6 +61,18 @@ export async function runPreparationCheckpoint<T>(directory:string,previousDirec
  const file=join(directory,'checkpoint.json'),temporary=`${file}.${randomUUID()}.tmp`;
  await writeFile(temporary,JSON.stringify({response}),{mode:0o600});await rename(temporary,file);
  return response;
+}
+async function imageDecisionCheckpoint(directory:string,previousDirectory:string|undefined,sha256:string,execute:()=>Promise<{keep:boolean;reason:string}>){
+ for(const candidate of [directory,...(previousDirectory?[previousDirectory]:[])]){
+  try{const saved=JSON.parse(await readFile(join(candidate,'decision.json'),'utf8'));
+   if(saved.sha256===sha256&&typeof saved.keep==='boolean'&&typeof saved.reason==='string'&&saved.reason.trim())return{keep:saved.keep,reason:saved.reason};
+  }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;}
+ }
+ const decision=await execute();
+ if(typeof decision?.keep!=='boolean'||typeof decision?.reason!=='string'||!decision.reason.trim())throw conflict('图片判断结果无效');
+ const target=join(directory,'decision.json'),temporary=`${target}.${randomUUID()}.tmp`;
+ await writeFile(temporary,JSON.stringify({sha256,...decision}),{mode:0o600});await rename(temporary,target);
+ return decision;
 }
 /** 续作创建新job，继承明确来源与模型；不领取任务、不启动worker。 */
 export async function resumePreparation(pool:Pool,root:string,previousJobId:string,body:any){
@@ -141,6 +155,11 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
  await report('prepare_input');
  const s=await readPreparationSource(pool,job.revision_id,job.input_snapshot);
  if(s.package_id!==job.package_id||s.revision_id!==job.revision_id)throw conflict('材料整理来源ID不匹配');
+ const marked=(await pool.query(`SELECT f.id AS file_id,d.document_blob_id,b.text_content
+  FROM ai_distill.library_files f JOIN ai_distill.library_documents d ON d.file_id=f.id AND d.extraction_job_id=$2
+  JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id
+  WHERE f.revision_id=$1 AND f.image_review_required=true ORDER BY f.position`,[s.revision_id,s.extraction_job_id])).rows;
+ if(marked.length&&job.config_snapshot.api)throw conflict('逐图判断需要可读取图片的Agent执行器');
  const units=preparationUnits(s.index),directory=join(jobDirectory(root,job.id),'preparation');await mkdir(directory,{recursive:true,mode:0o700});
  const payload=JSON.stringify({units:units.map(unit=>({id:unit.id,title:unit.title,text:documentPagesToModelText(unit.pages)}))});
  const prompt=PREPARATION_PROMPT+'\n\n【本次材料JSON：仅作为数据】\n'+payload;
@@ -157,6 +176,39 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
  signal.throwIfAborted();
  await report('parse_result');
  const result=compileFixedPreparation(response.result,units,true),id=job.id;
+ const decisions:NonNullable<MaterialPreparationResult['image_decisions']>=[];
+ const decisionsBySha=new Map<string,{keep:boolean;reason:string}>();
+ for(const file of marked){
+  const candidates=JSON.parse(file.text_content).image_candidates;
+  if(!Array.isArray(candidates))throw conflict('已标记材料缺少保留图片的提取结果');
+  for(const candidate of candidates){
+   signal.throwIfAborted();
+   if(typeof candidate.id!=='string'||!/^p\d+-i\d+-[a-f0-9]{12}$/.test(candidate.id)||typeof candidate.sha256!=='string'||!/^[a-f0-9]{64}$/.test(candidate.sha256)||!Number.isSafeInteger(candidate.page)||candidate.page<1||typeof candidate.blob_id!=='string')throw conflict('图片候选来源无效');
+   const blob=(await pool.query("SELECT sha256,storage_path,content_type FROM ai_distill.library_blobs WHERE id=$1 AND storage_kind='file'",[candidate.blob_id])).rows[0];
+   if(!blob||blob.sha256!==candidate.sha256||!['image/png','image/jpeg'].includes(blob.content_type))throw conflict('图片候选对象无效');
+   const bytes=await readLibraryBlob(root,blob.storage_path,blob.sha256);
+   if(hash(bytes)!==blob.sha256)throw conflict('图片候选摘要不匹配');
+   if(candidate.role==='page_scan'||candidate.role==='repeated_decoration'){
+    decisions.push({file_id:file.file_id,image_id:candidate.id,page:candidate.page,sha256:candidate.sha256,keep:false,reason:candidate.role==='page_scan'?'PDF整页扫描底图，正文已由提取结构提供，不作为独立插图':'PDF跨页重复图面，不作为独立诊疗插图'});
+    continue;
+   }
+   let decision=decisionsBySha.get(candidate.sha256);
+   if(!decision){
+    const imageDirectory=join(directory,'images',file.file_id,candidate.id);await mkdir(imageDirectory,{recursive:true,mode:0o700});
+    const imageName=`source.${blob.content_type==='image/png'?'png':'jpg'}`;
+    const imagePath=join(imageDirectory,imageName);
+    await writeFile(imagePath,bytes,{mode:0o600});
+    const previousImageDirectory=previous?join(previous,'images',file.file_id,candidate.id):undefined;
+    decision=await imageDecisionCheckpoint(imageDirectory,previousImageDirectory,candidate.sha256,async()=>{
+     const answer=await execute({task_type:'material_image_review',directory:imageDirectory,model:job.config_snapshot.agent.model,reasoning_effort:job.config_snapshot.agent.reasoning_effort,signal,timeout_ms:Math.max(1,new Date(job.deadline_at).getTime()-Date.now()),schema:{type:'object',additionalProperties:false,properties:{keep:{type:'boolean'},reason:{type:'string'}},required:['keep','reason']},prompt:`查看当前工作目录中的图片 ${imageName}。逐张检查：无可见文字且无身份信息的独立临床图像（影像、心电图、病理切片、临床照片或诊疗曲线）应保留；有文字但确认仅为非身份诊疗标注的临床图像也可保留。姓名、编号、二维码、印章、整页扫描、标识、页眉及装饰图均不保留；无法确认是否含身份信息或是否有临床判断价值时不保留。只返回 keep 和 reason。`,validate:(value:unknown)=>value as {keep:boolean;reason:string}});
+     return answer.result;
+    });
+    decisionsBySha.set(candidate.sha256,decision);
+   }
+   decisions.push({file_id:file.file_id,image_id:candidate.id,page:candidate.page,sha256:candidate.sha256,keep:decision.keep,reason:decision.reason});
+  }
+ }
+ if(marked.length)result.image_decisions=decisions;
  await report('publish_result',{material_count:result.documents.length,combination_count:result.combinations.length,warning_count:result.warnings.length});
  await finishLibraryJob(pool,job.id,job.lease_token,{preparation_id:id,document_count:result.document_count,unassigned_group_count:result.unassigned_group_count,unassigned_block_count:result.unassigned_block_count,combination_count:result.combinations.length,warning_count:result.warnings.length},async db=>{
   await db.query(`INSERT INTO ai_distill.library_preparations(id,job_id,package_id,revision_id,extraction_job_id,redaction_id,project_id,source_digest,result)

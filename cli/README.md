@@ -426,3 +426,5 @@ bun run ai-distill library batch run --file /tmp/phase7-prepare.json
 ## 显式题目开头修订
 
 `workflow opening revise --workflow UUID --file JSON` 调用开头修订HTTP入口；JSON字段、版本冲突、历史保留和后续失效规则见[出题模块](../server/authoring/README.md#显式开头修订)。不直连数据库。随后 `feishu draft-sync --workflow UUID --revision-attempt 修订attempt_UUID` 显式同步该版；可带 --base-token/--table，远端旧值冲突停止，不能直接重复覆盖。
+
+原子材料上传的可选图片链路：`library import` 和 `library revision create` 可加 `--preserve-images`；清单文件项可加 `"image_review_required":true`，必须与该开关一起使用。省略开关时维持纯文本提取；开启后也仅标记文件提取图片并在材料整理阶段逐图判断，图片不会进入脱敏输入。图文 DOCX 是题目冻结原文且已有逐图整理结果时的独立 `GET /api/workflows/:id/material-image-docx` 下载，原 `material-docx` 仍为纯文本。

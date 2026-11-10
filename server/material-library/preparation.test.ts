@@ -4,7 +4,7 @@
  * 边界：不连接业务数据库、不调用真实模型，不证明真实期次已部署或模型摘要质量。
  */
 import {test,expect} from 'bun:test';
-import {mkdtemp,readFile,rm,mkdir} from 'node:fs/promises';
+import {mkdtemp,readFile,rm,mkdir,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {preparationUnits,preparationBlocks,completeKnownPreparationDocuments,compilePreparation,compileFixedPreparation,materializePreparation,missingPreparationSummaryTasks,mergePreparationSummaryRepairs,preparationCounts,visiblePreparationContext,visiblePreparedDocuments,renderPreparationDocuments} from '../../shared/material-preparation-result';
@@ -382,4 +382,45 @@ test('历史纯正文索引经共用模型正文投影不丢失材料',()=>{
  const u=preparationUnits({materials:[{material_id:'legacy',markdown:'历史证据100元'}]});
  const r=compileFixedPreparation({package_summary:'事实',documents:[{id:'legacy',summary:'100元',document_type:'证据',tags:['金额'],visibility:'visible'}]},u,true);
  expect(renderPreparationDocuments(materializePreparation(r,u))).toContain('历史证据100元');
+});
+
+test('材料整理只隐藏精确命中的独立扫描广告段落，保留医疗正文与来源',()=>{
+ const source=preparationUnits({materials:[{material_id:'f1',title:'检查记录',document:{pages:[{page:1,structure:[{id:'a',kind:'paragraph',text:'检查结论：骨折'},{id:'b',kind:'paragraph',text:'CS 扫描全能王®\n3亿人都在用的扫描App'},{id:'c',kind:'paragraph',text:'正文提及扫描全能王软件'},{id:'d',kind:'paragraph',text:'第1页/共3页'},{id:'e',kind:'paragraph',text:'检查编号：第1号'}]}]}}]});
+ const original=JSON.stringify(source),result=compileFixedPreparation({package_summary:'检查记录',documents:[{id:'f1',summary:'骨折检查',document_type:'检查记录',tags:['骨折'],notes:'',visibility:'visible',visibility_reason:'',hidden_texts:[{source_text:'CS 扫描全能王®\n3亿人都在用的扫描App',reason:'扫描软件广告水印'},{source_text:'第1页/共3页',reason:'原件分页标记'},{source_text:'不存在的广告',reason:'疑似广告'}]}],combinations:[]},source,true);
+ const output=materializePreparation(result,source)[0]!.text;
+ expect(output).toContain('检查结论：骨折');expect(output).toContain('正文提及扫描全能王软件');expect(output).toContain('检查编号：第1号');expect(output).not.toContain('3亿人都在用');expect(output).not.toContain('第1页/共3页');
+ expect(result.documents[0]!.hidden_texts).toHaveLength(2);expect(result.warnings.some(w=>w.includes('未精确命中'))).toBe(true);expect(JSON.stringify(source)).toBe(original);
+});
+
+test('仅数据库标记文件逐图判断并把决定写入整理结果',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'preparation-image-'));
+ try{
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lXcAAAAASUVORK5CYII=','base64');
+  await writeFile(join(root,'asset.png'),png);
+  const sha=hash(png),imageId=`p1-i0-${sha.slice(0,12)}`,index=JSON.stringify({format:'redacted-index-v2',prepared_documents:[{id:'unit',title:'材料',text:'正文'}]});
+  let stored:any;const query=async(sql:string,values:any[]=[])=>{
+   if(sql.includes('SELECT r.package_id'))return{rows:[{package_id:id,revision_id:projectId,extraction_job_id:'extract',output_digest:'digest',text_content:index}]};
+   if(sql.includes('f.image_review_required=true'))return{rows:[{file_id:'file-1',text_content:JSON.stringify({image_candidates:[{id:imageId,page:1,position:0,sha256:sha,blob_id:'blob'}]})}]};
+   if(sql.includes("storage_kind='file'"))return{rows:[{sha256:sha,storage_path:'asset.png',content_type:'image/png'}]};
+   if(sql.includes('FOR UPDATE'))return{rows:[{id,revision_id:projectId}]};
+   if(sql.startsWith('INSERT INTO ai_distill.library_preparations'))stored=JSON.parse(values[7]);
+   return{rows:[],rowCount:1};
+  };
+  const pool={query,connect:async()=>({query,release(){}})};
+  const job={id,package_id:id,revision_id:projectId,lease_token:'lease',deadline_at:new Date(Date.now()+60000).toISOString(),input_snapshot:{redaction_id:id,extraction_job_id:'extract'},config_snapshot:{agent:{model:'fixture',reasoning_effort:'low'}}};
+  const calls:string[]=[];
+  await executePreparation(pool as any,root,job,new AbortController().signal,async(task:any)=>{
+   calls.push(task.task_type);
+   if(task.task_type==='material_image_review'){
+    expect(Buffer.from(await readFile(join(task.directory,'source.png')))).toEqual(png);
+    expect(task.prompt).toContain('当前工作目录中的图片 source.png');
+    expect(task.prompt).not.toContain(root);
+    return{result:{keep:true,reason:'诊疗影像'}} as any;
+   }
+   return{result:{package_summary:'材料',documents:[{id:'unit',summary:'正文',document_type:'记录',tags:[],notes:'',visibility:'visible',visibility_reason:''}],combinations:[]}} as any;
+  });
+  expect(calls).toEqual(['material_preparation','material_image_review']);
+  expect(stored.image_decisions).toEqual([{file_id:'file-1',image_id:imageId,page:1,sha256:sha,keep:true,reason:'诊疗影像'}]);
+  await executePreparation(pool as any,root,job,new AbortController().signal,async()=>{throw new Error('完整检查点不得重调模型');});
+ }finally{await rm(root,{recursive:true,force:true});}
 });

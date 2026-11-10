@@ -318,9 +318,9 @@ describe('命令范围和结果', () => {
     try {
       const source=join(root,'附件.docx'),manifest=join(root,'manifest.json');
       await writeFile(source,'test material');
-      await writeFile(manifest,JSON.stringify({files:[{path:source,redaction_mode:'declared_redacted'}]}));
+      await writeFile(manifest,JSON.stringify({files:[{path:source,redaction_mode:'declared_redacted',image_review_required:true}]}));
       const {client,calls}=fixture(()=>({id:second,reused:false}));
-      await runCommand(['library','revision','create','--package',question,'--version','3','--request-key',attempt,'--manifest',manifest,'--pdf-provider','glm-ocr'],client);
+      await runCommand(['library','revision','create','--package',question,'--version','3','--request-key',attempt,'--manifest',manifest,'--pdf-provider','glm-ocr','--preserve-images'],client);
       const call=calls[0];
       expect(call.url.pathname).toBe(`/api/material-library/packages/${question}/revisions`);
       expect(call.init?.headers).toMatchObject({'If-Match':'3'});
@@ -329,6 +329,8 @@ describe('命令范围和结果', () => {
       expect(form.get('request_key')).toBe(attempt);
       expect(form.get('pdf_provider')).toBe('glm-ocr');
       expect(form.get('redaction_modes')).toBe('["declared_redacted"]');
+      expect(form.get('preserve_images')).toBe('true');
+      expect(form.get('image_review_files')).toBe('[true]');
       expect((form.get('files') as File).name).toBe('附件.docx');
     } finally { await rm(root,{recursive:true,force:true}); }
   });

@@ -98,7 +98,7 @@ async function inheritDefaults(){
  <template v-else-if="editable">
   <Column v-if="step.ordinal===4" :gap="8" class="rounded border border-line-subtle p-12"><strong class="text-sm">系统固定通用出题规则</strong><pre class="max-h-[320px] overflow-auto whitespace-pre-wrap break-words text-xs">{{ AUTHORING_FIXED_PROMPT }}</pre></Column>
   <v-alert v-if="step.ordinal===4&&authoringProcessingMode==='mask'" type="warning">本期仍为历史遮挡设置，请明确选择Agent化名或原文；保存不会将旧结果改标为化名。</v-alert>
-  <v-select v-if="step.ordinal===4&&props.allowOriginalMaterialMode" v-model="authoringProcessingMode" label="本期材料处理方式" :items="[{title:'Agent 主导化名脱敏（默认）',value:'aliases'},{title:'不脱敏，使用提取原文',value:'original'}]" :disabled="busy" />
+  <v-select v-if="step.ordinal===4&&props.allowOriginalMaterialMode" v-model="authoringProcessingMode" label="本期材料处理方式" :items="[{title:'Agent 主导化名脱敏',value:'aliases'},{title:'不脱敏，使用提取原文',value:'original'}]" :disabled="busy" />
   <v-select v-if="step.ordinal===6" v-model="backend" label="执行方式" :items="[{title:'本地 Agent（Codex）',value:'codex'},{title:'大模型 API',value:'api'}]" :disabled="busy" />
   <v-combobox :return-object="false" v-if="isCodexStep" v-model="effort" label="推理强度" :items="effortItems" :disabled="busy||loadingModels" />
    <template v-if="isApiScoring">

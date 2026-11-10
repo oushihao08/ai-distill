@@ -81,6 +81,8 @@ MaterialLibraryJob可附加execution，复用StepExecution表达归属和本机�
 
 Agent计划中的unresolved仅保存语义疑点，不因blocking标记或缺少身份映射拒绝技术发布。编译器不猜测姓名、号码、地址残留，不以化名风格、原文同词、机构关键词、金额/日期形态或电话字符白名单否决。主体ID、替换字符串、精确原文位置、编辑冲突、完整覆盖及结构投影仍校验；地址前缀必须属于原文，允许保留整个片段。文书可跨文件，来源身份不变。此处通过只证明计划可执行，不证明脱敏无遗漏。
 
+材料整理的 `hidden_texts` 与 `scan-noise.ts` 职责不同：前者由 Agent 判断扫描广告、水印、无关页眉页脚和独立来源页码是否应从显示副本隐藏；`compileFixedPreparation()`只接受本份来源中逐字相同的完整段落和非空理由，未命中则保留并记录警告。`materializePreparation()`和图文DOCX导出复用 `isHiddenPreparationBlock()`，不修改原始结构、提取记录、脱敏结果或旧题冻结来源。含业务编号或正文页码的段落须保留；旧记录无该字段时不发生隐藏。固定扫描噪声清理则按其明确规则产生提取/脱敏阶段的精确编辑，不以整理建议反写来源。
+
 `material-preparation-result.ts`定义真实文书、逐份摘要/可见标记、多个可支持方向—场景—交付组合及正文投影；它含服务端SHA-256实现，不可从浏览器运行时导入。纯计数函数位于`material-preparation-counts.ts`，可由前端安全使用。建题冻结来源保留全文；含整理结果时出题、作答读取全部脱敏文书，评分复用作答冻结输入，DOCX仍按交付契约只消费可见文书。最终选择的交付成果保存在出题尝试JSON结果；方向+场景参考索引冲突不拦出题；主组合及`additional_combinations`均由尝试JSON保留，旧单组合兼容。新任务由`compileFixedPreparation()`固定来源ID、标题、顺序及全部正文，Agent只返回描述和现有记录类别，不拆合材料；全空记录不计完整文书。旧块级编译器仅保留兼容。逐份描述补齐后再生成总摘要及候选组合，总摘要不维护处理计数，程序统一统计。旧记录缺文书类型时仅能报告整理条目数，不能推断真实份数。旧`selected-material-index-v1`仅为历史快照只读校验。服务端行为唯一说明见[材料库](../server/material-library/README.md#材料整理与使用范围)。
 
 单次材料整理协议由MATERIAL_PREPARATION_SINGLE_SCHEMA定义，仅允许元数据和候选组合，不返回正文边界或完整文书分类；compileFixedPreparation的inheritKindsOnly用于新任务继承来源类别。visiblePreparationContext保留基于可见材料生成的总摘要。

@@ -7,7 +7,7 @@ import {materialDocxLayout,type MaterialDocxLayout} from '../lifecycle/material-
 import {resolveProjectPath} from '../paths';
 import {assertAuthoringMaterialBinding,assertOriginalManifest} from '../publishing/feishu-verification';
 
-import {preparationUnits,validateSelectedMaterialIndex,visiblePreparedDocuments} from '../../shared/material-preparation-result';
+import {preparationUnits,validateSelectedMaterialIndex,visiblePreparedDocuments,isHiddenPreparationBlock} from '../../shared/material-preparation-result';
 import {canonicalJson} from '../../shared/workflow-config';
 import {createHash,randomUUID} from 'node:crypto';
 import {chmod,lstat,mkdir,readFile,realpath,rename,rm,writeFile} from 'node:fs/promises';
@@ -20,13 +20,14 @@ import {documentBlocksToText} from './pdf';
 import {readQuestionMaterials} from '../question-materials';
 import {filterEnglishOnlyBlocks,filterEnglishOnlyText} from '../../shared/material-paragraph-filter';
 import {documentBlockFields} from '../../shared/prepared-structure';
+import {readLibraryBlob} from '../material-library/storage';
+import {imageDimensions} from '../material-library/image-candidates';
 import {isStandaloneNumberLine} from '../../shared/scan-noise';
 
 /** 仅移除独占一行的模型包装；不删代码内容、行内标记或业务正文。 */
 function stripMaterialWrapperLines(text:string):string{
  return text.split(/(\r\n|\r|\n)/).map(line=>/^\s*(?:\[\/?(?:code|json|xml)\]|```(?:code|json|xml|markdown)?)\s*$/i.test(line)?'':line).join('');
 }
-
 /** 材料导出专属投影，不修改冻结来源；标准成果等非材料DOCX不应用这条过滤规则。 */
 export function filterMaterialDocxSource(source:string|RedactedDocumentStructure):string|RedactedDocumentStructure{
  return typeof source==='string'
@@ -449,3 +450,56 @@ export async function readCurrentMaterialDocx(pool:Pool|PoolClient,artifactId:st
 
 /** Historical name retained for old callers; accepts only the mode-consistent current artifact. */
 export const readCurrentRedactedDocx=readCurrentMaterialDocx;
+
+/** 原文题目按冻结整理决定生成独立图文版；不改变现有纯文本DOCX及其artifact。 */
+export async function buildCurrentMaterialImageDocx(pool:Pool,workflowId:string,storageRoot:string,previewPreparationId?:string){
+ // 默认使用题目快照；显式预览只替换整理结果，并校验版本、来源摘要和项目，绝不回写冻结快照。
+ const context=await contextForExport(pool,workflowId);
+ if(context.material_origin?.kind!=='library_v1'||context.material_mode!=='original')throw new HTTPException(409,{message:'图文版仅支持冻结原文的材料库题目'});
+ const row=(await pool.query('SELECT snapshot_manifest FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0];
+ const manifest=row?.snapshot_manifest;let scope=manifest?.material_scope;
+ if(previewPreparationId){
+  const preview=(await pool.query('SELECT revision_id,source_digest,project_id,extraction_job_id,result FROM ai_distill.library_preparations WHERE id=$1',[previewPreparationId])).rows[0];
+  if(!preview||preview.revision_id!==context.material_origin.revision_id||preview.source_digest!==manifest?.origin?.source_digest||preview.project_id!==context.project_id||preview.result?.format!=='material-preparation-v2')throw new HTTPException(409,{message:'预览整理结果与题目来源不一致'});
+  scope={preparation_id:previewPreparationId,result:preview.result};
+ }
+ if(!scope?.preparation_id||!Array.isArray(scope.result?.image_decisions))throw new HTTPException(409,{message:'当前题目未冻结逐图整理结果'});
+ if(manifest.version!==2||scope.result.documents?.some((item:any)=>item.visibility==='hidden'))throw new HTTPException(409,{message:'当前图文版无法安全映射选用或隐藏文书'});
+ const prepared=(await pool.query('SELECT extraction_job_id,source_digest FROM ai_distill.library_preparations WHERE id=$1 AND revision_id=$2',[scope.preparation_id,context.material_origin.revision_id])).rows[0];
+ if(!prepared||prepared.source_digest!==manifest.origin?.source_digest)throw new HTTPException(409,{message:'图片整理来源与题目不一致'});
+ const decisions=scope.result.image_decisions.filter((item:any)=>item.keep===true);
+ // 正文仍取题目冻结结构，图片则按提取候选ID/摘要回查内容寻址对象；任何缺失或不一致都拒绝导出。
+ const pages:RedactedDocumentStructure['pages']=[],imagesByPage=new Map<number,Array<{data:Uint8Array;type:'png'|'jpg';width:number;height:number}>>();let exportableCount=0;
+ for(const file of manifest.files??[]){
+  const document=context.materialDocuments.get(file.material_id)?.document;
+  if(!document)throw new HTTPException(409,{message:'图文版缺少冻结正文结构'});
+  const hidden=scope.result.documents?.find((item:any)=>item.id===file.library_file_id)?.hidden_texts;
+  const extracted=(await pool.query(`SELECT b.text_content FROM ai_distill.library_documents d JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id
+   WHERE d.file_id=$1 AND d.extraction_job_id=$2`,[file.library_file_id,prepared.extraction_job_id])).rows[0];
+  const selectedAll=decisions.filter((item:any)=>item.file_id===file.library_file_id);
+  const candidates=JSON.parse(extracted?.text_content??'{}').image_candidates;
+  if(!Array.isArray(candidates)&&selectedAll.length)throw new HTTPException(409,{message:'图文版缺少图片候选'});
+  const available=Array.isArray(candidates)?candidates:[];
+  if(selectedAll.some((item:any)=>!available.some((candidate:any)=>candidate.id===item.image_id&&candidate.sha256===item.sha256)))throw new HTTPException(409,{message:'图片决定与提取候选不一致'});
+  // 旧PDF候选没有role，不能证明其不是整页扫描图，故也不得作为插图导出。
+  const selected=selectedAll.filter((item:any)=>!String(file.original_name??'').toLowerCase().endsWith('.pdf')||available.some((candidate:any)=>candidate.id===item.image_id&&candidate.sha256===item.sha256&&candidate.role==='figure'));
+  exportableCount+=selected.length;
+  for(const page of document.pages){
+   // 页号只作为图片锚点，连续排版由共用DOCX生成器负责；隐藏文字只过滤已核验的独立段落。
+   const number=pages.length+1;
+   pages.push({page:number,blocks:page.blocks.filter(block=>!isHiddenPreparationBlock(block,hidden))});
+   for(const decision of selected.filter((item:any)=>item.page===page.page)){
+    const candidate=available.find((item:any)=>item.id===decision.image_id&&item.sha256===decision.sha256);
+    const blob=(await pool.query("SELECT sha256,storage_path,content_type FROM ai_distill.library_blobs WHERE id=$1 AND storage_kind='file'",[candidate.blob_id])).rows[0];
+    if(!blob||blob.sha256!==candidate.sha256||!['image/png','image/jpeg'].includes(blob.content_type))throw new HTTPException(409,{message:'图片对象来源无效'});
+    const bytes=await readLibraryBlob(storageRoot,blob.storage_path,blob.sha256);
+    if(digest(bytes)!==blob.sha256)throw new HTTPException(409,{message:'图片对象摘要不匹配'});
+    const dimensions=imageDimensions(bytes,blob.content_type);
+    const list=imagesByPage.get(number)??[];list.push({data:bytes,type:blob.content_type==='image/png'?'png':'jpg',...dimensions});imagesByPage.set(number,list);
+   }
+  }
+ }
+ if(!pages.length)throw new HTTPException(409,{message:'图文版正文为空'});
+ if([...imagesByPage.values()].reduce((count,images)=>count+images.length,0)!==exportableCount)throw new HTTPException(409,{message:'图片决定未完整映射到冻结页码'});
+ return{bytes:await buildDocx({format:'redacted-structure-v1',pages},{materialMath:true,imagesByPage}),filename:'图文材料.docx',image_count:exportableCount};
+}

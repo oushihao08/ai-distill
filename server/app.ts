@@ -46,7 +46,7 @@ import {enqueuePublication} from './publishing/tasks';
 import {syncArchivedWorkflowToFeishu,syncAuthoredWorkflowToFeishu} from './publishing/feishu';
 import {registerFeishuTargetRoutes,validateFeishuTarget} from './publishing/feishu-targets';
 import {readArchivedWorkflowWorkbook} from './reporting/archive-workbook';
-import {exportCurrentMaterialDocx,exportRedactedDocx,readCurrentMaterialDocx} from './materials/redacted-docx-export';
+import {exportCurrentMaterialDocx,exportRedactedDocx,readCurrentMaterialDocx,buildCurrentMaterialImageDocx} from './materials/redacted-docx-export';
 import { enqueueExtraction } from './materials/jobs';
 import {createQuestionFromMaterialPackage,listMaterialPackageVersions} from './material-package-questions';
 import { readProjectRules,editProjectRuleFile,adoptProjectSkill,invalidateProjectRuleOutputs } from './rules';
@@ -400,7 +400,8 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     const groupPrompts=await readProjectGroupPrompts(db,group.id);
     const authoringDefaults=body?.authoring_defaults===undefined?await readSystemAuthoringDefaults(db):validateAuthoringDefaults(body.authoring_defaults);
     const promptOrdinals:readonly (4|5|6|9)[]=materialBackend==='library_v1'?[4,5,6]:[4,5,6,9];
-    for(const ordinal of promptOrdinals)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:ordinal===9?prompts[ordinal]:groupPrompts[ordinal]??prompts[ordinal],...(ordinal===4?{...authoringDefaults,material_processing_mode:'aliases',material_source_mode:'redacted'}:{})})]);
+    const initialProcessingMode=materialBackend==='library_v1'&&parentName==='豆包高经济价值-医疗'?'original':'aliases';
+    for(const ordinal of promptOrdinals)await db.query('INSERT INTO ai_distill.project_step_configs(project_id,ordinal,config) VALUES($1,$2,$3::jsonb)',[id,ordinal,JSON.stringify({prompt:ordinal===9?prompts[ordinal]:groupPrompts[ordinal]??prompts[ordinal],...(ordinal===4?{...authoringDefaults,material_processing_mode:initialProcessingMode,material_source_mode:initialProcessingMode==='original'?'original':'redacted'}:{})})]);
     await initializeDefaultAnswerModel(db,id);
     if(materialRoot)await registerQuestionFolders(db,id,name,questions,materialMode);
     await db.query('COMMIT'); return c.json(result.rows[0],201);
@@ -858,6 +859,11 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const workflowId=uuid(c.req.param('id'));
   const result=await exportCurrentMaterialDocx(pool,workflowId,storageRoot,assetExportRoot);
   return c.json(result,result.reused?200:201);
+ });
+ app.get('/api/workflows/:id/material-image-docx',async c=>{
+  const previewId=c.req.query('preview_preparation_id');
+  const result=await buildCurrentMaterialImageDocx(pool,uuid(c.req.param('id')),storageRoot,previewId?uuid(previewId):undefined);
+  return new Response(Uint8Array.from(result.bytes).buffer,{headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`,'Cache-Control':'no-store'}});
  });
  app.post('/api/workflows/:id/withdraw-archive',async c=>c.json(await withdrawPublication(pool,uuid(c.req.param('id')))));
  async function editMaterials(workflowId: string, incoming: File[], replaceId?: string, deleteId?: string) {

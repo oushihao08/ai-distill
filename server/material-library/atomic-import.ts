@@ -17,12 +17,15 @@ import {installLibraryBlob,lockLibraryBlobWrites,normalizeLibraryFilename,readLi
 import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
 import {mineruToken} from '../materials/pdf-extraction/mineru-credentials';
 
-export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKey:string,value:unknown,uploads:LibraryFileInput[],target?:{package_id:string;lock_version:number},requestedPdfProvider?:string){
+export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKey:string,value:unknown,uploads:LibraryFileInput[],target?:{package_id:string;lock_version:number},requestedPdfProvider?:string,options:{preserve_images?:boolean;image_review_files?:boolean[]}={}){
  uuid(requestKey);if(target)uuid(target.package_id);
  const schema=(await pool.query("SELECT to_regprocedure('ai_distill.guard_atomic_library_job()') IS NOT NULL AS available")).rows[0];
  if(!schema?.available)throw new HTTPException(503,{message:'原子提取入库尚未部署：需先审核并应用054迁移及更新API/worker'});
  const input=validateLibraryPackageInput(value);
  if(!uploads.length||uploads.length>100)throw new HTTPException(400,{message:'请选择1至100份材料'});
+ if(options.preserve_images!==undefined&&typeof options.preserve_images!=='boolean')throw new HTTPException(400,{message:'保留图片参数无效'});
+ if(options.image_review_files!==undefined&&(!Array.isArray(options.image_review_files)||options.image_review_files.length!==uploads.length||options.image_review_files.some(flag=>typeof flag!=='boolean')))throw new HTTPException(400,{message:'图片判断标记须与文件逐项对应'});
+ if(options.image_review_files?.some(Boolean)&&!options.preserve_images)throw new HTTPException(400,{message:'图片判断须先保留图片'});
  let total=0;
  const files=uploads.map((file,index)=>{
   const name=normalizeLibraryFilename(file.original_name),format=name.split('.').at(-1)?.toLowerCase()??'';
@@ -31,8 +34,9 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
   validateFile(new File([Buffer.from(bytes)],name),bytes);
   const redaction_mode=file.redaction_mode??'model';
   if(!['pdf','docx','txt','md','png','jpg','jpeg'].includes(format)||!['model','declared_redacted'].includes(redaction_mode)||(redaction_mode==='declared_redacted'&&format!=='docx'))throw new HTTPException(400,{message:'材料格式或脱敏声明无效'});
+  if(options.image_review_files?.[index]&&!['pdf','docx','png','jpg','jpeg'].includes(format))throw new HTTPException(400,{message:'纯文本材料不能标记逐图判断'});
   const content_type=format==='pdf'?'application/pdf':format==='docx'?'application/vnd.openxmlformats-officedocument.wordprocessingml.document':format==='png'?'image/png':format==='jpg'||format==='jpeg'?'image/jpeg':format==='md'?'text/markdown':'text/plain';
-  return{file_id:randomUUID(),original_name:name,position:index+1,source_sha256:hash(bytes),size_bytes:bytes.length,redaction_mode,format,content_type,bytes};
+  return{file_id:randomUUID(),original_name:name,position:index+1,source_sha256:hash(bytes),size_bytes:bytes.length,redaction_mode,format,content_type,image_review_required:options.image_review_files?.[index]??false,bytes};
  });
  if(new Set(files.map(f=>f.original_name)).size!==files.length)throw new HTTPException(400,{message:'材料文件名不能重复'});
  if(requestedPdfProvider!==undefined&&!['mineru-api','mineru-cli'].includes(requestedPdfProvider))throw new HTTPException(400,{message:'PDF OCR provider 仅支持MinerU'});
@@ -40,7 +44,7 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
  if(!['mineru-api','mineru-cli'].includes(pdfProvider))throw new HTTPException(503,{message:'当前文本提取仅支持MinerU'});
  const executionTarget=process.env.ATOMIC_IMPORT_EXECUTION_TARGET??'local';
  if(executionTarget!=='local'&&executionTarget!=='server')throw new HTTPException(503,{message:'ATOMIC_IMPORT_EXECUTION_TARGET 仅支持 local 或 server'});
- const manifest=buildLibraryManifest(files.map(f=>({...f,sha256:f.source_sha256}))),requestDigest=hash({input:target?null:input,target:target??null,manifest:manifest.sha256,pdf_provider:pdfProvider,...(executionTarget==='server'?{execution_target:'server'}:{})});
+ const manifest=buildLibraryManifest(files.map(f=>({...f,sha256:f.source_sha256}))),requestDigest=hash({input:target?null:input,target:target??null,manifest:manifest.sha256,pdf_provider:pdfProvider,preserve_images:options.preserve_images??false,image_review_files:files.map(file=>file.image_review_required),...(executionTarget==='server'?{execution_target:'server'}:{})});
  const id=randomUUID(),directory=join(jobDirectory(root,id),'import-source'),db=await pool.connect();let commitAttempted=false;
  try{
   await db.query('BEGIN');await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`atomic-library-import:${requestKey}`]);
@@ -61,7 +65,7 @@ export async function enqueueAtomicLibraryImport(pool:Pool,root:string,requestKe
   const staged=[];
   for(const file of files){const {bytes,...metadata}=file,path=join(directory,file.file_id);await writeFile(path,bytes,{flag:'wx',mode:0o600});staged.push({...metadata,storage_path:relative(root,path)});}
   const snapshot={version:1,request_digest:requestDigest,manifest_sha256:manifest.sha256,files:staged,atomic_import:{package_id:target?.package_id??randomUUID(),revision_id:randomUUID(),package_input:input,expected_version:target?.lock_version??null}};
-  const config={version:1,settings,pdf_provider:pdfProvider,pdf_ocr_version:MINERU_OCR_VERSION,...(files.some(file=>['png','jpg','jpeg'].includes(file.format))?{image_ocr_version:MINERU_OCR_VERSION}:{})};
+  const config={version:1,settings,pdf_provider:pdfProvider,pdf_ocr_version:MINERU_OCR_VERSION,preserve_images:options.preserve_images??false,...(files.some(file=>['png','jpg','jpeg'].includes(file.format))?{image_ocr_version:MINERU_OCR_VERSION}:{})};
   await db.query(`INSERT INTO ai_distill.library_jobs(id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
    VALUES($1,'extract','queued',$2,$3,$4::jsonb,$5,$6::jsonb,$7,$8)`,[id,requestKey,hash(snapshot),JSON.stringify(snapshot),hash(config),JSON.stringify(config),executor,executionTarget]);
   await registerLocalJob(db,id,'library',executor,'library:extract');commitAttempted=true;
@@ -105,7 +109,7 @@ export async function publishAtomicLibraryImport(db:PoolClient,root:string,job:a
    if(existing.storage_path!==blob.storage_path)await db.query('UPDATE ai_distill.library_blobs SET storage_path=$2 WHERE id=$1',[existing.id,blob.storage_path]);
    blobId=existing.id;
   }
-  await db.query('INSERT INTO ai_distill.library_files(id,revision_id,blob_id,original_name,position,redaction_mode) VALUES($1,$2,$3,$4,$5,$6)',[file.file_id,revisionId,blobId,file.original_name,file.position,file.redaction_mode]);
+  await db.query('INSERT INTO ai_distill.library_files(id,revision_id,blob_id,original_name,position,redaction_mode,image_review_required) VALUES($1,$2,$3,$4,$5,$6,$7)',[file.file_id,revisionId,blobId,file.original_name,file.position,file.redaction_mode,file.image_review_required??false]);
  }
  await db.query("UPDATE ai_distill.library_revisions SET state='ready',sealed_at=now() WHERE id=$1",[revisionId]);
  await db.query('UPDATE ai_distill.library_packages SET current_revision_id=$2,lock_version=lock_version+1,updated_at=now() WHERE id=$1',[packageId,revisionId]);

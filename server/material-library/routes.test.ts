@@ -66,6 +66,16 @@ describe('材料库 HTTP 路由输入边界',()=>{
   expect(retired.status).toBe(410);
  });
 
+ test('保图参数与逐文件判断标记在入库前校验',async()=>{
+  const base=()=>{const form=new FormData();form.set('name','医疗材料');form.set('request_key','11111111-1111-4111-8111-111111111111');form.append('files',new File(['正文'],'source.txt',{type:'text/plain'}));return form;};
+  const wrongFlag=base();wrongFlag.set('preserve_images','yes');
+  const response=await app().request('/api/material-library/imports',{method:'POST',body:wrongFlag});
+  expect(response.status).toBe(400);expect(await response.text()).toContain('preserve_images');
+  const wrongCount=base();wrongCount.set('preserve_images','true');wrongCount.set('image_review_files','[true,false]');
+  const count=await app().request('/api/material-library/imports',{method:'POST',body:wrongCount});
+  expect(count.status).toBe(400);expect(await count.text()).toContain('逐项对应');
+ });
+
  test('文书读取同时校验版本ID、提取任务ID和可选文件ID',async()=>{
   const id='11111111-1111-4111-8111-111111111111';
   const missing=await app().request(`/api/material-library/revisions/${id}/documents`);

@@ -120,6 +120,36 @@ export function parseGlmOcrResponse(value:unknown,expectedPages:number):Page[]{
  });
 }
 
+/** 保图模式专用：只取版面识别出的独立图片裁块，正文仍由原提取供应商负责。 */
+export async function extractGlmOcrImageRegions(path:string,signal?:AbortSignal,env:NodeJS.ProcessEnv=process.env,fetcher:typeof fetch=fetch):Promise<{page:number;position:number;native_label:string;bytes:Uint8Array;content_type:'image/png'|'image/jpeg'}[]>{
+ const bytes=await readFile(path),info=await command(['pdfinfo',path]),pageCount=Number(info.match(/^Pages:\s+(\d+)/m)?.[1]);
+ if(!Number.isInteger(pageCount)||pageCount<1||bytes.length>MAX_BYTES||pageCount>MAX_PAGES)throw new Error('GLM-OCR图片裁块原件超过限制');
+ const key=env.ZHIPU_API_KEY?.trim();if(!key)throw new Error('保图模式需要 ZHIPU_API_KEY');
+ const active=signal?AbortSignal.any([signal,AbortSignal.timeout(TIMEOUT_MS)]):AbortSignal.timeout(TIMEOUT_MS);
+ const response=await fetcher(`${(env.ZHIPU_BASE_URL??'https://open.bigmodel.cn/api/paas/v4').replace(/\/$/,'')}/layout_parsing`,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:'glm-ocr',file:`data:application/pdf;base64,${bytes.toString('base64')}`,return_crop_images:true,request_id:crypto.randomUUID()}),signal:active});
+ if(!response.ok)throw new Error(`GLM-OCR图片裁块返回HTTP ${response.status}`);
+ const raw:unknown=await response.json();
+ if(!isRecord(raw)||raw.model!=='glm-ocr'||!isRecord(raw.data_info)||raw.data_info.num_pages!==pageCount||!Array.isArray(raw.layout_details)||raw.layout_details.length!==pageCount)throw new Error('GLM-OCR图片裁块页数或结构无效');
+ const images:{page:number;position:number;native_label:string;bytes:Uint8Array;content_type:'image/png'|'image/jpeg'}[]=[];
+ for(const [pageIndex,layout] of raw.layout_details.entries()){
+  if(!Array.isArray(layout))throw new Error('GLM-OCR图片裁块布局无效');
+  for(const [position,block] of layout.entries()){
+   if(!isRecord(block)||block.label!=='image')continue;
+   if(typeof block.content!=='string'||!block.content)throw new Error('GLM-OCR图片裁块缺少下载地址');
+   const url=new URL(block.content);
+   if(url.protocol!=='https:'||!url.hostname.endsWith('.ufileos.com'))throw new Error('GLM-OCR图片裁块地址不受信任');
+   const crop=await fetcher(url,{signal:active,redirect:'error'});
+   if(!crop.ok||Number(crop.headers.get('content-length')??0)>10*1024*1024)throw new Error('GLM-OCR图片裁块下载失败或过大');
+   const data=new Uint8Array(await crop.arrayBuffer());
+   if(data.byteLength>10*1024*1024)throw new Error('GLM-OCR图片裁块过大');
+   const content_type=data[0]===0x89&&data[1]===0x50?'image/png':data[0]===0xff&&data[1]===0xd8?'image/jpeg':undefined;
+   if(!content_type)throw new Error('GLM-OCR图片裁块格式无效');
+   images.push({page:pageIndex+1,position,native_label:typeof block.native_label==='string'?block.native_label:'',bytes:data,content_type});
+  }
+ }
+ return images;
+}
+
 export class GlmOcrPdfExtractor implements PdfExtractionProvider{
  readonly id='glm-ocr' as const;
  constructor(private readonly env:NodeJS.ProcessEnv=process.env,private readonly fetcher:typeof fetch=fetch){}

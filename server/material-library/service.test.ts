@@ -80,6 +80,7 @@ test('revision detail exposes usable redaction ids so projects can select the ex
  const revisions=await readLibraryRevisions(pool,'package');
  expect(revisions).toMatchObject([{id:'revision-a',redactions:[{id:'redaction-a',usable_for_question:'true'}]}]);
  expect(calls[1]).toContain('AS redactions');
+ expect(calls[1]).toContain("'image_review_required',f.image_review_required");
 });
 
 test('同原文字节可在TXT和MD之间复用，其他类型冲突不放宽且不改旧对象',async()=>{

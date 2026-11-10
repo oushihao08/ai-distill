@@ -45,6 +45,12 @@ async function readExtractedDocuments(pool:Pool,job:RedactionJob){
  });
 }
 
+/** 只允许正文坐标进入脱敏Agent，拒绝将提取页上的图片元数据或路径透传。 */
+export function redactionPageInput(page:Page){
+ if(!page.structure)throw new Error('Agent脱敏要求完整提取结构');
+ return{page:page.page,text:page.text,structure:page.structure,method:page.method};
+}
+
 export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,signal:AbortSignal,execute:typeof runAgent=runAgent){
  // 旧冻结队列也不能回退到已删除的字段映射引擎；不调用模型、不改写历史结果。
  if(job.config_snapshot.redaction_template?.workflow!=='codex_plan')throw new Error('字段映射脱敏已删除，请重新创建Agent化名任务');
@@ -59,7 +65,7 @@ export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,si
   const model=agentConfig.provider==='codex'?agentConfig.model:api!.model;
   const reasoning=agentConfig.provider==='codex'?agentConfig.reasoning_effort:'none';
   const executeModel=api?apiMaterialExecutor(api):execute;
-  const output=await cachedExternalCall('library_preparation_complete',()=>prepareAgentLibraryMaterials({directory:join(jobDirectory(root,job.id),'private'),files:documents.map(d=>({file_id:d.file_id,text_sha256:hash(d.pages.map(p=>p.text).join('\n')),pages:d.pages.map(p=>{if(!p.structure)throw new Error('Agent脱敏要求完整提取结构');return{...p,structure:p.structure};})})),revision_id:job.revision_id,extraction_job_id:job.input_snapshot.extraction_job_id,
+  const output=await cachedExternalCall('library_preparation_complete',()=>prepareAgentLibraryMaterials({directory:join(jobDirectory(root,job.id),'private'),files:documents.map(d=>({file_id:d.file_id,text_sha256:hash(d.pages.map(p=>p.text).join('\n')),pages:d.pages.map(redactionPageInput)})),revision_id:job.revision_id,extraction_job_id:job.input_snapshot.extraction_job_id,
    template,model,reasoning_effort:reasoning,...(api?{api}:{}),signal,timeout_ms:new Date(job.deadline_at).getTime()-Date.now(),
    ...(job.previous_job_id?{previous_directory:join(jobDirectory(root,job.previous_job_id),'private')}:{}),
    execute:options=>runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,operation:api?'library_preparation_api':'library_preparation_agent'},call_id=>executeModel({...options,call_id})),

@@ -1,6 +1,6 @@
 /** 职责：材料库文件阅读、任务历史及项目使用页面的精简接口类型；不包含原件路径、密钥或任务配置。 */
 import type {MaterialLibraryFile,MaterialLibraryJob,MaterialLibraryRedactionSummary,MaterialLibraryRevision} from '@shared/material-library';
-export type LibraryFile=Pick<MaterialLibraryFile,'id'|'original_name'|'sha256'|'size_bytes'>;
+export type LibraryFile=Pick<MaterialLibraryFile,'id'|'original_name'|'sha256'|'size_bytes'|'image_review_required'>;
 export type LibraryJobSummary=Pick<MaterialLibraryJob,'id'|'kind'|'status'|'origin'|'created_at'|'finished_at'>;
 export type LibraryRedaction=Omit<Pick<MaterialLibraryRedactionSummary,'id'|'extraction_job_id'|'redaction_job_id'|'redaction_template_name'|'usable_for_question'|'created_at'|'output_digest'>,'usable_for_question'>&{usable_for_question:boolean|string};
 export type LibraryRevision=Pick<MaterialLibraryRevision,'id'|'state'|'file_count'|'created_at'>&{files:LibraryFile[];jobs:LibraryJobSummary[];redactions:LibraryRedaction[]};

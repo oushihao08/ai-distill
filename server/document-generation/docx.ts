@@ -3,14 +3,14 @@
  * 主要入口：`buildDocx()` 异步生成包含标题、段落、分页和表格的 DOCX 字节。
  * 使用场景：由材料DOCX导出和项目五件套工具调用；不读取原件或修改数据库。
  */
-import {AlignmentType,TableLayoutType,Document,HeadingLevel,Packer,Paragraph,Table,TableCell,TableRow,TextRun,WidthType} from 'docx';
+import {AlignmentType,TableLayoutType,Document,HeadingLevel,Packer,Paragraph,Table,TableCell,TableRow,TextRun,WidthType,ImageRun} from 'docx';
 import {planTableLayout} from './table-layout';
 import {materialMathRuns} from './material-math-docx';
 import type {DocumentBlock} from '../../shared/document-structure';
 
 export interface DocumentStructure {format:'redacted-structure-v1';pages:{page:number;blocks:DocumentBlock[];issues?:string[]}[]}
 export type RedactedDocumentStructure=DocumentStructure;
-export const DOCX_RENDERER_VERSION='redacted-structure-docx-v10';
+export const DOCX_RENDERER_VERSION='redacted-structure-docx-v11';
 export const REDACTED_DOCX_RENDERER_VERSION=DOCX_RENDERER_VERSION;
 
 /** 已提取页文本的保真结构：保留换行和制表符列，不推断表头或恢复不存在的合并单元格。 */
@@ -87,15 +87,22 @@ function structuredPageChildren(blocks:DocumentBlock[],materialMath=false):(Para
 }
 
 /** Render supplied text/structure only; caller owns source-mode verification, this function never opens original material. */
-export async function buildDocx(source:string|RedactedDocumentStructure,options:{style?:'legal';pagination?:'flow'|'source';materialMath?:boolean}={}):Promise<Uint8Array>{
+export async function buildDocx(source:string|RedactedDocumentStructure,options:{style?:'legal';pagination?:'flow'|'source';materialMath?:boolean;imagesByPage?:Map<number,Array<{data:Uint8Array;type:'png'|'jpg';width:number;height:number}>>}={}):Promise<Uint8Array>{
  if(typeof source==='string')return buildMarkdownRedactedDocx(source,options);
  if(!source||source.format!=='redacted-structure-v1'||!Array.isArray(source.pages)||!source.pages.length||source.pages.some(page=>!Number.isSafeInteger(page.page)||!Array.isArray(page.blocks)))throw new Error('脱敏文档结构无效');
  const children:(Paragraph|Table)[]=[];
  for(const page of source.pages){
   const content=structuredPageChildren(page.blocks,options.materialMath);
-  if(!content.length)continue;
+  // 图片由调用方按已核验页号提供；生成器不读取来源、不筛选图片。默认连续排版，只有显式source才硬分页。
+  const images=options.imagesByPage?.get(page.page)??[];
+  if(!content.length&&!images.length)continue;
   if(options.pagination==='source'&&children.length)children.push(new Paragraph({text:'',pageBreakBefore:true}));
   children.push(...content);
+  for(const image of images){
+   // 同一来源页可能连续有两张影像；限制单张高度，避免Office转PDF时第二张被挤到下一页并留下大片空白。
+   const scale=Math.min(380/image.width,300/image.height,1);
+   children.push(new Paragraph({children:[new ImageRun({type:image.type,data:Buffer.from(image.data),transformation:{width:Math.max(1,Math.round(image.width*scale)),height:Math.max(1,Math.round(image.height*scale))}})]}));
+  }
  }
  if(!children.length)throw new Error('脱敏文本为空');
  const document=new Document({creator:'',lastModifiedBy:'',revision:0,styles:{default:{document:{run:{font:{ascii:'Times New Roman',hAnsi:'Times New Roman',eastAsia:'宋体'},size:22,color:'000000'},paragraph:{spacing:{line:280,after:80}}}},paragraphStyles:[{id:'Heading1',name:'Heading 1',basedOn:'Normal',next:'Normal',run:{color:'000000',size:28,bold:true},paragraph:{spacing:{before:160,after:120}}},{id:'Heading2',name:'Heading 2',basedOn:'Normal',next:'Normal',run:{color:'000000',size:25,bold:true},paragraph:{spacing:{before:120,after:80}}},{id:'Heading3',name:'Heading 3',basedOn:'Normal',next:'Normal',run:{color:'000000',size:23,bold:true},paragraph:{spacing:{before:100,after:80}}}]},sections:[{properties:{page:{margin:{top:1134,right:1134,bottom:1134,left:1134}}},children}]});

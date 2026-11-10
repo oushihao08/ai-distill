@@ -90,7 +90,7 @@ Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symli
 
 包名称/说明/标签与处理设置分开。历史`library_packages.processing_settings`保留兼容初始快照，不再作为新任务执行配置，也不从包详情返回；包创建/更新接口拒绝单包处理配置写入。未保存共用配置时，从数据库系统提示词与当前系统模型/提取默认组合完整配置。保存后的共用设置只影响之后派发的新任务，历史任务与题目快照不回写。
 
-新默认`extraction.provider_config`为空兼容对象；既有旧Vision配置可读，不自动删除已保存设置。实际PDF供应商、转换版本由任务`pdf_provider`与`pdf_ocr_version`冻结；新导入或单次extract只允许`mineru-api`或`mineru-cli`，省略时使用MinerU API默认。环境或请求指定其他provider时直接拒绝。调整未来有效提取配置时须同时更新检查点身份，不能跨供应商或转换版本复用续作检查点。
+新默认`extraction.provider_config`为空兼容对象；既有旧Vision配置可读，不自动删除已保存设置。实际PDF文本供应商、转换版本由任务`pdf_provider`与`pdf_ocr_version`冻结；新导入或单次extract只允许`mineru-api`或`mineru-cli`，省略时使用MinerU API默认。环境或请求指定其他文本provider时直接拒绝。调整未来有效提取配置时须同时更新检查点身份，不能跨供应商或转换版本复用续作检查点。原子导入显式启用`preserve_images`时，PDF另向GLM-OCR请求`return_crop_images`并下载版面图片裁块；有裁块时以裁块作为逐图候选，无裁块时沿用PDF嵌入对象提取。此路径需要`ZHIPU_API_KEY`，默认导入不调用智谱。图片候选只供已标记文件的材料整理逐图判断，脱敏输入不读取图片；图文DOCX仅使用通过判断的候选。既有已提取版本不会自动补图，须新建提取任务。
 
 PNG/JPG/JPEG始终将原图直传`mineru-api`并解析为单页文档，不转PDF、不调用或回退GLM-OCR/CLI。图片检查点绑定原件SHA-256、PNG/JPG/JPEG格式、provider及MinerU版本，不能跨文件或格式复用。
 
@@ -274,7 +274,7 @@ Agent自检、宿主发布及显式复核共用同一编译器。成功表示原
 
 候选工作分析复用组合的 `core_work`、`deliverables`、`notes`：分别记录待处理工作、成果接收人与用途、实际依赖及适用核验。材料整理页在“候选工作分析与任务组合”直接展示工作、成果用途及说明；旧记录无说明时显示缺失提示。建题继续随整理结果冻结并传入 `material-scope.json`，不增加数据库字段、模型调用或跨题读取。旧整理结果不自动补分析；新提示词须由运行进程加载后用于新整理调用，已保存结果及完整检查点仍按既有复用规则处理。
 
-`preparation.ts`复用`library_jobs(kind=prepare)`读取成功提取或脱敏结构，一次返回逐份描述、可见性、总摘要、组合及整包出题支持度。默认走本机Agent；单次请求显式传`api_settings`时改走API槽位，`api_settings`与`agent_settings`互斥，来源绑定、输出schema、编译和发布共用原路径。API配置不保存密钥，执行时从服务进程环境读取；失败不自动切回Agent或重复调用。整理不作默认选择、不裁剪材料，也不增加步骤编号或前置审批；原文整理绑定成功提取任务，脱敏整理绑定成功脱敏结果；缺失、失败或摘要不完整时，建题仍可使用完整材料。prepare不参与提取/脱敏的revision互斥，默认不自动派发。
+`preparation.ts`复用`library_jobs(kind=prepare)`读取成功提取或脱敏结构，一次返回逐份描述、可见性、总摘要、组合及整包出题支持度。逐份描述可附 `hidden_texts`：Agent 指出完整独立段落的广告、水印、无关页眉页脚及仅用于原件分页的页码行，编译器要求原文精确命中并附理由；未命中则保留。病例编号、检查编号和正文引用页码仍作为材料内容保留。整理投影和图文导出只在显示副本隐藏，原始提取和旧题快照不变。默认走本机Agent；单次请求显式传`api_settings`时改走API槽位，`api_settings`与`agent_settings`互斥，来源绑定、输出schema、编译和发布共用原路径。API配置不保存密钥，执行时从服务进程环境读取；失败不自动切回Agent或重复调用。整理不作默认选择、不裁剪材料，也不增加步骤编号或前置审批；原文整理绑定成功提取任务，脱敏整理绑定成功脱敏结果；缺失、失败或摘要不完整时，建题仍可使用完整材料。prepare不参与提取/脱敏的revision互斥，默认不自动派发。
 
 HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`redaction_id`或`extraction_job_id`，可选`project_id`、`agent_settings`或`api_settings`；`GET /api/material-library/packages/:id/preparations`列出最近结果，`GET /api/material-library/preparations/:id?include_content=true`读取完整文书。状态和取消沿用jobs接口。同请求键恢复原ID；同来源/项目/模型及规则的成功结果或本机在途整理复用；成功结果可只读复用，不认领他机在途任务。新任务按来源目录固定材料ID、标题、顺序及全部结构块，模型只返回描述信息，不接收重分册的块ID或标题。已有脱敏分册直接沿用；未分册原文按原文件保留，不在整理阶段拆合。摘要缺失不自动补调或新增材料，保持空值并生成技术提示；边界疑点记入notes，交回上游处理。未知或重复描述不替换来源正文，不阻断建题；模型结果未知不自动重调。
 
@@ -321,3 +321,9 @@ CLI的start/resume/diagnose使用同一HTTP契约；diagnose只返回状态、�
 `GET /imports`只列最近50条独立任务摘要，失败只在这里/任务详情显示错误；成功后返回正式package_id/revision_id。相同键与内容恢复原任务，包括失败终态，不自动重提取；失败后重新选择文件提交新任务。临时文件在成功或已确认的失败后清理；进程中断/提交回执未知时先对账，不为清理删除可能已成功登记的原件。
 
 迁移054允许独立任务在尚未发布时不绑定正式包/版本，仅允许发布事务一次性绑定冻结身份；延迟约束阻止新包、版本和原件在没有完整成功提取时提交。迁移不清理或回写历史失败数据，也不取消在途作业。原API、worker和旧客户端需协调更新，不能只部署前端或只重启单个旧消费者；未迁移时新imports明确503，禁止回退到先建记录。
+
+## 可选图片候选与逐图整理
+
+新原子导入的 multipart 请求可传 `preserve_images=true`，默认 `false`。可选 `image_review_files` 是与上传文件一一对应的布尔 JSON 数组；标记为 `true` 的文件必须同时开启保图，TXT/MD 不可标记。上传任务冻结这两个参数，只有标记文件执行图片提取；开启保图但未标记文件的旧客户端请求仍可入库，按纯文本处理。标记PDF优先保存GLM-OCR版面图片裁块，页眉页脚标签作为重复页饰自动排除，其余裁块逐图判断；若无裁块，回退到嵌入图像对象，不支持的编码按对应原页渲染为PNG候选。DOCX提取 `word/media` 中的 PNG/JPEG；独立 PNG/JPG/JPEG 原件作为单张候选。回退的PDF对象按物理页覆盖范围识别整页扫描底图及跨页重复页饰，不作为交付插图。图片内容寻址保存，候选 ID、页码、顺序、类别和摘要写入该文件的提取文档。图片对象与正文在同一成功事务登记，失败不发布半包。TXT/MD 仍走纯文本路径。
+
+脱敏执行器只投影页码、文字、结构和识别方式，不把候选图片或存储路径传给脱敏 Agent。材料整理从数据库读取 `library_files.image_review_required`，仅将可交付插图交给Agent逐张判断（相同摘要图片复用一次判断）；整页扫描底图及重复页饰自动排除，每张决定保存原因和来源。选择 API 整理且存在标记文件时明确拒绝。原文来源题目可通过 `GET /api/workflows/:id/material-image-docx` 下载按冻结逐图决定嵌入图片的图文 DOCX；显式传 `preview_preparation_id` 可在来源、revision 和项目均匹配时预览新整理结果，不修改题目冻结快照。旧PDF候选没有图片类别时一律不嵌入，避免旧快照再次带入整页扫描图。图文版与纯文本版共用 DOCX 渲染器，按正文连续排版并在对应原件页正文后嵌图，不按原 PDF 页硬分页。现有 `POST /api/workflows/:id/material-docx` 保持纯文本输出。此图文版不自动成为投稿附件，也不对脱敏来源拼接未脱敏图像。嵌入对象及页面顺序可核对，但不承诺还原 PDF 的逐像素版式。应用 `063_library_image_review.sql` 并更新 API/worker 前，新参数不能用于业务环境。

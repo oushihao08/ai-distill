@@ -81,3 +81,4 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 - `059_allow_atomic_revision_seal.sql`：原子导入版本不再要求不存在的独立intake任务；其ready状态、当前版本、文件数和正文数由057的提取任务成功门禁核对，普通历史版本仍保留intake校验。
 - `061_library_load_eligibility.sql`：按revision、成功提取任务及评估算法版本保存完整材料合并后的DOCX估算页数和生成的加载资格字段；不回填、删除或改写既有期次关系。只有迁移与新版API均在目标环境生效后，新加载、选版和恢复门槛才可用。
 - `062_prepare_api_executor.sql`：仅允许可选材料整理任务选择本机API执行池；原Agent整理及其他材料任务约束不变。应用后新API整理任务才能成功入队。
+- `063_library_image_review.sql`：给材料库文件增加逐图价值判断标记，历史文件默认 `false`；与可选保图入库和材料整理配套，不回填或修改历史提取结果。需核实目标库已应用且新版 API/worker 同时加载后才启用新参数。

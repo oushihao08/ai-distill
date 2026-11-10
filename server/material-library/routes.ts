@@ -36,6 +36,14 @@ function pdfProvider(value:FormDataEntryValue|null){
  if(typeof value!=='string'||!['mineru-api','mineru-cli'].includes(value))throw new HTTPException(400,{message:'PDF OCR provider 仅支持MinerU'});
  return value;
 }
+function imageImportOptions(form:FormData,count:number){
+ const flag=form.get('preserve_images');
+ if(flag!==null&&flag!=='true'&&flag!=='false')throw new HTTPException(400,{message:'preserve_images须为true或false'});
+ const raw=form.get('image_review_files');let marks:unknown;
+ if(raw!==null){if(typeof raw!=='string')throw new HTTPException(400,{message:'图片判断标记无效'});try{marks=JSON.parse(raw);}catch{throw new HTTPException(400,{message:'图片判断标记无效'});}}
+ if(marks!==undefined&&(!Array.isArray(marks)||marks.length!==count||marks.some(mark=>typeof mark!=='boolean')))throw new HTTPException(400,{message:'图片判断标记须与文件逐项对应'});
+ return{preserve_images:flag==='true',...(marks!==undefined?{image_review_files:marks as boolean[]}:{})};
+}
 async function jsonBody(c:any){try{return await c.req.json();}catch{throw new HTTPException(400,{message:'请求必须是有效JSON'});}}
 
 export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:string,executeAgent?:<T>(task:AgentTask<T>)=>Promise<AgentResult<T>>){
@@ -103,7 +111,8 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
   if(typeof modeField==='string'){try{modes=JSON.parse(modeField);}catch{throw new HTTPException(400,{message:'脱敏声明无效'});}}
   if(!Array.isArray(modes)||(modes.length&&modes.length!==uploads.length)||modes.some(mode=>!['model','declared_redacted'].includes(mode)))throw new HTTPException(400,{message:'脱敏声明无效'});
   const files=await Promise.all(uploads.map(async (file,index)=>({original_name:file.name,bytes:new Uint8Array(await file.arrayBuffer()),redaction_mode:(modes[index]??'model') as 'model'|'declared_redacted'})));
-  const result=await enqueueAtomicLibraryImport(pool,storageRoot,key,{name,tags:[]},files,undefined,provider);return c.json(result,result.reused?200:202);
+  const options=imageImportOptions(form,uploads.length);
+  const result=await enqueueAtomicLibraryImport(pool,storageRoot,key,{name,tags:[]},files,undefined,provider,options);return c.json(result,result.reused?200:202);
  });
  app.get(`${prefix}/packages/:id`,async c=>c.json(await readLibraryPackage(pool,uuid(c.req.param('id')))));
  app.get(`${prefix}/packages/:id/usage`,async c=>c.json(await readLibraryPackageUsage(pool,uuid(c.req.param('id')))));
@@ -141,7 +150,7 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
   if(modes.length&&modes.length!==uploads.length)throw new HTTPException(400,{message:'脱敏声明数量须与文件数一致'});
   const files:LibraryFileInput[]=await Promise.all(uploads.map(async(file,index)=>({original_name:file.name,bytes:new Uint8Array(await file.arrayBuffer()),redaction_mode:(modes[index]??'model') as LibraryFileInput['redaction_mode']})));
   const pkg=await readLibraryPackage(pool,packageId);
-  const result=await enqueueAtomicLibraryImport(pool,storageRoot,requestKey,{name:pkg.name,description:pkg.description,tags:pkg.tags},files,{package_id:packageId,lock_version:ifMatch},provider);
+  const result=await enqueueAtomicLibraryImport(pool,storageRoot,requestKey,{name:pkg.name,description:pkg.description,tags:pkg.tags},files,{package_id:packageId,lock_version:ifMatch},provider,imageImportOptions(form,uploads.length));
   return c.json(result,result.reused?200:202);
  });
 }

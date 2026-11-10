@@ -23,7 +23,7 @@ export function ensurePages(pages:Page[],sourceSha:string){
  * 上传原件及其摘要不变；调用方在原事务中发布清理正文和匹配的text_sha256，不回写历史文档或题目快照。
  * 原始OCR与审计用于追溯，不代替业务核验；页尾数字的扫描证据与业务标签保护共用scan-noise.ts规则。
  */
-export async function storeExtractedDocument(db:Pick<PoolClient,'query'>,input:ReturnType<typeof ensurePages>){
+export async function storeExtractedDocument(db:Pick<PoolClient,'query'>,input:ReturnType<typeof ensurePages>,imageCandidates?:Array<{id:string;page:number;position:number;sha256:string;blob_id:string}>){
  const original=ensurePages(input.pages,input.source_sha256);
  const cleaned=cleanScanNoisePages(original.pages.map(p=>({file_id:input.source_sha256,page:p.page,blocks:p.structure!})),{englishOnlyParagraphs:true});
  const document=ensurePages(original.pages.map((page,index)=>({...page,structure:cleaned.pages[index]!.blocks,text:documentBlocksToText(cleaned.pages[index]!.blocks)})),input.source_sha256);
@@ -32,7 +32,7 @@ export async function storeExtractedDocument(db:Pick<PoolClient,'query'>,input:R
   const raw=await insertLibraryTextBlob(db,JSON.stringify(original),'application/vnd.ai-distill.extracted-document+json');
   cleanup={protocol:'conservative-scan-cleanup-v1',raw_document_blob_id:raw.id,raw_document_sha256:raw.sha256,edits:cleaned.edits};
  }
- const blob=await insertLibraryTextBlob(db,JSON.stringify({...document,...(cleanup?{cleanup}:{})}),'application/vnd.ai-distill.extracted-document+json');
+ const blob=await insertLibraryTextBlob(db,JSON.stringify({...document,...(cleanup?{cleanup}:{}),...(imageCandidates?{image_candidates:imageCandidates}:{})}),'application/vnd.ai-distill.extracted-document+json');
  return{blob,document,cleanup_edit_count:cleaned.edits.length};
 }
 

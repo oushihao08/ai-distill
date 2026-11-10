@@ -54,15 +54,15 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   batch create --project UUID (--ids UUID,... | --all) --size 数量 --to STEP_KEY --out 清单路径
   batch skip --file 清单路径 --ids UUID,... --reason 原因（仅记录本轮跳过，不取消任务）
   project create --name 显示名称 [--material-backend legacy --material-root 仓库相对路径 | --material-backend library_v1 --workspace-path 仓库相对路径] [--parent-name 主项目 --phase-name 期数 --phase-no N] [--project-group UUID] [--skill-path 仓库相对路径] [--settings-file JSON]
-    默认 library_v1、期号1、Agent化名；需要 --workspace-path，首期明确 --skill-path；旧目录须显式 --material-backend legacy。
+    默认 library_v1、期号1；医疗主项目新期默认原文，其他主项目默认Agent化名。需要 --workspace-path，首期明确 --skill-path；旧目录须显式 --material-backend legacy。
   project phase-update --project UUID --phase-no N --phase-name 期名 --expected-name 当前完整名称
   project-group rename|archive|restore --group UUID [--name 主项目名称]
-  library import --name 名称 --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli]（成功提取后才入库）
+  library import --name 名称 --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--preserve-images]（成功提取后才入库）
   library imports list
   library package create（已停止先建空包，使用 library import）
   library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
   library files prepare --manifest JSON --out 新输出目录（DOC/WPS/OFD转PDF、PDF切割、图片原样准备；不上传、不调用模型）
-  library revision create --package UUID --version N --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli]
+  library revision create --package UUID --version N --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--preserve-images]
   library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级]
   library prepare start --revision UUID (--redaction UUID | --extraction-job UUID) --request-key UUID [--project UUID] [--agent-model 模型 --reasoning-effort 等级] [--execution-timeout 30m] [--force]
   library prepare resume --job UUID --request-key UUID [--execution-timeout 30m]（显式续作，不启动worker）
@@ -124,7 +124,7 @@ function parse(args: string[]) {
     if (!value.startsWith('--')) { words.push(value); continue; }
     const key=value.slice(2);
     if (flags.has(key)) throw new CliError(`参数重复：--${key}`);
-    if (['force','all','redacted-only','json','help','full','content','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects'].includes(key)) flags.set(key,true);
+    if (['force','all','redacted-only','json','help','full','content','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects','preserve-images'].includes(key)) flags.set(key,true);
     else {
       const next=args[++i]; if(next===undefined||next.startsWith('--')) throw new CliError(`参数缺值：--${key}`);
       flags.set(key,next);
@@ -205,10 +205,10 @@ const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'library package list':['q','page','page-size','ready-only','redaction-state','preparation-state','archived-only','project'],'library package show':['package'],
       'library package usage':['package'],'library package revisions':['package'],'library package create':['name','description','tags'],
       'library package update':['package','version','file'],'library package archive':['package','version'],'library package restore':['package','version'],
-      'library files prepare':['manifest','out'],'library import':['name','manifest','request-key','pdf-provider'],'library imports list':[],
+      'library files prepare':['manifest','out'],'library import':['name','manifest','request-key','pdf-provider','preserve-images'],'library imports list':[],
       'library batch plan':['kind','project','project-query','q','redaction-state','preparation-state','extraction-state','out'],
       'library batch run':['file'],
-      'library revision create':['package','version','request-key','manifest','pdf-provider'],
+      'library revision create':['package','version','request-key','manifest','pdf-provider','preserve-images'],
       'library job start':['revision','kind','target','request-key','pdf-provider','extraction-job','previous-job','template','project','agent-model','reasoning-effort'],
       'library job show':['job'],'library job cancel':['job'],'library job wait':['job','timeout'],
       'library prepare start':['revision','redaction','extraction-job','request-key','project','agent-model','reasoning-effort','execution-timeout','force'],'library prepare resume':['job','request-key','execution-timeout'],'library prepare diagnose':['job'],'library prepare list':['package','revision','redaction','project'],'library prepare show':['preparation','content'],
@@ -276,10 +276,13 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       if(flags.has('pdf-provider')){
         const provider=required('pdf-provider');if(!['glm-ocr','mineru-api','mineru-cli'].includes(provider))throw new CliError('--pdf-provider 无效');form.set('pdf_provider',provider);
       }
-      const modes:string[]=[];
+      const modes:string[]=[],imageReview:boolean[]=[];
+      if(flags.has('preserve-images'))form.set('preserve_images','true');
       for(const [index,item] of manifest.files.entries()){
         if(!item||typeof item!=='object'||Array.isArray(item)||typeof item.path!=='string'||!item.path.trim())throw new CliError(`材料清单第${index+1}项缺少 path`);
-        if(Object.keys(item).some(key=>!['path','redaction_mode'].includes(key)))throw new CliError(`材料清单第${index+1}项含不支持的来源或恢复字段`,{kind:'file_error'});
+        if(Object.keys(item).some(key=>!['path','redaction_mode','image_review_required'].includes(key)))throw new CliError(`材料清单第${index+1}项含不支持的来源或恢复字段`,{kind:'file_error'});
+        if(item.image_review_required!==undefined&&typeof item.image_review_required!=='boolean')throw new CliError(`材料清单第${index+1}项 image_review_required 须为布尔值`);
+        if(item.image_review_required&&!flags.has('preserve-images'))throw new CliError('逐图判断须同时使用 --preserve-images');
         const mode=item.redaction_mode??'model';
         if(mode!=='model'&&mode!=='declared_redacted')throw new CliError(`材料清单第${index+1}项 redaction_mode 无效`);
         const filePath=resolve(dirname(resolve(manifestPath)),item.path);
@@ -290,9 +293,10 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         let bytes:Uint8Array;
         try{bytes=await readFile(filePath);}catch{throw new CliError(`材料文件无法读取：${basename(filePath)}`,{kind:'file_error'});}
         const uploadBytes=new Uint8Array(bytes.byteLength);uploadBytes.set(bytes);
-        form.append('files',new Blob([uploadBytes.buffer]),basename(filePath));modes.push(mode);
+        form.append('files',new Blob([uploadBytes.buffer]),basename(filePath));modes.push(mode);imageReview.push(item.image_review_required??false);
       }
       form.set('redaction_modes',JSON.stringify(modes));
+      if(flags.has('preserve-images'))form.set('image_review_files',JSON.stringify(imageReview));
       if(!packageId){form.set('name',required('name'));return api.form('/api/material-library/imports','POST',form,signal);}
       return api.form(`/api/material-library/packages/${packageId}/revisions`,'POST',form,signal,versionHeader(required('version')));
     };

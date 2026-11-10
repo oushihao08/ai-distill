@@ -18,7 +18,9 @@ import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
 import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,libraryExternalExtractionTimeoutMs,LIBRARY_JOB_LEASE_MS,assertLibraryExtractionUsable} from './jobs';
-import {readLibraryBlob,cleanupRolledBackLibraryBlobs} from './storage';
+import {readLibraryBlob,cleanupRolledBackLibraryBlobs,installLibraryBlob,lockLibraryBlobWrites} from './storage';
+import {extractImageCandidates,glmImageRole,shouldExtractImageCandidates,type ImageCandidate} from './image-candidates';
+import {extractGlmOcrImageRegions} from '../materials/pdf-extraction/glm-ocr';
 import {publishAtomicLibraryImport} from './atomic-import';
 import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-shared';
 import {executeRedaction} from './redaction-runner';
@@ -65,7 +67,7 @@ async function documentExtractor(root:string,jobId:string,provider:unknown,forma
 }
 
 export async function executeExtraction(pool:Pool,root:string,job:any,signal:AbortSignal,extractorOverride?:DocumentExtractor){
- const files=job.input_snapshot.files as any[],results:{item:any;document:ReturnType<typeof ensurePages>;issues:Record<string,unknown>[]}[]=[];
+ const files=job.input_snapshot.files as any[],results:{item:any;document:ReturnType<typeof ensurePages>;issues:Record<string,unknown>[];images?:ImageCandidate[]}[]=[];
  let extraction:{directory:string;extractor:DocumentExtractor}|null=null;
  for(const [index,item] of files.entries()){
   if(signal.aborted)throw new Error('材料任务已取消');
@@ -90,14 +92,39 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
    ...(!page.text.trim()?[{page:page.page,kind:'empty_page'}]:[]),
    ...(/无法辨认|�/.test(page.text)?[{page:page.page,kind:'unreadable'}]:[]),
   ]);
-  results.push({item,document,issues});
+  let images:ImageCandidate[]|undefined;
+  if(shouldExtractImageCandidates(job.config_snapshot?.preserve_images,item.image_review_required,item.format)){
+   const imageDirectory=join(jobDirectory(root,job.id),'image-source');await mkdir(imageDirectory,{recursive:true,mode:0o700});
+   const imageSource=join(imageDirectory,`${item.file_id}.${item.format}`);
+   await writeFile(imageSource,Buffer.from(bytes),{mode:0o600});
+   if(item.format==='pdf'){
+    const regions=await runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,library_file_id:item.file_id,operation:'library_glm_image_regions'},async()=>extractGlmOcrImageRegions(imageSource,signal));
+    images=regions.map(region=>{const sha256=hash(region.bytes);return{id:`p${region.page}-i${region.position}-${sha256.slice(0,12)}`,page:region.page,position:region.position,sha256,bytes:region.bytes,content_type:region.content_type,role:glmImageRole(region.native_label)};});
+    if(!images.length)images=await extractImageCandidates(imageSource,item.format,signal);
+   }else images=await extractImageCandidates(imageSource,item.format,signal);
+   if(images.length>300||images.reduce((sum,image)=>sum+image.bytes.byteLength,0)>100*1024*1024)throw new Error('图片候选数量或总大小超过限制');
+  }
+  results.push({item,document,issues,images});
   if(!await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'extract',completed_files:index+1,total_files:files.length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)}))throw stopReason(await libraryStopReason(pool,job)??'lease_lost');
  }
  if(job.input_snapshot.atomic_import)assertLibraryExtractionUsable(results.map(result=>({issues:result.issues,pages:result.document.pages,page_count:result.document.pages.length})));
  const summaries=await finishLibraryJob(pool,job.id,job.lease_token,{file_count:results.length,page_count:results.reduce((sum,result)=>sum+result.document.pages.length,0),issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)},async db=>{
   await publishAtomicLibraryImport(db,root,job);
   for(const result of results){
-   const {blob,document}=await storeExtractedDocument(db,result.document);
+   const imageCandidates=[];
+   if(result.images?.length){
+    await lockLibraryBlobWrites(db,result.images.map(image=>image.sha256));
+    for(const image of result.images){
+     const installed=await installLibraryBlob(root,image.bytes,image.content_type,'local');
+     (job.atomic_installed??=[]).push(installed);
+     const inserted=await db.query(`INSERT INTO ai_distill.library_blobs(id,sha256,size_bytes,content_type,storage_kind,storage_target,storage_path)
+      VALUES($1,$2,$3,$4,'file','local',$5) ON CONFLICT(sha256,storage_target) WHERE storage_kind='file' DO NOTHING RETURNING id`,[crypto.randomUUID(),installed.sha256,installed.size_bytes,installed.content_type,installed.storage_path]);
+     const blobId=inserted.rows[0]?.id??(await db.query("SELECT id FROM ai_distill.library_blobs WHERE sha256=$1 AND storage_kind='file' AND storage_target='local'",[installed.sha256])).rows[0]?.id;
+     if(!blobId)throw new Error('图片对象未登记');
+     imageCandidates.push({id:image.id,page:image.page,position:image.position,sha256:image.sha256,blob_id:blobId,...(image.role?{role:image.role}:{})});
+    }
+   }
+   const {blob,document}=await storeExtractedDocument(db,result.document,result.images?imageCandidates:undefined);
    if(job.input_snapshot.atomic_import)assertLibraryExtractionUsable([{issues:result.issues,pages:document.pages,page_count:document.pages.length}]);
    await db.query(`INSERT INTO ai_distill.library_documents(id,revision_id,file_id,extraction_job_id,document_blob_id,source_sha256,text_sha256,page_count,issues)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[crypto.randomUUID(),job.revision_id,result.item.file_id,job.id,blob.id,result.item.source_sha256,hash(document.pages.map(page=>page.text).join('\n')),document.pages.length,JSON.stringify(result.issues)]);

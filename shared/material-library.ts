@@ -69,6 +69,7 @@ export interface MaterialLibraryFile {
   size_bytes: number;
   content_type: string;
   redaction_mode: LibraryRedactionMode;
+  image_review_required?: boolean;
   created_at: string;
 }
 

@@ -530,6 +530,9 @@ test('HTTP新期缺省共享材料库并冻结出题专用默认，首期不猜S
  const response=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  expect(response.status).toBe(201);expect(saved[0]?.[3]).toBeNull();expect(saved[0]?.[7]).toBe('material_packages');expect(saved[0]?.[9]).toBe('library_v1');expect(saved[0]?.[12]).toBe(1);expect(scanned).toBe(false);
  expect(JSON.parse(configs.find(v=>v[1]===4)![2])).toMatchObject({model:'gpt-6.1-sol',reasoning_effort:'low',material_processing_mode:'aliases',material_source_mode:'redacted'});
+ const medical=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,name:'豆包高经济价值-医疗'})});
+ expect(medical.status).toBe(201);
+ expect(JSON.parse(configs.filter(v=>v[1]===4).at(-1)![2])).toMatchObject({material_processing_mode:'original',material_source_mode:'original'});
  const invalid=await app.request('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'新主项目',workspace_path:root})});expect(invalid.status).toBe(400);
 });
 
