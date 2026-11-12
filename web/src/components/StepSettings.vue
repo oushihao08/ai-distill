@@ -47,8 +47,8 @@ async function loadModels(force=false){
  try{
   loadingModels.value=true;
   if(props.step.ordinal===6)scoreInstructions.value=await api('/agent/scoring-instructions');
-  const config=await api<{model_options:ModelOption[];model:string}>('/agent/config');
-  modelOptions.value=config.model_options??[];
+  const config=await api<{model_options:ModelOption[];agent_drivers?:{id:string;label:string;model_options:ModelOption[]}[];model:string}>('/agent/config');
+  modelOptions.value=config.agent_drivers?.length?config.agent_drivers.flatMap(d=>d.model_options):config.model_options??[];
  }
  catch(cause){error.value=cause instanceof Error?cause.message:'读取Agent模型清单失败';}finally{loadingModels.value=false;}
 }

@@ -1,4 +1,11 @@
-/** 项目实现注册与同步分派。各步骤以同一个 execute(projectKey,input) 入口选择一个实现；通用业务仍由步骤管理。 */
+/**
+ * 职责：项目实现注册与分派容器（支持异步副作用、同步纯策略与历史身份匹配）。
+ * 核心入口：
+ * - `ProjectImplementations`：用于异步步骤实现（如步骤 8 归档交付、飞书发布），精确执行唯一匹配实现或默认回退。
+ * - `SyncProjectImplementations`：用于同步纯策略（如步骤 1-7 的 schema、投影、就绪判断）。
+ * - `ProjectKeyRegistry`：注册主项目身份识别规则，将主项目名/期次名/路径/历史契约解析为统一 `project_key`。
+ * 不变量与修改禁区：这里管理的是必需业务步骤分派，执行异常必须原样向调用方传播，不得像可选通知那样吞掉。
+ */
 export type ProjectImplementation<Input, Output> = (input: Input) => Output | Promise<Output>;
 export class ProjectImplementations<Input, Output> {
  private readonly implementations = new Map<string, ProjectImplementation<Input, Output>>();
@@ -12,7 +19,7 @@ export class ProjectImplementations<Input, Output> {
  /** 精确匹配，只执行一个实现；失败原样向步骤传播，不作为可忽略通知吞掉。 */
  async execute(projectKey: string | null | undefined, input: Input): Promise<Output> {
   const implementation = (projectKey ? this.implementations.get(projectKey) : undefined) ?? this.fallback;
-  try { return await implementation(input); } catch (error) { throw error; }
+  return await implementation(input);
  }
 }
 

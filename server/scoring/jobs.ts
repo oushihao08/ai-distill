@@ -26,6 +26,7 @@ import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,prep
 import {buildAnonymousInput,buildScoreFiles,runIndependentScore,runIndependentApiScore,scoreExecutionInstructions,scoreExecutionDigest} from './executor';
 import {extractTextScore,extractModelReport,validateScore,type ScoreContext} from './validate';
 import {validateStepConfigForExecution} from '../project-folders';
+import {isRegisteredAgentProvider} from '../agent';
 import {mergeCodexDefaults,readProjectAgentDefaults} from '../agent/config';
 import {canonicalJson} from '../../shared/workflow-config';
 import {DEFAULT_STEP_PROMPTS,resolveScoreStepPrompt} from '@shared/step-prompts';
@@ -227,7 +228,7 @@ export async function runNextScore(pool: Pool, root: string, grade: Grader = run
         const currentInstructions = scoreExecutionInstructions(executionProvider, frozenReading !== undefined ? job.input.context.scoring_policy?.contract : undefined, job.input.context.candidate_quote_check, legacyPreflight);
         if (job.input.execution_instructions && scoreExecutionDigest(executionProvider, job.input.execution_instructions) !== scoreExecutionDigest(executionProvider, currentInstructions))
             throw new Error('评分执行指令已变化，请重新派发评分');
-        if (executionProvider === 'codex' && (typeof config.model !== 'string' || !config.model.trim() || typeof config.reasoning_effort !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(config.reasoning_effort)))
+        if (executionProvider === 'codex' && ((config?.provider !== undefined && !isRegisteredAgentProvider(config.provider)) || typeof config.model !== 'string' || !config.model.trim() || typeof config.reasoning_effort !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(config.reasoning_effort)))
             throw new Error('invalid frozen config');
         if (executionProvider === 'api' && (!config.api || typeof config.api.model !== 'string'))
             throw new Error('invalid frozen config');

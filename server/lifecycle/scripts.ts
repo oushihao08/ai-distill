@@ -1,9 +1,14 @@
 /**
  * 职责：阶段钩子的持久记录、同步执行和主操作检查点；不解释或修改模型业务结果。
- * 入口：freezeStageHooks() 用于派发；executeWithStageHooks() 包装阶段主操作；runCommittedStageHooks() 在成功提交后同步执行增强。
- * 无钩子时不查询新表；不另建异步任务，不占用业务 ordinal。
+ * 核心入口：
+ * - `freezeStageHooks()`：在派发阶段冻结钩子脚本及声明文件快照。
+ * - `executeWithStageHooks()`：包装阶段主操作（依次执行 `before` 钩子、落盘 `main` 检查点、执行主任务）。
+ * - `prepareCommittedStageHooks()` / `runCommittedStageHooks()`：主事务内登记 `after` 钩子并在事务提交后同步执行。
+ * - `recoverInterruptedStageHooks()`：失联恢复事务内将运行中钩子转为 `needs_review`。
+ * 不变量与修改禁区：
+ * - 无钩子时不查询 `hook_runs` 表；`main` 检查点已成功时复用结果，状态为 `running`/`needs_review` 时禁止自动重复调用收费模型。
  */
-import {LifecycleRegistry} from './registry';
+import {runLifecycleTask,type LifecycleOutcome} from './registry';
 import {logEvent} from '../logging';
 import type {Pool,PoolClient} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
@@ -29,12 +34,10 @@ export class StageHookError extends Error {readonly reason_code='project_hook_fa
 const fail=(message:string)=>new StageHookError(message);
 export async function freezeStageHooks(root:string,workflow?:WorkflowConfig):Promise<FrozenStageHooks|undefined>{
  if(!workflow||!workflow.hooks.before.length&&!workflow.hooks.after.length)return undefined;
- try{
-  const before:FrozenHook[]=[],after:FrozenHook[]=[];
-  for(const action of workflow.hooks.before)before.push(await freezeHookScript(root,{...action,mode:'sync'}));
-  for(const action of workflow.hooks.after)after.push(await freezeHookScript(root,{...action,mode:'sync'}));
-  return {before,after};
- }catch(error){throw error;}
+ const before:FrozenHook[]=[],after:FrozenHook[]=[];
+ for(const action of workflow.hooks.before)before.push(await freezeHookScript(root,{...action,mode:'sync'}));
+ for(const action of workflow.hooks.after)after.push(await freezeHookScript(root,{...action,mode:'sync'}));
+ return {before,after};
 }
 function binding(context:StageHookContext){return sha({source:context.binding_digest,input:context.input,hooks:context.hooks});}
 function payload(context:StageHookContext,position:'before'|'after',hook:FrozenHook,output?:Record<string,unknown>):HookPayload{
@@ -42,7 +45,7 @@ function payload(context:StageHookContext,position:'before'|'after',hook:FrozenH
 }
 async function record(context:StageHookContext,position:'before'|'after'|'main',action_id:string,mode:'sync'|'checkpoint',snapshot:unknown,idempotent=false){
  const digest=binding(context);
- const read=async()=>{try{return (await context.pool.query('SELECT * FROM ai_distill.hook_runs WHERE attempt_id=$1 AND position=$2 AND action_id=$3',[context.attempt_id,position,action_id])).rows[0];}catch(error){throw error;}};
+ const read=async()=>(await context.pool.query('SELECT * FROM ai_distill.hook_runs WHERE attempt_id=$1 AND position=$2 AND action_id=$3',[context.attempt_id,position,action_id])).rows[0];
  let row=await read();
  if(!row){
   row=(await context.pool.query(`INSERT INTO ai_distill.hook_runs(id,workflow_id,attempt_id,stage,position,action_id,mode,status,binding_digest,snapshot,idempotent)
@@ -70,7 +73,7 @@ async function syncHook(context:StageHookContext,hook:FrozenHook,position:'befor
   const result=await runScript(hook,input,{signal:context.signal});
   if(context.signal?.aborted)throw fail('执行已取消');
   await save(context,row.id,'succeeded',result);return result;
- }catch(error){
+ }catch{
   await save(context,row.id,context.signal?.aborted?'cancelled':hook.action.idempotent?'failed':'needs_review',null,'项目钩子执行失败或中断');
   throw fail('执行失败或中断，主操作原始结果已保留');
  }
@@ -80,15 +83,15 @@ export async function executeWithStageHooks<T>(context:StageHookContext&{runMain
  if(!context.hooks||!context.hooks.before.length&&!context.hooks.after.length)return await context.runMain();
  const runScript=context.runScript??runHookScript;
  const additions:HookAddition[]=[];
- const beforeRegistry=new LifecycleRegistry();
- for(const hook of context.hooks.before)beforeRegistry.register({id:hook.action.id,stage:context.stage,event:'before',run:async()=>{
-  try{
+ for(const hook of context.hooks.before){
+  const outcome=await runLifecycleTask(hook.action.id,context.signal,async()=>{
    const result=await syncHook(context,hook,'before',runScript);
    if(result.additions?.length){if(context.stage==='answer')throw fail('作答阶段不允许附加输入');additions.push(...result.additions);}
-  }catch(error){throw error;}
- }});
- const beforeResults=await beforeRegistry.emit('before',{stage:context.stage,execution_id:context.attempt_id,signal:context.signal});
- for(const result of beforeResults)if(result.status!=='succeeded')logEvent('lifecycle.callback_failed',{level:'error',callback_id:result.id,state:result.status,attempt_id:context.attempt_id,reason_code:'project_hook_failed'});
+  });
+  if(outcome.status!=='succeeded'){
+   logEvent('lifecycle.callback_failed',{level:'error',callback_id:outcome.id,state:outcome.status,attempt_id:context.attempt_id,reason_code:'project_hook_failed'});
+  }
+ }
  if(context.signal?.aborted)throw fail('执行已取消');
  const checkpoint=await record(context,'main','__main__','checkpoint',{input:context.input,...(additions.length?{additions}:{})});
  let main:T;
@@ -103,19 +106,20 @@ export async function executeWithStageHooks<T>(context:StageHookContext&{runMain
 }
 /** 与主结果同事务仅登记待执行记录，不执行回调、不派发任务；进程中断后可见并可显式补执行。 */
 export async function prepareCommittedStageHooks(context:StageHookContext,output:Record<string,unknown>){
- try{
-  for(const hook of context.hooks?.after??[])await record(context,'after',hook.action.id,'sync',{hook,payload:payload(context,'after',hook,output)},hook.action.idempotent);
- }catch(error){throw error;}
+ for(const hook of context.hooks?.after??[])await record(context,'after',hook.action.id,'sync',{hook,payload:payload(context,'after',hook,output)},hook.action.idempotent);
 }
 /** 主结果提交并释放事务后同步调用；失败独立记账，不能回滚主结果。旧 async 配置也在此等待执行。 */
-export async function runCommittedStageHooks(context:StageHookContext & {runScript?:typeof runHookScript},output:Record<string,unknown>){
- const registry=new LifecycleRegistry();
- for(const hook of context.hooks?.after??[])registry.register({
-  id:hook.action.id,stage:context.stage,event:'committed',
-  run:async()=>{try{await syncHook(context,hook,'after',context.runScript??runHookScript,output);}catch(error){throw error;}},
- });
- const outcomes=await registry.emit('committed',{stage:context.stage,execution_id:context.attempt_id,workflow_id:context.workflow_id,signal:context.signal});
- for(const outcome of outcomes)if(outcome.status!=='succeeded')logEvent('lifecycle.callback_failed',{level:'error',state:outcome.status,callback_id:outcome.id,attempt_id:context.attempt_id,reason_code:'project_hook_failed'});
+export async function runCommittedStageHooks(context:StageHookContext & {runScript?:typeof runHookScript},output:Record<string,unknown>):Promise<LifecycleOutcome[]>{
+ const outcomes:LifecycleOutcome[]=[];
+ for(const hook of context.hooks?.after??[]){
+  const outcome=await runLifecycleTask(hook.action.id,context.signal,async()=>{
+   await syncHook(context,hook,'after',context.runScript??runHookScript,output);
+  });
+  outcomes.push(outcome);
+  if(outcome.status!=='succeeded'){
+   logEvent('lifecycle.callback_failed',{level:'error',state:outcome.status,callback_id:outcome.id,attempt_id:context.attempt_id,reason_code:'project_hook_failed'});
+  }
+ }
  return outcomes;
 }
 

@@ -5,9 +5,8 @@
  */
 import {withModelApiSlot} from './concurrency';
 import {resolveModelApiConfig,readModelApiKey} from './config';
-import {ModelApiError,type FunctionToolDefinition,type ModelApiErrorKind,type ModelApiConfig,type ModelApiMessage,type ModelApiRequest,type ModelApiResult,type ReasoningActivityEvidence,type ServerToolCallEvidence,type SourceCitation} from './types';
+import {assertOnlyModelApiFields as onlyFields,isModelApiRecord as record,ModelApiError,type FunctionToolDefinition,type ModelApiErrorKind,type ModelApiConfig,type ModelApiMessage,type ModelApiRequest,type ModelApiResult,type ReasoningActivityEvidence,type ServerToolCallEvidence,type SourceCitation} from './types';
 import {classifyLogError,logEvent,withLogContext} from '../logging';
-function record(value:unknown):value is Record<string,unknown>{return value!==null&&typeof value==='object'&&!Array.isArray(value);}
 function callerAbortError(signal?:AbortSignal):ModelApiError{
  const reason=signal?.reason;
  const known=new Set(['redaction_task_timeout','redaction_request_timeout','redaction_progress_stalled']);
@@ -15,7 +14,6 @@ function callerAbortError(signal?:AbortSignal):ModelApiError{
  if(record(reason)&&typeof reason.reason_code==='string'&&known.has(reason.reason_code))return new ModelApiError('timeout',false,null,null,null,reason.reason_code);
  return new ModelApiError('cancelled',false,null,null,null,'caller_cancelled');
 }
-function onlyFields(value:unknown,fields:string[]):asserts value is Record<string,unknown>{if(!record(value)||Object.keys(value).some(key=>!fields.includes(key)))throw new ModelApiError('configuration');}
 function networkFailureReason(error:unknown):string{
  let current:unknown=error;
  for(let depth=0;depth<4&&current;depth++){

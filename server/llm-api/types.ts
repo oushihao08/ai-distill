@@ -42,3 +42,13 @@ export class ModelApiError extends Error {
   this.name = 'ModelApiError';
  }
 }
+
+export function isModelApiRecord(value: unknown): value is Record<string, unknown> {
+ return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function assertOnlyModelApiFields(value: unknown, fields: string[]): asserts value is Record<string, unknown> {
+ if (!isModelApiRecord(value) || Object.keys(value).some(key => !fields.includes(key))) {
+  throw new ModelApiError('configuration');
+ }
+}

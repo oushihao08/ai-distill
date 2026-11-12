@@ -9,7 +9,7 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `client.ts` | Agent 本地适配器使用的低层 CLI 客户端：校验套餐登录、映射开发者指令、按普通出题／隔离任务选择工作目录和权限，保存独立产物、处理进程时限和结构化结果。 |
+| `client.ts` | Agent 本地适配器使用的 Codex CLI 客户端：校验 ChatGPT 套餐登录、组装 `distill_role` 权限与 `SCORE_ISOLATION_CONFIG` 参数、解析 Codex NDJSON 事件；底层子进程流控、临时沙箱与 `O_NOFOLLOW` 结果读取复用 [`../agent/cli-runtime.ts`](../agent/cli-runtime.ts)。 |
 | `models.ts` | 本机 Codex 模型目录：读取缓存公开的模型和推理档位，作为界面输入建议；保存与派发仅校验字段结构。 |
 | `system-config.ts` | Codex 设置服务：管理系统与项目默认值、步骤覆盖合并，以及经路径校验的凭证目录；按数据库原值读取模型和推理强度，不自动替换。 |
 | `client.test.ts` | 用假 CLI 子进程和临时目录核对参数、会话、隔离、超时、取消、错误日志及结果文件安全边界；不调用真实 Codex。 |

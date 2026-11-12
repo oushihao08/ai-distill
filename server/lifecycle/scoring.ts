@@ -1,12 +1,22 @@
-/** 评分终态增强：同步接续既有达标判断，失败独立记录，不改写评分。供评分队列的正常完成/失联结算调用。 */
-import {LifecycleRegistry} from './registry';
+/**
+ * 职责：评分终态后的达标判断接续执行。
+ * 核心入口：`runScoringEnhancements()` 供评分队列在 `succeeded`/`failed` 结算后调用，异常独立记录日志并返回 `LifecycleOutcome[]`，不回滚已提交评分。
+ */
+import {runLifecycleTask,type LifecycleOutcome} from './registry';
 import {logEvent,classifyLogError} from '../logging';
-export async function runScoringEnhancements(job:{id?:string;workflow_id:string;project_id?:string},status:string,judge:(workflowId:string)=>Promise<unknown>){
+export async function runScoringEnhancements(
+ job:{id?:string;workflow_id:string;project_id?:string},
+ status:string,
+ judge:(workflowId:string)=>Promise<unknown>
+):Promise<LifecycleOutcome[]|undefined>{
  if(!['succeeded','failed'].includes(status))return;
- const registry=new LifecycleRegistry();
- registry.register({id:'acceptance',stage:'scoring',event:'committed',run:async()=>{
-  try{await judge(job.workflow_id);}catch(error){logEvent('acceptance.auto_failed',{level:'error',workflow_id:job.workflow_id,...classifyLogError(error)});throw error;}
- }});
- try{return await registry.emit('committed',{stage:'scoring',execution_id:job.id??job.workflow_id,workflow_id:job.workflow_id,project_id:job.project_id});}
- catch(error){throw error;}
+ const outcome=await runLifecycleTask('acceptance',undefined,async()=>{
+  try{
+   await judge(job.workflow_id);
+  }catch(error){
+   logEvent('acceptance.auto_failed',{level:'error',workflow_id:job.workflow_id,...classifyLogError(error)});
+   throw error;
+  }
+ });
+ return [outcome];
 }

@@ -284,8 +284,26 @@ export class MineruApiPdfExtractor implements PdfExtractionProvider {
     while (this.now() < deadline) {
     if (controller.signal.aborted) throw new Error(signal?.aborted ? 'PDF提取已取消' : 'MinerU API任务超过30分钟');
     lastRequestStartedAt=this.now();
-    const poll = await this.fetcher(`${API_ROOT}/extract-results/batch/${encodeURIComponent(batchId)}`, { ...fetchOptions, headers });
-    const pollBody=await checkedJson(poll,'任务查询');
+    let pollBody: unknown;
+    let pollResponse: Response | undefined;
+    try {
+      pollResponse = await this.fetcher(`${API_ROOT}/extract-results/batch/${encodeURIComponent(batchId)}`, { ...fetchOptions, headers });
+      pollBody = await checkedJson(pollResponse, '任务查询');
+    } catch (pollErr: any) {
+      logEvent('extraction.api.poll_observed', {
+        provider: this.id,
+        diagnostic_id: diagnosticId,
+        http_status: pollResponse?.status ?? 0,
+        elapsed_ms: Math.max(0, this.now() - lastRequestStartedAt),
+        state: 'poll_transient_error',
+        attempt_count: pollCount + 1,
+        page_count: pageCount,
+        duration_ms: Math.max(0, this.now() - startedAt)
+      });
+      await this.sleep(POLL_INTERVAL_MS, controller.signal);
+      continue;
+    }
+    const poll = pollResponse!;
     lastRequestFinishedAt=this.now();
     const safeId=(v:unknown)=>typeof v==='string'&&/^[a-zA-Z0-9_-]{1,128}$/.test(v)?v:undefined;
     const envelope=isRecord(pollBody)?pollBody:{};

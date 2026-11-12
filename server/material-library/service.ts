@@ -10,6 +10,7 @@ import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
 import {readSystemStepPrompts} from '../system-step-prompts';
+import {isRegisteredAgentProvider} from '../agent';
 import {ModelApiError,readModelApiDefaults,resolveModelApiConfig} from '../llm-api';
 import {MAX_FILE,MAX_FOLDER_BATCH,validateFile,uuid} from '../validation';
 import {cleanupRolledBackLibraryBlobs,installLibraryBlob,lockLibraryBlobWrites,normalizeLibraryFilename,type InstalledLibraryBlob} from './storage';
@@ -38,12 +39,12 @@ export function validateProcessingSettings(value:unknown){
  if(!object(value)||Object.keys(value).some(key=>!['version','extraction','redaction','execution','policy','redaction_templates'].includes(key))||value.version!==1||!object(value.extraction)||!object(value.redaction)||!object(value.execution)||!object(value.policy))throw new HTTPException(400,{message:'材料库处理设置格式无效'});
  const settings=value as Record<string,any>,extraction=settings.extraction,redaction=settings.redaction,execution=settings.execution,policy=settings.policy;
  if(Object.keys(extraction).some(key=>!['provider_config','protocol'].includes(key))||typeof extraction.protocol!=='string'||!extraction.protocol.trim()||!object(extraction.provider_config))throw new HTTPException(400,{message:'材料提取设置无效'});
- if(Object.keys(redaction).some(key=>!['provider','api','model','reasoning_effort','prompt'].includes(key))||!['api','codex'].includes(redaction.provider)||typeof redaction.prompt!=='string'||!redaction.prompt.trim()||redaction.prompt.length>12000)throw new HTTPException(400,{message:'材料脱敏设置无效'});
+ if(Object.keys(redaction).some(key=>!['provider','api','model','reasoning_effort','prompt'].includes(key))||(redaction.provider!=='api'&&!isRegisteredAgentProvider(redaction.provider))||typeof redaction.prompt!=='string'||!redaction.prompt.trim()||redaction.prompt.length>12000)throw new HTTPException(400,{message:'材料脱敏设置无效'});
  if(redaction.provider==='api'&&(redaction.api!==null&&!object(redaction.api)||redaction.model!==undefined||redaction.reasoning_effort!==undefined))throw new HTTPException(400,{message:'材料库 API 模型设置无效'});
  if(redaction.provider==='api'&&object(redaction.api)){
   try{redaction.api=resolveModelApiConfig(redaction.api);}catch{throw new HTTPException(400,{message:'材料库 API 模型设置无效'});}
  }
- if(redaction.provider==='codex'&&(typeof redaction.model!=='string'||!redaction.model.trim()||typeof redaction.reasoning_effort!=='string'||redaction.api!==undefined))throw new HTTPException(400,{message:'材料库 Agent 模型设置无效'});
+ if(isRegisteredAgentProvider(redaction.provider)&&(typeof redaction.model!=='string'||!redaction.model.trim()||typeof redaction.reasoning_effort!=='string'||redaction.api!==undefined))throw new HTTPException(400,{message:'材料库 Agent 模型设置无效'});
  if(Object.keys(execution).some(key=>!['task_timeout_ms','request_timeout_ms'].includes(key))||![execution.task_timeout_ms,execution.request_timeout_ms].every(item=>Number.isSafeInteger(item)&&item>0&&item<=1800000))throw new HTTPException(400,{message:'材料库执行预算无效'});
  if(Object.keys(policy).some(key=>!['preserve_amounts','preserve_dates'].includes(key))||policy.preserve_amounts!==true||policy.preserve_dates!==true)throw new HTTPException(400,{message:'材料库金额和日期策略必须保持原文'});
  if(settings.redaction_templates!==undefined){
@@ -53,9 +54,9 @@ export function validateProcessingSettings(value:unknown){
    if(!object(template)||Object.keys(template).some(k=>!['id','name','workflow','redaction'].includes(k))||typeof template.id!=='string'||! /^[a-z][a-z0-9_-]{0,47}$/.test(template.id)||ids.has(template.id)||typeof template.name!=='string'||!template.name.trim()||template.name.length>80||template.workflow!=='codex_plan')throw new HTTPException(400,{message:'脱敏模板身份或流程无效'});
    ids.add(template.id);
    const config=template.redaction;
-   if(template.workflow==='codex_plan'&&(!object(config)||Object.keys(config).some(k=>!['provider','prompt'].includes(k))||config.provider!=='codex'))throw new HTTPException(400,{message:'整包计划模板仅配置Codex提示词，模型由执行会话固定'});
+   if(template.workflow==='codex_plan'&&(!object(config)||Object.keys(config).some(k=>!['provider','prompt'].includes(k))||!isRegisteredAgentProvider(config.provider)))throw new HTTPException(400,{message:'整包计划模板仅配置Codex提示词，模型由执行会话固定'});
    const checked=validateProcessingSettings({...settings,redaction:template.workflow==='codex_plan'?{...(config as Record<string,unknown>),model:'session',reasoning_effort:'medium'}:config,redaction_templates:undefined}) as any;
-   if(template.workflow==='codex_plan'&&checked.redaction.provider!=='codex')throw new HTTPException(400,{message:'整包代称计划模板必须使用Codex'});
+   if(template.workflow==='codex_plan'&&!isRegisteredAgentProvider(checked.redaction.provider))throw new HTTPException(400,{message:'整包代称计划模板必须使用Codex'});
   }
  }
  const encoded=JSON.stringify(value);

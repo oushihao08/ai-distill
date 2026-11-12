@@ -5,7 +5,7 @@ import type {Page} from '../materials/pdf';
 import {join} from 'node:path';
 import {renderRedactedMaterials} from '../materials/redaction';
 import {type RedactionConfig} from '../materials/redaction-config';
-import {runAgent} from '../agent';
+import {isAgentProviderConfig,runAgent} from '../agent';
 import {runExternalCall} from '../external-call';
 import {assertLibraryExtractionUsable,finishLibraryJob} from './jobs';
 import {insertLibraryTextBlob} from './storage';
@@ -61,9 +61,10 @@ export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,si
  const template=job.config_snapshot.redaction_template;
  if(template?.workflow==='codex_plan'){
   const agentConfig=settings.redaction;
-  const api=agentConfig.provider==='api'?agentConfig.api:undefined;
-  const model=agentConfig.provider==='codex'?agentConfig.model:api!.model;
-  const reasoning=agentConfig.provider==='codex'?agentConfig.reasoning_effort:'none';
+  const isAgent=isAgentProviderConfig(agentConfig);
+  const api=isAgent?undefined:agentConfig.api;
+  const model=isAgent?agentConfig.model:agentConfig.api.model;
+  const reasoning=isAgent?agentConfig.reasoning_effort:'none';
   const executeModel=api?apiMaterialExecutor(api):execute;
   const output=await cachedExternalCall('library_preparation_complete',()=>prepareAgentLibraryMaterials({directory:join(jobDirectory(root,job.id),'private'),files:documents.map(d=>({file_id:d.file_id,text_sha256:hash(d.pages.map(p=>p.text).join('\n')),pages:d.pages.map(redactionPageInput)})),revision_id:job.revision_id,extraction_job_id:job.input_snapshot.extraction_job_id,
    template,model,reasoning_effort:reasoning,...(api?{api}:{}),signal,timeout_ms:new Date(job.deadline_at).getTime()-Date.now(),
@@ -72,10 +73,10 @@ export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,si
   }));
   // 不换调用缓存键重调旧/未知请求；旧缓存缺少新协议时拒绝发布，交由显式新任务处理。
   if(output.text_protocol!==AGENT_TEXT_REDACTION_PROTOCOL)throw Object.assign(new Error('脱敏调用缓存不符合当前文本协议，请重新创建任务'),{reason_code:'agent_text_protocol_invalid'});
-  const materials=documents.map(d=>({material_id:d.file_id,pages:output.prepared.pages.filter(p=>p.file_id===d.file_id).map(p=>({page:p.page,text:p.text,structure:p.structure,issues:d.pages.find(original=>original.page===p.page)?.issues}))}));
+  const materials=documents.map(d=>({material_id:d.file_id,pages:output.prepared.pages.filter((p:any)=>p.file_id===d.file_id).map((p:any)=>({page:p.page,text:p.text,structure:p.structure,issues:d.pages.find(original=>original.page===p.page)?.issues}))}));
   const rendered=renderRedactedMaterials(materials),index=JSON.parse(rendered.index);
-  index.prepared_documents=output.prepared.documents.map((d,i)=>({id:d.id,title:d.title,text:d.text,duplicate_of:output.plan.documents[i]!.duplicate_of,segments:output.plan.documents[i]!.segments,document:d.document}));
-  rendered.markdown=output.prepared.documents.map(d=>d.text).join('\n\n');index.redacted_sha256=hash(rendered.markdown);index.preparation_layout='preserved-structure';
+  index.prepared_documents=output.prepared.documents.map((d:any,i:number)=>({id:d.id,title:d.title,text:d.text,duplicate_of:output.plan.documents[i]!.duplicate_of,segments:output.plan.documents[i]!.segments,document:d.document}));
+  rendered.markdown=output.prepared.documents.map((d:any)=>d.text).join('\n\n');index.redacted_sha256=hash(rendered.markdown);index.preparation_layout='preserved-structure';
   index.redaction_template={id:template.id,digest:template.digest,workflow:'codex_plan'};
   index.text_protocol=output.text_protocol;
   const indexText=JSON.stringify(index),outputDigest=hash({source:job.input_digest,markdown:hash(rendered.markdown),index:hash(indexText)});

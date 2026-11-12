@@ -1,6 +1,6 @@
 # 豆包高经·飞书资料
 
-适用于本项目飞书操作、人员对应及后续领取/填报程序。按用户2026-10-27提供的两个链接登记；[config.json](config.json)保存坐标与映射，不含密钥、名单明细或自动分配规则。
+适用于本项目飞书操作、人员对应及后续领取/填报程序。按用户2026-10-27提供的两个链接登记，2026-11-10 补登记医疗主项目第九期目标；[config.json](config.json)保存坐标与映射，不含密钥、名单明细或自动分配规则。医疗目标只共用人员名单与字段对应，所属主项目与法律项目隔离，见下文。
 
 ## 存储位置
 
@@ -26,7 +26,10 @@ doubao-high-value/
 | 七期-久盈 | [第七期题目表](https://ncn9ze979yuh.feishu.cn/base/DuizblJJwavfGjsB4KJcPH0TnRg?table=tblG6Bjofil7NoLS&view=vewRgfQZS9) | 用户指定的第七期同步更新目标；按稳定系统同步ID更新现有记录，不以表内行号替代题目身份 |
 | 第八期-久盈 | [第八期久盈表](https://ncn9ze979yuh.feishu.cn/base/DuizblJJwavfGjsB4KJcPH0TnRg?table=tbl5Y22Kleq8Ade6&view=vewE0zskag) | 第八期久盈交付目标；表名、table ID 和 view ID 冻结，交付不按名称重新定位 |
 | 第八期-内部 | [第八期内部表](https://ncn9ze979yuh.feishu.cn/base/DuizblJJwavfGjsB4KJcPH0TnRg?table=tblERmxMpoWIDKAi&view=vewFVqBCuB) | 第八期内部交付目标；表名、table ID 和 view ID 冻结，为本期系统默认目标 |
+| 第九期-医疗 | [医疗第九期题目表](https://ncn9ze979yuh.feishu.cn/base/DuizblJJwavfGjsB4KJcPH0TnRg?table=tblDxEX3XN2uYGxV&view=vewyxvmiay) | 医疗主项目第九期交付目标，并按用户2026-11-10指定同时承接医疗第一期的题目草稿；表结构与「第八期-内部」一致，身份字段同为「姓名／ID」；表名、table ID 和 view ID 冻结 |
 | 工具测试Base | [验收多维表格](https://ncn9ze979yuh.feishu.cn/base/XWf6bPBDpakcAasqavJc6BzOn7e) | 合成测试专用；不与人员名单、真实题目混用 |
+
+「第九期-医疗」属于另一主项目 `豆包高经济价值-医疗`（project_group_id `e23bfcec-5403-42df-ad92-ea071f6ab24a`），与本 config 顶部登记的法律主项目 group 不同。它沿用同一人员名单与三项身份字段对应，仅作为交付/领题的目标登记；服务端按主项目分别冻结默认目标，法律第八期的两个目标不受影响。2026-11-10 医疗第一期 6 道已出题题目以草稿形态（`题目是否完成`=未完成）写入此表，医疗第一期的显式默认目标也指向此表；这不是第九期期次记录，也不代表已完成验收或归档。`project sync` 会把这张表纳入只读身份快照，不因此把医疗期次当作法律期次，也不自动分配题目。
 
 view ID只决定查看入口，不是数据表或某个人的ID。名单行record_id、专家平台ID、飞书用户open_id、题目workflow UUID、题目表record_id是不同身份，不能相互替代。
 

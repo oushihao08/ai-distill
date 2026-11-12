@@ -1,4 +1,12 @@
-/** 可插拔生命周期注册表。调用者逐个 await 回调；不创建队列、不决定步骤是否执行或达标。 */
+/**
+ * 职责：可插拔生命周期注册表与单步回调隔离执行器。
+ * 核心入口：
+ * - `LifecycleRegistry`：按 `stage`、`event` 及可选 `project_id`/`project_key` 注册和触发可选生命周期通知。
+ * - `runLifecycleTask()`：执行单个隔离回调并返回 `{ id, status }`，不向主流程抛出异常。
+ * 不变量与修改禁区：
+ * - `emit()` 对传入 `context.data` 执行 `structuredClone`，防止回调篡改主步骤状态。
+ * - 回调失败只记入返回结果，不中断或回滚主步骤已提交结果。
+ */
 export type LifecycleEvent = 'before' | 'committed' | 'failed' | 'cancelled' | 'skipped';
 export interface LifecycleContext {
  stage: string;
@@ -19,6 +27,22 @@ export interface LifecycleRegistration {
  run: (context: LifecycleContext) => void | Promise<void>;
 }
 export interface LifecycleOutcome { id: string; status: 'succeeded' | 'failed' | 'cancelled' }
+
+export async function runLifecycleTask(
+ id: string,
+ signal: AbortSignal | undefined,
+ run: () => void | Promise<void>,
+ allowWhenAborted = false
+): Promise<LifecycleOutcome> {
+ if (signal?.aborted && !allowWhenAborted) return { id, status: 'cancelled' };
+ try {
+  await run();
+  return { id, status: 'succeeded' };
+ } catch {
+  return { id, status: signal?.aborted ? 'cancelled' : 'failed' };
+ }
+}
+
 export class LifecycleRegistry {
  private readonly callbacks = new Map<string, LifecycleRegistration>();
  has(event:LifecycleEvent,stage:string):boolean {
@@ -37,18 +61,14 @@ export class LifecycleRegistry {
  async emit(event: LifecycleEvent, context: LifecycleContext): Promise<LifecycleOutcome[]> {
   const matches = [...this.callbacks.values()].filter(entry => entry.stage === context.stage && entry.event === event && (entry.project_id === undefined || entry.project_id === context.project_id) && (entry.project_key === undefined || entry.project_key === context.project_key));
   const results: LifecycleOutcome[] = [];
+  const allowWhenAborted = event === 'cancelled' || event === 'failed';
   for(const entry of matches) {
-   if(context.signal?.aborted && event !== 'cancelled' && event !== 'failed') {
-    results.push({id:entry.id,status:'cancelled'});
-    continue;
-   }
-   try {
-    // 每个回调独立的数据副本；扩展不得改写后续回调或主步骤的数据。
-    await entry.run({...context, data:context.data ? structuredClone(context.data) : undefined});
-    results.push({id:entry.id,status:'succeeded'});
-   } catch {
-    results.push({id:entry.id,status:context.signal?.aborted?'cancelled':'failed'});
-   }
+   results.push(await runLifecycleTask(
+    entry.id,
+    context.signal,
+    () => entry.run({...context, data:context.data ? structuredClone(context.data) : undefined}),
+    allowWhenAborted
+   ));
   }
   return results;
  }

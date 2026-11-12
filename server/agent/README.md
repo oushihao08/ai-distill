@@ -1,19 +1,27 @@
 <!-- 文件职责：说明独立 Agent 单次任务执行入口、运行配置和后端适配边界。 -->
 # 独立 Agent 执行模块
 
-`index.ts` 是业务执行器与设置 API 的公共入口。每次 `runAgent()` 接收一个任务指令、独立目录、输出 schema、模型、推理强度、截止时间和取消信号，返回业务结果、执行后端／模型、会话与用量、诊断引用和耗时。当前默认使用本机 Codex CLI 与已有 ChatGPT 套餐登录。
+`index.ts` 是业务执行器与设置 API 的公共入口。每次 `runAgent()` 接收一个任务指令、独立目录、输出 schema、模型、推理强度、截止时间和取消信号，返回业务结果、执行后端／模型、会话与用量、诊断引用和耗时。当前内置 `codex`（默认兜底，使用本机 Codex CLI）与 `agy`（使用本机 Antigravity CLI，见 [`../antigravity/README.md`](../antigravity/README.md)）双驱动，并支持通过 `registerAgentDriver()` 动态扩展其他 CLI 驱动。
 
 ## 文件职责
 
 | 文件 | 说明 |
 | --- | --- |
-| `index.ts` | 公共执行与配置导出；业务调用方从此处依赖模块。 |
-| `runner.ts` | 单次任务契约、固定开发者指令注入、可替换后端及统一结果。 |
+| `index.ts` | 公共执行、多驱动注册表（含 `isRegisteredAgentProvider`）与配置导出；业务调用方从此处依赖模块。 |
+| `cli-runtime.ts` | 多 CLI Agent 共用的底层进程与沙箱底座：环境净化（`buildSafeCliEnvironment`）、64MiB/4MiB 流控与进程组强杀（`executeCliProcess`）、工作区拷贝与符号链接校验（`prepareCliWorkspace`）、`O_NOFOLLOW` 结果读取（`readSafeCliResultText`）及外层超时边界（`runWithCliTimeoutBoundary`）。 |
+| `driver.ts` | 可插拔 `AgentDriver` 注册表、`<driver>:<model>` 命名空间解析、`isRegisteredAgentProvider()` 身份判断及多驱动模型目录聚合。 |
+| `runner.ts` | 单次任务契约、固定开发者指令注入、驱动路由／可替换后端及统一结果。 |
 | `system-instructions.ts` | 不随步骤变化的独立执行边界；动态任务要求仍由调用方提交。 |
-| `config.ts` | 暴露全局／项目默认值、凭证目录、本机模型清单和登录配置能力；持久化复用既有设置服务。 |
+| `config.ts` | 暴露全局／项目默认值、凭证目录、本机单驱动／多驱动模型清单和登录配置能力；持久化复用既有设置服务。 |
 | `processes.ts` | 登记本 worker 的 Agent 子进程，供现有资源监控采样。 |
 | `processes.test.ts` | 检查 PID 重复登记、引用计数和注销；只使用当前测试进程 PID，不启动 Agent。 |
-| `runner.test.ts` | 检查任务设置转交、fresh-authoring 边界及可替换适配器；使用注入适配器，不调用真实 Codex。 |
+| `runner.test.ts` | 检查任务设置转交、fresh-authoring 边界、多驱动路由（codex/agy/custom）及可替换适配器；不调用真实 CLI。 |
+
+## 如何扩展新的 CLI Agent 驱动
+
+1. 在独立驱动目录（如 `server/<driver>/`）基于 `cli-runtime.ts` 的 `prepareCliWorkspace()`、`executeCliProcess()`、`readSafeCliResultText()` 和 `runWithCliTimeoutBoundary()` 实现该 CLI 的参数组装与事件流解析。
+2. 在 `driver.ts` 实现 `AgentDriver` 接口（提供 `id`、`label`、`readModelCatalog()`、`execute()`，可选 `matchesModel()`），并通过 `registerAgentDriver()` 注册。
+3. 业务队列（材料库、出题、作答、评分）统一通过 `isRegisteredAgentProvider(provider)` 识别 CLI Agent 驱动，无需在业务层硬编码新驱动名称。
 
 ## 数据流与设置接口
 

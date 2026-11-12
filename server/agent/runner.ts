@@ -1,12 +1,11 @@
 /**
  * 职责：提供独立 Agent 执行任务的公共契约与单次调用入口。
- * 关键方法：`runAgent()` 将明确任务交给所选执行适配器。
+ * 关键方法：`runAgent()` 将明确任务交给所选执行适配器或按模型标识路由至对应 CLI 驱动（默认支持 `codex` 与 `agy`，可通过驱动注册表扩展）。
  * 使用场景：worker 中的业务执行器调用本模块，不直接依赖 CLI 进程接口。
  */
-import {runCodex} from '../codex/client';
 import {AGENT_DEVELOPER_INSTRUCTIONS} from './system-instructions';
 export {SCORE_ISOLATION_CONFIG} from '../codex/client';
-import {registerAgentProcess} from './processes';
+import {resolveAgentDriver} from './driver';
 
 /** 单次任务的模型和工作目录等运行设置由业务队列冻结后传入。 */
 export interface AgentTask<T=unknown>{
@@ -37,9 +36,9 @@ export interface AgentResult<T=unknown>{
 }
 export type AgentAdapter<T=unknown>=(task:AgentTask<T>&{developer_instructions:string})=>Promise<Omit<AgentResult<T>,'result'>&{result:T}>;
 
-let configuredAdapter:AgentAdapter<any>=runCodexAdapter;
+let configuredAdapter:AgentAdapter<any>=runDriverRegistryAdapter;
 /** 后端选择集中在模块装配处，业务调用始终使用相同任务契约。 */
-export function configureAgentAdapter(adapter:AgentAdapter<any>|null){configuredAdapter=adapter??runCodexAdapter;}
+export function configureAgentAdapter(adapter:AgentAdapter<any>|null){configuredAdapter=adapter??runDriverRegistryAdapter;}
 
 /** 评分、模型作答与普通出题不注入通用开发者指令；其余业务任务保留通用边界指令。 */
 export async function runAgent<T>(task:AgentTask<T>,adapter:AgentAdapter<T>=configuredAdapter as AgentAdapter<T>):Promise<AgentResult<T>>{
@@ -50,8 +49,7 @@ export async function runAgent<T>(task:AgentTask<T>,adapter:AgentAdapter<T>=conf
  return {...result,requested_model:task.model,returned_model:result.returned_model??null};
 }
 
-async function runCodexAdapter<T>(task:AgentTask<T>&{developer_instructions:string}){
- let unregister:(()=>void)|undefined;
- const result=await runCodex({directory:task.directory,execution_profile:task.execution_profile,working_directory:task.working_directory,prompt:task.prompt,model:task.model,reasoning_effort:task.reasoning_effort,schema:task.schema,output_format:task.output_format,input_files:task.input_files,validate:task.validate,timeout_ms:task.timeout_ms,signal:task.signal,call_id:task.call_id,developer_instructions:task.developer_instructions,isolate_context:task.task_type==='independent_scoring'||task.task_type==='model_answer'||task.task_type==='revision_advice'||task.task_type==='material_preparation',onProcess(pid){if(pid===null){unregister?.();unregister=undefined;}else unregister=registerAgentProcess(pid);}});
- return{result:result.result,session_id:result.session_id,usage:result.usage,diagnostic_path:result.events_path,duration_ms:result.duration_ms,provider:'codex',model:task.model,requested_model:task.model,returned_model:null};
+async function runDriverRegistryAdapter<T>(task:AgentTask<T>&{developer_instructions:string}){
+ const {driver,resolvedModel}=resolveAgentDriver(task.model);
+ return driver.execute({...task,resolved_model:resolvedModel});
 }

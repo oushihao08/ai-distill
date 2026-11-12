@@ -7,9 +7,9 @@ NVIDIA NIM 使用`provider:nvidia`、`base_url:https://integrate.api.nvidia.com/
 | 文件 | 职责 |
 | --- | --- |
 | `index.ts` | 公共入口，导出客户端、配置解析及契约 |
-| `types.ts` | 消息、响应格式、结果及安全错误；供应商配置共用 shared 类型 |
+| `types.ts` | 消息、响应格式、结果、安全错误及共用的对象字段白名单校验（`isModelApiRecord`、`assertOnlyModelApiFields`）；供应商配置共用 shared 类型 |
 | `config.ts` | Qwen、Kimi、DeepSeek、豆包、OpenRouter、SiliconFlow、NVIDIA 的端点、模型与参数校验；服务端密钥和环境默认值 |
-| `models.ts` | `/api/llm-api/models` 的模型选项和默认配置，复用已登记系统模型，沿用现有表，不新增目录 |
+| `models.ts` | `/api/llm-api/models` 的模型选项和默认配置，复用已登记系统模型并通过 `!isRegisteredAgentProvider()` 过滤全部 CLI Agent 驱动项 |
 | `concurrency.ts` | 默认 HTTP 传输共享的本机 SQLite 请求槽位及有界排队 |
 | `client.ts` | `complete()` 默认纯文字调用；显式 OpenRouter `server_tools` 走 Responses 并收集安全轨迹；`completeJson()` JSON 解析及调用方校验；HTTP、取消、超时、usage 和安全日志 |
 

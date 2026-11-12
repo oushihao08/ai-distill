@@ -14,7 +14,7 @@ import {AGENT_TEXT_REDACTION_PROTOCOL} from '../../shared/agent-material-plan';
 import type {CreateLibraryJobRequest,LibraryExecutionTarget,LibraryExecutorKind,LibraryJobKind} from '../../shared/material-library';
 import {readLibraryProcessingSettings} from './settings';
 import {resolveLibraryTemplate} from './templates';
-import {readAgentDefaults,validateAgentModelSettings} from '../agent';
+import {isRegisteredAgentProvider,readAgentDefaults,validateAgentModelSettings} from '../agent';
 import {resolveModelApiConfig} from '../llm-api';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
 import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
@@ -76,7 +76,7 @@ export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest
 export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:string;redaction_mode?:'model'|'declared_redacted'}>,settings:{provider?:string}|null,target:LibraryExecutionTarget='local'):LibraryExecutorKind{
  if(kind==='intake')return'internal';
  if(kind==='extract')return files.some(file=>['pdf','docx','png','jpg','jpeg'].includes(file.format))?'api':'internal';
- if(settings?.provider==='codex'){
+ if(isRegisteredAgentProvider(settings?.provider)){
   if(target==='server')throw new HTTPException(409,{message:'Agent 脱敏只能在本机执行'});
   return'agent';
  }
@@ -118,7 +118,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   if(template&&template.workflow!=='codex_plan')throw conflict('字段映射脱敏已退役，请选择Agent化名模板');
   if(template?.workflow==='codex_plan'){
    // 所有项目共用材料库的脱敏模型；仅旧API配置缺少Agent模型时回退通用默认。
-   const agentSettings=request.api_settings?undefined:request.agent_settings??(settings.redaction?.provider==='codex'
+   const agentSettings=request.api_settings?undefined:request.agent_settings??(isRegisteredAgentProvider(settings.redaction?.provider)
     ?validateAgentModelSettings({model:settings.redaction.model,reasoning_effort:settings.redaction.reasoning_effort})
     :await readAgentDefaults(db));
    settings.redaction=request.api_settings?{provider:'api',api:request.api_settings,prompt:template.redaction.prompt}:{...template.redaction,...agentSettings};

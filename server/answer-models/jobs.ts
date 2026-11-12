@@ -33,14 +33,13 @@ import {SYSTEM_STEP_PROMPTS} from '../../shared/step-prompts';
 import {readQuestionMaterials} from '../question-materials';
 import {resolveEffectiveProjectSkill} from '../rule-files';
 import {runAcceptance} from '../decisions/jobs';
+import {isAgentProviderConfig,isRegisteredAgentProvider} from '../agent';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 const activeWorkflow="SELECT w.project_id,p.local_skill_path,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
 async function currentQuestion(db:PoolClient,id:string,project:import('../lifecycle/step-types').ProjectIdentity={}){
- try {
-  const row=(await db.query("SELECT a.id,a.result,a.input FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[id])).rows[0];
-  if(!row)throw new AnswerInputError('当前题目尚未出题成功');
-  return {...authoringQuestion({...row.result,...(row.input?.material_origin?{material_origin:row.input.material_origin}:{})},project),...(row.result.deliverables!==undefined?{deliverables:row.result.deliverables}:{}),question_attempt_id:row.id};
- }catch(error){throw error;}
+ const row=(await db.query("SELECT a.id,a.result,a.input FROM ai_distill.step_attempts a JOIN ai_distill.steps s4 ON s4.workflow_id=a.workflow_id AND s4.ordinal=4 AND s4.status='succeeded' WHERE a.workflow_id=$1 AND a.ordinal=4 AND a.status='succeeded' ORDER BY a.attempt DESC LIMIT 1 FOR UPDATE OF s4,a",[id])).rows[0];
+ if(!row)throw new AnswerInputError('当前题目尚未出题成功');
+ return {...authoringQuestion({...row.result,...(row.input?.material_origin?{material_origin:row.input.material_origin}:{})},project),...(row.result.deliverables!==undefined?{deliverables:row.result.deliverables}:{}),question_attempt_id:row.id};
 }
 export async function readAnswerAttachment(_root:string,artifact:{storage_path?:string;sha256:string;content?:string|null}){
  try{
@@ -97,10 +96,10 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   const generationPolicy=readAnswerGenerationPolicyFromStepConfig(rawStepConfig),overrides=answerProviderConfigFromStepConfig(rawStepConfig);let toolPolicy;
   try{toolPolicy=requiredAnswerToolPolicy(readAnswerToolPolicyFromStepConfig(rawStepConfig),input.answer_requirements.tools);}catch(error){throw new HTTPException(409,{message:error instanceof Error?error.message:'题目需要的作答工具未启用'});}
   const selected=await readProjectModelSet(db,workflow.project_id);const hasModelSet=selected.length>0;
-  if(executionTarget==='server'&&selected.some(model=>model.config.provider==='codex'))throw new HTTPException(409,{message:'Codex Agent 作答只支持本机执行'});
-  const models:RegisteredAnswerModel[]=(selected.length?selected:[{model_id:'',name:'',minimum_score:0,config:resolveAnswerConfig(overrides)}]).map(model=>({...model,config:model.config.provider==='codex'?model.config:applyAnswerToolPolicy(model.config,toolPolicy)}));
+  if(executionTarget==='server'&&selected.some(model=>isRegisteredAgentProvider(model.config.provider)))throw new HTTPException(409,{message:'Codex Agent 作答只支持本机执行'});
+  const models:RegisteredAnswerModel[]=(selected.length?selected:[{model_id:'',name:'',minimum_score:0,config:resolveAnswerConfig(overrides)}]).map(model=>({...model,config:isAgentProviderConfig(model.config)?model.config:applyAnswerToolPolicy(model.config,toolPolicy)}));
   if(input.answer_requirements.tools.length){
-   const unsupported=models.filter(model=>{const config=model.config as any,enabled=new Set([...(config.server_tools??[]),...(config.local_tools??[])]);return config.provider==='codex'||input.answer_requirements.tools.some(tool=>!enabled.has(tool));});
+   const unsupported=models.filter(model=>{const config=model.config as any,enabled=new Set([...(config.server_tools??[]),...(config.local_tools??[])]);return isRegisteredAgentProvider(config.provider)||input.answer_requirements.tools.some(tool=>!enabled.has(tool));});
    if(unsupported.length)throw new HTTPException(409,{message:'当前作答模型不能执行题目声明的工具；请调整新尝试的模型或项目工具设置'});
   }
   const modelSetDigest=answerModelSetDigest(models);
@@ -117,7 +116,7 @@ export async function enqueueAnswer(pool:Pool,id:string,root:string,executionTar
   }
   const existingQueued=await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=5 AND execution_target=$5 AND status IN ('waiting','running') AND (input->>'model_set_digest' IS DISTINCT FROM $2 OR COALESCE(input->'hooks','null'::jsonb) IS DISTINCT FROM $4::jsonb) AND id<>ALL($3::uuid[]) LIMIT 1",[id,modelSetDigest,queued.map(item=>item.id),JSON.stringify(hooks??null),executionTarget]);
   if(existingQueued.rowCount)throw new HTTPException(409,{message:'另一组模型仍在作答，请等待完成后再修改项目模型集合'});
-  await registerLocalJobs(db,queued.flatMap((item,index)=>item.reused?[]:[{id:item.id,kind:'step' as const,lane:models[index]!.config.provider==='codex'?'agent' as const:'api' as const,route:'answer'}]));
+  await registerLocalJobs(db,queued.flatMap((item,index)=>item.reused?[]:[{id:item.id,kind:'step' as const,lane:isRegisteredAgentProvider(models[index]!.config.provider)?'agent' as const:'api' as const,route:'answer'}]));
   const allReused=queued.every(item=>item.reused);
   if(allReused){await db.query('COMMIT');forgetLocalRegistrations(db);for(const [index,item] of queued.entries()){const model=models[index];withLogContext({component:'answer',workflow_id:id,project_id:workflow.project_id,ordinal:5,attempt_id:item.id,operation:'answer_enqueue',provider:model?.config.provider,model:model?.config.model},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));}return hasModelSet?{id:queued[0]!.id,ids:queued.map(item=>item.id),reused:true}:{id:queued[0]!.id,reused:true};}
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',error=NULL,result=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=5",[id]);
@@ -291,7 +290,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         await emitLifecycle(pool,'before', {stage:'answer',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         const hookContext = { pool, attempt_id: job.id, workflow_id: job.workflow_id, stage: 'answer' as const, binding_digest: createHash('sha256').update(canonicalJson({ input: job.input.input_digest, config: job.config, generation_policy: generationPolicy })).digest('hex'), input: { question: buildAnswerMessage(packaged), materials: packaged.materials }, hooks: job.input.hooks, signal };
         const answerConfig = resolveAnswerConfig(job.config), attemptDirectory = join(resolve(root), job.workflow_id, job.id);
-        const result = await executeWithStageHooks({ ...hookContext, runMain: () => runExternalCall({ attempt_id: job.id, operation: 'answer' }, call_id => answer({ config: answerConfig, question: buildAnswerMessage(packaged), materials: packaged.materials, system_prompt: job.input.system_prompt, signal, call_id, timeout_ms: callSettings.timeout_ms, ...((answerConfig.provider === 'codex'||answerConfig.local_tools?.length) ? { directory: attemptDirectory } : {}), ...(callSettings.observe_reasoning ? { observe_reasoning: true } : {}) })), outputForHooks: value => ({ text: value.text }) });
+        const result = await executeWithStageHooks({ ...hookContext, runMain: () => runExternalCall({ attempt_id: job.id, operation: 'answer' }, call_id => answer({ config: answerConfig, question: buildAnswerMessage(packaged), materials: packaged.materials, system_prompt: job.input.system_prompt, signal, call_id, timeout_ms: callSettings.timeout_ms, ...((isAgentProviderConfig(answerConfig)||answerConfig.local_tools?.length) ? { directory: attemptDirectory } : {}), ...(callSettings.observe_reasoning ? { observe_reasoning: true } : {}) })), outputForHooks: value => ({ text: value.text }) });
         const directory = join(resolve(root), job.workflow_id, job.id);
         await mkdir(directory, { recursive: true });
         const bytes = Buffer.from(result.text);
@@ -301,7 +300,7 @@ export async function runNextAnswer(pool: Pool, root: string, answer: (input: An
         await writeFile(path, bytes, { mode: 0o600 });
         logEvent('file.write.completed', { level: 'info', file_kind: 'model_answer', output_bytes: bytes.length });
         const answer_sha256 = createHash('sha256').update(bytes).digest('hex');
-        const generatedArtifacts=answerConfig.provider!=='codex'&&answerConfig.local_tools?.includes('artifact_write')?await readGeneratedAnswerArtifacts(attemptDirectory):[];
+        const generatedArtifacts=!isAgentProviderConfig(answerConfig)&&answerConfig.local_tools?.includes('artifact_write')?await readGeneratedAnswerArtifacts(attemptDirectory):[];
         if(job.input.answer_requirements?.output_mode==='file'){
             const calls=Array.isArray(result.tool_trace?.calls)?result.tool_trace.calls:[];
             if(!generatedArtifacts.length||!calls.some(call=>call.type==='artifact_write'&&call.status==='completed')||!calls.some(call=>call.type==='artifact_render'&&call.status==='completed'))throw new Error('文件型作答未完成受管生成与读回校验');

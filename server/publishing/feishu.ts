@@ -1,7 +1,7 @@
 /**
  * 职责：豆包题目的飞书草稿上传及达标归档后交付；上传当前冻结材料DOCX并更新同一目标表内的题目记录。
  * 入口：syncAuthoredWorkflowToFeishu()供显式草稿上传，syncArchivedWorkflowToFeishu()供归档worker与显式补传；失败不改写出题/归档状态。
- * 边界：只启用豆包主项目；凭证仅从服务端环境读取，远端响应正文不进入公开错误或日志。
+ * 边界：只启用豆包法律与医疗两个主项目，期次目标按主项目分别冻结；凭证仅从服务端环境读取，远端响应正文不进入公开错误或日志。
  */
 import type {Pool} from 'pg';
 import {createHash} from 'node:crypto';

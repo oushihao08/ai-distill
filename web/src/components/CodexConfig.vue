@@ -7,7 +7,8 @@
 import {api} from '../api/client';
 
 interface CodexModelOption {slug:string;supported_reasoning_levels:{effort:string}[]}
-interface CodexConfig {credential_home:string|null;model:string;reasoning_effort:string;model_options:CodexModelOption[]}
+interface AgentDriverCatalog {id:string;label:string;model_options:CodexModelOption[]}
+interface CodexConfig {credential_home:string|null;model:string;reasoning_effort:string;model_options:CodexModelOption[];agent_drivers?:AgentDriverCatalog[]}
 interface CodexProbe {connected:boolean;model:string;reasoning_effort:string;duration_ms:number}
 const path=shallowRef('');
 const savedPath=shallowRef('');
@@ -16,13 +17,24 @@ const savedModel=shallowRef('gpt-6.1-sol');
 const effort=shallowRef('medium');
 const savedEffort=shallowRef('medium');
 const availableModels=shallowRef<CodexModelOption[]>([]);
+const drivers=shallowRef<AgentDriverCatalog[]>([]);
+const selectedDriver=shallowRef<string>('all');
 const busy=shallowRef(false);
 const loading=shallowRef(true);
 const error=shallowRef('');
 const probe=shallowRef<CodexProbe|null>(null);
 const probeFailed=shallowRef(false);
-const modelItems=computed(()=>availableModels.value.map(item=>({title:item.slug,value:item.slug})));
-const effortItems=computed(()=>availableModels.value.find(item=>item.slug===model.value)?.supported_reasoning_levels.map(level=>level.effort)??[]);
+const driverItems=computed(()=>[{title:'全部 Agent 工具',value:'all'},...drivers.value.map(item=>({title:item.label,value:item.id}))]);
+const activeModels=computed(()=>{
+ if(selectedDriver.value!=='all'){
+  const matched=drivers.value.find(item=>item.id===selectedDriver.value);
+  if(matched)return matched.model_options;
+ }
+ if(drivers.value.length)return drivers.value.flatMap(item=>item.model_options);
+ return availableModels.value;
+});
+const modelItems=computed(()=>activeModels.value.map(item=>({title:item.slug,value:item.slug})));
+const effortItems=computed(()=>(activeModels.value.find(item=>item.slug===model.value)??drivers.value.flatMap(d=>d.model_options).find(item=>item.slug===model.value))?.supported_reasoning_levels.map(level=>level.effort)??['low','medium','high']);
 const canSaveDefaults=computed(()=>Boolean((model.value??'').trim()&&(effort.value??'').trim()));
 watch(model,clearProbe);watch(effort,clearProbe);
 const changed=computed(()=>path.value!==savedPath.value||model.value!==savedModel.value||effort.value!==savedEffort.value);
@@ -30,10 +42,13 @@ const changed=computed(()=>path.value!==savedPath.value||model.value!==savedMode
 function applyConfig(config:CodexConfig){
  path.value=config.credential_home??'';savedPath.value=path.value;
  availableModels.value=config.model_options??[];
+ drivers.value=config.agent_drivers??[];
  model.value=config.model??'';
  savedModel.value=model.value;
  effort.value=config.reasoning_effort??'';
  savedEffort.value=effort.value;
+ const prefix=model.value.includes(':')?model.value.split(':')[0]!.toLowerCase():'';
+ if(prefix&&drivers.value.some(item=>item.id===prefix))selectedDriver.value=prefix;
 }
 function requestBody(){
  return{credential_home:path.value.trim()||null,...(canSaveDefaults.value?{model:model.value,reasoning_effort:effort.value}:{})};
@@ -73,8 +88,8 @@ onMounted(load);
  <v-text-field v-model="path" density="compact" variant="outlined" hide-details label="Codex凭证目录或 auth.json 路径" placeholder="留空使用当前运行环境默认凭证" :disabled="loading||busy" @update:model-value="clearProbe" />
  <p class="text-xs text-muted">接受绝对路径或 ~/ 开头路径；填写 auth.json 时自动取其所在目录。</p>
  <Column class="border-t border-line-subtle pt-12" :gap="8">
-  <Column :gap="4"><h3 class="text-sm font-semibold">默认 Codex 模型</h3><p class="text-xs text-muted">仅作为未单独设置模型的后续任务默认值；项目步骤自定义设置和已入队任务保持不变。</p></Column>
-  <Row wrap :gap="12"><v-combobox :return-object="false" v-model="model" label="默认模型" :items="modelItems" hide-details :disabled="loading||busy" @update:model-value="clearProbe" /><v-combobox :return-object="false" v-model="effort" label="默认推理强度" :items="effortItems" hide-details :disabled="loading||busy" @update:model-value="clearProbe" /></Row>
+  <Column :gap="4"><h3 class="text-sm font-semibold">默认 Agent 模型（Codex / Antigravity）</h3><p class="text-xs text-muted">仅作为未单独设置模型的后续任务默认值；支持无前缀 Codex 模型或 agy: 前缀 Antigravity 模型。</p></Column>
+  <Row wrap :gap="12"><v-select v-if="drivers.length>1" v-model="selectedDriver" label="Agent 工具筛选" :items="driverItems" hide-details :disabled="loading||busy" /><v-combobox :return-object="false" v-model="model" label="默认模型" :items="modelItems" hide-details :disabled="loading||busy" @update:model-value="clearProbe" /><v-combobox :return-object="false" v-model="effort" label="默认推理强度" :items="effortItems" hide-details :disabled="loading||busy" @update:model-value="clearProbe" /></Row>
   <p v-if="!loading&&!modelItems.length" class="text-xs text-warning">本机模型建议暂不可用，可直接输入模型和推理强度；实际可用性由执行时反馈。</p>
  </Column>
  <v-alert v-if="error" :type="probeFailed?'error':'warning'" density="compact">{{ error }}</v-alert>

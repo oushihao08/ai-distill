@@ -9,4 +9,7 @@ export {ModelApiError as DomesticError} from '../llm-api';
 export type {ModelApiErrorKind as DomesticErrorKind} from '../llm-api';
 export type DomesticConfig=OtherApiConfig;
 export const resolveDomesticConfig=resolveOtherApiConfig;
-export function createDomesticClient(env:NodeJS.ProcessEnv=process.env,request:(input:string,init?:RequestInit)=>Promise<Response>=fetch):AnswerClient<DomesticConfig>{const client=createAnswerClient(env,request);return{async answer(input){try{return await client.answer({...input,config:resolveOtherApiConfig(input.config,env)});}catch(error){throw error;}}};}
+export function createDomesticClient(env:NodeJS.ProcessEnv=process.env,request:(input:string,init?:RequestInit)=>Promise<Response>=fetch):AnswerClient<DomesticConfig>{
+ const client=createAnswerClient(env,request);
+ return{async answer(input){return await client.answer({...input,config:resolveOtherApiConfig(input.config,env)});}};
+}

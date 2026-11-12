@@ -7,8 +7,10 @@ import { HTTPException } from 'hono/http-exception';
 export const MAX_FILE = Number(process.env.PDF_MAX_SIZE_MB ?? 50) * 1024 * 1024;
 export const MAX_BATCH = 100 * 1024 * 1024;
 export const MAX_FOLDER_BATCH = 200 * 1024 * 1024;
+/** 显式 GLM-OCR 原子导入可接收已切片的完整扫描包；普通导入仍为 200 MiB。 */
+export const MAX_GLM_FOLDER_BATCH = 400 * 1024 * 1024;
 /** HTTP封装余量不计入业务文件总量；库级导入和版本上传采用200MiB。 */
-export const MAX_UPLOAD_REQUEST_BYTES = MAX_FOLDER_BATCH + 1024 * 1024;
+export const MAX_UPLOAD_REQUEST_BYTES = MAX_GLM_FOLDER_BATCH + 1024 * 1024;
 export const MAX_DEFAULT_REQUEST_BYTES = MAX_BATCH + 1024 * 1024;
 /** 只放宽材料库导入及版本multipart上传；其余请求沿用原预算。 */
 export function requestBodyLimit(path:string,method:string):number{

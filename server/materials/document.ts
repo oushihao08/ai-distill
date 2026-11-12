@@ -1,7 +1,7 @@
 /**
- * 职责：统一文档提取：TXT/MD本地解析；PDF须注入provider，DOCX有注入provider时使用它，否则保留本地OOXML兼容解析。
- * 关键入口：extractLocalDocument提供本地兼容解析；ProjectDocumentExtractor.extract按格式分流，extractPages构造PDF子集复识别并恢复原页码。
- * 使用场景：intake及提取队列；页级复识别依赖既有Poppler的pdfseparate/pdfunite，只处理私有临时副本，文本、页码与issues统一返回。
+ * 职责：统一文档提取与页级问题检测：TXT/MD本地解析；PDF须注入provider，DOCX有注入provider时使用它，否则保留本地OOXML兼容解析。
+ * 关键入口：extractLocalDocument提供本地兼容解析；ProjectDocumentExtractor.extract按格式分流，extractPages构造PDF子集复识别并恢复原页码；collectExtractedPageIssues统一提取页问题标签。
+ * 使用场景：旧步骤2提取（process.ts）与全局材料库提取队列（material-library/runner.ts）共用；页级复识别只处理私有临时副本。
  */
 import { mkdtemp,readFile,rm } from 'node:fs/promises';
 import {join} from 'node:path';
@@ -9,7 +9,7 @@ import {tmpdir} from 'node:os';
 import { inflateRawSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { HTTPException } from 'hono/http-exception';
-import type { Page } from './pdf';
+import { documentBlocksToText, type Page } from './pdf';
 import type { PdfExtractionProvider } from './pdf-extraction/types';
 import {command} from './pdf';
 import {currentTaskSignal,withTaskSignal} from '../task-signal';
@@ -21,6 +21,23 @@ export interface DocumentExtractor {
  extract(path: string, signal?: AbortSignal): Promise<DocumentExtraction>;
  /** 只提交指定PDF页；结果绑定原件SHA，返回原页码，禁止以整份重传冒充页级复识别。 */
  extractPages?(path:string,pages:number[],signal?:AbortSignal):Promise<DocumentExtraction>;
+}
+
+/** 统一汇总单页已有识别问题、空白页（empty_page）与乱码/无法辨认标记（unreadable）。 */
+export function collectExtractedPageIssues(page: Pick<Page, 'text' | 'issues'>): string[] {
+ return [
+  ...(page.issues ?? []),
+  ...(!page.text.trim() ? ['empty_page'] : []),
+  ...(/无法辨认|\uFFFD/.test(page.text) ? ['unreadable'] : []),
+ ];
+}
+
+/** 补齐单页默认段落结构，并在需要时校验或同步结构文字投影。 */
+export function normalizeExtractedPageStructure(page: Page, strictProjection = false): Page {
+ const structure = page.structure?.length ? page.structure : [{ id: `p${page.page}-b1`, kind: 'paragraph' as const, text: page.text }];
+ const projected = documentBlocksToText(structure);
+ if (strictProjection && projected !== page.text) throw new Error('提取正文与结构化文字投影不一致');
+ return { ...page, structure, text: strictProjection ? page.text : projected };
 }
 
 function decodeXml(value: string) {

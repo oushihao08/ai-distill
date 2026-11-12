@@ -4,10 +4,11 @@
  * 使用场景：由 `dispatch.ts`、供应商适配器和 `jobs.ts` 共同实现与消费。
  */
 import type {ModelApiConfig,ModelApiProvider,ModelApiResult,ModelApiErrorKind} from '../llm-api';
+import type {AgentProviderName} from '../agent';
 // Structural contract: existing Qwen remains compatible without changing its runtime.
-export type AnswerProvider=ModelApiProvider|'codex';
+export type AnswerProvider=ModelApiProvider|AgentProviderName;
 export type AnswerModelConfig=ModelApiConfig;
-export interface CodexAnswerConfig {provider:'codex';model:string;reasoning_effort:string}
+export interface CodexAnswerConfig {provider:AgentProviderName;model:string;reasoning_effort:string}
 export type AnswerExecutionConfig=AnswerModelConfig|CodexAnswerConfig;
 export interface AnswerRequest<T extends AnswerExecutionConfig=AnswerExecutionConfig> {config:T;question:string;materials:{name:string;text:string}[];system_prompt?:string;timeout_ms?:number;signal?:AbortSignal;call_id?:string;observe_reasoning?:boolean;directory?:string}
 export type AnswerResult=Omit<ModelApiResult,'provider'>&{execution_mode?:'api'|'agent';reasoning_effort?:string;agent_session_id?:string};

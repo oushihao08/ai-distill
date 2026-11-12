@@ -10,12 +10,12 @@ const props=defineProps<{projectId:string}>();
 const emit=defineEmits<{saved:[]}>();
 interface CatalogModel{id:string;name:string;provider:string;base_url:string;model:string;config?:{reasoning_effort?:string};enabled:boolean}
 interface SelectedModel{model_id:string;name:string;minimum_score:number|null;config:{provider:string;base_url?:string;model:string;reasoning_effort?:string}}
-interface AgentCatalog{model_options:{slug:string;supported_reasoning_levels:{effort:string}[]}[]}
+interface AgentCatalog{model_options:{slug:string;supported_reasoning_levels:{effort:string}[]}[];agent_drivers?:{id:string;label:string;model_options:{slug:string;supported_reasoning_levels:{effort:string}[]}[]}[]}
 const catalog=shallowRef<CatalogModel[]>([]);const selected=shallowRef<SelectedModel[]>([]);
 const model=shallowRef('');const provider=shallowRef<'siliconflow'|'openrouter'|'codex'>('siliconflow');const reasoningEffort=shallowRef('ultra');const agentModels=shallowRef<AgentCatalog['model_options']>([]);
 const loading=shallowRef(false);const saving=shallowRef(false);const error=shallowRef('');const message=shallowRef('');
 async function refresh(){
- try{loading.value=true;error.value='';const [all,current,agent]=await Promise.all([api<CatalogModel[]>('/answer-models'),api<SelectedModel[]>(`/projects/${props.projectId}/answer-models`),api<AgentCatalog>('/agent/config')]);catalog.value=all;selected.value=current;agentModels.value=agent.model_options;}
+ try{loading.value=true;error.value='';const [all,current,agent]=await Promise.all([api<CatalogModel[]>('/answer-models'),api<SelectedModel[]>(`/projects/${props.projectId}/answer-models`),api<AgentCatalog>('/agent/config')]);catalog.value=all;selected.value=current;agentModels.value=agent.agent_drivers?.length?agent.agent_drivers.flatMap(d=>d.model_options):agent.model_options;}
  catch(cause){error.value=cause instanceof Error?cause.message:'模型设置读取失败';}finally{loading.value=false;}
 }
 function toggle(item:CatalogModel){

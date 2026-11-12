@@ -8,7 +8,7 @@ import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { currentTaskSignal } from '../task-signal';
 import { DOCUMENT_STRUCTURE_VERSION, documentBlocksToText, type Page } from './pdf';
-import { ProjectDocumentExtractor,type DocumentExtractor } from './document';
+import { ProjectDocumentExtractor, collectExtractedPageIssues, normalizeExtractedPageStructure, type DocumentExtractor } from './document';
 import type {VisionClient} from './vision';
 
 export interface ExtractionCache { storage_path: string; sha256: string; attempt_id: string; material_id: string; }
@@ -46,11 +46,7 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
    if(!pages){
     const result=await extractor.extract(sourcePath,currentTaskSignal());
     if(result.format!==format)throw new Error('结构化提取结果与原件不匹配');
-    pages=result.pages.map(page=>{
-     const structured=page.structure?.length?page.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:page.text}];
-     if(documentBlocksToText(structured)!==page.text)throw new Error('提取正文与结构化文字投影不一致');
-     return{...page,structure:structured};
-    });provider=result.provider;
+    pages=result.pages.map(page=>normalizeExtractedPageStructure(page,true));provider=result.provider;
    }
    // 历史缓存或provider附带的非重试提示不靠整份PDF重传修复；仅复查明确可重试的空白/乱码页。
    const retryableIssues=new Set(['empty_page','truncated_response','ocr_page_error','unreadable']);
@@ -77,15 +73,13 @@ export async function processMaterials(root:string,workflow:string,attempt:strin
     const pending=new Set(ocrPagesToRecheck.map(page=>page.page));
     pages=pages.map(page=>pending.has(page.page)?{...page,issues:[...new Set([...(page.issues??[]),'ocr_recheck_unavailable'])]}:page);
    }
-   pages=pages.map(page=>{const structure=page.structure?.length?page.structure:[{id:`p${page.page}-b1`,kind:'paragraph' as const,text:page.text}];return{...page,structure,text:documentBlocksToText(structure)};});
+   pages=pages.map(page=>normalizeExtractedPageStructure(page,false));
    extracted.push({material_id:material.id,sha256:material.sha256,format,pages,provider,mode,from_attempt_id,from_material_id,...(cache_error?{cache_error}:{})});
   }
   const allPages=extracted.flatMap(material=>material.pages.map(page=>({...page,material_id:material.material_id,reused:material.mode==='cached'||page.reused===true})));
-  const issues=allPages.flatMap((page,index)=>[
-   ...(page.issues??[]).map(kind=>({page_index:index,material_id:page.material_id,page:page.page,kind})),
-   ...(!page.text.trim()?[{page_index:index,material_id:page.material_id,page:page.page,kind:'empty_page'}]:[]),
-   ...(/无法辨认|�/.test(page.text)?[{page_index:index,material_id:page.material_id,page:page.page,kind:'unreadable'}]:[]),
-  ]);
+  const issues=allPages.flatMap((page,index)=>
+   collectExtractedPageIssues(page).map(kind=>({page_index:index,material_id:page.material_id,page:page.page,kind}))
+  );
   for(const material of extracted){
    const content=JSON.stringify({source_sha256:material.sha256,format:material.format,provider:material.provider,structure_version:DOCUMENT_STRUCTURE_VERSION,pages:material.pages.map(({reused:_,...page})=>page)});
    const storage_path=workflow+'/'+attempt+'/material-'+material.material_id+'-extracted.json';

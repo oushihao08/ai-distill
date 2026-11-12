@@ -6,16 +6,17 @@
 <script setup lang="ts">
 import {api} from '../api/client';
 interface ModelOption {slug:string;supported_reasoning_levels:{effort:string}[]}
+interface AgentDriverCatalog {id:string;label:string;model_options:ModelOption[]}
 interface Settings {model:string;reasoning_effort:string;source:'project'|'system'}
 const props=defineProps<{projectId:string}>();
 const model=shallowRef(''),effort=shallowRef(''),source=shallowRef<'project'|'system'>('system');
 const options=shallowRef<ModelOption[]>([]),loading=shallowRef(true),busy=shallowRef(false),error=shallowRef('');
 const modelItems=computed(()=>options.value.map(item=>({title:item.slug,value:item.slug})));
-const effortItems=computed(()=>options.value.find(item=>item.slug===model.value)?.supported_reasoning_levels.map(level=>level.effort)??[]);
+const effortItems=computed(()=>options.value.find(item=>item.slug===model.value)?.supported_reasoning_levels.map(level=>level.effort)??['low','medium','high']);
 const canSave=computed(()=>Boolean((model.value??'').trim()&&(effort.value??'').trim()));
 function apply(settings:Settings){model.value=settings.model;effort.value=settings.reasoning_effort;source.value=settings.source;}
 async function load(){
- try{loading.value=true;error.value='';const [catalog,settings]=await Promise.all([api<{model_options:ModelOption[]}>('/agent/config'),api<Settings>(`/projects/${props.projectId}/agent-settings`)]);options.value=catalog.model_options??[];apply(settings);}
+ try{loading.value=true;error.value='';const [catalog,settings]=await Promise.all([api<{model_options:ModelOption[];agent_drivers?:AgentDriverCatalog[]}>('/agent/config'),api<Settings>(`/projects/${props.projectId}/agent-settings`)]);options.value=catalog.agent_drivers?.length?catalog.agent_drivers.flatMap(d=>d.model_options):catalog.model_options??[];apply(settings);}
  catch(cause){error.value=cause instanceof Error?cause.message:'读取项目Codex设置失败';}finally{loading.value=false;}
 }
 async function save(){

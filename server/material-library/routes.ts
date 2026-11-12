@@ -33,7 +33,7 @@ function versionHeader(value:string|undefined){
 }
 function pdfProvider(value:FormDataEntryValue|null){
  if(value===null)return undefined;
- if(typeof value!=='string'||!['mineru-api','mineru-cli'].includes(value))throw new HTTPException(400,{message:'PDF OCR provider 仅支持MinerU'});
+ if(typeof value!=='string'||!['mineru-api','mineru-cli','glm-ocr'].includes(value))throw new HTTPException(400,{message:'PDF OCR provider 不支持'});
  return value;
 }
 function imageImportOptions(form:FormData,count:number){

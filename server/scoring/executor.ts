@@ -97,26 +97,23 @@ export async function runIndependentScore(context:ScoreContext,options:{root:str
  const input=buildAnonymousInput({...context,project_name:undefined,question_id:undefined,project_prompt:undefined,project_rules:undefined,step_prompt:scoringPrompt(context,options.step_prompt)});
  if(options.signal?.aborted)throw new Error('评分执行已取消');
  const frozen=structuredClone(context.binding);
- let directory:string;
- try{
-  await mkdir(resolve(options.root),{recursive:true,mode:0o700});
-  const root=await realpath(resolve(options.root));
-  directory=join(root,`score-${randomUUID()}`);await mkdir(directory,{mode:0o700});
-  const readingInstructions=options.model_report_reading_instructions??MODEL_REPORT_READING_INSTRUCTIONS;
-  // 已取消Python交卷预检；历史标记仅供读取旧指令摘要，不注入本次会话。
-  const legacyPreflight=false;
-  const prompt=buildScoreMessage(input,readingInstructions,legacyPreflight)+hookAdditionText(options.hook_additions);
-  const input_files=buildScoreFiles(input,legacyPreflight);
-  const execution_request={...scoreExecutionInstructions('codex',undefined,undefined,legacyPreflight),...candidateQuoteExecutionInstructions(input.candidate_quote_check),...(input.scoring_policy?.contract==='model_report_v1'&&readingInstructions?{model_report_reading_instructions:readingInstructions}:{}),step_prompt:input.step_prompt,model:options.model,reasoning_effort:options.reasoning_effort,input_sha256:hash(JSON.stringify({stdin:prompt,input_files})),stdin:prompt,input_files:input_files.map(file=>({name:file.name,sha256:hash(file.text),size_bytes:Buffer.byteLength(file.text)}))};
-  const invocation=await (options.execute??runAgent)({task_type:'independent_scoring',directory,prompt,model:options.model,reasoning_effort:options.reasoning_effort,output_format:'text',input_files,signal:options.signal,timeout_ms:options.timeout_ms,call_id:options.call_id,validate(value){
-   if(typeof value!=='string'||!value.trim())throw new Error('评分未返回文本');
-   return value;
-  }});
-  const raw_text=invocation.result;
-  const {score_extraction,report}=collectScore(raw_text,context,frozen);
-  const cli_request=options.execute?undefined:JSON.parse(await readFile(join(directory,'output','request.json'),'utf8'));
-  return {...invocation,execution_request:{...execution_request,...(cli_request?{cli_request}:{})},raw_text,report,score_extraction,validation:score_extraction,directory};
- }catch(error){throw error;}
+ await mkdir(resolve(options.root),{recursive:true,mode:0o700});
+ const root=await realpath(resolve(options.root));
+ const directory=join(root,`score-${randomUUID()}`);await mkdir(directory,{mode:0o700});
+ const readingInstructions=options.model_report_reading_instructions??MODEL_REPORT_READING_INSTRUCTIONS;
+ // 已取消Python交卷预检；历史标记仅供读取旧指令摘要，不注入本次会话。
+ const legacyPreflight=false;
+ const prompt=buildScoreMessage(input,readingInstructions,legacyPreflight)+hookAdditionText(options.hook_additions);
+ const input_files=buildScoreFiles(input,legacyPreflight);
+ const execution_request={...scoreExecutionInstructions('codex',undefined,undefined,legacyPreflight),...candidateQuoteExecutionInstructions(input.candidate_quote_check),...(input.scoring_policy?.contract==='model_report_v1'&&readingInstructions?{model_report_reading_instructions:readingInstructions}:{}),step_prompt:input.step_prompt,model:options.model,reasoning_effort:options.reasoning_effort,input_sha256:hash(JSON.stringify({stdin:prompt,input_files})),stdin:prompt,input_files:input_files.map(file=>({name:file.name,sha256:hash(file.text),size_bytes:Buffer.byteLength(file.text)}))};
+ const invocation=await (options.execute??runAgent)({task_type:'independent_scoring',directory,prompt,model:options.model,reasoning_effort:options.reasoning_effort,output_format:'text',input_files,signal:options.signal,timeout_ms:options.timeout_ms,call_id:options.call_id,validate(value){
+  if(typeof value!=='string'||!value.trim())throw new Error('评分未返回文本');
+  return value;
+ }});
+ const raw_text=invocation.result;
+ const {score_extraction,report}=collectScore(raw_text,context,frozen);
+ const cli_request=options.execute?undefined:JSON.parse(await readFile(join(directory,'output','request.json'),'utf8'));
+ return {...invocation,execution_request:{...execution_request,...(cli_request?{cli_request}:{})},raw_text,report,score_extraction,validation:score_extraction,directory};
 }
 
 /** API评分接收与Agent相同的获准来源文件正文和评分指令；不读取宿主资料或会话记忆。 */

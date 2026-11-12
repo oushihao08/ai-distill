@@ -6,18 +6,26 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `project-registry.ts` | 必需实现、同步纯策略及项目身份匹配的注册器；精确选中一个实现，无注册走默认 |
+| `project-registry.ts` | 必需异步实现（`ProjectImplementations`）、同步纯策略（`SyncProjectImplementations`）及项目身份匹配（`ProjectKeyRegistry`）注册器；精确选中一个实现，无注册走默认 |
 | `step-types.ts`、`steps.ts` | 1—7项目策略类型、默认行为及项目注册装配，供公共步骤调用 |
 | `default-projection.ts` | 普通题包投影，供默认策略与项目旧契约回退复用 |
 | `default-authoring-plan.ts` | 默认出题计划纯工厂；通用策略与Work旧契约共用，项目只覆盖差异字段 |
-| `registry.ts`、`index.ts` | 可选通知注册与发出、主项目key路由及安全日志 |
-| `scripts.ts` | 原before/after配置的同步适配、持久记录和主调用检查点 |
+| `registry.ts`、`index.ts` | 可选通知注册与发出（`LifecycleRegistry`）、单步回调隔离执行器（`runLifecycleTask`）、主项目key路由及安全日志 |
+| `scripts.ts` | 原before/after配置的同步适配、持久记录和主调用检查点（直接复用 `runLifecycleTask`，不创建临时注册表实例） |
 | `project-delivery.ts` | 归档前准备/交付统一入口，复用原项目脚本和检查点 |
 | `publication.ts` | 本地归档后的项目交付统一入口 |
-| `scoring.ts` | 评分汇总结算后接续原有达标判断，失败独立记录 |
+| `scoring.ts` | 评分汇总结算后通过 `runLifecycleTask` 接续达标判断，失败独立记录 |
 | `projects/` | [各项目独立注册位置](projects/README.md)，保存项目规则与适配 |
 | `registry.test.ts`、`project-registry.test.ts` | 注册、分派、顺序、隔离、异常、取消和跳过用例 |
 | `flow.fixture.ts`、`flow.test.ts`、`fixtures/flow-baseline.json` | 合成输入、迁移前固定输出及跨步骤回归；不是业务输入 |
+
+## 三类扩展机制选型边界
+
+| 机制 | 容器 / 入口 | 适用场景 | 失败语义 |
+| --- | --- | --- | --- |
+| 同步纯策略 | `SyncProjectImplementations`（`steps.ts`、`material-docx.ts`） | Schema 构造、题包归一化、公开/私有投影、步骤就绪判断、DOCX 布局选择（纯内存同步计算，禁查库/禁网络） | 异常原样向当前步骤抛出 |
+| 必需异步分派 | `ProjectImplementations`（`project-delivery.ts`、`publication.ts`） | 步骤 8 归档前准备/五件套生成、本地归档后飞书同步等必需业务动作 | 异常原样向调用方抛出，由调用方按阶段契约结算 |
+| 可选阶段通知 / 钩子 | `LifecycleRegistry` / `runLifecycleTask`（`index.ts`、`scripts.ts`、`scoring.ts`） | 阶段事件广播、钩子脚本执行、评分后自动触发达标判断 | 异常被捕获为 `{ status: 'failed' \| 'cancelled' }` 并记录日志，不回滚主步骤已提交结果 |
 
 ## 1—7项目策略执行点
 

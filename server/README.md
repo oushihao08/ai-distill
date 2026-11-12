@@ -18,7 +18,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务意图、执行归属和
 | [document-generation/](document-generation/README.md) | 各项目共用DOCX与XLSX字节生成、表格显示布局，不承担项目交付资格 |
 | [publishing/](publishing/README.md) | 持久派发第八步、复核达标、调用各项目交付、产物齐全后记录归档/撤回及下载五件套 |
 | [reporting/](reporting/README.md) | 单题/项目 Excel、版本一致性、费用与统计投影 |
-| [agent/](agent/README.md)、[codex/](codex/README.md) | 本地 Agent 任务契约及底层 Codex CLI/配置；作者和盲作答/评分使用不同隔离策略 |
+| [agent/](agent/README.md)、[codex/](codex/README.md)、[antigravity/](antigravity/README.md) | 本地 Agent 任务契约、共用 CLI 进程/沙箱底座（`agent/cli-runtime.ts`）、注册驱动判断（`isRegisteredAgentProvider()`）及底层 Codex / Antigravity CLI 适配；作者和盲作答/评分使用不同隔离策略 |
 | [llm-api/](llm-api/README.md) | API配置、凭证、JSON/SSE共用的消息字段拒绝规则及本机请求槽位；model返回值未知时为null |
 | [skill-generation/](skill-generation/README.md) | 项目规则生成候选 Skill、来源校验与采用 |
 | [monitoring/](monitoring/README.md) | 本机资源、worker、活动尝试和安全队列状态 |

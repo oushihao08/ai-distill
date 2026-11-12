@@ -6,6 +6,7 @@
 import {HTTPException} from 'hono/http-exception';
 import {resolveAnswerConfig} from './dispatch';
 import {readModelApiDefaults} from '../llm-api';
+import {isAgentProviderConfig,isRegisteredAgentProvider} from '../agent';
 import {readConfiguredAgentModelCatalog} from '../agent/config';
 import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
@@ -57,14 +58,16 @@ export async function listAnswerModels(db:Pool,enabledOnly=false){
 export async function registerAnswerModel(db:Pool,raw:unknown){
  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new HTTPException(400,{message:'模型登记须为JSON对象'});
  const value=raw as Record<string,unknown>;
- if(value.provider==='codex'){
+ if(isRegisteredAgentProvider(value.provider)){
   if(Object.keys(value).some(key=>!['provider','model','reasoning_effort'].includes(key))||typeof value.model!=='string'||typeof value.reasoning_effort!=='string')throw new HTTPException(400,{message:'Codex模型登记信息无效'});
   const catalog=await readConfiguredAgentModelCatalog(db);
   if(!catalog.some(item=>item.slug===value.model&&item.supported_reasoning_levels.some(level=>level.effort===value.reasoning_effort)))throw new HTTPException(400,{message:'所选Codex模型或推理强度不在本机可用目录中'});
-  const config=validateModelSet([{model_id:crypto.randomUUID(),name:`Codex ${value.model} · ${value.reasoning_effort}`,minimum_score:0,config:{provider:'codex',model:value.model,reasoning_effort:value.reasoning_effort}}])[0]!;
-  const id=config.model_id,baseUrl=`codex://local/${encodeURIComponent(value.reasoning_effort)}`;
+  const provider=value.provider;
+  const label=provider==='codex'?'Codex':provider.toUpperCase();
+  const config=validateModelSet([{model_id:crypto.randomUUID(),name:`${label} ${value.model} · ${value.reasoning_effort}`,minimum_score:0,config:{provider,model:value.model,reasoning_effort:value.reasoning_effort}}])[0]!;
+  const id=config.model_id,baseUrl=`${provider}://local/${encodeURIComponent(value.reasoning_effort)}`;
   const saved=await db.query(`INSERT INTO ai_distill.system_answer_models(id,name,provider,base_url,model,config)
-   VALUES($1,$2,'codex',$3,$4,$5::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,config.name,baseUrl,config.config.model,JSON.stringify(config.config)]);
+   VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,config.name,provider,baseUrl,config.config.model,JSON.stringify(config.config)]);
   return saved.rows[0];
  }
  if(value.provider==='siliconflow'){
@@ -72,7 +75,7 @@ export async function registerAnswerModel(db:Pool,raw:unknown){
   const modelId=value.model.trim();
   const id=crypto.randomUUID();
   const model=validateModelSet([{model_id:id,name:`SiliconFlow · ${modelId}`,minimum_score:0,config:{provider:'siliconflow',model:modelId}}])[0]!;
-  if(model.config.provider==='codex')throw new HTTPException(400,{message:'SiliconFlow模型配置无效'});
+  if(isAgentProviderConfig(model.config))throw new HTTPException(400,{message:'SiliconFlow模型配置无效'});
   const saved=await db.query(`INSERT INTO ai_distill.system_answer_models(id,name,provider,base_url,model,config)
    VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,model.name,model.config.provider,model.config.base_url,model.config.model,JSON.stringify(model.config)]);
   return saved.rows[0];
@@ -81,7 +84,7 @@ export async function registerAnswerModel(db:Pool,raw:unknown){
  const modelId=value.model_id.trim();
  const id=crypto.randomUUID();
  const model=validateModelSet([{model_id:id,name:modelId,minimum_score:0,config:{provider:'openrouter',model:modelId,...(value.server_tools!==undefined?{server_tools:value.server_tools}:{}),...(value.max_tool_calls!==undefined?{max_tool_calls:value.max_tool_calls}:{})}}])[0]!;
- if(model.config.provider==='codex')throw new HTTPException(400,{message:'OpenRouter模型配置无效'});
+ if(isAgentProviderConfig(model.config))throw new HTTPException(400,{message:'OpenRouter模型配置无效'});
  const saved=await db.query(`INSERT INTO ai_distill.system_answer_models(id,name,provider,base_url,model,config)
   VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id,name,provider,base_url,model,config,enabled,created_at`,[id,model.name,model.config.provider,model.config.base_url,model.config.model,JSON.stringify(model.config)]);
  return saved.rows[0];

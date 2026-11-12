@@ -10,7 +10,7 @@ import {join} from 'node:path';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import type {LibraryExecutionTarget,LibraryExecutorKind} from '../../shared/material-library';
-import {type DocumentExtractor,extractLocalDocument,ProjectDocumentExtractor} from '../materials/document';
+import {type DocumentExtractor,extractLocalDocument,ProjectDocumentExtractor,collectExtractedPageIssues} from '../materials/document';
 import {MineruCliPdfExtractor} from '../materials/pdf-extraction/mineru-cli';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiImageExtractor,MineruApiPdfExtractor} from '../materials/pdf-extraction/mineru-api';
 import {mineruToken} from '../materials/pdf-extraction/mineru-credentials';
@@ -20,7 +20,7 @@ import {validateFile} from '../validation';
 import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,libraryExternalExtractionTimeoutMs,LIBRARY_JOB_LEASE_MS,assertLibraryExtractionUsable} from './jobs';
 import {readLibraryBlob,cleanupRolledBackLibraryBlobs,installLibraryBlob,lockLibraryBlobWrites} from './storage';
 import {extractImageCandidates,glmImageRole,shouldExtractImageCandidates,type ImageCandidate} from './image-candidates';
-import {extractGlmOcrImageRegions} from '../materials/pdf-extraction/glm-ocr';
+import {extractGlmOcrImageRegions,GlmOcrPdfExtractor} from '../materials/pdf-extraction/glm-ocr';
 import {publishAtomicLibraryImport} from './atomic-import';
 import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-shared';
 import {executeRedaction} from './redaction-runner';
@@ -55,11 +55,13 @@ async function executeIntake(pool:Pool,root:string,job:any,signal:AbortSignal){
 }
 
 async function documentExtractor(root:string,jobId:string,provider:unknown,formats:string[]){
- if(!['mineru-api','mineru-cli'].includes(String(provider)))throw new HTTPException(409,{message:'提取任务缺少冻结MinerU供应商，请创建新的提取任务'});
+ if(!['mineru-api','mineru-cli','glm-ocr'].includes(String(provider)))throw new HTTPException(409,{message:'提取任务缺少有效的冻结供应商，请创建新的提取任务'});
  const hasPdf=formats.includes('pdf'),hasMineruNative=formats.some(format=>['docx','png','jpg','jpeg'].includes(format));
- if((hasPdf||hasMineruNative)&&!mineruToken())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
+ if(provider==='glm-ocr'&&formats.some(format=>format!=='pdf'))throw new HTTPException(409,{message:'GLM-OCR任务含不支持的格式'});
+ if(((hasPdf&&provider!=='glm-ocr')||hasMineruNative)&&!mineruToken())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
+ if(hasPdf&&provider==='glm-ocr'&&!process.env.ZHIPU_API_KEY?.trim())throw new HTTPException(503,{message:'GLM-OCR文本提取服务未配置'});
  const cli=new MineruCliPdfExtractor(process.env);
- const pdf=provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli);
+ const pdf=provider==='glm-ocr'?new GlmOcrPdfExtractor(process.env):provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli);
  const extractor=new ProjectDocumentExtractor(pdf,new MineruApiDocxExtractor(process.env),new MineruApiImageExtractor(process.env));
  const directory=join(jobDirectory(root,jobId),'source');
  await mkdir(directory,{recursive:true,mode:0o700});
@@ -87,11 +89,9 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
   }
   if(signal.aborted)throw signal.reason;
   await writeExtractionCheckpoint(root,job,item,document,actualProvider,item.format==='pdf'?job.config_snapshot?.pdf_ocr_version:['png','jpg','jpeg'].includes(item.format)?job.config_snapshot?.image_ocr_version:undefined);
-  const issues=document.pages.flatMap(page=>[
-   ...(page.issues??[]).map(kind=>({page:page.page,kind})),
-   ...(!page.text.trim()?[{page:page.page,kind:'empty_page'}]:[]),
-   ...(/无法辨认|�/.test(page.text)?[{page:page.page,kind:'unreadable'}]:[]),
-  ]);
+  const issues=document.pages.flatMap(page=>
+   collectExtractedPageIssues(page).map(kind=>({page:page.page,kind}))
+  );
   let images:ImageCandidate[]|undefined;
   if(shouldExtractImageCandidates(job.config_snapshot?.preserve_images,item.image_review_required,item.format)){
    const imageDirectory=join(jobDirectory(root,job.id),'image-source');await mkdir(imageDirectory,{recursive:true,mode:0o700});

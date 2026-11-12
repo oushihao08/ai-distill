@@ -1,7 +1,10 @@
 /**
- * 职责：读取／保存 worker 并发配置，并用 STORAGE_DIR 下的 SQLite 配置与槽位表协调跨进程 Agent 调用。
- * 入口：readConcurrencySettings() 按环境变量、持久设置、默认值逐项读取；saveWorkerConcurrencySettings() 保存页面设置；AgentConcurrencyGate.run() 供worker与连通性检查共同占槽。
- * SQLite 只保存本机并发配置及临时进程／槽位元数据，不涉及业务数据库迁移。
+ * 职责：读取／保存 worker 并发配置，并用 STORAGE_DIR 下的 SQLite 槽位表提供跨进程并发门禁。
+ * 核心入口：
+ * - `readConcurrencySettings()` / `saveWorkerConcurrencySettings()`：按环境变量、SQLite 持久设置、默认值解析与保存 Agent / 模型 API 并发上限。
+ * - `AgentConcurrencyGate`（别名 `SqliteConcurrencyGate`）/ `getAgentConcurrencyGate()`：基于不同 root 目录隔离的跨进程槽位控制器，由 Agent 调用（`<STORAGE_DIR>`）、大模型 API（`<STORAGE_DIR>/.model-api-slots`）与本地队列槽位（`<STORAGE_DIR>/.execution-queue`）共同复用。
+ * 不变量与修改禁区：
+ * - SQLite 表名（`agent_concurrency_owners`、`agent_concurrency_slots`）与错误消息前缀须保持稳定，兼容正在运行的进程锁与现有测试断言。
  */
 import {Database} from 'bun:sqlite';
 import {chmodSync,mkdirSync,existsSync} from 'node:fs';

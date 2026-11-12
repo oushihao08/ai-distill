@@ -38,7 +38,7 @@ export function apiMaterialExecutor(config:ModelApiConfig,client=createModelApiC
     const details={valid:false,reason_code:(error as any)?.reason_code??'agent_plan_file_invalid',validation_details:(error as any)?.validation_details};
     messages.push({role:'assistant',content:result.text},{role:'user',content:`同一编译器校验结果：${JSON.stringify(details)}。修正实际条目并返回完整JSON计划。`});continue;
    }
-   return{result:task.validate({plan_file:'output/material-plan.json'}),session_id:result.completion_id??'',usage:{calls:usage},diagnostic_path:task.directory,duration_ms:Math.round(performance.now()-started),provider:result.provider,model:result.model??config.model,requested_model:config.model,returned_model:result.model};
+   return{result:task.validate({plan_file:'output/material-plan.json',parsed_plan:plan}),session_id:result.completion_id??'',usage:{calls:usage},diagnostic_path:task.directory,duration_ms:Math.round(performance.now()-started),provider:result.provider,model:result.model??config.model,requested_model:config.model,returned_model:result.model};
   }
  };
 }

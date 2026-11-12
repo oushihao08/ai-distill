@@ -9,17 +9,28 @@ import {HTTPException} from 'hono/http-exception';
 import {uuid} from '../validation';
 import {feishuClient,createFeishuTable,ensureFeishuSchema,SyncError,FEISHU_FIELDS} from './feishu-api';
 
-const DEFAULT_BASE='DuizblJJwavfGjsB4KJcPH0TnRg',GROUP='315407cd-43db-49d1-8eb3-c2dff77af859';
+const DEFAULT_BASE='DuizblJJwavfGjsB4KJcPH0TnRg',
+ LEGAL_GROUP='315407cd-43db-49d1-8eb3-c2dff77af859',
+ MEDICAL_GROUP='e23bfcec-5403-42df-ad92-ea071f6ab24a';
+/** 两个豆包主项目共用同一套同步实现，但期次目标按主项目分别冻结，不互相回退。 */
+const ENABLED_GROUPS=new Set([LEGAL_GROUP,MEDICAL_GROUP]);
 export interface FeishuTarget {base_token:string;table_id:string}
 export interface FrozenFeishuTarget extends FeishuTarget {name:string}
-/** 第八期交付坐标由用户确认后冻结；同步时使用具体ID，不按表名搜索或自动换表。 */
+/** 第八期与医疗第九期交付坐标冻结；同步时使用具体ID，不按表名搜索或自动换表。 */
 export const FROZEN_FEISHU_TARGETS={
  eighthPeriodJiuying:{name:'第八期-久盈',base_token:DEFAULT_BASE,table_id:'tbl5Y22Kleq8Ade6'},
- eighthPeriodInternal:{name:'第八期-内部',base_token:DEFAULT_BASE,table_id:'tblERmxMpoWIDKAi'}
+ eighthPeriodInternal:{name:'第八期-内部',base_token:DEFAULT_BASE,table_id:'tblERmxMpoWIDKAi'},
+ ninthPeriodMedical:{name:'第九期-医疗',base_token:DEFAULT_BASE,table_id:'tblDxEX3XN2uYGxV'}
 } as const satisfies Record<string,FrozenFeishuTarget>;
 const PHASE_DEFAULT_TARGETS:Record<string,FeishuTarget>={
  '第六期':{base_token:DEFAULT_BASE,table_id:'tblbT3gCovrk5lf0'},
  '第八期':FROZEN_FEISHU_TARGETS.eighthPeriodInternal
+};
+/** 医疗主项目只对本表已登记的期次启用自动交付；未登记期次不按名称临时找表或建表。
+ * 2026-11-10 按用户指定，第一期的题目同样交付到「第九期-医疗」表，与第九期共用同一冻结目标。 */
+const MEDICAL_PHASE_DEFAULT_TARGETS:Record<string,FeishuTarget>={
+ '第一期':FROZEN_FEISHU_TARGETS.ninthPeriodMedical,
+ '第九期':FROZEN_FEISHU_TARGETS.ninthPeriodMedical
 };
 type DefaultTarget=FeishuTarget|{base_token:string;table_name:string};
 const bad=(message:string)=>new HTTPException(400,{message});
@@ -39,9 +50,15 @@ async function project(pool:Pick<Pool,'query'>,id:string){
 }
 /** 未配置时保持现有按期次目标；显式配置只接受具体表ID，避免同名表产生含混路由。 */
 export async function readFeishuDeliveryConfig(pool:Pick<Pool,'query'>,projectId:string):Promise<{default_target:DefaultTarget;source:'phase_default'|'configured'}|null>{
- const row=await project(pool,projectId);if(!row||String(row.project_group_id)!==GROUP)return null;
+ const row=await project(pool,projectId);if(!row)return null;
+ const group=String(row.project_group_id??'');if(!ENABLED_GROUPS.has(group))return null;
  if(row.settings)return{default_target:validateFeishuTarget(row.settings.default_target),source:'configured'};
  const phase=String(row.phase_name??'').trim();if(!phase)throw bad('期次名称缺失');
+ if(group===MEDICAL_GROUP){
+  const target=MEDICAL_PHASE_DEFAULT_TARGETS[phase];
+  if(!target)return null;
+  return{default_target:target,source:'phase_default'};
+ }
  return{default_target:PHASE_DEFAULT_TARGETS[phase]??{base_token:DEFAULT_BASE,table_name:phase},source:'phase_default'};
 }
 async function requireProject(pool:Pool,id:string){if(!await readFeishuDeliveryConfig(pool,id))throw new HTTPException(404,{message:'本项目未启用豆包飞书交付'});}

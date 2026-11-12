@@ -13,5 +13,5 @@ export type QwenAnswerInput=AnswerRequest<QwenConfig>;
 export type QwenAnswer=Omit<ModelApiResult,'provider'>;
 export function createQwenClient(env:NodeJS.ProcessEnv=process.env,request:(input:string,init?:RequestInit)=>Promise<Response>=fetch){
  const api=createAnswerClient(env,request);
- return{async answer(input:QwenAnswerInput):Promise<QwenAnswer>{try{return await api.answer({...input,config:resolveQwenConfig(input.config,env)});}catch(error){throw error;}}};
+ return{async answer(input:QwenAnswerInput):Promise<QwenAnswer>{return await api.answer({...input,config:resolveQwenConfig(input.config,env)});}};
 }

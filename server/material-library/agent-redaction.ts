@@ -1,7 +1,7 @@
 /** 职责：限时生成整包ID/文本脱敏结果，按冻结字段映射回填原结构；由材料库runner调用，不自行入队或写库。 */
 import {join} from 'node:path';
 import {runAgent,type AgentTask,type AgentResult} from '../agent';
-import {AGENT_TEXT_REDACTION_PROTOCOL,compileAgentTextMaterialPlan,type PreparationFile} from '../../shared/agent-material-plan';
+import {AGENT_TEXT_REDACTION_PROTOCOL,compileAgentTextMaterialPlan,type AgentRedactionPlan,type PreparationFile} from '../../shared/agent-material-plan';
 import {prepareAgentRedactionArtifacts,readAgentRedactionPlan,writePrivateJson} from './agent-redaction-artifacts';
 import {apiMaterialExecutor} from './api-redaction';
 import type {ModelApiConfig} from '../llm-api';
@@ -9,9 +9,9 @@ import type {ModelApiConfig} from '../llm-api';
 type Options={directory:string;files:PreparationFile[];revision_id:string;extraction_job_id:string;template:{id:string;digest:string;redaction:{prompt:string}};model:string;reasoning_effort:string;api?:ModelApiConfig;signal?:AbortSignal;timeout_ms?:number;previous_directory?:string;execute?:<T>(task:AgentTask<T>)=>Promise<AgentResult<T>>};
 const completionSchema={type:'object',additionalProperties:false,properties:{plan_file:{type:'string',enum:['output/material-plan.json']}},required:['plan_file']};
 function timeoutError(){return Object.assign(new Error('Agent脱敏达到执行预算，已停止并保留私有进度'),{reason_code:'agent_redaction_timeout'});}
-export function validateAgentPlanFileDeclaration(value:unknown):{plan_file:string}{
+export function validateAgentPlanFileDeclaration(value:unknown):{plan_file:string;parsed_plan?:AgentRedactionPlan}{
  if(!value||typeof value!=='object'||(value as any).plan_file!=='output/material-plan.json')throw Object.assign(new Error('Agent材料计划文件声明无效'),{reason_code:'agent_plan_file_declaration_invalid'});
- return value as {plan_file:string};
+ return value as {plan_file:string;parsed_plan?:AgentRedactionPlan};
 }
 
 export async function prepareAgentLibraryMaterials(options:Options){
@@ -24,7 +24,7 @@ export async function prepareAgentLibraryMaterials(options:Options){
  try{
   await prepareAgentRedactionArtifacts({...options,identity});
   if(signal.aborted)throw signal.reason;
-  const output=await (options.execute??(options.api?apiMaterialExecutor(options.api):runAgent))<{plan_file:string}>({task_type:'material_preparation',directory:options.directory,model:options.model,reasoning_effort:options.reasoning_effort,schema:completionSchema,
+  const output=await (options.execute??(options.api?apiMaterialExecutor(options.api):runAgent))<{plan_file:string;parsed_plan?:AgentRedactionPlan}>({task_type:'material_preparation',directory:options.directory,model:options.model,reasoning_effort:options.reasoning_effort,schema:completionSchema,
    timeout_ms:Math.max(1,budget-(performance.now()-started)),signal,
    prompt:options.template.redaction.prompt+`
 
@@ -38,7 +38,7 @@ export async function prepareAgentLibraryMaterials(options:Options){
 ${options.api?'- API执行接口：上述文件由宿主以内联JSON完整提供，不访问本地路径、不调用shell。直接返回符合plan_schema的完整JSON计划，不返回plan_file。宿主运行同一校验器，valid:false时修正实际条目后返回完整计划，valid:true时由宿主保存文件并结束。':`- 在本次执行预算内运行${validatorCommand}。它直接接受上述计划，内部坐标转换无需你处理。返回valid:false就修正实际条目后再校验；valid:true后最终只返回{"plan_file":"output/material-plan.json"}。超时保留计划，不自行重试。`}`,
    validate:validateAgentPlanFileDeclaration,
   });
-  const plan=await readAgentRedactionPlan(options.directory);
+  const plan=output.result?.parsed_plan??await readAgentRedactionPlan(options.directory);
   await writePrivateJson(join(options.directory,'semantic-plan.private.json'),plan);
   if(signal.aborted)throw signal.reason;
   const compiled=compileAgentTextMaterialPlan(plan,options.files,identity);

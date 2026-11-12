@@ -3,16 +3,10 @@
  * 关键入口：resolveModelApiConfig() / readModelApiDefaults() 冻结非敏感配置；readModelApiKey() 仅在请求时取密钥。
  * 不按密钥猜测通用默认供应商；Qwen 旧配置兼容由 resolveQwenConfig() 单独保留。
  */
-import {ModelApiError,type ModelApiConfig} from './types';
+import {assertOnlyModelApiFields as onlyFields,isModelApiRecord as record,ModelApiError,type ModelApiConfig} from './types';
 import {ANSWER_LOCAL_TOOLS,DEFAULT_MODEL_API_MODEL,OPENROUTER_SERVER_TOOLS,type AnswerLocalTool,type OpenRouterServerTool} from '@shared/types';
 export type QwenApiConfig=ModelApiConfig&{provider:'qwen'};
 export type OtherApiConfig=ModelApiConfig&{provider:'kimi'|'deepseek'|'doubao'|'openrouter'|'siliconflow'|'nvidia'};
-function record(value: unknown): value is Record<string, unknown> {
- return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-function onlyFields(value: unknown, fields: string[]): asserts value is Record<string, unknown> {
- if (!record(value) || Object.keys(value).some(key => !fields.includes(key))) throw new ModelApiError('configuration');
-}
 export function resolveQwenConfig(raw: unknown, env: NodeJS.ProcessEnv = process.env): QwenApiConfig {
  onlyFields(raw, ['provider', 'base_url', 'model', 'enable_thinking', 'max_tokens','server_tools','local_tools','max_tool_calls']);
  const routerDefault = Boolean(env.OPEN_ROUTER_KEY?.trim()) && !(env.QWEN_API_KEY?.trim() || env.DASHSCOPE_API_KEY?.trim());

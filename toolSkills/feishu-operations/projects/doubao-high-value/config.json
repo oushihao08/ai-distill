@@ -65,6 +65,19 @@
       "view_id": "vewFVqBCuB",
       "project_id": "6eb9d559-d802-43cb-8b34-aa01f8215476",
       "fields": {"question_id": "题目ID", "sync_id": "系统同步ID", "expert_id": "ID", "account_user": "姓名", "expert_source": "专家来源"}
+    },
+    {
+      "key": "ninth-period-medical",
+      "name": "第九期-医疗",
+      "role": "submission_update",
+      "phase": "第九期",
+      "main_project": "豆包高经济价值-医疗",
+      "base_token": "DuizblJJwavfGjsB4KJcPH0TnRg",
+      "table_id": "tblDxEX3XN2uYGxV",
+      "view_id": "vewyxvmiay",
+      "project_id": "ae425eff-901b-4004-8604-fedfc3a1187f",
+      "project_group_id": "e23bfcec-5403-42df-ad92-ea071f6ab24a",
+      "fields": {"question_id": "题目ID", "sync_id": "系统同步ID", "expert_id": "ID", "account_user": "姓名", "expert_source": "专家来源"}
     }
   ],
   "identity_mapping": {

@@ -14,7 +14,7 @@ import {readModelApiCatalog} from './llm-api';
 import { Hono, type Context } from 'hono';
 import {runAgent} from './agent';
 import {AgentConcurrencyConfigurationError,getAgentConcurrencyGate,readConcurrencySettings,readSavedWorkerConcurrencySettings,saveWorkerConcurrencySettings,SAFE_WORKER_CONCURRENCY_LIMITS} from './concurrency';
-import {clearProjectAgentSettings,configureAgentCredentialHome,readAgentCredentialHome,readAgentModelCatalog,readAgentSettings,readProjectAgentSettings,saveAgentSettings,saveProjectAgentSettings} from './agent/config';
+import {clearProjectAgentSettings,configureAgentCredentialHome,readAgentCredentialHome,readAgentDriverCatalogs,readAgentModelCatalog,readAgentSettings,readProjectAgentSettings,saveAgentSettings,saveProjectAgentSettings} from './agent/config';
 import {readActiveRevisionAdviceTasks,readActiveWorkflowTasks,readMaterialLibraryQueue,readWorkerMonitor} from './monitoring/worker-monitor';
 import {DEFAULT_CODEX_SETTINGS} from './codex/system-config';
 import { HTTPException } from 'hono/http-exception';
@@ -207,13 +207,15 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  });
  app.on('GET',['/api/agent/config','/api/codex/config'],async c=>{
   const config=await readAgentSettings(pool);
-  return c.json({...config,model_options:readAgentModelCatalog(config.credential_home??undefined)});
+  const credentialHome=config.credential_home??undefined;
+  return c.json({...config,model_options:readAgentModelCatalog(credentialHome),agent_drivers:readAgentDriverCatalogs(credentialHome)});
  });
  app.on('PUT',['/api/agent/config','/api/codex/config'],async c=>{
   const body=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'请提交有效JSON'});});
   try{
    const config=await saveAgentSettings(pool,body);
-   return c.json({...config,model_options:readAgentModelCatalog(config.credential_home??undefined)});
+   const credentialHome=config.credential_home??undefined;
+   return c.json({...config,model_options:readAgentModelCatalog(credentialHome),agent_drivers:readAgentDriverCatalogs(credentialHome)});
   }catch(error){if(error instanceof HTTPException)throw error;throw new HTTPException(400,{message:error instanceof Error?error.message:'Codex设置无效'});}
  });
  app.on('GET',['/api/projects/:id/agent-settings','/api/projects/:id/codex-settings'],async c=>{
@@ -237,7 +239,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    if(!admitted.acquired)throw new HTTPException(503,{message:'Agent 当前并发已满，请稍后重试'});
    const result=admitted.value;
    return c.json({connected:true,model:config.model,reasoning_effort:config.reasoning_effort,duration_ms:result.duration_ms});
-  }catch(error){if(error instanceof HTTPException)throw error;if(error instanceof AgentConcurrencyConfigurationError)throw new HTTPException(503,{message:'API 与 worker 的 AGENT_CONCURRENCY 配置不一致，请统一配置'});throw new HTTPException(502,{message:'Codex 连通性测试失败，请检查凭证路径、ChatGPT 登录和 Codex 服务状态'});}
+  }catch(error){if(error instanceof HTTPException)throw error;if(error instanceof AgentConcurrencyConfigurationError)throw new HTTPException(503,{message:'API 与 worker 的 AGENT_CONCURRENCY 配置不一致，请统一配置'});throw new HTTPException(502,{message:`Agent 连通性测试失败: ${error instanceof Error?error.message:'请检查模型配置与驱动状态'}`});}
   finally{await rm(directory,{recursive:true,force:true});}
  });
  registerExecutionQueueRoutes(app,pool,storageRoot);

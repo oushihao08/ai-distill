@@ -12,7 +12,7 @@ import {frozenRevisionAdvice,validFrozenAdvice,assertRepairStepAllowed,type Froz
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {runExternalCall} from '../external-call';
-import {runAgent} from '../agent';
+import {isRegisteredAgentProvider,runAgent} from '../agent';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {mergeCodexDefaults,readProjectAgentDefaults} from '../agent/config';
 import {HTTPException} from 'hono/http-exception';
@@ -39,51 +39,46 @@ const materialIdentity=(input:Pick<FrozenInput,'redaction_attempt_id'|'material_
 const designContext=(workflow:any)=>{const context={...(workflow.scenario?{scenario:String(workflow.scenario)}:{}),...(workflow.role_perspective?{role_perspective:String(workflow.role_perspective)}:{}),...(workflow.target_level?{target_level:String(workflow.target_level)}:{}),...(Array.isArray(workflow.question_tags)&&workflow.question_tags.length?{question_tags:workflow.question_tags.map(String)}:{})};return Object.keys(context).length?context:undefined;};
 const sourceFiles=(workflow:any):{name:string;path:string}[]=>Array.isArray(workflow.source_manifest)?workflow.source_manifest.filter((file:any)=>typeof file?.name==='string'&&typeof file?.path==='string').map((file:any)=>({name:file.name,path:file.path})):[];
 const questionId=(workflow:any)=>typeof workflow.source_key==='string'&&workflow.source_key.trim()?workflow.source_key:workflow.title;
-/** 历史摘要使用JSON插入顺序；两条规则来源分支的字段顺序/省略条件不可随意合并或排序。 */
+
+/**
+ * 历史冻结摘要不变量：JSON.stringify 使用对象属性插入顺序参与 SHA-256。
+ * prefix -> 规则来源分支(rule_version_id 或 project_prompt) -> suffix 的字段顺序与省略条件严禁重排、合并或字母序排序。
+ */
+const inputDigestPrefix=(input:Omit<FrozenInput,'digest'>)=>({
+ ...(input.revision_advice?{revision_advice:JSON.parse(canonicalJson(input.revision_advice))}:{}),
+ ...(input.content_contract?{content_contract:input.content_contract}:{}),
+ ...(input.system_authoring_prompt?{system_authoring_prompt:input.system_authoring_prompt}:{}),
+ ...(input.project_name!==undefined?{project_name:input.project_name}:{}),
+ ...(input.answer_capabilities?{answer_capabilities:input.answer_capabilities}:{}),
+ title:input.title,
+ ...(input.design_context?{design_context:stableDesignContext(input.design_context)}:{}),
+ ...(input.authoring_direction?{authoring_direction:input.authoring_direction}:{}),
+ ...(input.question_id?{question_id:input.question_id}:{}),
+ ...(input.source_files?{source_files:input.source_files}:{}),
+});
+const inputDigestSuffix=(input:Omit<FrozenInput,'digest'>)=>({
+ ...materialIdentity(input),
+ materials:input.materials.map(item=>({id:item.id,sha256:item.sha256})),
+ ...(input.model_materials?{model_materials:input.model_materials.map(item=>({id:item.id,sha256:item.sha256}))}:{}),
+ ...(input.material_scope?{material_scope:JSON.parse(canonicalJson(input.material_scope))}:{}),
+ ...(input.batch_context?{batch_context:JSON.parse(canonicalJson({...input.batch_context,captured_at:undefined}))}:{}),
+ ...(input.authoring_contract?{authoring_contract:input.authoring_contract}:{}),
+ ...(input.scoring_policy?{scoring_policy:JSON.parse(canonicalJson(input.scoring_policy))}:{}),
+ ...(input.hooks?{hooks:JSON.parse(canonicalJson(input.hooks))}:{}),
+});
 export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.stringify(input.rule_version_id ? {
-    ...(input.revision_advice ? {revision_advice:JSON.parse(canonicalJson(input.revision_advice))} : {}),
-    ...(input.content_contract ? { content_contract: input.content_contract } : {}),
-    ...(input.system_authoring_prompt ? { system_authoring_prompt: input.system_authoring_prompt } : {}),
-    ...(input.project_name !== undefined ? { project_name: input.project_name } : {}),
-    ...(input.answer_capabilities ? { answer_capabilities: input.answer_capabilities } : {}),
-    title: input.title,
-    ...(input.design_context ? { design_context: stableDesignContext(input.design_context) } : {}),
-    ...(input.authoring_direction ? { authoring_direction: input.authoring_direction } : {}),
-    ...(input.question_id ? { question_id: input.question_id } : {}),
-    ...(input.source_files ? { source_files: input.source_files } : {}),
+    ...inputDigestPrefix(input),
     rule_version_id: input.rule_version_id,
     rule_attempt_id: input.rule_attempt_id,
     rule_source_digest: input.rule_source_digest,
     rule_snapshot_path: input.rule_snapshot_path,
     rule_files: (input.rule_files ?? []).map(file => ({ path: file.path, sha256: file.sha256, size_bytes: file.size_bytes })),
-    ...materialIdentity(input),
-    materials: input.materials.map(item => ({ id: item.id, sha256: item.sha256 })),
-    ...(input.model_materials?{model_materials:input.model_materials.map(item=>({id:item.id,sha256:item.sha256}))}:{}),
-    ...(input.material_scope?{material_scope:JSON.parse(canonicalJson(input.material_scope))}:{}),
-    ...(input.batch_context?{batch_context:JSON.parse(canonicalJson({...input.batch_context,captured_at:undefined}))}:{}),
-    ...(input.authoring_contract ? { authoring_contract: input.authoring_contract } : {}),
-    ...(input.scoring_policy ? { scoring_policy: JSON.parse(canonicalJson(input.scoring_policy)) } : {}),
-    ...(input.hooks ? { hooks: JSON.parse(canonicalJson(input.hooks)) } : {})
+    ...inputDigestSuffix(input),
 } : {
-    ...(input.revision_advice ? {revision_advice:JSON.parse(canonicalJson(input.revision_advice))} : {}),
-    ...(input.content_contract ? { content_contract: input.content_contract } : {}),
-    ...(input.system_authoring_prompt ? { system_authoring_prompt: input.system_authoring_prompt } : {}),
-    ...(input.project_name !== undefined ? { project_name: input.project_name } : {}),
-    ...(input.answer_capabilities ? { answer_capabilities: input.answer_capabilities } : {}),
-    title: input.title,
-    ...(input.design_context ? { design_context: stableDesignContext(input.design_context) } : {}),
-    ...(input.authoring_direction ? { authoring_direction: input.authoring_direction } : {}),
-    ...(input.question_id ? { question_id: input.question_id } : {}),
-    ...(input.source_files ? { source_files: input.source_files } : {}),
+    ...inputDigestPrefix(input),
     project_prompt: input.project_prompt ? { workspace_path: input.project_prompt.workspace_path, skill_path: input.project_prompt.skill_path, source_digest: input.project_prompt.source_digest, files: input.project_prompt.files.map(file => ({ path: file.path, sha256: file.sha256, size_bytes: file.size_bytes })) } : null,
-    ...materialIdentity(input),
-    materials: input.materials.map(item => ({ id: item.id, sha256: item.sha256 })),
-    ...(input.model_materials?{model_materials:input.model_materials.map(item=>({id:item.id,sha256:item.sha256}))}:{}),
-    ...(input.material_scope?{material_scope:JSON.parse(canonicalJson(input.material_scope))}:{}),
-    ...(input.batch_context?{batch_context:JSON.parse(canonicalJson({...input.batch_context,captured_at:undefined}))}:{}),
-    ...(input.authoring_contract ? { authoring_contract: input.authoring_contract } : {}),
-    ...(input.scoring_policy ? { scoring_policy: JSON.parse(canonicalJson(input.scoring_policy)) } : {}),
-    ...(input.hooks ? { hooks: JSON.parse(canonicalJson(input.hooks)) } : {}) }));
+    ...inputDigestSuffix(input),
+}));
 
 async function basePrerequisites(db:PoolClient,id:string){
  const workflow=(await db.query(workflowSql,[id])).rows[0];
@@ -351,7 +346,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
             throw Object.assign(new Error('stale input'), { reason_code: 'authoring_input_binding_changed' });
         const materials = await readMaterials(pool, root, job, binding.loaded_materials);
         const projectContextFiles = await readProjectContext(job);
-        if (job.config?.provider !== 'codex' || typeof job.config.model !== 'string' || !job.config.model.trim() || typeof job.config.reasoning_effort !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(job.config.reasoning_effort))
+        if (!isRegisteredAgentProvider(job.config?.provider) || typeof job.config.model !== 'string' || !job.config.model.trim() || typeof job.config.reasoning_effort !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(job.config.reasoning_effort))
             throw new Error('invalid frozen config');
         logEvent('attempt.input_validated', { level: 'info', material_count: materials.length });
         const legacyRulesInput = job.input.rule_version_id ? { version_id: job.input.rule_version_id, source_digest: job.input.rule_source_digest, files: projectContextFiles } : undefined;

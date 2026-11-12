@@ -1,9 +1,9 @@
 # 材料提取、脱敏与DOCX
 
-当前执行绑定以项目、题目、任务、材料包、revision和附件ID为准。已派发任务不再因正文/配置/提示词/整理结果的内容摘要或环境指纹变化而被拒绝；保留任务取消、最新任务归属、材料集合完整性、结构格式和路径边界检查。摘要字段仍用于历史记录、内容寻址及缓存，不作为上述业务执行前后的版本准入门槛。本段覆盖下文历史指纹绑定描述。
+## 适用范围与绑定规则
 
-
-本模块提供格式解析、MinerU适配、脱敏正文/索引渲染和材料DOCX。旧工作流使用步骤1、内部2及人工声明的步骤9；当前整包Agent化名由`../material-library/`执行。全局库revision/job与旧材料工作流身份独立。提取成功不等于OCR准确，技术结构有效不等于零脱敏遗漏。
+- **当前执行绑定**：以项目、题目、任务、材料包、`revision` 和附件 ID 为准。已派发任务不因正文/配置/提示词/整理结果的内容摘要或环境指纹变化而被拒绝；保留任务取消、最新任务归属、材料集合完整性、结构格式和路径边界检查。摘要字段用于历史记录、内容寻址及缓存。
+- **职责范围**：本模块提供格式解析、MinerU 适配、脱敏正文/索引渲染和材料 DOCX。旧工作流使用步骤 1、内部 2 及人工声明的步骤 9；当前整包 Agent 化名由 `../material-library/` 执行。全局库 `revision`/`job` 与旧材料工作流身份独立。提取成功不等于 OCR 准确，技术结构有效不等于零脱敏遗漏。
 
 全局库新材料的原子入库、失败重传及可选脱敏与整理路径见[材料库处理顺序](../material-library/README.md#新材料处理顺序与可跳过步骤)；本目录只说明解析器与旧材料工作流的职责。
 
@@ -13,7 +13,7 @@
 
 | 文件 | 职责和边界 |
 | --- | --- |
-| `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；`extractPages()`以Poppler生成问题页PDF子集后调用同一provider并映回原页码。PDF必须注入冻结provider，DOCX使用MinerU结构化接口，PNG/JPG/JPEG原图直传MinerU API并输出单页结构；TXT/MD本地UTF8。 |
+| `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；`extractPages()`以Poppler生成问题页PDF子集后调用同一provider并映回原页码；`collectExtractedPageIssues()`统一汇总页级识别问题、`empty_page` 与 `unreadable`（供 `process.ts` 和 `material-library/runner.ts` 复用）；`normalizeExtractedPageStructure()`补齐默认段落结构并校验/同步文字投影。PDF必须注入冻结provider，DOCX使用MinerU结构化接口，PNG/JPG/JPEG原图直传MinerU API并输出单页结构；TXT/MD本地UTF8。 |
 | `jobs.ts` | 旧步骤2入队、冻结MinerU配置/转换版本、按执行端领取/缓存/发布；更新步骤1处理状态，非全局库队列。 |
 | `process.ts` | `processMaterials()`核对原件/缓存，生成私有页结构；只对可重试问题页做一次子集复识别并保留issues，无页级能力则标记不可复查，不整份重传。旧无调用的检查点清理入口已移除，不删除历史缓存。 |
 | `pdf.ts` | 当前共享Page/DocumentBlock和确定性`documentBlocksToText()`；`command()`封装Poppler；`extractPdf()`是旧Vision页级路径，非当前MinerU主入口。 |
@@ -22,7 +22,7 @@
 | `config.ts` | `loadExtractionConfig()`读JSON兼容识别配置，仅用EXTRACTION_CONFIG_PATH选文件；不是当前MinerU逐字段环境配置合并器。 |
 | `vision.ts` | 旧智谱聊天视觉/实体客户端，保留调查与测试路径；独立GLM-OCR版面解析不复用此客户端。 |
 | `state.ts` | 旧附件/脱敏设置变更的事务失效；保留历史，取消活动尝试，使依赖当前结果失效。共享库题目来源保持独立冻结。 |
-| `redaction-config.ts` | 合并API/Codex默认和校验；`sameRedactionConfig()`比较有效配置，忽略键序和等价默认。 |
+| `redaction-config.ts` | 合并API/已注册Agent驱动（`isRegisteredAgentProvider`）默认和校验；`sameRedactionConfig()`比较有效配置，忽略键序和等价默认。 |
 | `redaction-jobs.ts` | 旧步骤9只处理人工已脱敏声明，重验来源并原子发布；旧字段映射冻结任务明确失败，不再复用或调用模型。 |
 | `redaction.ts` | 仅保留`renderRedactedMaterials()`渲染同源正文/结构索引及历史协议标识，不包含模型执行。 |
 | `redacted-docx.ts` | 兼容导出公共`document-generation/docx.ts`的`buildDocx()`纯文字/结构渲染；默认连续排版并跳过纯空段/空页，只有显式pagination=source才保留扫描页硬分页，表格单元格采用紧凑段距；名称兼容，可接受已核验脱敏或明确冻结原文，不读取原件、数据库或图片。可选 `style: legal` 只供 Work 业务成稿使用宋体正文、黑色标题及行距，并保留逐行文书字段，独立首段使用标题样式；默认附件渲染不变。 |

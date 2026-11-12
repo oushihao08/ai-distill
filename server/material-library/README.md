@@ -1,8 +1,10 @@
 <!-- 文件职责：说明全局材料库的存储、处理配置、API、任务、项目加载与文件阅读。 -->
 
-当前执行绑定以项目、题目、任务、材料包、revision和附件ID为准。已派发任务不再因正文/配置/提示词/整理结果的内容摘要或环境指纹变化而被拒绝；保留任务取消、最新任务归属、材料集合完整性、结构格式和路径边界检查。摘要字段仍用于历史记录、内容寻址及缓存，不作为上述业务执行前后的版本准入门槛。本段覆盖下文历史指纹绑定描述。
-
 # 独立材料库
+
+## 适用范围与绑定规则
+
+- **当前执行绑定**：以项目、题目、任务、材料包、`revision` 和附件 ID 为准。已派发任务不因正文/配置/提示词/整理结果的内容摘要或环境指纹变化而被拒绝；保留任务取消、最新任务归属、材料集合完整性、结构格式和路径边界检查。摘要字段用于历史记录、内容寻址及缓存。
 
 ## 新材料处理顺序与可跳过步骤
 
@@ -58,11 +60,13 @@ HTTP入口为`GET /api/material-library/redactions/:id/name-revision-source?proj
 | `redaction-runner.ts` | 仅按冻结Agent模板执行整包化名并事务发布；旧字段映射快照在读取正文前拒绝 |
 | `execution-shared.ts` | 执行器共用摘要、私有目录、提取结构校验及正文发布前保守清理；有改动时同时保留原始OCR对象与精确编辑审计 |
 | `processing-policy.ts` | 从期次配置读取当前两模式及历史mask身份并约束派发模板；不调用模型 |
-| `agent-redaction.ts` | 单次限时Agent调用及最终程序编译；不入队、不自动重试 |
+| `agent-redaction.ts` | 单次限时Agent/API调用及最终程序编译；API模式优先复用内存已解析计划`parsed_plan`避免重复磁盘解析，仍保留私有产物落盘；不入队、不自动重试 |
+| `api-redaction.ts` | 将同源私有文件内联至`llm-api`，宿主运行同一编译器反馈修正，落盘`output/material-plan.json`并向调用方透传`parsed_plan` |
 | `agent-redaction-artifacts.ts` | 私有输入、同源检查点、固定结果文件及本地校验工具准备 |
 | `agent-redaction-validator.ts` | 打包到任务内的只读校验CLI，供Agent在同次调用内修正错误；不写库 |
 | `redaction-review.ts` | 显式复核Agent已发布产物，将当前结论及历史追加到job.result_summary，不改不可变产物或任务成功历史 |
 | `preparation.ts` | 可跳过的材料整理任务：按冻结的提取/脱敏来源单次生成总摘要、逐份摘要、文书可见性和支持范围；不自动补调 |
+| `preparation-support.ts` | 材料整理共用系统提示词`PREPARATION_PROMPT`、响应检查点`runPreparationCheckpoint`与逐图审核检查点`imageDecisionCheckpoint` |
 | `worker-once.ts` | 验收入口，只消费HTTP已创建的指定本机Agent材料job UUID，复用共享Agent槽位与正式事务，不领取其他任务 |
 | `prepared-import.ts` | 导入Codex已审阅的原文编辑/分册计划：校验完整提取来源、精确编辑、范围覆盖与请求幂等，在同一事务保存新任务及脱敏结果；不OCR、不调用模型、不改旧结果 |
 | `mineru-import.ts` | 导入MinerU桌面端content_list：核对完整版本原件摘要与PDF页数，复用结构转换，事务保存提取文档与来源摘要；不重跑OCR、不脱敏 |

@@ -27,7 +27,7 @@ async function convertOfficeToPdf(source:string,convertedDirectory:string,profil
  return{output,converter:'LibreOffice',converter_version:version};
 }
 /** 输出目录必须尚不存在，失败保留审计文件但不发布manifest.json；原件只读。 */
-export async function prepareLibraryFiles(manifestPath:string,outputPath:string,signal?:AbortSignal){
+export async function prepareLibraryFiles(manifestPath:string,outputPath:string,signal?:AbortSignal,maxBatchBytes=MAX_FOLDER_BATCH){
  try{
   const sourcePath=resolve(manifestPath),output=resolve(outputPath),manifest=JSON.parse(await readFile(sourcePath,'utf8'));
   if(Object.hasOwn(manifest,'recovery'))throw new Error('临时恢复清单不能再次预处理或作为材料原件');
@@ -74,7 +74,7 @@ export async function prepareLibraryFiles(manifestPath:string,outputPath:string,
    await writeFile(join(output,'provenance.json'),JSON.stringify({version:1,complete:false,files:audit},null,2)+'\n');
   }
   signal?.throwIfAborted();
-  if(audit.some(x=>x.outputs.some((o:any)=>o.size_bytes>MAX_FILE))||audit.reduce((s,x)=>s+x.outputs.reduce((n:number,o:any)=>n+o.size_bytes,0),0)>MAX_FOLDER_BATCH)throw new Error('预处理产物超过上传单文件或整包大小限制，未发布清单');
+  if(audit.some(x=>x.outputs.some((o:any)=>o.size_bytes>MAX_FILE))||audit.reduce((s,x)=>s+x.outputs.reduce((n:number,o:any)=>n+o.size_bytes,0),0)>maxBatchBytes)throw new Error('预处理产物超过上传单文件或整包大小限制，未发布清单');
   if(files.length>100)throw new Error('预处理结果超过100份文件，未发布清单');
   await writeFile(join(output,'provenance.json'),JSON.stringify({version:1,complete:true,files:audit},null,2)+'\n');
   await writeFile(join(output,'manifest.json'),JSON.stringify({files},null,2)+'\n');
