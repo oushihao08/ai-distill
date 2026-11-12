@@ -87,11 +87,11 @@ HTTP归档入口只持久派发并返回任务ID（202），通过attempt接口/
 
 | 接口 | 输入和效果 |
 | --- | --- |
-| `GET /api/projects/:id/feishu-delivery` | 返回当前default_target、来源及统一字段；只读。 |
-| `PUT /api/projects/:id/feishu-delivery` | `{"default_target":{"base_token":"…","table_id":"tbl…"}}`；核实远端结构，合并写入project_step_configs.ordinal=8的feishu_delivery键，不覆盖同配置内其他键，不清空题目或归档。 |
+| `GET /api/projects/:id/feishu-delivery` | 返回当前default_target、来源、`attachment_format`（`docx`或`pdf`）及统一字段；只读。 |
+| `PUT /api/projects/:id/feishu-delivery` | `{"default_target":{"base_token":"…","table_id":"tbl…"},"attachment_format":"docx|pdf"}`（至少提供一项）；传入`default_target`时核实远端结构，合并写入project_step_configs.ordinal=8的feishu_delivery键，保留未传字段，不清空题目或归档。 |
 | `POST /api/projects/:id/feishu-tables` | `{"table_name":"第六期第二批","base_token":"…"}`；base_token可省略，创建空表并返回target，不改变默认目标；同名表拒绝创建，未知响应先核对远端。 |
-| `POST /api/workflows/:id/feishu-sync` | 空body使用期次默认目标；`{"target":{"base_token":"…","table_id":"tbl…"}}`临时指定目标。只同步当前有效的达标归档，不重新评分或归档；逐题请求，不将大批量上传放在单次长HTTP请求中。 |
-| `POST /api/workflows/:id/feishu-draft-sync` | 同样可省略或指定target；要求当前步骤4出题成功且题目尚未归档。上传题面、rubric、思路、标答文本和冻结材料DOCX，将“题目是否完成”设为“未完成”；不改工作流状态或归档回执。 |
+| `POST /api/workflows/:id/feishu-sync` | 空body使用期次默认目标与`attachment_format`；可选`target`临时指定目标，可选`attachment_format`（`docx`|`pdf`）覆盖本次附件格式。只同步当前有效的达标归档，不重新评分或归档；逐题请求，不将大批量上传放在单次长HTTP请求中。 |
+| `POST /api/workflows/:id/feishu-draft-sync` | 同样可省略或指定`target`、`attachment_format`及`revision_attempt_id`；要求当前步骤4出题成功且题目尚未归档。上传题面、rubric、思路、标答文本和冻结材料DOCX（或经`scripts/runtime/docx-to-image-pdf.py`转换的图像PDF），将“题目是否完成”设为“未完成”；不改工作流状态或归档回执。 |
 
 第八期的两个交付目标在 `feishu-targets.ts` 中同时冻结显示名称、`base_token`、`table_id`：“第八期-内部”为本期默认目标，“第八期-久盈”通过显式 `target` 交付。两者均不按名称搜索或临时创表；名称只用于人工识别，业务定位以冻结 ID 为准。
 
@@ -99,9 +99,11 @@ HTTP归档入口只持久派发并返回任务ID（202），通过attempt接口/
 
 ### 材料附件生成、上传与题目绑定
 
+PDF转换的LibreOffice查找顺序为`LIBREOFFICE_PATH`、macOS的`/Applications/LibreOffice.app`或`LibreOfficeDev.app`、当前服务用户`~/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/libreoffice-headless/libreoffice/LibreOfficeDev.app/Contents/MacOS/soffice`，最后由Python脚本使用服务PATH查找。自动候选须可执行；不自动安装依赖或修改服务环境。`PYTHON3_PATH`仍可指定转换用Python。代码更新需要API重载后生效，CLI启动环境不会改变已运行服务。
+
 1. 先取当前有效出题attempt的冻结输入与题目版本。材料导出器核对来源版本、材料身份、数量、大小和摘要；不从当前目录另挑材料，也不跨题混合。草稿须出题成功且尚未归档；正式同步须当前归档和达标有效。
 2. 有可用材料整理结果时，依其中**可见文书及其顺序**生成；否则按该题原件顺序取冻结正文/结构。普通豆包来源依主项目布局合成一份DOCX：保留各文书正文，首标题与文书名相同则复用，否则补边界标题；同名文书标第几份，重复件只标记而不删除。新材料库的选用材料快照强制**逐文书导出**，文书有几份就生成几份DOCX，不套用合册布局。整理结果存在但没有可见文书时拒绝导出，不回退整包正文。具体投影与布局由[材料导出模块](../materials/README.md#材料docx布局与来源顺序)维护。
-3. 按实际导出件顺序读取DOCX字节，以字节SHA-256前16位生成`材料-<摘要>.docx`名称，逐份上传取得飞书`file_token`。所有token填入目标表内**同一workflow UUID对应记录**的“输入附件”字段；“题目ID”和隐藏“系统同步ID”也使用该UUID。先按这两个稳定ID查现有记录，拒绝同表多行命中；不凭任务名称或材料文件名猜测题目归属。
+3. 按实际导出件顺序读取DOCX字节，以冻结DOCX字节SHA-256前16位生成`材料-<摘要>.docx`（或`attachment_format=pdf`时的`材料-<摘要>.pdf`；PDF由现有`scripts/runtime/docx-to-image-pdf.py`转换图像版并缓存于`<STORAGE_DIR>/feishu-material-pdfs/<workflow_id>/`，依赖本机`soffice`），逐份上传取得飞书`file_token`。所有token填入目标表内**同一workflow UUID对应记录**的“输入附件”字段；“题目ID”和隐藏“系统同步ID”也使用该UUID。先按这两个稳定ID查现有记录，拒绝同表多行命中；不凭任务名称或材料文件名猜测题目归属。
 4. 新建记录后回读本次上传token、附件数量和题目字段；已有记录按生成文件的摘要名称、数量和顺序核对附件，同时逐字符核对题目ID及六项业务字段。远端差异或来源在过程中变化则停止并记录失败。这里**不下载远端附件逐字节复核**；`succeeded`表示本次远端记录和附件关联回读通过，不等于平台后续人工验收。
 
 ### 回执、失败与验证边界

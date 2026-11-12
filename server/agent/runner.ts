@@ -14,6 +14,7 @@ export interface AgentTask<T=unknown>{
 	execution_profile?:'fresh_authoring'|'project_delivery';
  working_directory?:string;
  prompt:string;
+ provider?:string;
  model:string;
  reasoning_effort:string;
  schema?:Record<string,unknown>;
@@ -50,6 +51,6 @@ export async function runAgent<T>(task:AgentTask<T>,adapter:AgentAdapter<T>=conf
 }
 
 async function runDriverRegistryAdapter<T>(task:AgentTask<T>&{developer_instructions:string}){
- const {driver,resolvedModel}=resolveAgentDriver(task.model);
+ const {driver,resolvedModel}=resolveAgentDriver(task.model,task.provider);
  return driver.execute({...task,resolved_model:resolvedModel});
 }

@@ -6,7 +6,7 @@
 | 脚本 | 当前用途和边界 |
 | --- | --- |
 | `verify-web-agent.ts` | 真实本机Chrome（后台、临时档案）+ 本地假聊天页，验证网页Agent传输的上传/长文本/读取/取消/6会话并发/实例复用/清理；不访问真实站点、数据库或模型，不碰`.storage`档案。 |
-| `verify-web-agent-db.ts` | `bun --no-env-file scripts/verification/verify-web-agent-db.ts --port <本机临时PG端口> --out <证据JSON>`；只接受127.0.0.1、`web_verify`专用空库，顺序应用`001`..`064`迁移并在`finally`删除schema；使用脚本化假网页传输（含首轮故意违规触发对话内修正）跑通`capacity.web=6`独立通道互不阻塞、脱敏（`library_redactions`）、整理（`library_preparations`）与步骤4出题（`step_attempts`/`artifacts`/`question_material_scope_uses`）直写PG入库。不读取`.env`、不访问真实网页或业务库。 |
+| `verify-web-agent-db.ts` | `bun --no-env-file scripts/verification/verify-web-agent-db.ts --port <本机临时PG端口> --out <证据JSON>`；只接受127.0.0.1、`web_verify`专用空库，顺序应用`001`..`064`迁移并在`finally`删除schema；核验自动网页脱敏被HTTP拒绝、SQL约束只允许本机目标的redact/web，并使用脚本化假网页传输（含首轮故意违规触发对话内修正）跑通`capacity.web=6`独立通道互不阻塞、材料整理（`library_preparations`）与步骤4出题（`step_attempts`/`artifacts`/`question_material_scope_uses`）直写PG入库；并以离线作业台（`cli/offline.ts` 的 export/import，模拟人工解压zip、先回不合格结果再分两段回合格结果）验证脱敏→整理→出题三类均经修正轮后入库、对账台记录完整。脚本把`STORAGE_DIR`指向临时根，不读取`.env`、不访问真实网页或业务库。 |
 | `verify-worker-transactions.ts` | 显式本机端口、固定专用`worker_verify`数据库与随机schema，复用生产材料任务函数及真实任务表约束；验证取消/提交锁竞争、失租、回滚、JSONB原因、提交后回执异常。只用合成数据，退出删schema；不读取业务连接配置、不跑全量迁移或模型，须显式指定证据输出路径。 |
 | `verify-answer-flow.ts` | 随机临时 schema 与合成输入；默认用注入执行器，不调用模型；`--real-score` 会调用真实 Codex 评分。写入其声明的结果文件。 |
 | `verify-authoring-flow.ts` | 随机临时 schema 与合成输入，但会调用真实 Codex 出题；写入结果文件。 |

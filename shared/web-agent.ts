@@ -14,6 +14,10 @@ export interface WebAgentSettings {
   thinking?: boolean;
   /** 站点模型选择器上的可见标签；缺省沿用站点默认。 */
   model_label?: string;
+  /** 'offline'＝离线作业台：不驱动浏览器，导出zip由人工在网页操作后交回；校验与入库不变。须同时给出 task。 */
+  mode?: 'offline';
+  /** 离线任务键 `<redact|prepare|author>-<对象UUID>`，跨导出/交回保持不变，用于定位已交回的回复。 */
+  task?: string;
 }
 
 export function isWebAgentProvider(value: unknown): value is WebAgentProvider {
@@ -24,13 +28,17 @@ export function isWebAgentProvider(value: unknown): value is WebAgentProvider {
 export function validateWebAgentSettings(value: unknown): WebAgentSettings {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('网页Agent设置须为对象');
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).some(key => !['provider', 'thinking', 'model_label'].includes(key))) throw new Error('网页Agent设置包含未知字段');
+  if (Object.keys(record).some(key => !['provider', 'thinking', 'model_label', 'mode', 'task'].includes(key))) throw new Error('网页Agent设置包含未知字段');
   if (!isWebAgentProvider(record.provider)) throw new Error('网页Agent提供方仅支持deepseek或gemini');
   if (record.thinking !== undefined && typeof record.thinking !== 'boolean') throw new Error('网页Agent thinking须为布尔值');
   if (record.model_label !== undefined && (typeof record.model_label !== 'string' || !record.model_label.trim() || record.model_label.length > 80)) throw new Error('网页Agent model_label无效');
+  if (record.mode !== undefined && record.mode !== 'offline') throw new Error('网页Agent mode 仅支持 offline');
+  if ((record.mode === 'offline') !== (record.task !== undefined)) throw new Error('离线模式须且仅须同时提供 task');
+  if (record.task !== undefined && (typeof record.task !== 'string' || !/^(redact|prepare|author)-[0-9a-f-]{36}$/.test(record.task))) throw new Error('离线任务键无效');
   return {
     provider: record.provider,
     ...(record.thinking !== undefined ? { thinking: record.thinking } : {}),
     ...(record.model_label !== undefined ? { model_label: record.model_label.trim() } : {}),
+    ...(record.mode === 'offline' ? { mode: 'offline' as const, task: record.task as string } : {}),
   };
 }

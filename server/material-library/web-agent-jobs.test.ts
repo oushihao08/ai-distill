@@ -1,4 +1,4 @@
-/** 验证材料库网页Agent边界：脱敏/提取/入库拒绝 web_settings，仅材料整理（prepare）允许冻结到 lane=web；用SQL替身与临时本机队列，不连接PG、不启动浏览器或模型。 */
+/** 验证材料库网页Agent边界：自动网页脱敏及提取/入库拒绝 web_settings，脱敏仅接受离线作业台（mode=offline，本机目标），材料整理（prepare）允许冻结到 lane=web；用SQL替身与临时本机队列，不连接PG、不启动浏览器或模型。 */
 import {test,expect} from 'bun:test';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -24,6 +24,16 @@ test('library job requests (intake/extract/redact) reject web_settings and choos
  expect(status(()=>chooseLibraryExecutor('redact',[{format:'docx'}],{provider:'web'},'local'))).toBe(409);
  expect(chooseLibraryExecutor('redact',[{format:'docx'}],{provider:'api'})).toBe('api');
  expect(chooseLibraryExecutor('redact',[{format:'docx'}],{provider:'codex'})).toBe('agent');
+});
+
+test('redact accepts web_settings only for the offline workbench on a local target',()=>{
+ const offline={provider:'deepseek',mode:'offline',task:'redact-123e4567-e89b-42d3-a456-426614174002'};
+ expect(validateLibraryJobRequest({...redact,web_settings:offline})).toMatchObject({web_settings:offline});
+ expect(status(()=>validateLibraryJobRequest({...redact,execution_target:'server',web_settings:offline}))).toBe(409);
+ expect(status(()=>validateLibraryJobRequest({...redact,web_settings:offline,api_settings:apiSettings}))).toBe(400);
+ expect(status(()=>validateLibraryJobRequest({kind:'extract',request_key:key,execution_target:'local',web_settings:offline}))).toBe(400);
+ expect(chooseLibraryExecutor('redact',[{format:'docx'}],{provider:'web',web:offline} as any)).toBe('web');
+ expect(status(()=>chooseLibraryExecutor('redact',[{format:'docx'}],{provider:'web',web:offline} as any,'server'))).toBe(409);
 });
 
 async function withTemporaryLocalQueue<T>(run:(root:string)=>Promise<T>){

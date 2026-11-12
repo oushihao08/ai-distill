@@ -12,7 +12,8 @@ import {frozenRevisionAdvice,validFrozenAdvice,assertRepairStepAllowed,type Froz
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
 import {runExternalCall} from '../external-call';
-import {isRegisteredAgentProvider,runAgent} from '../agent';
+import {isRegisteredAgentProvider,resolveAgentDriver,runAgent} from '../agent';
+import {DEFAULT_AUTHORING_SETTINGS} from '../system-step-prompts';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {mergeCodexDefaults,readProjectAgentDefaults} from '../agent/config';
 import {HTTPException} from 'hono/http-exception';
@@ -166,13 +167,49 @@ function webStepConfig(raw:unknown,web:WebAgentSettings){
  void _model;void _effort;void _provider;void _web;
  return{...rest,provider:'web',web};
 }
-/** options.web：仅本次派发改用网页Agent出题；项目步骤配置不变，设置冻结进本次任务配置。 */
-export async function enqueueAuthoring(pool:Pool,id:string,options?:{web?:WebAgentSettings}){
+export interface AuthoringDispatchOptions {
+ web?: WebAgentSettings;
+ provider?: 'codex' | 'agy' | string;
+ model?: string;
+ reasoning_effort?: string;
+ prompt?: string;
+ timeout_ms?: number;
+}
+/** options.web：仅本次派发改用网页Agent出题；options.provider/model/reasoning_effort：显式覆盖出题执行后端，避免读取数据库默认配置。 */
+export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDispatchOptions){
  const db=await pool.connect();
  try{
   await db.query('BEGIN');await assertWorkflowNotArchived(db,id);await assertRepairStepAllowed(db,id,4);await syncWorkflowMaterialScope(db,id);const source=await prerequisites(db,id);
-  const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[source.workflow.project_id])).rows[0]?.config;
-  const config=validateStepConfigForExecution(4,options?.web?webStepConfig(raw,options.web):raw?.provider==='web'?raw:mergeCodexDefaults(raw,await readProjectAgentDefaults(db,source.workflow.project_id)));
+  const optProvider=options?.provider?(options.provider.trim().toLowerCase()==='antigravity'?'agy':options.provider.trim().toLowerCase()):undefined;
+  const hasExplicitAgent=Boolean(optProvider||options?.model||options?.reasoning_effort);
+  const skipDbStepConfig=Boolean(hasExplicitAgent&&options?.prompt);
+  const raw=skipDbStepConfig?undefined:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[source.workflow.project_id])).rows[0]?.config;
+  let mergedConfig:Record<string,unknown>;
+  if(options?.web){
+   mergedConfig=webStepConfig(raw,options.web);
+  }else if(hasExplicitAgent){
+   const {model:_dbModel,reasoning_effort:_dbEffort,provider:_dbProvider,web:_dbWeb,...restRaw}=(raw&&typeof raw==='object'&&!Array.isArray(raw)?raw:{}) as Record<string,unknown>;
+   void _dbModel;void _dbEffort;void _dbProvider;void _dbWeb;
+   const inferredProvider=optProvider??(options?.model?(()=>{try{return resolveAgentDriver(options.model).driver.id;}catch{return 'codex';}})():'codex');
+   const resolvedModel=options?.model??(inferredProvider==='agy'?DEFAULT_AUTHORING_SETTINGS.model:'gpt-5.4');
+   const resolvedEffort=options?.reasoning_effort??DEFAULT_AUTHORING_SETTINGS.reasoning_effort;
+   mergedConfig={
+    ...restRaw,
+    provider:inferredProvider,
+    model:resolvedModel,
+    reasoning_effort:resolvedEffort,
+    ...(options?.prompt?{prompt:options.prompt}:{}),
+    ...(options?.timeout_ms!==undefined?{timeout_ms:options.timeout_ms}:{}),
+   };
+  }else if(raw?.provider==='web'){
+   mergedConfig=raw;
+  }else{
+   const defaults=await readProjectAgentDefaults(db,source.workflow.project_id);
+   mergedConfig=mergeCodexDefaults(raw,defaults);
+   if(options?.prompt)mergedConfig.prompt=options.prompt;
+   if(options?.timeout_ms!==undefined)mergedConfig.timeout_ms=options.timeout_ms;
+  }
+  const config=validateStepConfigForExecution(4,mergedConfig);
   const scoreConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[source.workflow.project_id])).rows[0]?.config;
   const answerConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5',[source.workflow.project_id])).rows[0]?.config;
   const answerCapabilities=readAnswerToolPolicyFromStepConfig(answerConfig)??{server_tools:[],local_tools:[]};
@@ -180,7 +217,7 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:{web?:WebAge
   const scoringPolicy:ScoringPolicy|undefined=scoreWorkflow?.contract==='model_report_v1'?{contract:scoreWorkflow.contract,rules_text:scoreWorkflow.rules_text,reference_answer:scoreWorkflow.reference_answer}:undefined;
   if(config.provider==='web'&&!localQueueEnabled())throw new HTTPException(409,{message:'网页Agent出题需要本机独立队列（EXECUTION_QUEUE_MODE=local）'});
   const hooks=await freezeStageHooks(dirname(source.skill_path),config.workflow);
-  const loggingConfig=(config.provider==='web'?{model:`web:${config.web.provider}`}:config) as {model?:string;reasoning_effort?:string};
+  const loggingConfig=(config.provider==='web'?{model:`web:${config.web.provider}`,provider:'web'}:{model:config.model,reasoning_effort:config.reasoning_effort,provider:config.provider}) as {model?:string;reasoning_effort?:string;provider?:string};
   const advice=await frozenRevisionAdvice(db,id);
   const batchContext=await freezeAuthoringBatch(db,source.workflow.project_id,id);
   const materialScope=freezeMaterialScope('loaded_materials' in source?source.loaded_materials?.material_scope:undefined,batchContext);
@@ -188,7 +225,7 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:{web?:WebAge
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};
   await supersedeForeignPending(db,{kind:'step',id,ordinal:4});
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND input->>'digest'=$2 AND config=$3::jsonb AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id,input.digest,JSON.stringify(config)])).rows[0];
-  if(previous){await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'authoring',workflow_id:id,project_id:source.workflow.project_id,ordinal:4,attempt_id:previous.id,operation:'authoring_enqueue',provider:'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return{id:previous.id,reused:true};}
+  if(previous){await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'authoring',workflow_id:id,project_id:source.workflow.project_id,ordinal:4,attempt_id:previous.id,operation:'authoring_enqueue',provider:loggingConfig.provider??'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return{id:previous.id,reused:true};}
   if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND status IN ('waiting','running') LIMIT 1",[id])).rowCount)throw new HTTPException(409,{message:'此题目已有出题任务'});
   const attempt=crypto.randomUUID();
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,4,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=4",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
@@ -198,7 +235,7 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:{web?:WebAge
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='题目更新，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal>4 AND ordinal<=8 AND status IN ('waiting','running')",[id]);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[id]);
   await db.query("UPDATE ai_distill.project_exports SET status='stale',error='题目或评分标准更新',finished_at=now() WHERE project_id=$1 AND status IN ('running','succeeded')",[source.workflow.project_id]);
-  await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'authoring',workflow_id:id,project_id:source.workflow.project_id,ordinal:4,attempt_id:attempt,operation:'authoring_enqueue',provider:'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting',material_count:input.materials.length}));return{id:attempt,reused:false};
+  await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'authoring',workflow_id:id,project_id:source.workflow.project_id,ordinal:4,attempt_id:attempt,operation:'authoring_enqueue',provider:loggingConfig.provider??'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting',material_count:input.materials.length}));return{id:attempt,reused:false};
  }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
 }
 
@@ -278,6 +315,9 @@ function buildAuthoringFailure(error: unknown, failurePhase: string): import('..
             case 'result_validation_failed':
                 message = '出题结果无法转换为可保存的JSON题包，请检查本次私有执行记录';
                 break;
+            case 'web_offline_pending':
+                message = '已导出离线作业台任务，等待交回网页回复';
+                break;
             case 'codex_timeout':
                 message = '出题执行超过本次时限，未取得可接收的完整结果';
                 break;
@@ -338,7 +378,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
     }
     for (const row of staleRows)
         withLogContext({ component: 'authoring', project_id: row.project_id, workflow_id: row.workflow_id, ordinal: 4, attempt_id: row.id, operation: 'authoring' }, () => logEvent('attempt.recovered_interrupted', { level: 'error', state: 'failed', threshold_ms: 300000, ...(row.heartbeat_at ? { last_heartbeat_at: new Date(row.heartbeat_at).toISOString() } : {}) }));
-    const restoreLogContext = enterLogContext({ component: 'authoring', workflow_id: job.workflow_id, project_id: job.project_id, ordinal: 4, attempt_id: job.id, operation: 'authoring', provider: job.config?.provider === 'web' ? 'web' : 'codex', model: job.config?.provider === 'web' ? `web:${job.config.web?.provider}` : job.config?.model, reasoning_effort: job.config?.reasoning_effort });
+    const restoreLogContext = enterLogContext({ component: 'authoring', workflow_id: job.workflow_id, project_id: job.project_id, ordinal: 4, attempt_id: job.id, operation: 'authoring', provider: job.config?.provider === 'web' ? 'web' : (job.config?.provider ?? 'codex'), model: job.config?.provider === 'web' ? `web:${job.config.web?.provider}` : job.config?.model, reasoning_effort: job.config?.reasoning_effort });
     logEvent('attempt.claimed', { level: 'info', state: 'running' });
     logEvent('attempt.started', { level: 'info', state: 'running', material_count: job.input?.materials?.length ?? 0 });
     const cancellation = watchTaskCancellation(pool, job.id, signal, false);
@@ -413,6 +453,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                         + hookAdditionText(additions),
                     model: job.config.provider === 'web' ? `web:${job.config.web.provider}` : job.config.model,
                     reasoning_effort: job.config.provider === 'web' ? 'none' : job.config.reasoning_effort,
+                    provider: job.config.provider,
                     // 业务心跳只证明执行器存活，不能让始终没有完整结果的调用无限占槽。
                     // 出题单次墙钟时间硬限制为 30 分钟；到线后由现有失败结算释放本机容量。
                     timeout_ms: Math.min(job.config.timeout_ms ?? 1_800_000, 1_800_000),
@@ -420,7 +461,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     execute: options => runExternalCall({
                         attempt_id: job.id, operation: 'author'
                     }, call_id => (job.config.provider === 'web' ? webAuthoringExecutor(job.config.web) : runAgent)({
-                        ...options, call_id, task_type: 'question_authoring'
+                        ...options, call_id, task_type: 'question_authoring', provider: job.config.provider
                     }))
                 };
                 return author(authorOptions);

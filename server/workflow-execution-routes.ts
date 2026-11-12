@@ -19,13 +19,38 @@ import {storageDirectory} from './paths';
 import {QueueCapacityError} from './execution-queue/store';
 import {readActiveConcurrencyLimit,readConcurrencySettings} from './concurrency';
 import {validateWebAgentSettings,type WebAgentSettings} from '../shared/web-agent';
+import type {AuthoringDispatchOptions} from './authoring/jobs';
 
-/** 派发附加上下文：归档交付身份，或仅本次出题派发使用的网页Agent设置（冻结进任务，不改项目配置）。 */
-export interface DispatchContext {delivery_identity?:{task_id:string;org:string};web_settings?:WebAgentSettings}
+/** 派发附加上下文：归档交付身份，或仅本次出题派发使用的网页Agent设置/出题配置（冻结进任务，不改项目配置）。 */
+export interface DispatchContext {
+ delivery_identity?:{task_id:string;org:string};
+ web_settings?:WebAgentSettings;
+ authoring_settings?:AuthoringDispatchOptions;
+}
 /** 解析可选的 web_settings；非法值返回400。 */
 function readWebSettings(value:unknown){
  if(value===undefined)return undefined;
  try{return validateWebAgentSettings(value);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'网页Agent设置无效'});}
+}
+/** 解析可选的出题执行参数（支持顶层或嵌套 authoring_settings）；非法格式返回400。 */
+function readAuthoringSettings(value:unknown):AuthoringDispatchOptions|undefined{
+ if(!value||typeof value!=='object'||Array.isArray(value))return undefined;
+ const obj=value as Record<string,unknown>;
+ const nested=(obj.authoring_settings&&typeof obj.authoring_settings==='object'&&!Array.isArray(obj.authoring_settings))?obj.authoring_settings as Record<string,unknown>:undefined;
+ const src=nested??obj;
+ const provider=typeof src.provider==='string'?src.provider.trim():undefined;
+ const model=typeof src.model==='string'?src.model.trim():undefined;
+ const effort=typeof src.reasoning_effort==='string'?src.reasoning_effort.trim():typeof src.effort==='string'?src.effort.trim():undefined;
+ const prompt=typeof src.prompt==='string'?src.prompt:undefined;
+ const timeout=typeof src.timeout_ms==='number'?src.timeout_ms:undefined;
+ if(!provider&&!model&&!effort&&!prompt&&timeout===undefined)return undefined;
+ return{
+  ...(provider?{provider:provider.toLowerCase()==='antigravity'?'agy':provider.toLowerCase()}:{}),
+  ...(model?{model}:{}),
+  ...(effort?{reasoning_effort:effort}:{}),
+  ...(prompt?{prompt}:{}),
+  ...(timeout!==undefined?{timeout_ms:timeout}:{}),
+ };
 }
 interface RouteDependencies {
  pool:Pool;
@@ -72,9 +97,13 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
    const raw=await c.req.text();
    if(raw.trim()){
     let body:unknown;try{body=JSON.parse(raw);}catch{throw new HTTPException(400,{message:'出题参数须为有效JSON'});}
-    if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>key!=='web_settings'))throw new HTTPException(400,{message:'出题参数只允许 web_settings'});
-    const web=readWebSettings((body as {web_settings?:unknown}).web_settings);
-    if(web)context={web_settings:web};
+    if(!body||typeof body!=='object'||Array.isArray(body))throw new HTTPException(400,{message:'出题参数须为JSON对象'});
+    const b=body as Record<string,unknown>;
+    const allowedKeys=['web_settings','authoring_settings','provider','model','reasoning_effort','effort','prompt','timeout_ms'];
+    if(Object.keys(b).some(key=>!allowedKeys.includes(key)))throw new HTTPException(400,{message:`出题参数只允许 ${allowedKeys.join(', ')}`});
+    const web=readWebSettings(b.web_settings);
+    const authoring=readAuthoringSettings(b);
+    if(web||authoring)context={...(web?{web_settings:web}:{}),...(authoring?{authoring_settings:authoring}:{})};
    }
   }
   if(ordinal===8){
@@ -141,6 +170,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
   try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'批量执行参数须为有效JSON'});}
   const batchWeb=readWebSettings((body as {web_settings?:unknown}|null)?.web_settings);
   if(batchWeb&&ordinal!==4)throw new HTTPException(400,{message:'web_settings仅用于出题步骤'});
+  const batchAuthoring=ordinal===4?readAuthoringSettings(body):undefined;
   const rawIds=(body as {workflow_ids?:unknown}|null)?.workflow_ids;
   if(rawIds!==undefined&&!Array.isArray(rawIds))throw new HTTPException(400,{message:'workflow_ids须为记录数组'});
   const requestedIds=rawIds===undefined?undefined:[...new Set(rawIds.map(value=>uuid(String(value))))];
@@ -170,7 +200,8 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
     const eligibility=workflowStepReadiness(ordinal,states);
     if(!eligibility.ready)return{workflow_id:workflowId,status:'not_ready' as const,reason:eligibility.reason};
     try{
-     const task=await dispatch(workflowId,ordinal as WorkflowStepOrdinal,batchWeb?{web_settings:batchWeb}:undefined);
+     const batchContext:DispatchContext|undefined=(batchWeb||batchAuthoring)?{...(batchWeb?{web_settings:batchWeb}:{}),...(batchAuthoring?{authoring_settings:batchAuthoring}:{})}:undefined;
+     const task=await dispatch(workflowId,ordinal as WorkflowStepOrdinal,batchContext);
      return{workflow_id:workflowId,status:task.completed?'succeeded' as const:'queued' as const,attempt_id:task.id,...(task.ids?{attempt_ids:task.ids}:{}),reused:task.reused??false,...(task.decision?{decision:task.decision,reasons:task.reasons??[]}: {})};
     }catch(error){
      if(error instanceof QueueCapacityError)return{workflow_id:workflowId,status:'capacity_exceeded' as const,reason:error.message};

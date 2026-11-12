@@ -1,6 +1,6 @@
 /**
  * 职责：web agent 模块公共入口——优先经 BrowserSkill 后台 Agent Window 复用已登录浏览器，否则退回独立 Chrome 档案经 CDP 驱动 DeepSeek / Gemini 网页对话。
- * 公开入口：`createWebChatTransport`、`webBrowserStatus`、`webDoctor`、`webLogin`、`webCloseBrowser`、`WebAgentError`、`extractJsonFromReply`、`isLikelyTruncatedJson` 及类型。
+ * 公开入口：`createWebChatTransport`、`createOfflineChatTransport`（离线作业台：导出zip、回放交回的回复）、`webBrowserStatus`、`webDoctor`、`webLogin`、`webCloseBrowser`、`WebAgentError`、`extractJsonFromReply`、`isLikelyTruncatedJson` 及类型。
  * 不读取数据库/队列/.env，不借用用户日常标签页；详细边界、核验事实与排错见 `README.md`。
  */
 import {bskBrowserStatus,closeOwnedBskSessions,probeBskBrowser} from './bsk-transport';
@@ -10,6 +10,8 @@ import type {WebAgentBackend,WebChatTransportOptions,WebProvider} from './types'
 
 export {createWebChatTransport,createCdpChatTransport,resolveBackend} from './transport';
 export {createBskChatTransport,probeBskBrowser} from './bsk-transport';
+export {createOfflineChatTransport,readOfflineTask,importOfflineReply,offlineRoot,OFFLINE_TASK_KEY} from './offline-transport';
+export type {OfflineTaskState,OfflineTaskStatus} from './offline-transport';
 export {extractJsonFromReply,isLikelyTruncatedJson,JsonExtractError} from './json-extract';
 export type {JsonExtractReason} from './json-extract';
 export {classifyNotice,classifyPage} from './classify';

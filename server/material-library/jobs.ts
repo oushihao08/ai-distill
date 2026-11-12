@@ -16,6 +16,7 @@ import {readLibraryProcessingSettings} from './settings';
 import {resolveLibraryTemplate} from './templates';
 import {isRegisteredAgentProvider,readAgentDefaults,validateAgentModelSettings} from '../agent';
 import {resolveModelApiConfig} from '../llm-api';
+import {validateWebAgentSettings} from '../../shared/web-agent';
 import {readProjectMaterialProcessingMode,projectRedactionTemplate} from './processing-policy';
 import {MINERU_OCR_VERSION} from '../materials/pdf-extraction/mineru-cli';
 import {mineruToken} from '../materials/pdf-extraction/mineru-credentials';
@@ -54,7 +55,7 @@ export async function hasLibraryQueueWork(pool:Pool,executor:LibraryExecutorKind
 
 export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest{
  if(!value||typeof value!=='object'||Array.isArray(value))throw new HTTPException(400,{message:'材料处理任务参数无效'});
- const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','pdf_provider','extraction_job_id','previous_job_id','template_id','project_id','agent_settings','api_settings'];
+ const body=value as Record<string,unknown>,allowed=['kind','request_key','execution_target','pdf_provider','extraction_job_id','previous_job_id','template_id','project_id','agent_settings','api_settings','web_settings'];
  if(Object.keys(body).some(key=>!allowed.includes(key))||!['intake','extract','redact'].includes(String(body.kind))||typeof body.request_key!=='string'||!uuidPattern.test(body.request_key)||!['local','server'].includes(String(body.execution_target)))throw new HTTPException(400,{message:'材料处理任务参数无效'});
  if(body.kind==='redact'&&(typeof body.extraction_job_id!=='string'||!uuidPattern.test(body.extraction_job_id)))throw new HTTPException(400,{message:'脱敏任务必须明确指定成功的文本提取任务'});
  if(body.kind!=='redact'&&body.extraction_job_id!==undefined)throw new HTTPException(400,{message:'仅脱敏任务可以指定文本提取任务'});
@@ -70,7 +71,14 @@ export function validateLibraryJobRequest(value:unknown):CreateLibraryJobRequest
   if(body.kind!=='redact'||!body.agent_settings||typeof body.agent_settings!=='object'||Array.isArray(body.agent_settings)||Object.keys(body.agent_settings).some(key=>!['model','reasoning_effort'].includes(key)))throw new HTTPException(400,{message:'仅化名脱敏任务可指定本次Agent模型设置'});
   agentSettings=validateAgentModelSettings(body.agent_settings);
  }
- return{...(apiSettings?{api_settings:apiSettings}:{}),...(agentSettings?{agent_settings:agentSettings}:{}),...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),...(typeof body.pdf_provider==='string'?{pdf_provider:body.pdf_provider as CreateLibraryJobRequest['pdf_provider']}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
+ let webSettings:CreateLibraryJobRequest['web_settings'];
+ if(body.web_settings!==undefined){
+  if(body.kind!=='redact'||body.agent_settings!==undefined||body.api_settings!==undefined)throw new HTTPException(400,{message:'网页设置仅用于脱敏离线作业台，且不能与Agent/API设置同时指定'});
+  try{webSettings=validateWebAgentSettings(body.web_settings);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'网页Agent设置无效'});}
+  if(webSettings.mode!=='offline')throw new HTTPException(400,{message:'脱敏不支持自动网页Agent，仅支持离线作业台（mode=offline）'});
+  if(body.execution_target!=='local')throw new HTTPException(409,{message:'离线作业台脱敏只能在本机执行'});
+ }
+ return{...(apiSettings?{api_settings:apiSettings}:{}),...(agentSettings?{agent_settings:agentSettings}:{}),...(webSettings?{web_settings:webSettings}:{}),...(typeof body.project_id==='string'?{project_id:body.project_id}:{}),...(typeof body.template_id==='string'?{template_id:body.template_id}:{}),...(typeof body.pdf_provider==='string'?{pdf_provider:body.pdf_provider as CreateLibraryJobRequest['pdf_provider']}:{}),kind:body.kind as LibraryJobKind,request_key:body.request_key,execution_target:body.execution_target as LibraryExecutionTarget,...(typeof body.extraction_job_id==='string'?{extraction_job_id:body.extraction_job_id}:{}),...(typeof body.previous_job_id==='string'?{previous_job_id:body.previous_job_id}:{})};
 }
 
 export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:string;redaction_mode?:'model'|'declared_redacted'}>,settings:{provider?:string}|null,target:LibraryExecutionTarget='local'):LibraryExecutorKind{
@@ -81,6 +89,10 @@ export function chooseLibraryExecutor(kind:LibraryJobKind,files:Array<{format:st
   return'agent';
  }
  if(settings?.provider==='api')return'api';
+ if(settings?.provider==='web'&&kind==='redact'&&(settings as {web?:{mode?:string}}).web?.mode==='offline'){
+  if(target==='server')throw new HTTPException(409,{message:'离线作业台脱敏只能在本机执行'});
+  return'web';
+ }
  throw new HTTPException(409,{message:'材料库脱敏仅支持Agent或API化名，旧字段映射执行已删除'});
 }
 
@@ -100,7 +112,7 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    FROM ai_distill.library_files f JOIN ai_distill.library_blobs b ON b.id=f.blob_id WHERE f.revision_id=$1 ORDER BY f.position`,[revisionId])).rows as LibraryFileRow[];
   if(files.length!==Number(revision.file_count))throw conflict('材料文件集合清单不完整');
   if(files.some(file=>file.storage_target!==request.execution_target))throw conflict('所选执行位置无法读取文件集合中的全部原件');
-  const intent={version:1,...(request.api_settings?{api_settings:request.api_settings}:{}),...(request.agent_settings?{agent_settings:request.agent_settings}:{}),...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),...(request.pdf_provider?{pdf_provider:request.pdf_provider}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
+  const intent={version:1,...(request.api_settings?{api_settings:request.api_settings}:{}),...(request.web_settings?{web_settings:request.web_settings}:{}),...(request.agent_settings?{agent_settings:request.agent_settings}:{}),...(request.project_id?{project_id:request.project_id}:{}),...(request.template_id?{template_id:request.template_id}:{}),...(request.pdf_provider?{pdf_provider:request.pdf_provider}:{}),kind:request.kind,revision_id:revisionId,execution_target:request.execution_target,...(request.extraction_job_id?{extraction_job_id:request.extraction_job_id}:{}),...(request.previous_job_id?{previous_job_id:request.previous_job_id}:{})};
   const requestDigest=hash(intent);
   const previousRequest=(await db.query('SELECT id,input_snapshot FROM ai_distill.library_jobs WHERE package_id=$1 AND request_key=$2',[packageId,request.request_key])).rows[0];
   if(previousRequest){
@@ -118,10 +130,11 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   if(template&&template.workflow!=='codex_plan')throw conflict('字段映射脱敏已退役，请选择Agent化名模板');
   if(template?.workflow==='codex_plan'){
    // 所有项目共用材料库的脱敏模型；仅旧API配置缺少Agent模型时回退通用默认。
-   const agentSettings=request.api_settings?undefined:request.agent_settings??(isRegisteredAgentProvider(settings.redaction?.provider)
+   const agentSettings=request.api_settings||request.web_settings?undefined:request.agent_settings??(isRegisteredAgentProvider(settings.redaction?.provider)
     ?validateAgentModelSettings({model:settings.redaction.model,reasoning_effort:settings.redaction.reasoning_effort})
     :await readAgentDefaults(db));
-   settings.redaction=request.api_settings?{provider:'api',api:request.api_settings,prompt:template.redaction.prompt}:{...template.redaction,...agentSettings};
+   settings.redaction=request.api_settings?{provider:'api',api:request.api_settings,prompt:template.redaction.prompt}:request.web_settings?{provider:'web',web:request.web_settings,prompt:template.redaction.prompt}:{...template.redaction,...agentSettings};
+   if(request.web_settings&&!localQueueEnabled())throw conflict('离线作业台需要启用本机独立队列（EXECUTION_QUEUE_MODE=local）');
   }
   const executor=chooseLibraryExecutor(request.kind,files.map(file=>({format:fileFormat(file.original_name),redaction_mode:file.redaction_mode})),settings.redaction,request.execution_target);
   const pdfProvider=request.pdf_provider??process.env.PDF_EXTRACTION_PROVIDER??'mineru-api';

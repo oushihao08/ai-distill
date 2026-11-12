@@ -34,7 +34,7 @@
 
 | 文件 | 作用与调用方 |
 | --- | --- |
-| `jobs.ts` | `enqueueAuthoring()`由HTTP派发调用，固定步骤设置、设计输入、有效Skill和材料指纹；`runNextAuthoring()`由worker消费，启动时读取冻结来源，作者返回后直接保存步骤、尝试和公开题包。 |
+| `jobs.ts` | `enqueueAuthoring()`由HTTP派发调用，支持显式传参覆盖 `provider`（`codex` / `agy`）、`model` 与 `reasoning_effort`（显式传入时不再读取数据库项目/系统默认模型配置），固定步骤设置、设计输入、有效Skill和材料指纹；`runNextAuthoring()`由worker消费，启动时读取冻结来源，作者返回后直接保存步骤、尝试和公开题包。 |
 | `executor.ts` | `runAuthoring()`建立本次私有输入，调用Agent并接收JSON，不以Markdown存在或一致性阻断保存；`renderPublicQuestionPackage()`排除思路、标答及Work内部研究信息，`renderPrivateQuestionPackage()`用于完整渲染。 |
 | `receive.ts`、`validate.ts` | 前者的`validateDraft()`只转换下游兼容字段，后者仅保留旧导入路径；不校验内容、数量、附件引用或runner声明。 |
 | `restore.ts` | 显式恢复原任务本地检查点，或在后续尝试失败后选择同冻结材料的历史成功结果；不重新调用作者。 |

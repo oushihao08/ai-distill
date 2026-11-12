@@ -117,6 +117,7 @@ CLI不读取或拼装这三阶段的模型正文。隐藏材料、题面、Rubri
 | `material-export.ts` | 将已审阅材料计划导出为本地候选，不调用模型或入库。 |
 | `queue-diagnostics.ts` | 只读队列/监控快照并给出诊断，不重启、不取消、不重派。 |
 | `feishu.ts` | 飞书目标和批次回执处理；归档与飞书提交是独立状态。 |
+| `offline.ts` | 离线作业台：`offline export/import/status`，按阶段挑选任务、以 `mode='offline'` 派发、复制每任务zip并维护 `对账台.json/md`；交回时拼接回复并重放入库。只调用本机HTTP与本机交换目录。 |
 | `*.test.ts` | 注入HTTP/文件替身验证命令契约；不证明真实服务、模型、数据库或飞书已运行。 |
 
 | 你要做的事 | 命令组 | 运行位置/对象 | 主要效果 |
@@ -188,7 +189,7 @@ bun run ai-distill project list --json
 bun run ai-distill question list --project <项目UUID> --json
 bun run ai-distill workflow status --project <项目UUID> --ids <题目UUID,...> --json
 bun run ai-distill step list --json
-bun run ai-distill step dispatch author_question --project <项目UUID> --ids <题目UUID,...> --json
+bun run ai-distill step dispatch author_question --project <项目UUID> --ids <题目UUID,...> [--provider codex|agy --model <模型> --reasoning-effort <强度>] --json
 bun run ai-distill attempt wait --ids <任务UUID,...> --timeout 1h --json
 bun run ai-distill result show --workflow <题目UUID> --json
 ```
@@ -354,14 +355,34 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 ### Web Agent 网页执行通道
 
-需要经 DeepSeek 网页（脱敏/整理）或 Gemini 网页（步骤4出题）执行任务时，通过独立 `web` 通道（默认 6 槽位，不占用 `agent` 或 `api` 槽位，本机队列与 `/api/monitor` 同步可见，避免本地 Agent 重复认领）派发：
+需要经 DeepSeek 网页（材料整理）或 Gemini 网页（步骤4出题）自动执行任务时，通过独立 `web` 通道（默认 6 槽位，不占用 `agent` 或 `api` 槽位，本机队列与 `/api/monitor` 同步可见，避免本地 Agent 重复认领）派发：
 
 - 浏览器与登录检查：`bun run ai-distill web status --json`、`bun run ai-distill web doctor [--provider deepseek|gemini] --json`、`bun run ai-distill web close --json`；使用独立 CDP 档案时可用 `bun run ai-distill web login --provider deepseek|gemini`（本机已连接 BrowserSkill 扩展时默认自动走 `bsk` 独立后台窗口复用现有登录，无需重复登录）。
-- 派发旗标（与 `--agent-model` / `--api-*` 互斥）：
-  - 脱敏：`library job start --revision UUID --kind redact --extraction-job UUID --request-key UUID --web deepseek [--web-thinking on|off]`
+- 派发旗标（与 `--agent-model` / `--api-*` 互斥；`library job start` 含 `redact` 不支持自动网页Agent，脱敏请用下方离线作业台）：
   - 整理：`library prepare start --revision UUID --redaction UUID --request-key UUID --web deepseek [--web-thinking on|off]`
   - 出题：`step dispatch author_question --project UUID --ids UUID,... --web gemini [--web-model-label <模型选项文本>]`
 - 服务端需要已应用 `064_web_agent_lane.sql` 且本机 worker 已加载新代码；产物由原编译器/校验器在同一对话内修正后走原事务直接入库，无需本地 Agent 二次处理。实现与边界见 [web-agent](../server/web-agent/README.md) 与 [web-executors](../server/web-executors/README.md)。
+- 离线作业台（不驱动浏览器，每个任务一个 zip，脱敏/整理/出题三类，详见下节）。
+
+### 离线作业台（offline）
+
+适合不想让程序操作浏览器、由你自己在网页里操作的场景。作业台是一个目录，已存在则增量追加：
+
+```
+<作业台>/对账台.md、对账台.json   每项任务的导出/交回/校验/入库记录
+<作业台>/脱敏/  整理/  出题/       每个任务一个 zip（旧轮次移入同级 历史/）
+```
+
+- 导出：`offline export --stage redact|prepare|author --out <作业台> [--count N] [--web deepseek|gemini] [--project UUID] [--ids UUID,...]`
+  - `redact`：默认挑材料库中当前版本已成功提取、尚无可用脱敏结果的材料包；`--ids` 为材料包ID。
+  - `prepare`：`--project` 挑期次已加载且尚未整理的脱敏结果；或 `--ids` 指定脱敏结果ID（可直接用上一阶段离线脱敏的结果）。
+  - `author`：`--project` 挑步骤4未成功的题目，或配合 `--ids` 指定题目。
+  - 默认 `--web`：脱敏/整理 deepseek，出题 gemini（只决定操作说明里的网站）。
+- zip 内容：`README.md`（操作说明）、`prompt.md`（粘贴发送的提示词）、`files/`（上传文件）、`reply/`（回复存放位置）；修正轮另含 `history/`。内容由本机 worker 按真实执行生成，与 Agent/网页路径的输入一致。
+- 交回：把网页回复存为 zip 内或解压后同名文件夹内的 `reply/reply-1.md`（截断续写依次 `reply-2.md`…），运行 `offline import --out <作业台>`。程序拼接多段、预检唯一JSON，再按原编译器/`validateDraft` 校验：通过即直接入库；不通过导出“第N轮”zip（`prompt.md` 含具体错误），在同一网页对话继续。`offline status --out <作业台>` 查看汇总。
+- 标记：导出的任务在系统里以 `web_offline_pending`（“已导出离线作业台任务，等待交回网页回复”）结束本次执行，对账台记为“待交回”；交回入库后改为“已入库”。导出/交回各占一次 `web` 槽位，仅数秒，不长期占用。
+- 脱敏交回只需列出发生修改/删除的文本条目，未列出的按原文补齐；自动网页脱敏仍不支持。
+- 前置：服务端已应用 `064_web_agent_lane.sql`，本机 worker 以 `EXECUTION_QUEUE_MODE=local` 运行新代码，CLI 与 worker 使用同一 `STORAGE_DIR`（交换目录 `<STORAGE_DIR>/web-offline/`）。
 
 `advice show --workflow UUID`读取建议；`advice generate --workflow UUID`手动派发。批量用`advice generate --project UUID --all`或`--ids UUID,...`，遇到容量不足或写入回执未知后停止后续派发，并保留已取得的ID。相同依据复用；下一次出题冻结有效建议。CLI仍仅是HTTP客户端，不直连PG或SQLite。功能结构、版本和恢复边界以[建议模块](../server/revision-advice/README.md)及[队列模块](../server/execution-queue/README.md)为准。
 
@@ -371,7 +392,9 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 命令入口为`feishu config show/set`、`feishu table create`、`feishu sync`、`feishu sync-batch`、`feishu draft-sync`和`feishu draft-sync-batch`；完整旗标以HELP为准。实现位于`cli/feishu.ts`与`commands.ts`，只调用本机HTTP API，不读取飞书App Secret、不直连数据库。HTTP契约及字段唯一来源见[飞书交付](../server/publishing/README.md#豆包飞书交付)。当前仅豆包启用，不能将其当作Work交付入口。
 
-- 查询或更换该期默认表：`feishu config show/set`；set核对既有表字段后保存配置，不自动补传旧题。
+PDF转换器由API进程解析：优先`LIBREOFFICE_PATH`，再查macOS应用目录、同用户Codex自带的LibreOffice，最后使用API的PATH。无需把Codex终端PATH复制给服务；CLI自身设置环境变量不会改变已运行API的环境。代码更新需按授权重载API。批次收到非成功回执即停止，剩余题目保持pending，不连续重复触发同一转换错误。
+
+- 查询或更换该期默认表与交付附件格式：`feishu config show/set`；`set`支持`--base-token BASE --table TABLE`与`--attachment-format docx|pdf`（至少一项），核对既有表字段后合并保存配置，不自动补传旧题。`sync`、`sync-batch`、`draft-sync`、`draft-sync-batch`同样支持可选`--attachment-format docx|pdf`单次覆盖，省略时沿用该期`feishu_delivery.attachment_format`（默认`docx`）。`pdf`模式由服务端调用现有`scripts/runtime/docx-to-image-pdf.py`转换图像版PDF，需API所在机器具备`soffice`。
 - 一次性交付N题到新表：固定N个当前已达标、已归档的workflow ID；先运行`feishu table create`，记录返回的base_token/table_id，再运行`feishu sync-batch`显式传入这两个ID。只建一张表，不为每道题单独建表，不改变期次默认目标。
 - 默认表已有具体ID时，单题`feishu sync`或批次可省略目标旗标；显式`--base-token`和`--table`必须成对提供。同一表内更新原记录；不同表分别记账。
 - 出题完成后显式运行`feishu draft-sync --workflow UUID`，或用`feishu draft-sync-batch --project UUID --ids UUID,... --out 新进度文件.json`上传草稿；批次只接受明确ID，并预检步骤4已成功且尚未归档。草稿在表内标为“未完成”，不代表达标或平台验收，也不改工作流步骤/归档状态。单题命令立即返回逐题回执，批次保存逐题回执并在未知结果时停止后续发送。

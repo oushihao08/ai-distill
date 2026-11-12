@@ -211,7 +211,7 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 `aliases/codex_plan`表示化名方法和计划协议，不等于固定模型后端。默认读取共用脱敏Agent设置，优先级及历史回退见上文；新建redact任务可显式传`api_settings: ModelApiConfig`，与`agent_settings`互斥，完整非敏感配置进入请求幂等摘要和冻结快照，使用现有API消费池。未指定时不使用通用API默认值替代Agent。不修改共用默认设置或历史结果。
 
-新建redact任务还可显式传`web_settings:{provider:'deepseek'|'gemini',thinking?,model_label?}`（`shared/web-agent.ts`校验），与`agent_settings`、`api_settings`互斥；冻结为`settings.redaction={provider:'web',web,prompt}`，`executor_kind='web'`、lane=`web`，仅允许本机目标，服务器目标与legacy队列模式均409拒绝。`redaction-runner.ts`按需加载`../web-executors/redaction`的`webMaterialExecutor`，外部调用operation为`library_preparation_web`。材料整理（prepare）同样接受`web_settings`并冻结到`config_snapshot.web`；需要逐图判断的材料（`image_review_required`）不能用web或API执行器，返回409。迁移见`064_web_agent_lane.sql`；浏览器传输与站点交互不属于本目录。
+材料整理（`prepare`）可显式传`web_settings:{provider:'deepseek'|'gemini',thinking?,model_label?}`（`shared/web-agent.ts`校验），与`agent_settings`、`api_settings`互斥；冻结到`config_snapshot.web`，`executor_kind='web'`、lane=`web`，仅允许本机目标且需要`EXECUTION_QUEUE_MODE=local`，legacy队列模式或需要逐图判断的材料（`image_review_required`）返回409。材料脱敏（`redact`）只接受离线作业台设置 `web_settings:{provider,mode:'offline',task}`（本机目标；冻结为 `settings.redaction={provider:'web',web,prompt}`，`redaction-runner.ts` 改用 `web-executors/redaction.ts` 的 `offlineMaterialExecutor`，外部调用operation为`library_preparation_offline`），自动网页设置返回400；提取（`extract`）与入库（`intake`）不接受`web_settings`。迁移见`064_web_agent_lane.sql`；浏览器传输与站点交互见`server/web-agent/`与`server/web-executors/`。
 
 `agent-redaction.ts`维护共用输入准备、预算、续作私有产物和最终编译。`api-redaction.ts`只适配模型调用：将同一source/schema/提示词和可用续作计划内联给`llm-api`；宿主执行同一`compileAgentTextMaterialPlan()`，反馈校验错误供模型在剩余预算内修正。API没有本地shell/读文件能力，不把工具脚本作为可执行提示发给模型；供应商失败不自动重试，相同无效计划停止。Agent与API的已有计划可在同一稳定来源上续作；后端或配置变化不作为拒绝条件。结果沿原redaction-runner事务发布，不新增一套脱敏处理链。
 
@@ -333,3 +333,7 @@ CLI的start/resume/diagnose使用同一HTTP契约；diagnose只返回状态、�
 新原子导入的 multipart 请求可传 `preserve_images=true`，默认 `false`。可选 `image_review_files` 是与上传文件一一对应的布尔 JSON 数组；标记为 `true` 的文件必须同时开启保图，TXT/MD 不可标记。上传任务冻结这两个参数，只有标记文件执行图片提取；开启保图但未标记文件的旧客户端请求仍可入库，按纯文本处理。标记PDF优先保存GLM-OCR版面图片裁块，页眉页脚标签作为重复页饰自动排除，其余裁块逐图判断；若无裁块，回退到嵌入图像对象，不支持的编码按对应原页渲染为PNG候选。DOCX提取 `word/media` 中的 PNG/JPEG；独立 PNG/JPG/JPEG 原件作为单张候选。回退的PDF对象按物理页覆盖范围识别整页扫描底图及跨页重复页饰，不作为交付插图。图片内容寻址保存，候选 ID、页码、顺序、类别和摘要写入该文件的提取文档。图片对象与正文在同一成功事务登记，失败不发布半包。TXT/MD 仍走纯文本路径。
 
 脱敏执行器只投影页码、文字、结构和识别方式，不把候选图片或存储路径传给脱敏 Agent。材料整理从数据库读取 `library_files.image_review_required`，仅将可交付插图交给Agent逐张判断（相同摘要图片复用一次判断）；整页扫描底图及重复页饰自动排除，每张决定保存原因和来源。选择 API 整理且存在标记文件时明确拒绝。原文来源题目可通过 `GET /api/workflows/:id/material-image-docx` 下载按冻结逐图决定嵌入图片的图文 DOCX；显式传 `preview_preparation_id` 可在来源、revision 和项目均匹配时预览新整理结果，不修改题目冻结快照。旧PDF候选没有图片类别时一律不嵌入，避免旧快照再次带入整页扫描图。图文版与纯文本版共用 DOCX 渲染器，按正文连续排版并在对应原件页正文后嵌图，不按原 PDF 页硬分页。现有 `POST /api/workflows/:id/material-docx` 保持纯文本输出。此图文版不自动成为投稿附件，也不对脱敏来源拼接未脱敏图像。嵌入对象及页面顺序可核对，但不承诺还原 PDF 的逐像素版式。应用 `063_library_image_review.sql` 并更新 API/worker 前，新参数不能用于业务环境。
+
+### 建题并发与连接占用
+
+建题完整正文预读不加行锁，附件复制仍在事务外；提交时保留原有锁序及来源校验。同一API进程内，同一期次已有建题请求时，新请求在获取数据库连接前返回409；应先按原请求键核对结果，不连续新建请求键重传。此准入不跨进程，正式建题事务使用2秒锁等待上限，跨进程竞争超时回滚；不增加连接池容量、不删除历史结果。源码变更需API进程重新加载才生效。

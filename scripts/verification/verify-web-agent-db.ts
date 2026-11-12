@@ -3,7 +3,8 @@
  * 入口：`bun --no-env-file scripts/verification/verify-web-agent-db.ts --port <本机临时PG端口> --out <证据JSON>`
  * 边界：仅接受 127.0.0.1 的专用空库 `web_verify`，顺序应用全部真实迁移（含 064_web_agent_lane.sql），
  * 使用真实 HTTP 路由（createApp）+ 真实本机队列消费者（runLocalQueueWorker）+ 脚本化 WebChatTransport，
- * 验证容量隔离（6槽独立于 agent/api）、脱敏拒绝网页通道（API与DB约束双重拦截）、材料整理（prepare，含校验反馈修复回路）及出题（step 4）直接入库，并在 finally 删 schema；不连接业务库、不调用真实模型。
+ * 验证容量隔离（6槽独立于 agent/api）、自动网页脱敏被拒、材料整理（prepare，含校验反馈修复回路）及出题（step 4）直接入库，
+ * 以及离线作业台（cli/offline.ts）脱敏/整理/出题三类的导出zip→不合格交回→修正轮→合格交回→入库闭环，并在 finally 删 schema；不连接业务库、不调用真实模型。
  */
 import {Pool} from 'pg';
 import {mkdtemp,readFile,readdir,writeFile,mkdir,rm} from 'node:fs/promises';
@@ -14,11 +15,14 @@ import {createApp} from '../../server/app';
 import {createLibraryPackage,createLibraryRevision} from '../../server/material-library/service';
 import {saveLibraryProcessingSettings} from '../../server/material-library/settings';
 import {insertLibraryTextBlob} from '../../server/material-library/storage';
+import {renderRedactedMaterials} from '../../server/materials/redaction';
 import {hash} from '../../server/material-library/execution-shared';
 import {canonicalJson} from '../../shared/workflow-config';
 import {localQueue,withLocalQueueRoot,reconcileRegistrations} from '../../server/execution-queue/runtime';
 import {runLocalQueueWorker} from '../../server/execution-queue/worker';
 import {setWebTransportForTests} from '../../server/web-executors/common';
+import {readOfflineTask} from '../../server/web-agent/offline-transport';
+import {offlineExport,offlineImport,type OfflineHttp} from '../../cli/offline';
 import type {WebChatTransport,WebChatTurn} from '../../server/web-agent';
 
 const arg=(flag:string)=>process.argv[process.argv.indexOf(flag)+1];
@@ -29,6 +33,8 @@ if(!process.argv.includes('--port')||!process.argv.includes('--out')||!Number.is
 process.env.EXECUTION_QUEUE_MODE='local';
 
 const root=await mkdtemp(join(tmpdir(),'web-agent-db-verify-'));
+// 离线作业台交换目录位于 storageDirectory()/web-offline，指向本次临时根，避免写入仓库 .storage。
+process.env.STORAGE_DIR=root;
 const queue=localQueue(root);
 const options={host:'127.0.0.1',port,user:'postgres',database:'web_verify',ssl:false,max:6,connectionTimeoutMillis:5000,options:'-c statement_timeout=15000'};
 const admin=new Pool({...options,application_name:'web-verify-admin'});
@@ -72,25 +78,8 @@ function findUploadedText(turn:WebChatTurn,suffix:string):string{
   throw new Error(`上传文件中未找到 ${suffix}`);
 }
 
-let prepRound=0;
-let cachedPrepMaterials:{units:{id:string;title:string;text:string}[]}|null=null;
-const scriptedTransport:WebChatTransport={
-  async open(provider,opts){
-    return{
-      url:()=>`https://${provider}.example.test/session/${randomUUID()}`,
-      async close(){},
-      async ask(turn){
-        const fileNames=(turn.files??[]).map(f=>f.name);
-        // 1) 材料整理：第1轮故意返回不满足 schema 的结果触发同会话反馈回路，第2轮返回完整合法整理结果
-        if(fileNames.includes('materials.json')||prepRound===1){
-          if(fileNames.includes('materials.json')){
-            cachedPrepMaterials=JSON.parse(findUploadedText(turn,'materials.json')) as {units:{id:string;title:string;text:string}[]};
-          }
-          prepRound++;
-          if(prepRound===1){
-            return{text:'```json\n{"package_summary":"缺字段测试"}\n```',conversation_url:`https://${provider}.example.test/prepare`,elapsed_ms:5};
-          }
-          const materials=cachedPrepMaterials!;
+/** 合成合法整理结果：首份文书visible、其余hidden，带组合与可出题评估。 */
+function buildPreparation(materials:{units:{id:string;title:string;text:string}[]}){
           const docs=materials.units.map((u,idx)=>idx===0?({
             id:u.id,
             summary:'原告周文远诉被告山城商贸公司民间借贷本金50万元及利息，载明转账凭证与催告经过。',
@@ -130,10 +119,10 @@ const scriptedTransport:WebChatTransport={
               unsupported_conclusions:['法院终本裁定结果'],
             },
           };
-          void opts;
-          return{text:`\`\`\`json\n${JSON.stringify(prep)}\n\`\`\``,conversation_url:`https://${provider}.example.test/prepare`,elapsed_ms:8};
-        }
-        // 2) 出题（步骤4）：解析上传的 input/input.json 与 input/delivery.json，返回完整合法 Draft JSON
+  return prep;
+}
+/** 解析上传的 input.json / delivery.json，合成满足当前schema的完整出题结果。 */
+function buildDraft(turn:WebChatTurn){
         const inputJson=JSON.parse(findUploadedText(turn,'input.json')) as {materials:{id:string}[];material_scope?:string;batch_context?:string};
         const deliveryJson=JSON.parse(findUploadedText(turn,'delivery.json')) as {schema:{properties?:Record<string,any>}};
         const attachmentIds=inputJson.materials.map(m=>m.id);
@@ -166,11 +155,91 @@ const scriptedTransport:WebChatTransport={
             additional_combinations:[],
           }}:{}),
         };
-        return{text:`\`\`\`json\n${JSON.stringify(draft)}\n\`\`\``,conversation_url:`https://${provider}.example.test/authoring`,elapsed_ms:10};
+  return draft;
+}
+const fenced=(value:unknown)=>`\`\`\`json\n${JSON.stringify(value)}\n\`\`\``;
+
+let prepRound=0;
+let cachedPrepMaterials:{units:{id:string;title:string;text:string}[]}|null=null;
+const scriptedTransport:WebChatTransport={
+  async open(provider){
+    return{
+      url:()=>`https://${provider}.example.test/session/${randomUUID()}`,
+      async close(){},
+      async ask(turn){
+        const fileNames=(turn.files??[]).map(f=>f.name);
+        // 1) 材料整理：第1轮故意返回不满足 schema 的结果触发同会话反馈回路，第2轮返回完整合法整理结果
+        if(fileNames.includes('materials.json')||prepRound===1){
+          if(fileNames.includes('materials.json'))cachedPrepMaterials=JSON.parse(findUploadedText(turn,'materials.json'));
+          prepRound++;
+          if(prepRound===1)return{text:'```json\n{"package_summary":"缺字段测试"}\n```',conversation_url:`https://${provider}.example.test/prepare`,elapsed_ms:5};
+          return{text:fenced(buildPreparation(cachedPrepMaterials!)),conversation_url:`https://${provider}.example.test/prepare`,elapsed_ms:8};
+        }
+        // 2) 出题（步骤4）
+        return{text:fenced(buildDraft(turn)),conversation_url:`https://${provider}.example.test/authoring`,elapsed_ms:10};
       },
     };
   },
 };
+
+/** 解压作业台中的zip，按导出内容生成上传回合，供模拟人工构造回复。 */
+async function readExportedZip(zipPath:string):Promise<{dir:string;turn:WebChatTurn}>{
+  const dir=zipPath.replace(/\.zip$/,'');
+  await rm(dir,{recursive:true,force:true});await mkdir(dir,{recursive:true});
+  const proc=Bun.spawn(['unzip','-q',zipPath,'-d',dir],{stdout:'ignore',stderr:'pipe'});
+  if(await proc.exited!==0)throw new Error('解压导出包失败');
+  const names=await readdir(join(dir,'files')).catch(()=>[] as string[]);
+  return{dir,turn:{prompt:await readFile(join(dir,'prompt.md'),'utf8'),files:await Promise.all(names.map(async name=>({name,content:await readFile(join(dir,'files',name),'utf8')})))}};
+}
+/** 模拟人工把网页回复存进解压文件夹的 reply/ 下（可多段）。 */
+async function returnReply(dir:string,parts:string[]){
+  await mkdir(join(dir,'reply'),{recursive:true});
+  for(const [index,part] of parts.entries())await writeFile(join(dir,'reply',`reply-${index+1}.md`),part);
+}
+/** 由导出的 source.json 合成合法化名计划：只回改动条目（稀疏），每个文件一个文书范围。 */
+function buildRedactionPlan(turn:WebChatTurn){
+  const source=JSON.parse(findUploadedText(turn,'source.json')) as {texts:{id:string;text:string}[]};
+  const changed=source.texts.filter(item=>item.text.includes('周文远')).map(item=>({id:item.id,text:item.text.replaceAll('周文远','张明远')}));
+  const blocks=[...new Set(source.texts.map(item=>item.id.split('#')[0]!))];
+  const byFile=new Map<string,string[]>();
+  for(const block of blocks){const file=block.match(/^(f\d+)/)?.[1]??'f';byFile.set(file,[...(byFile.get(file)??[]),block]);}
+  const documents=[...byFile.entries()].map(([file,ids],index)=>({id:`doc${index+1}`,title:index===0?'民事起诉状':'执行裁定书',ranges:[{first_block_id:ids[0]!,last_block_id:ids.at(-1)!}],duplicate_of:null}));
+  return{texts:changed,documents,unresolved:[]};
+}
+let offlineHttp:OfflineHttp;
+/** 在本机队列消费者运行期间执行CLI离线命令（命令内部轮询任务终态）。 */
+async function withWorker<T>(run:()=>Promise<T>):Promise<T>{
+  const drain=new AbortController(),hard=new AbortController();
+  const worker=withLocalQueueRoot(root,()=>runLocalQueueWorker(pool,root,hard.signal,{agent:2,llmApi:4,web:6},async()=>true,'all',undefined,'local',drain.signal));
+  try{return await run();}finally{drain.abort();hard.abort();await worker.catch(()=>{});}
+}
+/** 完整一轮离线闭环：导出→第1轮交回不合格→导出第2轮修正→交回合格→入库。 */
+async function offlineRoundTrip(stage:'redact'|'prepare'|'author',out:string,exportOptions:{project?:string;ids?:string[]},build:(turn:WebChatTurn)=>unknown){
+  const exported=await withWorker(()=>offlineExport(offlineHttp,{stage,out,count:1,...exportOptions,timeoutMs:60000}));
+  const first=exported.results[0];
+  assert(first?.status==='待交回'&&first.zip,`${stage} 导出失败: ${JSON.stringify(first)}`);
+  const round1=await readExportedZip(join(out,first.zip));
+  assert(round1.turn.files!.length>0&&round1.turn.prompt.length>50,`${stage} 导出包缺少文件或提示词`);
+  await returnReply(round1.dir,['```json\n{"invalid":true}\n```']);
+  const afterInvalid=await withWorker(()=>offlineImport(offlineHttp,{out,timeoutMs:60000}));
+  const second=afterInvalid.results.find((row:any)=>row.seq===first.seq);
+  assert(second?.status==='待交回'&&second.round===2&&String(second.zip).includes('第2轮'),`${stage} 不合格回复未生成第2轮: ${JSON.stringify(second)}`);
+  const round2=await readExportedZip(join(out,second.zip));
+  assert(round2.turn.prompt.includes('校验'),`${stage} 第2轮提示词未含校验反馈`);
+  // 合格回复拆成两段交回，验证续写拼接
+  const full='```json\n'+JSON.stringify(build(round1.turn))+'\n```',cut=Math.floor(full.length/2);
+  await returnReply(round2.dir,[full.slice(0,cut)+'\n```',full.slice(cut)]);
+  const done=await withWorker(()=>offlineImport(offlineHttp,{out,timeoutMs:60000}));
+  const final=done.results.find((row:any)=>row.seq===first.seq);
+  assert(final?.status==='已入库',`${stage} 合格回复未入库: ${JSON.stringify(final)}`);
+  const ledger=JSON.parse(await readFile(join(out,'对账台.json'),'utf8'));
+  const item=ledger.items.find((row:any)=>row.seq===first.seq);
+  assert(item.status==='已入库'&&item.history.some((h:any)=>h.event==='exported_correction'),'对账台未记录完整轮次');
+  assert((await readFile(join(out,'对账台.md'),'utf8')).includes('已入库'),'对账台.md 未更新');
+  const state=await readOfflineTask(item.task);
+  assert(state?.status==='imported','离线交换目录未标记为已入库');
+  return{task:item.task,job_id:item.job_id,rounds:item.round};
+}
 
 try{
   assert((await admin.query('SELECT current_database() AS name')).rows[0].name==='web_verify','拒绝非 web_verify 数据库');
@@ -251,7 +320,7 @@ try{
   await drainUntil(async()=>(await admin.query('SELECT status FROM ai_distill.library_jobs WHERE id=$1',[extractJob.id])).rows[0]?.status==='succeeded');
 
   let redactionId='';
-  await check('脱敏（redact）拒绝网页通道：HTTP 接口返回 400 且 PG 约束拦截 executor_kind=web',async()=>{
+  await check('自动网页脱敏被拒：HTTP 返回 400；PG 约束只允许本机目标的 redact/web（离线作业台）',async()=>{
     const badRes=await withLocalQueueRoot(root,()=>app.request(`/api/material-library/revisions/${rev.id}/jobs`,{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({kind:'redact',extraction_job_id:extractJob.id,request_key:randomUUID(),execution_target:'local',web_settings:{provider:'deepseek'}}),
@@ -261,35 +330,43 @@ try{
     let sqlRejected=false;
     try{
       await admin.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target)
-        VALUES($1,$2,$3,'redact','queued',$4,$5,'{}'::jsonb,$5,'{}'::jsonb,'web','local')`,
+        VALUES($1,$2,$3,'redact','queued',$4,$5,'{}'::jsonb,$5,'{}'::jsonb,'web','server')`,
         [randomUUID(),pkg.id,rev.id,randomUUID(),'a'.repeat(64)]);
     }catch{sqlRejected=true;}
-    assert(sqlRejected,'library_jobs_executor_kind 未拦截 kind=redact, executor_kind=web');
+    assert(sqlRejected,'library_jobs 约束未拦截 kind=redact, executor_kind=web, execution_target=server');
 
-    // 预置常规 Agent 脱敏产物作为下游网页整理与网页出题的真实输入
+    // 预置常规 Agent 脱敏产物（与 redaction-runner 同形的 redacted-index-v2）作为下游网页整理与网页出题的真实输入
     const client=await admin.connect();
     try{
       await client.query('BEGIN');
-      const redactJobId=randomUUID();
-      const fullMarkdown=`${doc1Text}\n\n${doc2Text}`;
-      const indexObj={
-        version:1,
-        preparation_layout:'preserved-structure',
-        redacted_sha256:hash(fullMarkdown),
-        redaction_template:{id:'aliases',digest:'a'.repeat(64),workflow:'codex_plan'},
-        prepared_documents:[
-          {id:'doc_claim',title:'民事起诉状',text:doc1Text,duplicate_of:null,segments:[],document:{pages:[{page:1,text:doc1Text,structure:[{id:'b1',kind:'paragraph',text:doc1Text}]}]}},
-          {id:'doc_ruling',title:'执行裁定书',text:doc2Text,duplicate_of:null,segments:[],document:{pages:[{page:1,text:doc2Text,structure:[{id:'b2',kind:'paragraph',text:doc2Text}]}]}},
-        ],
-      };
+      const docRows=(await client.query(`SELECT f.id AS file_id,f.original_name,b.text_content
+        FROM ai_distill.library_files f
+        JOIN ai_distill.library_documents d ON d.revision_id=f.revision_id AND d.file_id=f.id AND d.extraction_job_id=$2
+        JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id
+        WHERE f.revision_id=$1 ORDER BY f.position`,[rev.id,extractJob.id])).rows;
+      const materials=docRows.map((r:any)=>{
+        const parsed=JSON.parse(r.text_content);
+        return{material_id:String(r.file_id),pages:parsed.pages};
+      });
+      const rendered=renderRedactedMaterials(materials);
+      const indexObj=JSON.parse(rendered.index);
+      indexObj.prepared_documents=[
+        {id:'doc_claim',title:'民事起诉状',text:doc1Text,duplicate_of:null,segments:[],unit_kind:'document',document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'b1',kind:'paragraph',text:doc1Text}]}]}},
+        {id:'doc_ruling',title:'执行裁定书',text:doc2Text,duplicate_of:null,segments:[],unit_kind:'document',document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'b2',kind:'paragraph',text:doc2Text}]}]}},
+      ];
+      rendered.markdown=[doc1Text,doc2Text].join('\n\n');
+      indexObj.redacted_sha256=hash(rendered.markdown);
+      indexObj.preparation_layout='preserved-structure';
+      indexObj.redaction_template={id:'aliases',digest:'a'.repeat(64),workflow:'codex_plan'};
       const indexText=JSON.stringify(indexObj);
+      const redactJobId=randomUUID();
       const inputDigest=hash(canonicalJson({extract:extractJob.id}));
-      const outputDigest=hash(canonicalJson({markdown:hash(fullMarkdown),index:hash(indexText)}));
+      const outputDigest=hash(canonicalJson({markdown:hash(rendered.markdown),index:hash(indexText)}));
       const report={material_processing_mode:'aliases',redaction_template_workflow:'codex_plan',usable_for_question:true,protocol:'agent-material-plan-v1',structure_mode:'preserved-structure',redaction_template_id:'aliases'};
       await client.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target,result_summary,finished_at)
         VALUES($1,$2,$3,'redact','succeeded',$4,$5,$6::jsonb,$7,$8::jsonb,'agent','local',$9::jsonb,now())`,
-        [redactJobId,pkg.id,rev.id,randomUUID(),inputDigest,JSON.stringify({extraction_job_id:extractJob.id}),hash('cfg'),JSON.stringify({version:1}),JSON.stringify(report)]);
-      const mdBlob=await insertLibraryTextBlob(client,fullMarkdown,'text/markdown; charset=utf-8');
+        [redactJobId,pkg.id,rev.id,randomUUID(),inputDigest,JSON.stringify({extraction_job_id:extractJob.id}),hash('cfg'),JSON.stringify({version:1,redaction_template:{id:'aliases',workflow:'codex_plan'}}),JSON.stringify(report)]);
+      const mdBlob=await insertLibraryTextBlob(client,rendered.markdown,'text/markdown; charset=utf-8');
       const idxBlob=await insertLibraryTextBlob(client,indexText,'application/vnd.ai-distill.redacted-index+json');
       redactionId=randomUUID();
       await client.query(`INSERT INTO ai_distill.library_redactions(id,package_id,revision_id,extraction_job_id,redaction_job_id,markdown_blob_id,index_blob_id,input_digest,output_digest,validation_report)
@@ -398,6 +475,60 @@ try{
     const scopeUses=(await admin.query('SELECT direction,scene FROM ai_distill.question_material_scope_uses WHERE workflow_id=$1',[workflowId])).rows;
     assert(scopeUses.length===1,'question_material_scope_uses 未落库');
     return{workflow_id:workflowId,attempt_id:attemptId,artifact_kinds:kinds,scope_uses:scopeUses.length};
+  });
+
+  offlineHttp={
+    get:async path=>{const res=await withLocalQueueRoot(root,()=>app.request(path));if(!res.ok)throw new Error(`GET ${path} ${res.status} ${await res.text()}`);return res.json();},
+    post:async(path,body)=>{const res=await withLocalQueueRoot(root,()=>app.request(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body??{})}));if(!res.ok)throw new Error(`POST ${path} ${res.status} ${await res.text()}`);return res.json();},
+  };
+  const workbench=join(root,'作业台');
+  let offlineRedactionId='';
+
+  await check('离线作业台·脱敏：导出zip+对账台，不合格回复导出修正轮，稀疏两段回复拼接后经同一编译器发布 library_redactions',async()=>{
+    const result=await offlineRoundTrip('redact',workbench,{ids:[pkg.id]},buildRedactionPlan);
+    const row=(await admin.query(`SELECT r.id,j.executor_kind,j.config_snapshot FROM ai_distill.library_redactions r JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id WHERE j.id=$1`,[result.job_id])).rows[0];
+    assert(row&&row.executor_kind==='web'&&row.config_snapshot?.settings?.redaction?.web?.mode==='offline','离线脱敏结果未入库或未冻结离线设置');
+    const md=(await admin.query('SELECT b.text_content FROM ai_distill.library_redactions r JOIN ai_distill.library_blobs b ON b.id=r.markdown_blob_id WHERE r.id=$1',[row.id])).rows[0]?.text_content as string;
+    assert(md.includes('张明远')&&!md.includes('周文远'),'化名未按回复回填');
+    const auto=await withLocalQueueRoot(root,()=>app.request(`/api/material-library/revisions/${rev.id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:'redact',extraction_job_id:extractJob.id,request_key:randomUUID(),execution_target:'local',web_settings:{provider:'deepseek'}})}));
+    assert(auto.status===400,`自动网页脱敏应被拒绝，实际 ${auto.status}`);
+    offlineRedactionId=String(row.id);
+    return{...result,redaction_id:row.id,auto_web_redact_rejected:400};
+  });
+
+  await check('离线作业台·整理：导出zip+对账台，不合格回复导出修正轮，回复经compileFixedPreparation直接入库 library_preparations',async()=>{
+    // 用上一阶段离线脱敏刚产出的结果继续整理（串起 脱敏→整理）
+    const result=await offlineRoundTrip('prepare',join(root,'作业台'),{ids:[offlineRedactionId]},turn=>buildPreparation(JSON.parse(findUploadedText(turn,'materials.json'))));
+    const row=(await admin.query('SELECT p.result,j.config_snapshot FROM ai_distill.library_preparations p JOIN ai_distill.library_jobs j ON j.id=p.job_id WHERE j.id=$1',[result.job_id])).rows[0];
+    assert(row?.result?.format==='material-preparation-v2'&&row.config_snapshot?.web?.mode==='offline','离线整理结果未入库');
+    return result;
+  });
+
+  await check('离线作业台·出题：导出input文件zip+对账台，不合格回复导出修正轮，回复经validateDraft直接入库 step_attempts/artifacts',async()=>{
+    const projRes=await withLocalQueueRoot(root,()=>app.request('/api/projects',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({parent_name:'离线作业台验证项目',phase_name:'离线验证期',phase_no:1,material_backend:'library_v1',material_mode:'material_packages',workspace_path:'projects/豆包高经济价值',local_skill_path:'projects/豆包高经济价值/skill',question_tags:['民间借贷']}),
+    }));
+    assert(projRes.status===201,`创建离线验证项目失败: ${projRes.status} ${await projRes.clone().text()}`);
+    const project=(await projRes.json()) as {id:string};
+    const loadRes=await withLocalQueueRoot(root,()=>app.request(`/api/projects/${project.id}/loaded-materials`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package_id:pkg.id,redaction_id:redactionId})}));
+    assert(loadRes.status===201,`离线项目加载材料失败: ${loadRes.status} ${await loadRes.clone().text()}`);
+    const loaded=(await loadRes.json()) as {id:string;lock_version?:number};
+    const qRes=await withLocalQueueRoot(root,()=>app.request(`/api/projects/${project.id}/loaded-materials/${loaded.id}/questions`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({request_key:randomUUID(),redaction_id:redactionId,expected_link_version:Number(loaded.lock_version??1),title:'离线验证题-民间借贷',scenario:'诉前证据与利息审查',role_perspective:'原告代理律师',target_level:'L5',authoring_direction:'审查50万元本金与分段利息并制定保全方案',question_tags:['民间借贷']}),
+    }));
+    assert(qRes.status===201,`离线创建题目失败: ${qRes.status} ${await qRes.clone().text()}`);
+    const createdQ=(await qRes.json()) as {workflow_id?:string;id?:string;workflow?:{id:string}};
+    const workflowId=String(createdQ.workflow_id??createdQ.workflow?.id??createdQ.id);
+    const result=await offlineRoundTrip('author',join(root,'作业台'),{project:project.id,ids:[workflowId]},turn=>buildDraft(turn));
+    const attemptRow=(await admin.query('SELECT status,config FROM ai_distill.step_attempts WHERE id=$1',[result.job_id])).rows[0];
+    assert(attemptRow?.status==='succeeded'&&attemptRow.config?.web?.mode==='offline','离线出题尝试未成功或未冻结离线设置');
+    const kinds=(await admin.query('SELECT kind FROM ai_distill.artifacts WHERE workflow_id=$1 AND attempt_id=$2',[workflowId,result.job_id])).rows.map((r:any)=>r.kind);
+    assert(kinds.includes('authored_question'),'离线出题 artifacts 未入库');
+    const stages=await readdir(join(root,'作业台'));
+    assert(['脱敏','整理','出题','对账台.json','对账台.md'].every(name=>stages.includes(name)),`作业台目录结构不完整: ${stages.join(',')}`);
+    return{...result,workflow_id:workflowId};
   });
 
   await reconcileRegistrations(pool,queue);

@@ -13,8 +13,11 @@ export interface WebChatSession{
  ask(turn:WebChatTurn,opts:{timeout_ms:number;signal?:AbortSignal}):Promise<WebChatReply>;
  url():string;
  close():Promise<void>;
+ /** 可选：回路结束时告知会话最终校验结果（离线作业台传输据此更新状态）。 */
+ complete?(outcome:'succeeded'|'failed',message?:string):Promise<void>;
 }
-export interface WebChatOpenOptions{signal?:AbortSignal;thinking?:boolean;model_label?:string}
+/** label：任务类型等非敏感标识，仅离线作业台传输用于标注任务。 */
+export interface WebChatOpenOptions{signal?:AbortSignal;thinking?:boolean;model_label?:string;label?:string}
 export interface WebChatTransport{open(provider:WebProviderId,opts?:WebChatOpenOptions):Promise<WebChatSession>}
 export type WebAgentBackend='auto'|'bsk'|'cdp';
 export interface WebChatTransportOptions{
@@ -33,7 +36,7 @@ export interface WebChatTransportOptions{
 
 export const WEB_AGENT_REASON_CODES=[
  'web_login_required','web_challenge_required','web_rate_limited','web_busy','web_timeout',
- 'web_ui_changed','web_browser_unavailable','web_reply_incomplete','web_upload_rejected','web_cancelled',
+ 'web_ui_changed','web_browser_unavailable','web_reply_incomplete','web_upload_rejected','web_cancelled','web_offline_pending',
 ] as const;
 export type WebAgentReasonCode=typeof WEB_AGENT_REASON_CODES[number];
 
@@ -48,6 +51,7 @@ const REASON_TEXT:Record<WebAgentReasonCode,string>={
  web_reply_incomplete:'网页回复未完整结束',
  web_upload_rejected:'网页拒绝或无法接收上传文件',
  web_cancelled:'网页聊天已取消',
+ web_offline_pending:'离线任务已导出，等待交回网页回复',
 };
 
 export class WebAgentError extends Error{

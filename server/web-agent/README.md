@@ -22,6 +22,7 @@
 | `sites/types.ts` | `WebSiteAdapter`：站点选择器/判定都是**页面内 JS 表达式字符串** | 站点适配 |
 | `sites/dom-markdown.ts` | 页面内 DOM→Markdown 函数源码（保留 ``` 围栏、列表、表格、标题） | 各站点 `lastReply` |
 | `sites/deepseek.ts`、`sites/gemini.ts` | 两个真实站点的表达式（`bsk` 与 `cdp` 共用同一份表达式） | `transport.ts` |
+| `offline-transport.ts` | `createOfflineChatTransport()`：离线作业台传输（settings.mode='offline'，task=任务键），不开浏览器；按任务键在 `<root>/web-offline/<任务键>/round-N/` 保存提示词/上传文件/交回回复；已交回的轮次直接回放（比较提示词时忽略UUID与时间戳），缺回复的轮次用系统 `zip` 打包（条目名保持ASCII）并抛 `web_offline_pending`；`importOfflineReply()` 预检唯一JSON后写入该轮 `reply.md`；`readOfflineTask()` 读状态 | `web-executors/common.ts`、`cli/offline.ts` |
 | `sites/fake.ts`、`fake-chat-server.ts` | `provider:'fake'` 的适配器与本地假聊天页（`Bun.serve`，URL 由 `fake_url` 注入） | 测试、验证脚本 |
 | `*.test.ts` | `cdp.test.ts`、`bsk-transport.test.ts`、`json-extract.test.ts`、`classify.test.ts` | `bun test` |
 
@@ -64,6 +65,7 @@ await session.close();                                                          
 | `web_reply_incomplete` | 回复为空；或 `extractJsonFromReply` 判定截断/不可用 | 生成中断 |
 | `web_upload_rejected` | 文件数/大小超限、站点拒绝格式或解析失败（如 DeepSeek “No text extracted”） | 上传 |
 | `web_cancelled` | 调用方取消 | `AbortSignal` |
+| `web_offline_pending` | 离线作业台已导出本轮zip，等待交回（不是故障，是“待交回”标记） | `offline-transport.ts` |
 
 命中登录/验证码/限额/繁忙时**只抛错并停止**，不尝试绕过、不点击任何验证控件。错误信息不含提示词、回复正文、文件内容或凭证。
 

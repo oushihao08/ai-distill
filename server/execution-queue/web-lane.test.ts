@@ -51,7 +51,7 @@ test('canRunLocalTask consumes web lane only in local/all worker modes',async()=
  const {canRunLocalTask}=await import('./worker');
  const base:QueueJob={id:randomUUID(),generation:0,kind:'step',lane:'web',state:'queued',lease:null,pid:null,cancel_requested:0,cancel_synced:0,created_at:0,updated_at:0,route:'authoring',error:null};
  const raw={workflow_id:'w',ordinal:4,execution_target:'local'};
- for(const job of [base,{...base,kind:'library' as const,route:'library:redact'}]){
+ for(const job of [base,{...base,kind:'library' as const,route:'library:prepare'}]){
   const row=job.kind==='library'?{execution_target:'local'}:raw;
   expect(canRunLocalTask('local',job,row,'local')).toBe(true);expect(canRunLocalTask('all',job,row,'local')).toBe(true);
   for(const mode of ['api','server','materials'])expect(canRunLocalTask(mode,job,row,'local')).toBe(false);
@@ -60,12 +60,12 @@ test('canRunLocalTask consumes web lane only in local/all worker modes',async()=
  expect(canRunLocalTask('local',base,raw,'local',['w'])).toBe(true);expect(canRunLocalTask('local',base,raw,'local',['other'])).toBe(false);
 });
 
-test('064 migration widens lane and library executor checks for web without touching history',()=>{
+test('064 migration widens lane for web: prepare may use web, redact only web on local target (offline workbench)',()=>{
  const sql=readFileSync(join(import.meta.dir,'../../migrations/064_web_agent_lane.sql'),'utf8');
  expect(sql).toContain("execution_dispatches_lane_check CHECK(lane IN ('agent','api','internal','hook','remote','web'))");
  expect(sql).toContain("library_jobs_executor_kind_check CHECK (executor_kind IN ('internal','api','agent','web'))");
  expect(sql).toContain("library_jobs_executor_target CHECK (executor_kind NOT IN ('agent','web') OR execution_target='local')");
- expect(sql).toContain("(kind='redact' AND executor_kind IN ('internal','api','agent','web'))");
+ expect(sql).toContain("(kind='redact' AND (executor_kind IN ('internal','api','agent') OR (executor_kind='web' AND execution_target='local')))");
  expect(sql).toContain("(kind='prepare' AND executor_kind IN ('agent','api','web') AND execution_target='local')");
  expect(sql).toContain("(kind='extract' AND executor_kind IN ('internal','api'))");expect(sql).toContain("(kind='intake' AND executor_kind='internal')");
  expect(sql).not.toMatch(/\b(UPDATE|DELETE|INSERT)\b/i);

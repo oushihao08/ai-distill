@@ -30,3 +30,6 @@ projects/*/snapshots/**
 assets/out/附件库/
 /projects/Work法律全场景.zip
 .DS_Store
+
+# 离线作业台（含未脱敏材料导出，不提交）
+工作台/

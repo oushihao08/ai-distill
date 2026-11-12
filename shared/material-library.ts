@@ -180,6 +180,8 @@ export interface CreateLibraryJobRequest {
   agent_settings?: {model:string;reasoning_effort:string};
   /** 显式选择API整包化名，省略时仍使用Agent；与agent_settings互斥。 */
   api_settings?: import('./types').ModelApiConfig;
+  /** 仅脱敏：离线作业台（mode='offline'）导出/交回；自动网页脱敏不支持。与agent_settings、api_settings互斥。 */
+  web_settings?: import('./web-agent').WebAgentSettings;
 }
 
 export interface CreateLibraryQuestionRequest {

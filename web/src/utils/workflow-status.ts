@@ -65,7 +65,7 @@ export function workflowStepDisplay(view:WorkflowStatusView|undefined,ordinal:nu
   const reason=step.error??(Array.isArray(reasons)?reasons.filter((item):item is string=>typeof item==='string').map(acceptanceReasonLabel).join('；'):'');
   if(labels[decision])return{...labels[decision],reason,finishedAt:step.finished_at};
  }
- if(step.status==='succeeded'&&step.ready)return{label:'就绪',color:'primary',reason:'当前版本允许重新执行',finishedAt:step.finished_at};
+ if(ordinal!==4&&step.status==='succeeded'&&step.ready)return{label:'就绪',color:'primary',reason:'当前版本允许重新执行',finishedAt:step.finished_at};
  if(step.status==='succeeded')return{label:'成功',color:'success',reason:'',finishedAt:step.finished_at};
  return step.ready?{label:'就绪',color:'primary',reason:'可执行',finishedAt:step.finished_at}:{label:'等待',color:'secondary',reason:step.ready_reason??'等待前置步骤',finishedAt:step.finished_at};
 }

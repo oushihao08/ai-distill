@@ -14,7 +14,15 @@ import {AUTHORING_FIXED_PROMPT,resolveScoreStepPrompt} from '@shared/step-prompt
 import {resolveMaterialProcessingMode,materialProcessingSourceMode,type MaterialProcessingMode} from '@shared/material-library';
 const props=defineProps<{ projectId:string; step:ProjectStage; materialSourceMode:'redacted'|'original'; allowOriginalMaterialMode:boolean }>();
 const emit=defineEmits<{ saved:[];close:[];openModels:[] }>();
-const editable=computed(()=>[4,5,6].includes(props.step.ordinal));
+interface FeishuDeliveryResponse {default_target:{base_token:string;table_id?:string;table_name?:string};source:'phase_default'|'configured';attachment_format?:'docx'|'pdf'}
+const feishuLoading=shallowRef(false);
+const feishuSupported=shallowRef(false);
+const feishuSource=shallowRef<'phase_default'|'configured'>('phase_default');
+const feishuPhaseTableName=shallowRef('');
+const feishuBaseToken=shallowRef('');
+const feishuTableId=shallowRef('');
+const feishuAttachmentFormat=shallowRef<'docx'|'pdf'>('docx');
+const editable=computed(()=>[4,5,6].includes(props.step.ordinal)||(props.step.ordinal===8&&feishuSupported.value));
 const backend=shallowRef(props.step.config.provider==='codex'?'codex':'api');
 interface ApiModelOption {name:string;config:ModelApiConfig;is_default:boolean}
 const apiConfig=shallowRef<ModelApiConfig|undefined>(props.step.config.api);
@@ -35,7 +43,9 @@ interface ModelOption {slug:string;supported_reasoning_levels:{effort:string}[]}
 const modelOptions=shallowRef<ModelOption[]>([]),loadingModels=shallowRef(false);
 const isApiScoring=computed(()=>props.step.ordinal===6&&backend.value==='api');
 const isCodexStep=computed(()=>props.step.ordinal===4||props.step.ordinal===6&&backend.value==='codex');
-const invalidConfig=computed(()=>props.step.ordinal===5?!prompt.value.trim():(isApiScoring.value)?!apiConfig.value||!prompt.value.trim():isCodexStep.value?!model.value||!(effort.value??'').trim()||!prompt.value.trim()||props.step.ordinal===4&&authorTimeoutMinutes.value!==''&&(!Number.isInteger(Number(authorTimeoutMinutes.value))||Number(authorTimeoutMinutes.value)<1||Number(authorTimeoutMinutes.value)>120):false);
+const feishuHasTargetInput=computed(()=>Boolean(feishuTableId.value.trim())||feishuSource.value==='configured');
+const feishuInvalid=computed(()=>props.step.ordinal===8&&(!feishuSupported.value||feishuLoading.value||(feishuHasTargetInput.value&&(!/^[A-Za-z0-9]{10,100}$/.test(feishuBaseToken.value.trim())||!/^tbl[A-Za-z0-9]{6,80}$/.test(feishuTableId.value.trim())))));
+const invalidConfig=computed(()=>props.step.ordinal===8?feishuInvalid.value:props.step.ordinal===5?!prompt.value.trim():(isApiScoring.value)?!apiConfig.value||!prompt.value.trim():isCodexStep.value?!model.value||!(effort.value??'').trim()||!prompt.value.trim()||props.step.ordinal===4&&authorTimeoutMinutes.value!==''&&(!Number.isInteger(Number(authorTimeoutMinutes.value))||Number(authorTimeoutMinutes.value)<1||Number(authorTimeoutMinutes.value)>120):false);
 const modelItems=computed(()=>modelOptions.value.map(item=>({title:item.slug,value:item.slug})));
 const effortItems=computed(()=>modelOptions.value.find(item=>item.slug===model.value)?.supported_reasoning_levels.map(level=>level.effort)??[]);
 const modelSourceLabel=computed(()=>props.step.config_source==='step'?'步骤单独设置':props.step.config_source==='project'?'项目默认':'Codex 全局默认');
@@ -68,9 +78,31 @@ async function loadApiModels(){
  }catch(cause){error.value=cause instanceof Error?cause.message:'读取API模型目录失败';}finally{loadingApiModels.value=false;}
 }
 watch(()=>isApiScoring.value,enabled=>{if(enabled)void loadApiModels();},{immediate:true});
+async function loadFeishuDelivery(){
+ try{
+  feishuLoading.value=true;error.value='';
+  const result=await api<FeishuDeliveryResponse>(`/projects/${props.projectId}/feishu-delivery`);
+  feishuSupported.value=true;
+  feishuSource.value=result.source;
+  feishuAttachmentFormat.value=result.attachment_format==='pdf'?'pdf':'docx';
+  feishuBaseToken.value=result.default_target.base_token??'';
+  feishuTableId.value=result.default_target.table_id??'';
+  feishuPhaseTableName.value=result.default_target.table_name??'';
+ }catch(cause){
+  feishuSupported.value=false;
+  error.value=cause instanceof Error?cause.message:'读取飞书交付设置失败';
+ }finally{feishuLoading.value=false;}
+}
+watch(()=>props.step.ordinal===8,enabled=>{if(enabled)void loadFeishuDelivery();},{immediate:true});
 async function save(){
  try{
   busy.value=true;error.value='';
+  if(props.step.ordinal===8){
+   const body:Record<string,unknown>={attachment_format:feishuAttachmentFormat.value};
+   if(feishuHasTargetInput.value)body.default_target={base_token:feishuBaseToken.value.trim(),table_id:feishuTableId.value.trim()};
+   await api(`/projects/${props.projectId}/feishu-delivery`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+   emit('saved');emit('close');return;
+  }
   if(props.step.ordinal===5){
    await api(`/projects/${props.projectId}/steps/5/prompt`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt.value,expected_prompt:openedPrompt})});
    await api(`/projects/${props.projectId}/steps/5/workflow`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({workflow:workflowDraft.value??null})});
@@ -95,6 +127,16 @@ async function inheritDefaults(){
  <Column :gap="16" class="min-h-0 overflow-y-auto px-20 pb-16">
  <p class="text-sm text-muted">就绪 {{ step.ready }} · 排队 {{ step.queued }} · 运行 {{ step.running }} · 成功 {{ step.succeeded }} · 失败 {{ step.failed }}</p>
  <Column v-if="step.ordinal===5" :gap="8"><ProjectAnswerModelsSummary :project-id="projectId" /><v-alert type="info">点击“模型作答”会为项目模型集合中的每个已选模型分别派发作答任务，随后逐份评分。每题只读取创建题目时冻结的材料版本，脱敏或未脱敏由题目快照决定；请在出题前为本期选择新题材料版本。请在项目的“作答模型”页选择并保存多个模型；这里无需选择单个模型。同一主项目各期共用本提示词，保存会同步到其他期次，但只影响之后创建的作答任务。</v-alert><v-textarea v-model="prompt" label="模型作答步骤提示词" rows="8" required :disabled="busy" /><Row x="end"><v-btn color="primary" variant="flat" @click="emit('openModels')">配置作答模型</v-btn></Row></Column>
+ <Column v-else-if="step.ordinal===8" :gap="12">
+  <p v-if="feishuLoading" class="text-sm text-muted">正在读取飞书交付配置…</p>
+  <template v-else-if="feishuSupported">
+   <v-alert type="info">本期飞书草稿上传与达标归档同步共用下方默认目标表与附件格式。选择 PDF 时调用 <code>scripts/runtime/docx-to-image-pdf.py</code> 将冻结材料 DOCX 转为图像版 PDF 后上传。</v-alert>
+   <v-select v-model="feishuAttachmentFormat" label="交付附件格式" :items="[{title:'DOCX 文档（默认）',value:'docx'},{title:'PDF（图像版）',value:'pdf'}]" :disabled="busy" />
+   <v-text-field v-model="feishuBaseToken" label="飞书多维表格 Base Token" :disabled="busy" />
+   <v-text-field v-model="feishuTableId" label="数据表 Table ID（tbl...）" :placeholder="feishuPhaseTableName?`未指定具体ID（按期名 ${feishuPhaseTableName} 路由）`:'tbl...'" :disabled="busy" />
+   <p class="text-xs text-muted">当前目标来源：{{ feishuSource==='configured'?'本期显式配置':'期次默认路由' }}。填写具体 Table ID 保存时会先核验远端表字段结构。</p>
+  </template>
+ </Column>
  <template v-else-if="editable">
   <Column v-if="step.ordinal===4" :gap="8" class="rounded border border-line-subtle p-12"><strong class="text-sm">系统固定通用出题规则</strong><pre class="max-h-[320px] overflow-auto whitespace-pre-wrap break-words text-xs">{{ AUTHORING_FIXED_PROMPT }}</pre></Column>
   <v-alert v-if="step.ordinal===4&&authoringProcessingMode==='mask'" type="warning">本期仍为历史遮挡设置，请明确选择Agent化名或原文；保存不会将旧结果改标为化名。</v-alert>

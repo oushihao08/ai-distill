@@ -22,7 +22,7 @@ export type AuthoringRule = {path:string;text:string;bytes?:never}|{path:string;
 export const FRESH_AUTHORING_CONTRACT='fresh-desktop-v1';
 export interface AuthoringOptions {
  project_key?:string|null;material_scope?:MaterialScopeContext;batch_context?:AuthoringBatchContext;
- content_contract?:'work_legal_v1';scoring_policy?:ScoringPolicy;project_name?:string;answer_capabilities?:AnswerToolPolicy;workspace_path:string;root:string;question:string;authoring_direction?:string;question_id?:string;source_files?:{name:string;path:string}[];materials:AuthoringMaterial[];project_context?:{source_digest:string;files:AuthoringRule[]};rules?:{version_id:string;source_digest:string;files:AuthoringRule[]};system_authoring_prompt?:string;step_prompt?:string;model:string;reasoning_effort:string;signal?:AbortSignal;timeout_ms?:number;call_id?:string;execute?:typeof runAgent;
+ content_contract?:'work_legal_v1';scoring_policy?:ScoringPolicy;project_name?:string;answer_capabilities?:AnswerToolPolicy;workspace_path:string;root:string;question:string;authoring_direction?:string;question_id?:string;source_files?:{name:string;path:string}[];materials:AuthoringMaterial[];project_context?:{source_digest:string;files:AuthoringRule[]};rules?:{version_id:string;source_digest:string;files:AuthoringRule[]};system_authoring_prompt?:string;step_prompt?:string;provider?:string;model:string;reasoning_effort:string;signal?:AbortSignal;timeout_ms?:number;call_id?:string;execute?:typeof runAgent;
 }
 export interface AuthoringResult {question_id:string;draft:Draft|ModelDraft;question_version:string;rubric_version:string;package_text:string;codex:{session_id:string;usage:unknown;duration_ms:number}}
 
@@ -110,7 +110,7 @@ export async function runAuthoring(options:AuthoringOptions):Promise<AuthoringRe
  const folder=options.project_context?'project-context':'rules';
 
  const workspace=await realpath(options.workspace_path);
- const author=await execute({task_type:'question_authoring',directory:authorDirectory,execution_profile:'fresh_authoring',working_directory:workspace,prompt:await freshPrompt(options,authorDirectory,folder,plan)+plan.prompt_suffix,model:options.model,reasoning_effort:options.reasoning_effort,schema:plan.schema,signal:options.signal,timeout_ms:options.timeout_ms,call_id:options.call_id,validate:value=>validateDraft(value,options.materials,options.scoring_policy?.contract??'legacy',plan.validation_options)});
+ const author=await execute({task_type:'question_authoring',directory:authorDirectory,execution_profile:'fresh_authoring',working_directory:workspace,prompt:await freshPrompt(options,authorDirectory,folder,plan)+plan.prompt_suffix,provider:options.provider,model:options.model,reasoning_effort:options.reasoning_effort,schema:plan.schema,signal:options.signal,timeout_ms:options.timeout_ms,call_id:options.call_id,validate:value=>validateDraft(value,options.materials,options.scoring_policy?.contract??'legacy',plan.validation_options)});
  if(options.signal?.aborted)throw new Error('出题执行已取消');const draft=author.result;
  await writeFile(join(resolve(options.root),'draft.json'),JSON.stringify(draft),{mode:0o600,flag:'wx'});
  const {reference_answer:_privateReference,...publicDraft}=draft;void _privateReference;

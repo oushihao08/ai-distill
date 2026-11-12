@@ -31,7 +31,7 @@ import { enqueueRedaction } from './materials/redaction-jobs';
 import {clearGeneratedData} from './generated-data';
 import {enqueueScore} from './scoring/jobs';
 import {scoreExecutionInstructions} from './scoring/executor';
-import {enqueueAuthoring} from './authoring/jobs';
+import {enqueueAuthoring,type AuthoringDispatchOptions} from './authoring/jobs';
 import type {WebAgentSettings} from '../shared/web-agent';
 import {reviseQuestionOpening} from './authoring/revise';
 import {enqueueProjectSkill,listProjectSkillAttempts} from './skill-generation/jobs';
@@ -45,7 +45,7 @@ import {buildSkillDependencyPackage} from '../projects/Skill Dependency/scripts/
 import {buildProjectExport,verifyProjectAuthoringRules,workbookSha256,withProjectExportLock} from './reporting/export';
 import {enqueuePublication} from './publishing/tasks';
 import {syncArchivedWorkflowToFeishu,syncAuthoredWorkflowToFeishu} from './publishing/feishu';
-import {registerFeishuTargetRoutes,validateFeishuTarget} from './publishing/feishu-targets';
+import {registerFeishuTargetRoutes,validateFeishuTarget,validateFeishuAttachmentFormat} from './publishing/feishu-targets';
 import {readArchivedWorkflowWorkbook} from './reporting/archive-workbook';
 import {exportCurrentMaterialDocx,exportRedactedDocx,readCurrentMaterialDocx,buildCurrentMaterialImageDocx} from './materials/redacted-docx-export';
 import { enqueueExtraction } from './materials/jobs';
@@ -873,18 +873,20 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.post('/api/workflows/:id/feishu-sync',async c=>{
   const raw=await c.req.text();let body:Record<string,unknown>={};
   if(raw.trim()){try{const parsed=JSON.parse(raw);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('invalid');body=parsed;}catch{throw new HTTPException(400,{message:'请提交有效JSON对象'});}}
-  if(Object.keys(body).some(key=>key!=='target'))throw new HTTPException(400,{message:'只允许指定target'});
+  if(Object.keys(body).some(key=>!['target','attachment_format'].includes(key)))throw new HTTPException(400,{message:'只允许指定target和attachment_format'});
   const target=body.target===undefined?undefined:validateFeishuTarget(body.target);
-  const result=await syncArchivedWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,true);
+  const attachmentFormat=body.attachment_format===undefined?undefined:validateFeishuAttachmentFormat(body.attachment_format);
+  const result=await syncArchivedWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,true,attachmentFormat);
   return c.json(result,result.status==='failed'?502:200);
  });
  // 显式上传已完成出题步骤的草稿；不执行或写入归档、评分及达标状态。
  app.post('/api/workflows/:id/feishu-draft-sync',async c=>{
   const raw=await c.req.text();let body:Record<string,unknown>={};
   if(raw.trim()){try{const parsed=JSON.parse(raw);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('invalid');body=parsed;}catch{throw new HTTPException(400,{message:'请提交有效JSON对象'});}}
-  if(Object.keys(body).some(key=>!['target','revision_attempt_id'].includes(key)))throw new HTTPException(400,{message:'仅允许target和revision_attempt_id'});
+  if(Object.keys(body).some(key=>!['target','revision_attempt_id','attachment_format'].includes(key)))throw new HTTPException(400,{message:'仅允许target、revision_attempt_id和attachment_format'});
   const target=body.target===undefined?undefined:validateFeishuTarget(body.target);
-  const result=await syncAuthoredWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,body.revision_attempt_id===undefined?undefined:uuid(String(body.revision_attempt_id)));
+  const attachmentFormat=body.attachment_format===undefined?undefined:validateFeishuAttachmentFormat(body.attachment_format);
+  const result=await syncAuthoredWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,body.revision_attempt_id===undefined?undefined:uuid(String(body.revision_attempt_id)),attachmentFormat);
   return c.json(result);
  });
  app.post('/api/workflows/:id/material-docx',async c=>{
@@ -1107,10 +1109,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      return new Response(file, { headers: { 'Content-Type': materialMime(result.rows[0].original_name), 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.rows[0].original_name)}`, 'Cache-Control': 'no-store' } });
    } catch (error) { throw error; }
  });
- const workflowStepHandlers=(workflowId:string,deliveryIdentity?:{task_id:string;org:string},webSettings?:WebAgentSettings):WorkflowStepHandlers<StepDispatchTask>=>({
+ const workflowStepHandlers=(workflowId:string,deliveryIdentity?:{task_id:string;org:string},webSettings?:WebAgentSettings,authoringSettings?:AuthoringDispatchOptions):WorkflowStepHandlers<StepDispatchTask>=>({
   1:()=>enqueueIngestion(pool,workflowId),
   2:()=>enqueueExtraction(pool,workflowId),
-  4:()=>enqueueAuthoring(pool,workflowId,webSettings?{web:webSettings}:undefined),
+  4:()=>enqueueAuthoring(pool,workflowId,{...(webSettings?{web:webSettings}:{}),...(authoringSettings??{})}),
   5:()=>enqueueAnswer(pool,workflowId,storageRoot),
   6:()=>enqueueScore(pool,workflowId),
   7:()=>runAcceptance(pool,workflowId),
@@ -1139,7 +1141,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    if(!identity)throw new HTTPException(404,{message:'工作流不存在'});
    if(identity.workflow_kind==='material_package'&&![1,2,9].includes(ordinal))throw new HTTPException(409,{message:'材料包只执行入库和脱敏'});
    if(identity.source_workflow_id&&[1,2,9].includes(ordinal))throw new HTTPException(409,{message:'派生题目使用已冻结的材料快照'});
-   return dispatchWorkflowStep(ordinal,workflowStepHandlers(workflowId,context?.delivery_identity,context?.web_settings));
+   return dispatchWorkflowStep(ordinal,workflowStepHandlers(workflowId,context?.delivery_identity,context?.web_settings,context?.authoring_settings));
   },
  });
  registerRemoteMaterialRoutes(app,pool,storageRoot);

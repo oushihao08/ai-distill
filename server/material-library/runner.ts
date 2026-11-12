@@ -208,7 +208,7 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   if(code==='already_succeeded'){logEvent('library_job.completion_confirmed',{level:'info',state:'succeeded'});return;}
   if(!/^[a-z][a-z0-9_]{0,79}$/.test(code))code='library_job_failed';
   const cancelled=code==='user_cancelled'||code==='worker_shutdown';
-  const message=code==='agent_redaction_timeout'?'Agent脱敏达到本次冻结执行预算，已停止并保留私有进度':cancelled?'材料任务已取消或 worker 已停止':code==='deadline_exceeded'?'材料任务达到本次执行期限':code==='heartbeat_unavailable'?'材料任务心跳不可用，已停止发布':'材料任务执行失败，请检查处理记录和服务配置';
+  const message=code==='web_offline_pending'?'已导出离线作业台任务，等待交回网页回复':code==='agent_redaction_timeout'?'Agent脱敏达到本次冻结执行预算，已停止并保留私有进度':cancelled?'材料任务已取消或 worker 已停止':code==='deadline_exceeded'?'材料任务达到本次执行期限':code==='heartbeat_unavailable'?'材料任务心跳不可用，已停止发布':'材料任务执行失败，请检查处理记录和服务配置';
   const failure=saveLibraryFailure({lease_token:job.lease_token,code,message,status:cancelled?'cancelled':'failed'});
   const saved=await failLibraryJob(pool,job.id,failure.lease_token,failure.code,failure.message,failure.status);
   if(!saved){logEvent('library_job.terminal_not_written',{level:'error',reason_code:code,state:'unknown'});return;}

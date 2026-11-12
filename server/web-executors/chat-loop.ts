@@ -1,6 +1,6 @@
 /**
  * 职责：在同一个网页对话里完成“提问 → 取回单个JSON → 业务校验 → 反馈修正”的回路，并处理输出被截断后的续写。
- * 主要入口：`runWebJsonChat()`；调用方为 preparation.ts、authoring.ts 两个网页执行器。
+ * 主要入口：`runWebJsonChat()`；调用方为 preparation.ts、authoring.ts、redaction.ts（仅离线作业台）。
  * 边界：只与 `WebChatTransport` 交互，不读写目录、不入库；校验由调用方提供（整理用原编译器，出题用原接收转换）。
  */
 import {extractJsonFromReply,isLikelyTruncatedJson,WebAgentError,type WebChatReply,type WebChatTransport,type WebChatTurn} from '../web-agent';
@@ -15,6 +15,8 @@ export interface WebJsonChatOptions<T>{
   /** 每轮回复落盘等记录钩子；不得抛出会影响主流程的错误。 */
   onRound?:(log:WebChatRoundLog)=>void|Promise<void>;
   max_corrections?:number;max_continuations?:number;
+  /** 非敏感任务标识（如 task_type），透传给传输用于标注会话。 */
+  label?:string;
 }
 export interface WebJsonChatResult<T>{value:T;conversation_url:string;rounds:WebChatRoundLog[]}
 
@@ -71,7 +73,7 @@ export async function runWebJsonChat<T>(options:WebJsonChatOptions<T>):Promise<W
   const deadline=Date.now()+options.timeout_ms,rounds:WebChatRoundLog[]=[];
   const maxCorrections=options.max_corrections??3,maxContinuations=options.max_continuations??8;
   const remaining=()=>{const left=Math.floor(deadline-Date.now());if(left<=0)throw new WebAgentError('web_timeout','网页对话达到本次执行预算');return left;};
-  const session=await options.transport.open(options.settings.provider,{signal:options.signal,thinking:options.settings.thinking,model_label:options.settings.model_label});
+  const session=await options.transport.open(options.settings.provider,{signal:options.signal,thinking:options.settings.thinking,model_label:options.settings.model_label,...(options.label?{label:options.label}:{})});
   const ask=async(turn:WebChatTurn,kind:WebChatRoundLog['kind']):Promise<WebChatReply>=>{
     if(options.signal?.aborted)throw new WebAgentError('web_cancelled','网页任务已取消');
     const reply=await session.ask(turn,{timeout_ms:remaining(),signal:options.signal});
@@ -96,12 +98,19 @@ export async function runWebJsonChat<T>(options:WebJsonChatOptions<T>):Promise<W
         lastInvalid=text;corrections++;kind='correction';
         turn={prompt:`校验结果：${JSON.stringify({valid:false,reason_code:'invalid_json'})}。请只输出一个完整的\`\`\`json代码块，内容为修正后的完整JSON。`};continue;
       }
-      try{return{value:await options.check(value),conversation_url:session.url(),rounds};}
+      let checked:T;
+      try{checked=await options.check(value);}
       catch(error){
         if(lastInvalid===text||corrections>=maxCorrections)throw error;
         lastInvalid=text;corrections++;kind='correction';
         turn={prompt:`同一校验器结果：${feedback(error)}。修正实际条目并返回完整JSON（只输出一个\`\`\`json代码块）。`};
+        continue;
       }
+      await session.complete?.('succeeded').catch(error=>logEvent('web_agent.session_complete_failed',{level:'warn',...classifyLogError(error)}));
+      return{value:checked,conversation_url:session.url(),rounds};
     }
+  }catch(error){
+    await session.complete?.('failed',error instanceof Error?error.message:undefined).catch(()=>{});
+    throw error;
   }finally{await session.close().catch(error=>logEvent('web_agent.session_close_failed',{level:'warn',...classifyLogError(error)}));}
 }

@@ -15,9 +15,11 @@ import {diagnoseQueue} from './queue-diagnostics';
 import {batchSize,batchView,createBatch,readBatch,skipBatch} from './batches';
 import {exportFailedQuestions} from './failed-export';
 import {exportPreparedMaterials} from './material-export';
-import {feishuTarget,readFeishuConfig,syncFeishuBatch,FEISHU_REQUEST_TIMEOUT_MS} from './feishu';
+import {feishuAttachmentFormat,feishuTarget,readFeishuConfig,syncFeishuBatch,FEISHU_REQUEST_TIMEOUT_MS} from './feishu';
+import {syncLocalFeishu} from './feishu-local';
 import {validateMaterialPreparationPlan} from '../shared/material-preparation';
 import {WEB_AGENT_PROVIDERS,validateWebAgentSettings,type WebAgentSettings} from '../shared/web-agent';
+import {OFFLINE_STAGES,offlineExport,offlineImport,offlineStatus,type OfflineStage} from './offline';
 
 export const HELP = `ai-distill：工作流工具（全部命令支持 --json；仅本机命令接受 --api http://127.0.0.1:3700）
 远程材料（经 SSH 隧道，凭证从 .env 读取）：
@@ -99,6 +101,8 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   advice generate (--workflow UUID | --project UUID (--ids UUID,... | --all))
   step dispatch STEP_KEY --project UUID (--ids UUID,... | --all) [--web deepseek|gemini [--web-thinking on|off] [--web-model-label 标签]]（--web 仅 author_question：本次改由网页Agent出题）
   web status | web doctor | web login --provider deepseek|gemini | web close（网页Agent通道：6个独立槽位；专用浏览器档案，不占Agent/API槽位）
+  offline export --stage redact|prepare|author --out 作业台目录 [--count N] [--web deepseek|gemini] [--project UUID] [--ids UUID,...]（离线作业台：每任务一个zip+对账台，目录已存在则增量）
+  offline import --out 作业台目录（读取zip或解压文件夹内 reply/reply-N.md，校验通过即入库，不通过导出下一轮）| offline status --out 作业台目录
   export create --project UUID [--batch 批次]
 下载（仅写指定的新本机文件，不覆盖）：
   library documents export --plan Codex处理计划.json --out 新目录（校验原文并应用计划；不调用模型、不入库）
@@ -108,12 +112,13 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   siriser download --workflow UUID --out 五件套ZIP路径（需该题已有当前有效归档）
 飞书交付（仅豆包；新接口需API/worker重载后可用）：
   feishu config show --project UUID
-  feishu config set --project UUID --base-token BASE --table TABLE
+  feishu config set --project UUID [--base-token BASE --table TABLE] [--attachment-format docx|pdf]
   feishu table create --project UUID --name 新表名 [--base-token BASE]（不改变默认目标）
-  feishu sync --workflow UUID [--base-token BASE --table TABLE]
-  feishu sync-batch --project UUID --ids UUID,... --out 新进度文件.json [--base-token BASE --table TABLE]
-  feishu draft-sync --workflow UUID [--base-token BASE --table TABLE]（出题成功后上传未完成草稿，不归档）
-  feishu draft-sync-batch --project UUID --ids UUID,... --out 新进度文件.json [--base-token BASE --table TABLE]
+  feishu sync --workflow UUID [--base-token BASE --table TABLE] [--attachment-format docx|pdf]
+  feishu local-sync --manifest 本地题包清单.json --out 新回执.json --base-token BASE --table TABLE（本地PDF草稿交付，不调用业务API）
+  feishu sync-batch --project UUID --ids UUID,... --out 新进度文件.json [--base-token BASE --table TABLE] [--attachment-format docx|pdf]
+  feishu draft-sync --workflow UUID [--base-token BASE --table TABLE] [--revision-attempt UUID] [--attachment-format docx|pdf]（出题成功后上传未完成草稿，不归档）
+  feishu draft-sync-batch --project UUID --ids UUID,... --out 新进度文件.json [--base-token BASE --table TABLE] [--attachment-format docx|pdf]
 STEP_KEY 使用 step list；不使用页面序号。派发只执行一个步骤，不自动继续。
 attempt wait 默认仅返回状态元信息；完整正文使用 attempt show 或 wait --full；归档终态不代表飞书交付完成，另查 workflow delivery show。
 退出码：0 完成/派发已接受（不等于业务达标），1 命令/HTTP 错误，2 部分失败/未就绪，3 等待到期仍运行，130 中断。
@@ -230,13 +235,14 @@ const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'material text':['workflow','material','redacted-only'],'rules list':['project'],'rules file':['project','path'],
       'models catalog':[],'models show':['project'],'attempt show':['attempt'],'attempt wait':['ids','timeout','full'],
       'queue show':[],'queue diagnose':[],'queue cancel':['job'],'advice show':['workflow'],'advice generate':['workflow','project','ids','all'],
-      'result list':[],'result show':['workflow'],'step list':[],'step dispatch':['project','ids','all','web','web-thinking','web-model-label'],'web status':[],'web doctor':[],'web login':['provider'],'web close':[],
+      'result list':[],'result show':['workflow'],'step list':[],'step dispatch':['project','ids','all','web','web-thinking','web-model-label'],'web status':[],'offline export':['stage','out','count','web','project','ids'],'offline import':['out'],'offline status':['out'],'web doctor':[],'web login':['provider'],'web close':[],
       'export list':['project'],'export create':['project','batch'],'export download':['export','out'],
       'siriser download':['workflow','out'],
-      'feishu config show':['project'],'feishu config set':['project','base-token','table'],
-      'feishu table create':['project','name','base-token'],'feishu sync':['workflow','base-token','table'],
-      'feishu sync-batch':['project','ids','out','base-token','table'],
-      'feishu draft-sync':['workflow','base-token','table','revision-attempt'],'feishu draft-sync-batch':['project','ids','out','base-token','table'],
+      'feishu config show':['project'],'feishu config set':['project','base-token','table','attachment-format'],
+      'feishu local-sync':['manifest','out','base-token','table'],
+      'feishu table create':['project','name','base-token'],'feishu sync':['workflow','base-token','table','attachment-format'],
+      'feishu sync-batch':['project','ids','out','base-token','table','attachment-format'],
+      'feishu draft-sync':['workflow','base-token','table','revision-attempt','attachment-format'],'feishu draft-sync-batch':['project','ids','out','base-token','table','attachment-format'],
       'export failed':['project','ids','all'],
       'export review':['project','ids'],
       'artifact download':['artifact','out'],'monitor show':[],
@@ -263,6 +269,11 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       try{return validateWebAgentSettings({provider:required('web'),...(thinking?{thinking:thinking==='on'}:{}),...(flags.has('web-model-label')?{model_label:required('web-model-label')}:{})});}
       catch(error){throw new CliError(error instanceof Error?error.message:'网页Agent设置无效');}
     };
+    if(command==='feishu local-sync'){
+      const target=feishuTarget(flags.get('base-token'),flags.get('table'));
+      if(!target)throw new CliError('本地交付须明确提供 --base-token 和 --table');
+      return await syncLocalFeishu(required('manifest'),required('out'),target,signal);
+    }
     const api=client??new ApiClient(flags.has('api')?required('api'):process.env.AI_DISTILL_API_URL);
     const get=(path:string)=>api.json(path,'GET',undefined,signal);
     const post=(path:string,body:unknown={})=>api.json(path,'POST',body,signal);
@@ -398,30 +409,31 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
       }
       case 'feishu config show': data=await readFeishuConfig(api,uuid('project'),signal);break;
       case 'feishu config set': {
-        const project=uuid('project'),target=feishuTarget(required('base-token'),required('table'))!;
-        await readFeishuConfig(api,project,signal);
-        data=await api.json(`/api/projects/${project}/feishu-delivery`,'PUT',{default_target:target},signal,{},FEISHU_REQUEST_TIMEOUT_MS);break;
+        const project=uuid('project'),target=feishuTarget(flags.get('base-token'),flags.get('table')),attachmentFormat=feishuAttachmentFormat(flags.get('attachment-format'));
+        if(!target&&!attachmentFormat)throw new CliError('至少提供 --base-token/--table 或 --attachment-format');
+        await readFeishuConfig(api,project,signal,false,attachmentFormat!==undefined);
+        data=await api.json(`/api/projects/${project}/feishu-delivery`,'PUT',{...(target?{default_target:target}:{}),...(attachmentFormat?{attachment_format:attachmentFormat}:{})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);break;
       }
       case 'feishu table create': {
         const project=uuid('project');await readFeishuConfig(api,project,signal);
         data=await api.json(`/api/projects/${project}/feishu-tables`,'POST',{table_name:required('name'),...(flags.has('base-token')?{base_token:required('base-token')}:{})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);break;
       }
       case 'feishu sync': {
-        const workflow=uuid('workflow').toLowerCase(),target=feishuTarget(flags.get('base-token'),flags.get('table'));
+        const workflow=uuid('workflow').toLowerCase(),target=feishuTarget(flags.get('base-token'),flags.get('table')),attachmentFormat=feishuAttachmentFormat(flags.get('attachment-format'));
         const detail=await get(`/api/workflows/${workflow}?view=status`),project=id(detail.workflow?.project_id,'项目');
-        await readFeishuConfig(api,project,signal);
-        data=await api.json(`/api/workflows/${workflow}/feishu-sync`,'POST',target?{target}:{},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
+        await readFeishuConfig(api,project,signal,false,attachmentFormat!==undefined);
+        data=await api.json(`/api/workflows/${workflow}/feishu-sync`,'POST',{...(target?{target}:{}),...(attachmentFormat?{attachment_format:attachmentFormat}:{})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
         return{outcome:data.status==='succeeded'?'complete':'partial',data};
       }
-      case 'feishu sync-batch': return await syncFeishuBatch(api,uuid('project'),[...new Set(ids().map(value=>value.toLowerCase()))],required('out'),feishuTarget(flags.get('base-token'),flags.get('table')),signal);
+      case 'feishu sync-batch': return await syncFeishuBatch(api,uuid('project'),[...new Set(ids().map(value=>value.toLowerCase()))],required('out'),feishuTarget(flags.get('base-token'),flags.get('table')),signal,'archived',feishuAttachmentFormat(flags.get('attachment-format')));
       case 'feishu draft-sync': {
-        const workflow=uuid('workflow').toLowerCase(),target=feishuTarget(flags.get('base-token'),flags.get('table'));
+        const workflow=uuid('workflow').toLowerCase(),target=feishuTarget(flags.get('base-token'),flags.get('table')),attachmentFormat=feishuAttachmentFormat(flags.get('attachment-format'));
         const detail=await get(`/api/workflows/${workflow}?view=status`),project=id(detail.workflow?.project_id,'项目');
-        await readFeishuConfig(api,project,signal,true);
-        data=await api.json(`/api/workflows/${workflow}/feishu-draft-sync`,'POST',{...(target?{target}:{}),...(flags.has('revision-attempt')?{revision_attempt_id:uuid('revision-attempt')}: {})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
+        await readFeishuConfig(api,project,signal,true,attachmentFormat!==undefined);
+        data=await api.json(`/api/workflows/${workflow}/feishu-draft-sync`,'POST',{...(target?{target}:{}),...(flags.has('revision-attempt')?{revision_attempt_id:uuid('revision-attempt')}:{}),...(attachmentFormat?{attachment_format:attachmentFormat}:{})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
         return{outcome:data.status==='succeeded'?'complete':'partial',data,note:'草稿仅表示出题结果已上传飞书，字段“题目是否完成”为未完成；不代表评分、达标、归档或平台验收。'};
       }
-      case 'feishu draft-sync-batch': return await syncFeishuBatch(api,uuid('project'),[...new Set(ids().map(value=>value.toLowerCase()))],required('out'),feishuTarget(flags.get('base-token'),flags.get('table')),signal,'draft');
+      case 'feishu draft-sync-batch': return await syncFeishuBatch(api,uuid('project'),[...new Set(ids().map(value=>value.toLowerCase()))],required('out'),feishuTarget(flags.get('base-token'),flags.get('table')),signal,'draft',feishuAttachmentFormat(flags.get('attachment-format')));
 
       case 'batch create': {
         const size=batchSize(required('size'));
@@ -715,6 +727,17 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const {webBrowserStatus}=await import('../server/web-agent');
         data={capacity:queue.capacity?.web??null,items,browser:await webBrowserStatus(),providers:WEB_AGENT_PROVIDERS};break;
       }
+      case 'offline export': {
+        const stage=required('stage');
+        if(!(OFFLINE_STAGES as readonly string[]).includes(stage))throw new CliError('--stage 只接受 redact、prepare 或 author');
+        const provider=flags.has('web')?required('web'):undefined;
+        if(provider!==undefined&&!(WEB_AGENT_PROVIDERS as readonly string[]).includes(provider))throw new CliError('--web 仅支持 deepseek 或 gemini');
+        let count:number|undefined;
+        if(flags.has('count')){count=Number(required('count'));if(!Number.isSafeInteger(count)||count<1||count>500)throw new CliError('--count 须为1至500的整数');}
+        data=await offlineExport({get,post},{stage:stage as OfflineStage,out:required('out'),...(count!==undefined?{count}:{}),...(provider?{provider:provider as WebAgentSettings['provider']}:{}),...(flags.has('project')?{project:uuid('project')}:{}),...(flags.has('ids')?{ids:ids()}:{})});break;
+      }
+      case 'offline import': data=await offlineImport({get,post},{out:required('out')});break;
+      case 'offline status': data=await offlineStatus({out:required('out')});break;
       case 'web doctor': {const {webDoctor}=await import('../server/web-agent');data=await webDoctor();break;}
       case 'web login': {
         const provider=required('provider');
@@ -727,13 +750,22 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         if(!step?.visible)throw new CliError('步骤 key 无效或属于隐藏步骤，请查看 step list');
         const web=webSettings();
         if(web&&step.ordinal!==4)throw new CliError('--web 仅用于 author_question');
+        const providerFlag=flags.get('provider');
+        const modelFlag=flags.get('model');
+        const effortFlag=flags.get('reasoning-effort')??flags.get('effort');
+        if((providerFlag||modelFlag||effortFlag)&&step.ordinal!==4)throw new CliError('--provider / --model / --reasoning-effort 仅用于 author_question');
+        const authoringSettings=(providerFlag||modelFlag||effortFlag)?{
+          ...(providerFlag?{provider:providerFlag}:{}),
+          ...(modelFlag?{model:modelFlag}:{}),
+          ...(effortFlag?{reasoning_effort:effortFlag}:{}),
+        }:undefined;
         const {project,selected}=await scope(step.ordinal);
         const batches: any[]=[];const results:any[]=[];let failed=false;
         // 不重试 POST。后续分组发生网络错误时保留已经取得的任务 ID，并停止继续派发。
         for(let i=0;i<selected.length;i+=100) {
           const workflowIds=selected.slice(i,i+100);
           try {
-            const response=object(await post(`/api/projects/${project}/steps/${step.ordinal}/run-batch`,{workflow_ids:workflowIds,...(web?{web_settings:web}:{})}),'派发');
+            const response=object(await post(`/api/projects/${project}/steps/${step.ordinal}/run-batch`,{workflow_ids:workflowIds,...(web?{web_settings:web}:{}),...(authoringSettings?{authoring_settings:authoringSettings}:{})}),'派发');
             const rows=dispatchResults(response.results,workflowIds);
             batches.push({workflow_ids:workflowIds,data:response});results.push(...rows);
           } catch(error) {

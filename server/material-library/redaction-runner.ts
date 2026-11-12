@@ -63,13 +63,15 @@ export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,si
   const agentConfig=settings.redaction;
   const isAgent=isAgentProviderConfig(agentConfig);
   const api=isAgent||agentConfig.provider!=='api'?undefined:agentConfig.api;
-  const model=isAgent?agentConfig.model:agentConfig.provider==='api'?agentConfig.api.model:'';
+  // provider='web' 仅为离线作业台：导出zip待人工交回，交回后回放回复并走同一编译器。
+  const web=!isAgent&&agentConfig.provider==='web'?agentConfig.web:undefined;
+  const model=isAgent?agentConfig.model:agentConfig.provider==='api'?agentConfig.api.model:web?`web:${web.provider}`:'';
   const reasoning=isAgent?agentConfig.reasoning_effort:'none';
-  const executeModel=api?apiMaterialExecutor(api):execute;
+  const executeModel=api?apiMaterialExecutor(api):web?(await import('../web-executors/redaction')).offlineMaterialExecutor(web):execute;
   const output=await cachedExternalCall('library_preparation_complete',()=>prepareAgentLibraryMaterials({directory:join(jobDirectory(root,job.id),'private'),files:documents.map(d=>({file_id:d.file_id,text_sha256:hash(d.pages.map(p=>p.text).join('\n')),pages:d.pages.map(redactionPageInput)})),revision_id:job.revision_id,extraction_job_id:job.input_snapshot.extraction_job_id,
    template,model,reasoning_effort:reasoning,...(api?{api}:{}),signal,timeout_ms:new Date(job.deadline_at).getTime()-Date.now(),
    ...(job.previous_job_id?{previous_directory:join(jobDirectory(root,job.previous_job_id),'private')}:{}),
-   execute:options=>runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,operation:api?'library_preparation_api':'library_preparation_agent'},call_id=>executeModel({...options,call_id})),
+   execute:options=>runExternalCall({library_job_id:job.id,library_package_id:job.package_id,library_revision_id:job.revision_id,operation:api?'library_preparation_api':web?'library_preparation_offline':'library_preparation_agent'},call_id=>executeModel({...options,call_id})),
   }));
   // 不换调用缓存键重调旧/未知请求；旧缓存缺少新协议时拒绝发布，交由显式新任务处理。
   if(output.text_protocol!==AGENT_TEXT_REDACTION_PROTOCOL)throw Object.assign(new Error('脱敏调用缓存不符合当前文本协议，请重新创建任务'),{reason_code:'agent_text_protocol_invalid'});

@@ -16,7 +16,7 @@
 | `MaterialPackageQuestions` | 材料包详情的关联题目表；每页读取十道题的出题至归档状态和逐模型评分，不显示脱敏指纹及步骤原因；支持查看尝试历史与确认后逻辑删除单题，不删除材料包或源材料 |
 | `WorkflowAttemptHistory` | 按工作流与步骤分页查看安全执行元信息；入库记录合并内部 PDF/DOCX 提取尝试 |
 | `AcceptedQuestionList`、`AcceptedQuestionDetail` | 当前达标题目的共享材料包或旧来源、搜索、异常筛选、分页、模型评分概览和单题归档入口；通用题目详情弹窗按需展示当前题目包、答案、评分及脱敏附件全文，题目记录和步骤记录均复用该弹窗 |
-| `CodexConfig`、`ProjectCodexSettings`、`StepSettings` | 全局、项目、步骤 Agent 配置；同一主项目的出题、作答、评分提示词共享，模型、材料模式及流程等其他设置仍按期次覆盖；保存携带打开时提示词并在冲突时保留当前草稿 |
+| `CodexConfig`、`ProjectCodexSettings`、`StepSettings` | 全局、项目、步骤 Agent 配置及豆包步骤8飞书交付配置（默认目标表与`docx`/`pdf`附件格式）；同一主项目的出题、作答、评分提示词共享，模型、材料模式及流程等其他设置仍按期次覆盖；保存携带打开时提示词并在冲突时保留当前草稿 |
 | `SystemStepPromptSettings` | 主项目首页维护新主项目首期的出题、作答与评分默认提示词（旧脱敏提示词仅兼容读取）；同一主项目后续新期继承该主项目当前提示词；出题标签页同时维护出题专用默认模型/强度 |
 | `WorkerConcurrencyConfig` | 系统级 Agent／API 并发设置；显示安全上限及当前生效值，保存后重启 API 与 worker 生效 |
 | `AnswerModelSet` | 系统模型目录、当前期次作答模型集合及各模型百分制分数上限；这是该期达标判断的唯一配置来源 |

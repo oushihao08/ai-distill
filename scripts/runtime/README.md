@@ -8,6 +8,7 @@
 | `start-iterm.sh` | macOS iTerm启动入口；只复用匹配进程。源码/配置比API或worker新时拒绝自动替换，提示按原参数安全停止后再启动，避免丢失进程环境覆盖及空闲检查竞争；不发送停止信号、不安装或迁移。 |
 | `deploy.sh`、`deploy-server.sh` | 从干净的 `main` 工作树部署与 `origin/main` 相同的提交；需要环境变量 `AI_DISTILL_DEPLOY_HOST`、`AI_DISTILL_DEPLOY_USER`、`AI_DISTILL_DEPLOY_DIR`、SSH 和生产操作授权。每次将本机 `.env` 经 SSH 传到服务器并替换服务器 `.env`（保留回滚副本）；SSH 用户必须是 root，服务器需 Docker Swarm。脚本会构建镜像、更新 API/worker 服务及调整存储目录权限；部署前检查 worker 空闲，不运行数据库迁移。成功后会显示本地访问用 SSH 隧道命令。 |
 | `docx-to-image-pdf.py` | 批量将 DOCX 先经隔离的 LibreOffice 和 macOS 中文字体环境转成 PDF，再逐页栅格化为无可提取文本的 PDF。macOS 即使外部设置了 `FONTCONFIG_FILE` 也使用本次隔离配置；DOCX 含中文但中间 PDF 未嵌入可用中文字体时拒绝发布，已知错误回退字体同样拒绝。缓存文件名含字体校验版本，避免复用旧输出。可传多个本机 DOCX，或重复 `--workflow <UUID>` 调用共用纯文本材料 DOCX 导出；`--workflow <UUID> --include-images` 改为下载冻结图文 DOCX，单题可附 `--preview-preparation-id <UUID>` 预览同来源新整理结果，不改旧题快照。依赖本机 soffice、pdffonts、pdftotext、pdfunite 与 Python pypdfium2/Pillow；默认使用本机 3700 和 `assets/out`，可显式指定 `--api-url`、`--asset-root`、`--soffice`。输出文件名含源路径摘要，结果写入 `results.json`；不覆盖已有 PDF、不改原件、不上传。图像 PDF 仍可由 OCR 识别，不能当作保密措施。 |
+| `phase9-authoring-dispatch.ts` | 高经第九期出题自动加载、建题与派发脚本：`bun scripts/runtime/phase9-authoring-dispatch.ts --provider codex|agy --model <模型> --effort <强度> [--limit N] [--dry-run]`；按本机 `agent` 通道实时空槽将已整理完成的材料包加载入期次、创建唯一题目并显式携带出题驱动与模型参数派发出题（不读取数据库默认模型配置）。 |
 
 从仓库任意路径运行：`bash scripts/runtime/start.sh`。`start-iterm.sh` 不自动重启存活的过期API/worker。部署示例：`AI_DISTILL_DEPLOY_HOST=<host> AI_DISTILL_DEPLOY_USER=root AI_DISTILL_DEPLOY_DIR=<absolute-path> ./scripts/runtime/deploy.sh`。部署会替换远端 `.env` 并更新服务，不能把它当作只传源码的操作；部署前核对本机配置确实应成为服务器配置，并按根 README 和仓库授权边界操作。
 

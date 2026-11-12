@@ -73,7 +73,7 @@ type FrozenSource={material_scope?:{preparation_id:string;result:import('../../s
 
 async function transaction<T>(pool:Pool,action:(db:PoolClient)=>Promise<T>,beforeCommit?:()=>void):Promise<T>{
  const db=await pool.connect();
- try{await db.query('BEGIN');const result=await action(db);beforeCommit?.();await db.query('COMMIT');return result;}
+ try{await db.query('BEGIN');await db.query("SET LOCAL lock_timeout='2s'");const result=await action(db);beforeCommit?.();await db.query('COMMIT');return result;}
  catch(error){try{await db.query('ROLLBACK');}catch(rollbackError){throw new AggregateError([error,rollbackError],'题目快照事务失败且回滚状态不确定');}throw error;}
  finally{db.release();}
 }
@@ -84,17 +84,17 @@ async function locatePackage(pool:Pool,projectId:string,linkId:string){
  return String(row.package_id);
 }
 
-async function lockAndReadSource(db:PoolClient,projectId:string,linkId:string,packageId:string,input:ValidLibraryQuestionInput):Promise<FrozenSource>{
- const pkg=(await db.query('SELECT id,name,deleted_at FROM ai_distill.library_packages WHERE id=$1 FOR UPDATE',[packageId])).rows[0];
+async function lockAndReadSource(db:Pick<PoolClient,'query'>,projectId:string,linkId:string,packageId:string,input:ValidLibraryQuestionInput,locked=true):Promise<FrozenSource>{
+ const pkg=(await db.query(`SELECT id,name,deleted_at FROM ai_distill.library_packages WHERE id=$1${locked?' FOR UPDATE':''}`,[packageId])).rows[0];
  if(!pkg||pkg.deleted_at)throw conflict('材料包已归档或不存在，不能建题');
- await db.query('SELECT g.id FROM ai_distill.project_groups g JOIN ai_distill.projects p ON p.project_group_id=g.id WHERE p.id=$1 FOR UPDATE OF g',[projectId]);
- const project=(await db.query('SELECT id,name,material_backend,workspace_path,local_skill_path,question_tags,deleted_at,project_group_id,parent_name FROM ai_distill.projects WHERE id=$1 FOR UPDATE',[projectId])).rows[0];
+ if(locked)await db.query('SELECT g.id FROM ai_distill.project_groups g JOIN ai_distill.projects p ON p.project_group_id=g.id WHERE p.id=$1 FOR UPDATE OF g',[projectId]);
+ const project=(await db.query(`SELECT id,name,material_backend,workspace_path,local_skill_path,question_tags,deleted_at,project_group_id,parent_name FROM ai_distill.projects WHERE id=$1${locked?' FOR UPDATE':''}`,[projectId])).rows[0];
  if(!project||project.deleted_at)throw new HTTPException(404,{message:'项目不存在'});
  const packageLevel=/(?:^|[-_\s])L([2-5])(?=$|[-_\s])/i.exec(String(pkg.name))?.[1];
  if(packageLevel&&input.target_level!==`L${packageLevel}`)throw conflict(`材料包标题标注为L${packageLevel}，题目目标等级须为L${packageLevel}`);
  if(input.question_tags.some(tag=>!Array.isArray(project.question_tags)||!project.question_tags.includes(tag)))throw conflict('项目出题标签已变化，请刷新后重试');
  const link=(await db.query(`SELECT id,project_id,package_id,selected_revision_id,selected_redaction_id,lock_version,removed_at,material_use_id,reuse_source_workflow_id,reuse_direction
-  FROM ai_distill.project_library_packages WHERE id=$1 AND project_id=$2 FOR UPDATE`,[linkId,projectId])).rows[0];
+  FROM ai_distill.project_library_packages WHERE id=$1 AND project_id=$2${locked?' FOR UPDATE':''}`,[linkId,projectId])).rows[0];
  if(!link||link.removed_at||link.package_id!==packageId)throw conflict('项目材料加载关系已移除或已变化');
  const activeQuestion=(await db.query(`SELECT q.workflow_id
   FROM ai_distill.question_library_sources q JOIN ai_distill.workflows w ON w.id=q.workflow_id
@@ -211,14 +211,24 @@ export function remapLibraryRedactedIndex(source:Pick<FrozenSource,'index'|'mate
 
 export function libraryQuestionStepOrdinals(){return STEP_REGISTRY.filter(item=>item.ordinal>=4&&item.ordinal<=8).map(item=>item.ordinal);}
 
+// 准入发生在获取连接之前；同一期次的并发建题快速拒绝，不占连接等待主项目锁。
+// 此门仅限当前进程；多进程竞争仍由正式事务的行锁与lock_timeout保护。
+const creatingProjects=new Set<string>();
 export async function createLibraryQuestion(pool:Pool,storageRoot:string,projectId:string,linkId:string,value:unknown){
+ if(creatingProjects.has(projectId))throw conflict('本期已有建题请求处理中，请先核对原请求结果后再提交');
+ creatingProjects.add(projectId);
+ try{return await createLibraryQuestionOnce(pool,storageRoot,projectId,linkId,value);}
+ finally{creatingProjects.delete(projectId);}
+}
+async function createLibraryQuestionOnce(pool:Pool,storageRoot:string,projectId:string,linkId:string,value:unknown){
  const packageId=await locatePackage(pool,projectId,linkId);
  const projectTags=(await pool.query('SELECT question_tags FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[projectId])).rows[0]?.question_tags;
  const input=validateLibraryQuestionInput(value,projectTags);
  const requestDigest=libraryQuestionRequestDigest({project_id:projectId,project_material_id:linkId,input});
  const prior=(await pool.query('SELECT workflow_id,request_digest,source_digest,snapshot_digest FROM ai_distill.question_library_sources WHERE project_id=$1 AND request_key=$2',[projectId,input.request_key])).rows[0];
  if(prior)return libraryQuestionReplay(prior,requestDigest);
- const base=await transaction(pool,async db=>lockAndReadSource(db,projectId,linkId,packageId,input));
+ // 完整正文预读不持行锁；复制后仍在正式事务中按既有锁序复核来源。
+ const base=await lockAndReadSource(pool,projectId,linkId,packageId,input,false);
  const first=await attachPreparationContext(pool,base,projectId);
  if(input.copy_originals===false&&first.material_mode!=='redacted')throw conflict('原文来源建题仍须复制原件；仅脱敏来源支持不复制原件');
  const copyOriginals=input.copy_originals??(first.material_mode==='original');

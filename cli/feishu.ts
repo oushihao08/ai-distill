@@ -8,27 +8,34 @@ import {randomUUID} from 'node:crypto';
 import {ApiClient,CliError} from './client';
 
 export interface FeishuCliTarget {base_token:string;table_id:string}
+export type FeishuCliAttachmentFormat='docx'|'pdf';
 export const FEISHU_REQUEST_TIMEOUT_MS=180000;
 export function feishuTarget(base:unknown,table:unknown):FeishuCliTarget|undefined{
  if(base===undefined&&table===undefined)return;
  if(typeof base!=='string'||!/^[A-Za-z0-9]{10,100}$/.test(base)||typeof table!=='string'||!/^tbl[A-Za-z0-9]{6,80}$/.test(table))throw new CliError('--base-token和--table须同时提供有效ID');
  return{base_token:base,table_id:table};
 }
+export function feishuAttachmentFormat(value:unknown):FeishuCliAttachmentFormat|undefined{
+ if(value===undefined)return;
+ if(value!=='docx'&&value!=='pdf')throw new CliError('--attachment-format 须为 docx 或 pdf');
+ return value;
+}
 
 /** 旧API可能忽略目标body；先读能力标记，未加载新接口就停止，绝不降级上传。 */
-export async function readFeishuConfig(api:ApiClient,projectId:string,signal?:AbortSignal,requireDraftSync=false){
+export async function readFeishuConfig(api:ApiClient,projectId:string,signal?:AbortSignal,requireDraftSync=false,requireAttachmentFormat=false){
  let config:any;
  try{config=await api.json(`/api/projects/${projectId}/feishu-delivery`,'GET',undefined,signal);}
  catch(error){if(error instanceof CliError&&error.detail.http_status===404)throw new CliError('API尚未加载飞书配置接口，未执行上传；请按授权重载服务后使用',{kind:'feature_unavailable',outcome_unknown:false});throw error;}
  if(config?.capabilities?.target_override!==true)throw new CliError('API未声明支持指定目标表，未执行上传',{kind:'feature_unavailable',outcome_unknown:false});
  if(requireDraftSync&&config?.capabilities?.draft_sync!==true)throw new CliError('API尚未声明支持出题后草稿上传，未执行上传；请按授权重载服务后使用',{kind:'feature_unavailable',outcome_unknown:false});
+ if(requireAttachmentFormat&&config?.capabilities?.attachment_format!==true)throw new CliError('API尚未声明支持交付附件格式（docx/pdf），未执行上传；请按授权重载服务后使用',{kind:'feature_unavailable',outcome_unknown:false});
  return config;
 }
 
 /** 首先只读核对全部题目归属/达标/归档；每题发送前落盘dispatching，未知响应立即停止。 */
-export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[],output:string,target:FeishuCliTarget|undefined,signal?:AbortSignal,stage:'draft'|'archived'='archived'){
+export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[],output:string,target:FeishuCliTarget|undefined,signal?:AbortSignal,stage:'draft'|'archived'='archived',attachmentFormat?:FeishuCliAttachmentFormat){
  if(!ids.length||ids.length>1000)throw new CliError('飞书批次须明确指定1至1000道题');
- const settings=await readFeishuConfig(api,projectId,signal,stage==='draft');
+ const settings=await readFeishuConfig(api,projectId,signal,stage==='draft',attachmentFormat!==undefined);
  const project=await api.json(`/api/projects/${projectId}`,'GET',undefined,signal);
  if(!Array.isArray(project.workflows)||!project.workflow_status)throw new CliError('项目响应缺少题目状态',{kind:'invalid_response'});
  for(const id of ids){
@@ -43,7 +50,8 @@ export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[
   if(configured?.table_id)target=feishuTarget(configured.base_token,configured.table_id);
   else throw new CliError('本期尚无固定表ID；请先创建或指定目标表，再执行批次，避免批次中途改向');
  }
- const path=resolve(output),state:any={version:1,stage,project_id:projectId,workflow_ids:ids,target,created_at:new Date().toISOString(),items:ids.map(workflow_id=>({workflow_id,status:'pending'}))};
+ const effectiveAttachmentFormat:FeishuCliAttachmentFormat=attachmentFormat??(settings.attachment_format==='pdf'?'pdf':'docx');
+ const path=resolve(output),state:any={version:1,stage,project_id:projectId,workflow_ids:ids,target,attachment_format:effectiveAttachmentFormat,created_at:new Date().toISOString(),items:ids.map(workflow_id=>({workflow_id,status:'pending'}))};
  try{await writeFile(path,JSON.stringify(state,null,2),{flag:'wx',mode:0o600});}
  catch{throw new CliError('进度文件必须不存在且父目录可写；未上传本批题目',{kind:'file_error'});}
  const persist=async()=>{
@@ -56,8 +64,9 @@ export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[
   item.status='dispatching';item.dispatched_at=new Date().toISOString();await persist();
   try{
    const route=stage==='draft'?'feishu-draft-sync':'feishu-sync';
-   const receipt=await api.json(`/api/workflows/${item.workflow_id}/${route}`,'POST',{target},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
+   const receipt=await api.json(`/api/workflows/${item.workflow_id}/${route}`,'POST',{target,...(attachmentFormat?{attachment_format:attachmentFormat}:{})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
    item.receipt=receipt;item.status=receipt.status==='succeeded'?'succeeded':receipt.status==='in_progress'?'in_progress':'failed';await persist();
+   if(item.status!=='succeeded')break;
   }catch(error){
    const detail=error instanceof CliError?error.detail:{};
    // 飞书核对失败按HTTP502返回；从同题安全回执恢复具体差异，不把旧回执当作本次响应。
@@ -79,5 +88,5 @@ export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[
    break;
   }
  }
- return{outcome:state.items.every((item:any)=>item.status==='succeeded')?'complete':'partial',data:{progress_file:path,project_id:projectId,target,stage,items:state.items,total:ids.length,succeeded:state.items.filter((item:any)=>item.status==='succeeded').length,verified:state.items.filter((item:any)=>item.receipt?.verification?.status==='passed').length,verification_failed:state.items.filter((item:any)=>item.receipt?.verification?.status==='failed').length,verification_incomplete:state.items.filter((item:any)=>item.status!=='pending'&&item.receipt?.verification?.status!=='passed'&&item.receipt?.verification?.status!=='failed').length,note:stage==='draft'?'草稿仅表示出题结果已上传飞书，字段“题目是否完成”为未完成；不代表评分、达标、归档或平台验收。unknown先核对远端，pending未派发。补传须明确指定剩余ID并使用新的进度文件，不自动重试。':'核对结果见每题receipt.verification；旧回执无verification不代表本次核对通过。仅成功回执代表已提交；unknown先核对远端，pending未派发。补传须明确指定剩余ID并使用新的进度文件，不自动重试。'}};
+ return{outcome:state.items.every((item:any)=>item.status==='succeeded')?'complete':'partial',data:{progress_file:path,project_id:projectId,target,attachment_format:effectiveAttachmentFormat,stage,items:state.items,total:ids.length,succeeded:state.items.filter((item:any)=>item.status==='succeeded').length,verified:state.items.filter((item:any)=>item.receipt?.verification?.status==='passed').length,verification_failed:state.items.filter((item:any)=>item.receipt?.verification?.status==='failed').length,verification_incomplete:state.items.filter((item:any)=>item.status!=='pending'&&item.receipt?.verification?.status!=='passed'&&item.receipt?.verification?.status!=='failed').length,note:stage==='draft'?'草稿仅表示出题结果已上传飞书，字段“题目是否完成”为未完成；不代表评分、达标、归档或平台验收。unknown先核对远端，pending未派发。补传须明确指定剩余ID并使用新的进度文件，不自动重试。':'核对结果见每题receipt.verification；旧回执无verification不代表本次核对通过。仅成功回执代表已提交；unknown先核对远端，pending未派发。补传须明确指定剩余ID并使用新的进度文件，不自动重试。'}};
 }

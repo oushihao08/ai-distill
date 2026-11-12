@@ -187,10 +187,11 @@ export async function registerQuestionFolders(db: PoolClient, projectId: string,
  return {discovered:questions.length,added:added.length,changed:changed.length};
 }
 export type AnswerStepConfig=ModelApiConfig&{prompt:string;workflow?:WorkflowConfig};
-export type CodexAuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';material_processing_mode?:MaterialProcessingMode;workflow?:WorkflowConfig};
+export type AgentAuthoringStepConfig={provider:'codex'|'agy';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';material_processing_mode?:MaterialProcessingMode;workflow?:WorkflowConfig};
+export type CodexAuthoringStepConfig=AgentAuthoringStepConfig;
 /** 网页Agent出题：设置在派发时冻结；没有模型/推理强度，网页不返回可核实的实际模型。 */
 export type WebAuthoringStepConfig={provider:'web';web:WebAgentSettings;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';material_processing_mode?:MaterialProcessingMode;workflow?:WorkflowConfig};
-export type AuthoringStepConfig=CodexAuthoringStepConfig|WebAuthoringStepConfig;
+export type AuthoringStepConfig=AgentAuthoringStepConfig|WebAuthoringStepConfig;
 export type ScoringStepConfig=CodexAuthoringStepConfig|{provider:'api';api:ModelApiConfig;prompt:string;workflow?:WorkflowConfig};
 export function validateStepConfig(ordinal:9,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):RedactionConfig;
 export function validateStepConfig(ordinal:4,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):AuthoringStepConfig;
@@ -240,8 +241,12 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
   if(webTimeout!==undefined&&(!Number.isInteger(webTimeout)||Number(webTimeout)<60000||Number(webTimeout)>7200000))throw new HTTPException(400,{message:'出题超时须为 1 至 120 分钟的毫秒数'});
   return{provider:'web',web,prompt:webPrompt,...(webTimeout!==undefined?{timeout_ms:webTimeout as number}:{}),...extension};
  }
- const provider = 'codex';
- if (value.provider !== undefined && value.provider !== provider) throw new HTTPException(400, { message: `此步骤使用${provider}` });
+ let provider: 'codex' | 'agy' = 'codex';
+ if (value.provider !== undefined) {
+  const p = typeof value.provider === 'string' ? (value.provider.trim().toLowerCase() === 'antigravity' ? 'agy' : value.provider.trim().toLowerCase()) : '';
+  if (p !== 'codex' && p !== 'agy') throw new HTTPException(400, { message: '此步骤仅支持 codex 或 agy (antigravity)' });
+  provider = p as 'codex' | 'agy';
+ }
  const model = text(value.model, '模型ID', 160);
  const effort = text(value.reasoning_effort ?? 'medium', '推理强度', 20);
  if(provider==='codex'&&validateAdvertisedModel)validateAgentModel(model,effort,modelCatalog);

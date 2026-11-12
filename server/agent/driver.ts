@@ -140,8 +140,16 @@ export function isAgentProviderConfig<T extends {provider?:unknown}>(config:T):c
  return Boolean(config&&isRegisteredAgentProvider(config.provider));
 }
 
-export function resolveAgentDriver(model:string):{driver:AgentDriver;resolvedModel:string}{
+export function resolveAgentDriver(model:string,preferredProvider?:string):{driver:AgentDriver;resolvedModel:string}{
  const trimmed=model.trim();
+ const preferred=preferredProvider?.trim().toLowerCase();
+ const normalizedPreferred=preferred==='antigravity'?AGY_DRIVER_ID:preferred;
+ if(normalizedPreferred&&drivers.has(normalizedPreferred)){
+  const driver=drivers.get(normalizedPreferred)!;
+  const prefixMatch=trimmed.match(/^([a-z][a-z0-9_-]{0,31}):(.+)$/i);
+  const rawModel=prefixMatch?prefixMatch[2]!.trim():trimmed;
+  return{driver,resolvedModel:normalizedPreferred===AGY_DRIVER_ID?stripAgyPrefix(rawModel):rawModel};
+ }
  const prefixMatch=trimmed.match(/^([a-z][a-z0-9_-]{0,31}):(.+)$/i);
  if(prefixMatch){
   const driverId=prefixMatch[1]!.toLowerCase();

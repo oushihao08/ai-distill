@@ -15,6 +15,7 @@ const DEFAULT_BASE='DuizblJJwavfGjsB4KJcPH0TnRg',
 /** 两个豆包主项目共用同一套同步实现，但期次目标按主项目分别冻结，不互相回退。 */
 const ENABLED_GROUPS=new Set([LEGAL_GROUP,MEDICAL_GROUP]);
 export interface FeishuTarget {base_token:string;table_id:string}
+export type FeishuAttachmentFormat='docx'|'pdf';
 export interface FrozenFeishuTarget extends FeishuTarget {name:string}
 /** 第八期与医疗第九期交付坐标冻结；同步时使用具体ID，不按表名搜索或自动换表。 */
 export const FROZEN_FEISHU_TARGETS={
@@ -43,23 +44,28 @@ export function validateFeishuTarget(value:unknown):FeishuTarget{
  if(!object(value)||Object.keys(value).some(k=>!['base_token','table_id'].includes(k)))throw bad('交付目标须包含base_token和table_id');
  return{base_token:token(value.base_token,'base'),table_id:token(value.table_id,'table')};
 }
+export function validateFeishuAttachmentFormat(value:unknown):FeishuAttachmentFormat{
+ if(value!=='docx'&&value!=='pdf')throw bad('交付附件格式须为docx或pdf');
+ return value;
+}
 async function project(pool:Pick<Pool,'query'>,id:string){
  return(await pool.query(`SELECT p.project_group_id,p.phase_name,c.config->'feishu_delivery' AS settings
  FROM ai_distill.projects p LEFT JOIN ai_distill.project_step_configs c ON c.project_id=p.id AND c.ordinal=8
  WHERE p.id=$1 AND p.deleted_at IS NULL`,[id])).rows[0];
 }
 /** 未配置时保持现有按期次目标；显式配置只接受具体表ID，避免同名表产生含混路由。 */
-export async function readFeishuDeliveryConfig(pool:Pick<Pool,'query'>,projectId:string):Promise<{default_target:DefaultTarget;source:'phase_default'|'configured'}|null>{
+export async function readFeishuDeliveryConfig(pool:Pick<Pool,'query'>,projectId:string):Promise<{default_target:DefaultTarget;source:'phase_default'|'configured';attachment_format:FeishuAttachmentFormat}|null>{
  const row=await project(pool,projectId);if(!row)return null;
  const group=String(row.project_group_id??'');if(!ENABLED_GROUPS.has(group))return null;
- if(row.settings)return{default_target:validateFeishuTarget(row.settings.default_target),source:'configured'};
+ const attachmentFormat=row.settings?.attachment_format===undefined?'docx':validateFeishuAttachmentFormat(row.settings.attachment_format);
+ if(row.settings?.default_target)return{default_target:validateFeishuTarget(row.settings.default_target),source:'configured',attachment_format:attachmentFormat};
  const phase=String(row.phase_name??'').trim();if(!phase)throw bad('期次名称缺失');
  if(group===MEDICAL_GROUP){
   const target=MEDICAL_PHASE_DEFAULT_TARGETS[phase];
   if(!target)return null;
-  return{default_target:target,source:'phase_default'};
+  return{default_target:target,source:'phase_default',attachment_format:attachmentFormat};
  }
- return{default_target:PHASE_DEFAULT_TARGETS[phase]??{base_token:DEFAULT_BASE,table_name:phase},source:'phase_default'};
+ return{default_target:PHASE_DEFAULT_TARGETS[phase]??{base_token:DEFAULT_BASE,table_name:phase},source:'phase_default',attachment_format:attachmentFormat};
 }
 async function requireProject(pool:Pool,id:string){if(!await readFeishuDeliveryConfig(pool,id))throw new HTTPException(404,{message:'本项目未启用豆包飞书交付'});}
 async function payload(c:Context){try{const body=await c.req.json();if(!object(body))throw bad('须提交JSON对象');return body;}catch(error){if(error instanceof HTTPException)throw error;throw bad('须提交有效JSON');}}
@@ -69,17 +75,21 @@ function remoteError(error:unknown):never{if(error instanceof HTTPException)thro
 export function registerFeishuTargetRoutes(app:Hono,pool:Pool){
  app.get('/api/projects/:id/feishu-delivery',async c=>{
   const id=uuid(c.req.param('id'));await requireProject(pool,id);
-  return c.json({...await readFeishuDeliveryConfig(pool,id),capabilities:{target_override:true,per_target_receipts:true,draft_sync:true},fields:FEISHU_FIELDS.map(([name,type])=>({name,type,hidden:name==='系统同步ID'}))});
+  return c.json({...await readFeishuDeliveryConfig(pool,id),capabilities:{target_override:true,per_target_receipts:true,draft_sync:true,attachment_format:true},fields:FEISHU_FIELDS.map(([name,type])=>({name,type,hidden:name==='系统同步ID'}))});
  });
  app.put('/api/projects/:id/feishu-delivery',async c=>{
   const id=uuid(c.req.param('id'));await requireProject(pool,id);const body=await payload(c);
-  if(Object.keys(body).some(k=>k!=='default_target'))throw bad('只允许修改default_target');
-  const target=validateFeishuTarget(body.default_target);
-  let api:Awaited<ReturnType<typeof feishuClient>>|undefined;
-  try{api=await feishuClient();await ensureFeishuSchema(api,target.base_token,target.table_id);}catch(error){remoteError(error);}finally{await api?.close();}
+  if(Object.keys(body).some(k=>!['default_target','attachment_format'].includes(k))||(body.default_target===undefined&&body.attachment_format===undefined))throw bad('只允许修改default_target或attachment_format');
+  const target=body.default_target===undefined?undefined:validateFeishuTarget(body.default_target);
+  const attachmentFormat=body.attachment_format===undefined?undefined:validateFeishuAttachmentFormat(body.attachment_format);
+  if(target){
+   let api:Awaited<ReturnType<typeof feishuClient>>|undefined;
+   try{api=await feishuClient();await ensureFeishuSchema(api,target.base_token,target.table_id);}catch(error){remoteError(error);}finally{await api?.close();}
+  }
+  const patch={...(target?{default_target:target}:{}),...(attachmentFormat?{attachment_format:attachmentFormat}:{})};
   const saved=await pool.query(`INSERT INTO ai_distill.project_step_configs AS existing(project_id,ordinal,config)
    VALUES($1,8,jsonb_build_object('feishu_delivery',$2::jsonb)) ON CONFLICT(project_id,ordinal)
-   DO UPDATE SET config=existing.config||EXCLUDED.config,updated_at=now() RETURNING project_id`,[id,JSON.stringify({default_target:target})]);
+   DO UPDATE SET config=jsonb_set(COALESCE(existing.config,'{}'::jsonb),'{feishu_delivery}',COALESCE(existing.config->'feishu_delivery','{}'::jsonb)||$2::jsonb,true),updated_at=now() RETURNING project_id`,[id,JSON.stringify(patch)]);
   if(!saved.rowCount)throw new HTTPException(409,{message:'保存交付目标失败'});
   return c.json(await readFeishuDeliveryConfig(pool,id));
  });
