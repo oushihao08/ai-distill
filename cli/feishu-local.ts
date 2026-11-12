@@ -11,6 +11,7 @@ import type {FeishuCliTarget} from './feishu';
 import {feishuClient,ensureFeishuSchema} from '../server/publishing/feishu-api';
 import {feishuTextFields,compareFeishuText} from '../server/publishing/feishu-verification';
 import {convertMaterialDocxToImagePdf} from '../server/publishing/material-pdf';
+import {canonicalJson} from '../shared/workflow-config';
 const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 
 export async function syncLocalFeishu(manifestPath:string,output:string,target:FeishuCliTarget,signal?:AbortSignal){
@@ -66,7 +67,7 @@ export async function syncLocalFeishu(manifestPath:string,output:string,target:F
     const pdfs=await convertMaterialDocxToImagePdf(item.files,item.workflow_id,join(dirname(path),'local-pdf-cache'));
     api=await feishuClient();
     const fresh=(await api.list(tablePath+'/records')).filter(r=>r.fields?.['题目ID']===item.workflow_id||r.fields?.['系统同步ID']===item.workflow_id);
-    if(fresh.length!==(existing?1:0)||fresh[0]?.record_id!==existing?.record_id||JSON.stringify(fresh[0]?.fields)!==JSON.stringify(existing?.fields))throw new CliError('转换期间远端记录改变，未写入');
+    if(fresh.length!==(existing?1:0)||fresh[0]?.record_id!==existing?.record_id||canonicalJson(fresh[0]?.fields??null)!==canonicalJson(existing?.fields??null))throw new CliError('转换期间远端记录改变，未写入');
     const attachments=[];
     for(const [i,bytes] of pdfs.entries()){
      const form=new FormData();form.set('file_name',names[i]!);form.set('parent_type','bitable_file');form.set('parent_node',target.base_token);form.set('size',String(bytes.byteLength));form.set('file',new Blob([new Uint8Array(bytes)],{type:'application/pdf'}),names[i]!);

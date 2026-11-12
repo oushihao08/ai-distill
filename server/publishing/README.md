@@ -10,6 +10,7 @@ Skill Dependency 的出题后本地直交另由 `GET /api/workflows/:id/skill-de
 | 文件 | 职责与入口 |
 | --- | --- |
 | `feishu.ts` | 豆包出题草稿上传及已归档题目的同步；校验冻结材料DOCX和远端记录。草稿上传不写归档步骤，归档同步成功后才允许把同版本草稿行升级为已完成。 |
+| `material-pdf.ts` | HTTP交付与本地CLI共用的材料DOCX到图像PDF转换器；不读取数据库或调用业务API，依赖已有LibreOffice/Python及PDF工具。 |
 | `feishu-verification.ts` | 六字段固定投影、逐字符差异和材料身份校验的纯函数；新记录考点复用豆包普通数字投影，旧版标签仅用于同版旧值核验。 |
 | `feishu.test.ts`、`feishu-verification.test.ts` | 隔离替身验证同步分支及材料/文本规则，不访问真实服务。 |
 | `feishu-api.ts` | 豆包字段/选项、建表与隐藏系统关联；通用远端操作调用toolSkills的CLI，客户端须finally关闭。 |

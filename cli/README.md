@@ -392,7 +392,15 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 命令入口为`feishu config show/set`、`feishu table create`、`feishu sync`、`feishu sync-batch`、`feishu draft-sync`和`feishu draft-sync-batch`；完整旗标以HELP为准。实现位于`cli/feishu.ts`与`commands.ts`，只调用本机HTTP API，不读取飞书App Secret、不直连数据库。HTTP契约及字段唯一来源见[飞书交付](../server/publishing/README.md#豆包飞书交付)。当前仅豆包启用，不能将其当作Work交付入口。
 
-PDF转换器由API进程解析：优先`LIBREOFFICE_PATH`，再查macOS应用目录、同用户Codex自带的LibreOffice，最后使用API的PATH。无需把Codex终端PATH复制给服务；CLI自身设置环境变量不会改变已运行API的环境。代码更新需按授权重载API。批次收到非成功回执即停止，剩余题目保持pending，不连续重复触发同一转换错误。
+`feishu local-sync --manifest 本地题包清单.json --out 新回执.json --base-token BASE --table TABLE`直接读取本地快照、转换PDF并调用飞书，不创建业务API客户端、不连接数据库、不要求API或worker运行。复用`feishu-verification.ts`字段投影/逐字符核对、`material-pdf.ts`转换器及现有飞书CLI传输。仅交付“未完成”草稿，不写后端同步回执或归档；本地快照不证明数据库当前版本。不能并发交付同一批题目，未知请求先按题目ID及本地回执对账。
+
+本地清单格式如下；`question`是完整题包快照，包含现有交付字段及题面/rubric版本，`files`为既有材料导出件及真实SHA-256，文件路径相对清单目录。上传前整批校验本地文件，正文冲突拒绝覆盖；同摘要DOCX可原地改传PDF，其余附件冲突停止。回执文件必须不存在，逐题保存创建请求ID、record ID、核对结果，最后全表分页对账。清单及回执含业务信息，应保存在私有运行目录。
+
+```json
+{"version":1,"items":[{"workflow_id":"题目UUID","question":{"question_version":"原题面版本","rubric_version":"原rubric版本","task_name":"任务名称","task_type":"任务类型","question":"题面正文","rubric":[{"id":"R1","max_score":1,"criterion":"判据"}],"answer_approach":"作答思路","reference_answer":"标准答案"},"files":[{"path":"材料.docx","sha256":"文件的64位SHA-256"}]}]}
+```
+
+公共PDF转换器优先使用执行进程的`LIBREOFFICE_PATH`，再查macOS应用目录、同用户Codex自带的LibreOffice，最后使用该进程PATH。本地交付直接使用CLI环境；原HTTP交付仍使用API环境，CLI环境不会改变已运行API。两种批次收到非成功回执均停止，剩余题目保持pending。
 
 - 查询或更换该期默认表与交付附件格式：`feishu config show/set`；`set`支持`--base-token BASE --table TABLE`与`--attachment-format docx|pdf`（至少一项），核对既有表字段后合并保存配置，不自动补传旧题。`sync`、`sync-batch`、`draft-sync`、`draft-sync-batch`同样支持可选`--attachment-format docx|pdf`单次覆盖，省略时沿用该期`feishu_delivery.attachment_format`（默认`docx`）。`pdf`模式由服务端调用现有`scripts/runtime/docx-to-image-pdf.py`转换图像版PDF，需API所在机器具备`soffice`。
 - 一次性交付N题到新表：固定N个当前已达标、已归档的workflow ID；先运行`feishu table create`，记录返回的base_token/table_id，再运行`feishu sync-batch`显式传入这两个ID。只建一张表，不为每道题单独建表，不改变期次默认目标。
