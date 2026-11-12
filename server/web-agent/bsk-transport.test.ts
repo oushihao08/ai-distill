@@ -48,8 +48,8 @@ if(args[0]==='evaluate'){
  const expr=args[args.length-1];
  let value:any=true;
  if(expr.includes('var raw=window.__waFiles'))value={ok:true,count:1};
- else if(expr.includes('beforeUsers='))value={ok:true};
  else if(expr.includes('beforeAsst='))value={ok:true,text:'\`\`\`json\\n{"ok":1}\\n\`\`\`',href:'https://chat.deepseek.com/a/chat/s/11111111-1111-1111-1111-111111111111',visOverridden:false};
+ else if(expr.includes('beforeUsers='))value={ok:true};
  else if(expr.includes('visibilityState')&&expr.includes('composer:'))value={url:'https://chat.deepseek.com/',composer:true,login:false,challenge:false,visibility:'visible'};
  else if(expr.includes('thinking:')&&expr.includes('search:'))value={thinking:false,search:false};
  else if(expr.includes('last_user_key:')&&expr.includes('reply_sig:'))value={users:0,assistants:0,last_user_key:'',last_assistant_key:'',reply_len:0,reply_sig:'0:',generating:false,complete:false,visibility:'visible'};

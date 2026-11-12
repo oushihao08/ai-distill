@@ -8,8 +8,7 @@ import {ModelApiError,readModelApiDefaults,resolveModelApiConfig,type ModelApiCo
 import {isRegisteredAgentProvider,type AgentProviderName} from '../agent';
 import {validateAgentModel} from '../agent/config';
 import {DEFAULT_REDACTION_PROMPT} from '@shared/step-registry';
-import type {WebAgentSettings} from '../../shared/web-agent';
-export type RedactionConfig={provider:AgentProviderName;model:string;reasoning_effort:string;prompt:string}|{provider:'api';api:ModelApiConfig;prompt:string}|{provider:'web';web:WebAgentSettings;prompt:string};
+export type RedactionConfig={provider:AgentProviderName;model:string;reasoning_effort:string;prompt:string}|{provider:'api';api:ModelApiConfig;prompt:string};
 function stableJson(value:unknown):string{
  const normalize=(item:unknown):unknown=>Array.isArray(item)?item.map(value=>value===undefined?null:normalize(value)):item&&typeof item==='object'?Object.fromEntries(Object.entries(item).filter(([,value])=>value!==undefined).sort(([a],[b])=>a.localeCompare(b)).map(([key,value])=>[key,normalize(value)])):item;
  return JSON.stringify(normalize(value))??'undefined';

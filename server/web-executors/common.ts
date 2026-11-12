@@ -1,6 +1,6 @@
 /**
- * 职责：三个网页执行器共用的小工具：默认传输单例、与Agent同形的结果封装、每轮回复的私有记录。
- * 主要入口：`defaultWebTransport()`、`webAgentResult()`、`roundRecorder()`；调用方为 redaction.ts、preparation.ts、authoring.ts。
+ * 职责：两个网页执行器共用的小工具：默认传输单例、与Agent同形的结果封装、每轮回复的私有记录。
+ * 主要入口：`defaultWebTransport()`、`webAgentResult()`、`roundRecorder()`；调用方为 preparation.ts、authoring.ts。
  * 边界：模型身份只记录“网页提供方”，网页不返回可核实的实际模型，因此 returned_model 恒为 null。
  */
 import {join} from 'node:path';

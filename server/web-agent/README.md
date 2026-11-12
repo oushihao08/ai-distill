@@ -1,24 +1,29 @@
-# web-agent：网页聊天（DeepSeek / Gemini）CDP 驱动
+# web-agent：网页聊天（DeepSeek / Gemini）双后端驱动（BrowserSkill 优先 + 独立 CDP 备选）
 
-读者：写 worker “web agent” 执行器或排查网页聊天故障的工程师。本目录用**独立 Chrome 档案**经 Chrome DevTools Protocol 驱动 DeepSeek 网页与 Gemini 网页完成一次（或多轮）对话；零 npm 依赖（Bun `WebSocket`/`fetch`/`Bun.spawn`），不读取数据库、队列、`.env`，也不使用用户日常 Chrome。
+读者：写 worker “web agent” 执行器或排查网页聊天故障的工程师。本目录驱动 DeepSeek 网页与 Gemini 网页完成一次（或多轮）对话；零新增 npm 依赖（Bun `WebSocket`/`fetch`/`Bun.spawn`），不读取数据库、队列、`.env` 或浏览器 cookie。
+
+支持两种后端（`backend: 'auto' | 'bsk' | 'cdp'`，默认 `'auto'`，可由 `WEB_AGENT_BACKEND` 覆盖）：
+- **`bsk`（默认优先）**：检测到本机已连接的 BrowserSkill（`bsk` CLI + Chrome 扩展，多实例可用 `WEB_AGENT_BSK_BROWSER` 指定）时，直接复用用户已登录 Chrome 的站点会话，**每次任务仅新建独立后台 Agent Window**（从不传 `--focus`、从不 `tab borrow` 触碰用户现有窗口或标签页），无需重复登录；会话结束必调 `bsk session stop` 关闭该后台窗口。
+- **`cdp`（独立档案备选）**：未安装/未连接 `bsk`、显式指定 `backend:'cdp'` 或自定义隔离 `root` / `provider:'fake'` 时，启动 `<root>/web-agent/profile/` 独立 Chrome 档案经 Chrome DevTools Protocol 后台驱动。
 
 ## 文件职责
 
 | 文件 | 职责 / 入口 | 调用方 |
 | --- | --- | --- |
-| `index.ts` | 公共入口：`createWebChatTransport`、`webBrowserStatus`、`webDoctor`、`webLogin`、`webCloseBrowser`、`WebAgentError`、`extractJsonFromReply`、`isLikelyTruncatedJson` | worker 执行器、CLI |
-| `types.ts` | 站点/会话/传输接口，`WebAgentError{reason_code}` 与固定错误文案 | 全模块 |
+| `index.ts` | 公共入口：`createWebChatTransport`、`resolveBackend`、`webBrowserStatus`、`webDoctor`、`webLogin`、`webCloseBrowser`、`WebAgentError`、`extractJsonFromReply`、`isLikelyTruncatedJson` | worker 执行器、CLI |
+| `types.ts` | 站点/会话/传输接口，`WebAgentBackend`、`WebAgentError{reason_code}` 与固定错误文案 | 全模块 |
+| `bsk-transport.ts` | `probeBskBrowser()`、`createBskChatTransport()`、`BskChatSession`：经 `bsk` 驱动独立后台 Agent Window，分块暂存文件/提示词，单次 Promise 完成发送与流式等待 | `transport.ts`、`index.ts` |
 | `cdp.ts` | 最小 CDP 客户端：请求/响应关联、事件、断线、超时、取消；浏览器级连接 + `Target.attachToTarget{flatten}` 多路复用 | `browser.ts`、`session.ts` |
 | `browser.ts` | 专用 Chrome 生命周期：档案/端口/锁路径、启动与复用、状态、关闭、人工登录窗口 | `transport.ts`、`index.ts` |
-| `transport.ts` | `createWebChatTransport()`：新建对话 target、等待输入框、应用选项；`probeProviderHealth()` 只读登录态探测 | `index.ts` |
+| `transport.ts` | `createWebChatTransport()`：按 `resolveBackend` 路由到 `bsk` 或 `cdp`；`probeProviderHealth()` 只读登录态探测 | `index.ts` |
 | `session.ts` | `CdpChatSession`：上传、写入提示词、发送、多信号等待、读取回复、取消/超时 | `transport.ts` |
-| `classify.ts` | 纯函数：登录/验证码/限额/繁忙文案与页面快照分类 | `session.ts`、`transport.ts` |
+| `classify.ts` | 纯函数：登录/验证码/限额/繁忙文案与页面快照分类 | `bsk-transport.ts`、`session.ts`、`transport.ts` |
 | `json-extract.ts` | `extractJsonFromReply()`、`isLikelyTruncatedJson()`、`JsonExtractError` | 调用方解析回复 |
 | `sites/types.ts` | `WebSiteAdapter`：站点选择器/判定都是**页面内 JS 表达式字符串** | 站点适配 |
 | `sites/dom-markdown.ts` | 页面内 DOM→Markdown 函数源码（保留 ``` 围栏、列表、表格、标题） | 各站点 `lastReply` |
-| `sites/deepseek.ts`、`sites/gemini.ts` | 两个真实站点的表达式（可原样用 `bsk evaluate` 复核） | `transport.ts` |
+| `sites/deepseek.ts`、`sites/gemini.ts` | 两个真实站点的表达式（`bsk` 与 `cdp` 共用同一份表达式） | `transport.ts` |
 | `sites/fake.ts`、`fake-chat-server.ts` | `provider:'fake'` 的适配器与本地假聊天页（`Bun.serve`，URL 由 `fake_url` 注入） | 测试、验证脚本 |
-| `*.test.ts` | `cdp.test.ts`（假 CDP 服务器）、`json-extract.test.ts`、`classify.test.ts` | `bun test` |
+| `*.test.ts` | `cdp.test.ts`、`bsk-transport.test.ts`、`json-extract.test.ts`、`classify.test.ts` | `bun test` |
 
 端到端脚本：`scripts/verification/verify-web-agent.ts`（真实 Chrome + 假聊天页，使用独立临时档案）。
 
@@ -91,7 +96,7 @@ await session.close();                                                          
 | 输入框 | `textarea[name=search]`（placeholder “Message DeepSeek”）。原生 setter 写入 100,004 字符 + `input` 事件被接受，发送按钮随即可用；`execCommand('insertText')` 会被 bsk 视为人工输入（与站点无关）。CDP `Input.insertText` 在真实站点**未实测**，实现带 JS 写值回退。 |
 | 新对话 | 访问 `/`；首次发送后 URL 变为 `/a/chat/s/<uuid>`；侧栏 “New chat” |
 | 文件上传 | 常驻隐藏 `input[type=file][multiple]`；`accept` 约 5.9KB 扩展名清单，含 `.pdf .txt .md .csv .json .doc(x) .xls(x) .ppt(x)` 与大量代码扩展名与图片；附件按钮工具提示 “Upload docs or images (Max 50, 100MB each)”。已实测：多文件一次上传、25.87MB 文本上传成功。`.zip` 被拒：toast “The uploaded file format is not supported. Supported formats include PDF, DOC, XLSX, PPT, images, text, and code.”（无附件 chip）。空文件：chip 显示 “No text extracted”（失败态） |
-| 上传信号 | 附件 chip 的状态槽文字：上传中 `Uploading...` → 完成 `TXT 22B`/`TXT 25.87MB`（类型 + 大小）；失败如 `No text extracted`。chip 结构为“名称 div + 状态 div”两子节点；移除按钮为 chip 内图标按钮（JS `click()` 有效） |
+| 上传信号 | 附件 chip 位于输入框内层 `input[type=file]` 容器之上、消息虚拟列表之外：外层卡片含左侧图标/`.ds-loading`、中间“名称 div + 状态 div”两子节点与右侧关闭图标按钮。上传/解析期间存在 `.ds-loading`（即使状态槽已先显示 `JSON 13B` 也仍处于加载态）或显示 `Uploading...`；`.ds-loading` 消失且状态槽匹配 `TXT 11B`/`JSON 85KB`（类型 + 大小）时为 `ready`；失败如 `No text extracted` |
 | 发送 | 圆形主按钮 `[role=button].ds-button--primary.ds-button--circle`；输入为空时带 `ds-button--disabled`；JS `click()` 有效，回车未测 |
 | 停止生成 | 未能直接观察（回复仅 ~2 秒完成）。由状态推断：发送后输入框清空、该按钮**不带 disabled**即为停止态。**停止按钮选择器属推断，未实测** |
 | 回复完成信号 | 助手条目下方出现操作栏（≥3 个 `[role=button]`：复制/重新生成/点赞…），位于 `.ds-message` 之外。生成中无操作栏为推断 |
@@ -123,20 +128,13 @@ await session.close();                                                          
 
 ## 自动化验证结果（2026-11-12）
 
-- `bun test ./server/web-agent/cdp.test.ts ./server/web-agent/json-extract.test.ts ./server/web-agent/classify.test.ts`：29 项通过。
+- `bun test ./server/web-agent`：32 项通过（含 `cdp.test.ts`、`bsk-transport.test.ts`、`json-extract.test.ts`、`classify.test.ts`）。
 - `bun scripts/verification/verify-web-agent.ts`（真实本机 Chrome 后台有界面 + 本地假聊天页，独立临时档案）：11/11 通过——3 个传输并发冷启动只有 1 个主进程；3 文件（含二进制与中文名）按序上传且 sha256 一致；220KB 提示词 sha256 一致；表格/列表/代码围栏保留；多轮复用同一对话；取消关闭 target、超时为 `web_timeout`；6 会话并发互不串扰；新传输复用同一实例；会话结束后页面数回到基线且临时上传目录已删；繁忙/上传拒绝/文件数超限/空文件/登录页/验证码页分类正确；测试期间前台应用从未是专用 Chrome。
-- 站点表达式另用 `bsk evaluate` 在两站点真实历史对话页只读复核：DeepSeek 的 `pageState/options/chatState/lastReply`（表格、加粗、列表、```json 围栏均正确还原，`extractJsonFromReply` 可解析）与 Gemini 的 `pageState/chatState/lastReply`（表格、标题、列表、代码围栏）可执行且结果合理；`attachments`/`sendReady`/`composerLength` 在空输入态返回 `[]/false/0`。
-
-## 未验证项
-
-- 真实站点在**专用档案已登录**条件下的端到端（`open → ask → 回复`）；需要用户先 `webLogin`。
-- 真实站点上的 CDP `Input.insertText` 写入、可信点击发送/上传菜单、`DOM.setFileInputFiles`/`fileChooserOpened`。
-- DeepSeek 停止按钮与“生成中无操作栏”；DeepSeek/Gemini 限额、繁忙、验证码、登录页的真实页面形态；Gemini 文件数/大小上限；DeepSeek 单条消息长度上限（已测 10 万字符输入框接受，未发送）。
-- 站点长回复（≥数千字）的读取与 DeepSeek 虚拟列表在多轮长对话中卸载旧条目的影响（程序用条目键与计数同时比较）。
+- `bsk` 后端实测（`instance_id=8ca9c398`）：`web status` / `web doctor` 识别 `deepseek: logged_in`、`gemini: logged_in`；DeepSeek `input[type=file]` 多文件注入（`.json` + `.txt`）与 Gemini `ClipboardEvent('paste')` 多文件注入均进入 `ready` 态；单次 `evaluate` Promise 跨 35s+ 流式等待无 `observation_changed` 中断。
 
 ## 维护边界
 
 - 站点选择器只放在 `sites/*.ts` 的表达式里；改版后用 `bsk evaluate` 复核，并更新本文“已核验事实”的日期。
-- 不绕过登录、验证码、风控、限额；不新增依赖；不读取 cookie/凭证；不使用用户日常 Chrome 档案或窗口。
-- `webLogin` 与自动化浏览器互斥；不要同时对同一档案启动两个实例。
+- 不绕过登录、验证码、风控、限额；不新增依赖；不读取 cookie/凭证。`bsk` 模式只开独立后台 Agent Window（严禁 `--focus` 或 `tab borrow` 借用用户窗口/标签页），会话结束必调 `bsk session stop`；`cdp` 模式只使用 `<root>/web-agent/profile/` 独立档案。
+- `cdp` 模式下 `webLogin` 与自动化浏览器互斥；不要同时对同一档案启动两个实例。
 - 本目录与 `scripts/verification/verify-web-agent.ts` 之外的文件（执行队列、数据库、CLI）由各自模块维护。

@@ -4,8 +4,10 @@
  * 调用方：`transport.ts`（`backend:'auto'|'bsk'` 时选用）与 `index.ts`（`web status / doctor / login / close`）。
  * 边界：只开后台 Agent Window（从不传 `--focus`、从不 `tab borrow` 用户标签页），不读取 cookie/凭证；会话结束必调 `bsk session stop`。
  */
+import {randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
-import {homedir} from 'node:os';
+import {rm} from 'node:fs/promises';
+import {homedir,tmpdir} from 'node:os';
 import {basename,extname,join} from 'node:path';
 import {NOTICE_BUSY,NOTICE_CHALLENGE,NOTICE_RATE_LIMITED,classifyNotice,classifyPage,classifyShortReply,providerHealth} from './classify';
 import {jsArg,type AttachmentInfo,type ChatStateInfo,type OptionStateInfo,type PageStateInfo,type WebSiteAdapter} from './sites/types';
@@ -105,24 +107,53 @@ async function stopBskSession(bin:string,sessionId:string):Promise<void>{
  await runBsk(bin,['session','stop',sessionId],{timeout_ms:8000}).catch(()=>undefined);
 }
 
+/** 后台 Agent Window 未触发合成器首帧时 DeepSeek 虚拟列表不挂载节点；通过带重试的后台截图唤醒渲染且不抢焦点。 */
+async function wakeBskCompositor(bin:string,sessionId:string,signal?:AbortSignal):Promise<void>{
+ const outPath=join(tmpdir(),`wa-bsk-wake-${randomUUID()}.png`);
+ try{
+  for(let attempt=0;attempt<6;attempt++){
+   const syncArgs=attempt<3
+    ?['cooperate','sync','--settle','--session',sessionId,'--max-tokens','32']
+    :['cooperate','sync','--session',sessionId,'--max-tokens','32'];
+   const sync=await runBsk(bin,syncArgs,{timeout_ms:15_000,signal});
+   if(sync.code===0&&sync.json?.context_id&&sync.json?.observation_id){
+    const sc=await runBsk(
+     bin,
+     ['screenshot','--session',sessionId,'--context',String(sync.json.context_id),'--observation',String(sync.json.observation_id),'--out',outPath],
+     {timeout_ms:15_000,signal},
+    );
+    if(sc.code===0)return;
+   }
+   await sleep(250,signal);
+  }
+ }catch(error){
+  if(error instanceof WebAgentError&&error.reason_code==='web_cancelled')throw error;
+ }finally{
+  await rm(outPath,{force:true}).catch(()=>undefined);
+ }
+}
+
 async function evalInBsk<T>(bin:string,sessionId:string,expression:string,options:{timeout_ms?:number;signal?:AbortSignal}={}):Promise<T>{
  const timeoutMs=Math.max(5000,options.timeout_ms??30_000);
- for(let attempt=0;attempt<6;attempt++){
-  const sync=await runBsk(bin,['cooperate','sync','--settle','--session',sessionId,'--max-tokens','32'],{timeout_ms:25_000,signal:options.signal});
+ for(let attempt=0;attempt<12;attempt++){
+  const syncArgs=attempt<4
+   ?['cooperate','sync','--settle','--session',sessionId,'--max-tokens','32']
+   :['cooperate','sync','--session',sessionId,'--max-tokens','32'];
+  const sync=await runBsk(bin,syncArgs,{timeout_ms:25_000,signal:options.signal});
   if(sync.code!==0||!sync.json?.context_id||!sync.json?.observation_id){
-   if(attempt<5){await sleep(500,options.signal);continue;}
+   if(attempt<11){await sleep(300,options.signal);continue;}
    throw new WebAgentError('web_browser_unavailable','bsk 页面同步失败');
   }
   const ev=await runBsk(
    bin,
    ['evaluate','--session',sessionId,'--context',String(sync.json.context_id),'--observation',String(sync.json.observation_id),'--timeout',`${timeoutMs}ms`,expression],
-   {timeout_ms:timeoutMs+8000,signal:options.signal},
+   {timeout_ms:timeoutMs+15_000,signal:options.signal},
   );
   if(ev.code===0&&ev.json?.ok===true)return ev.json.value as T;
   const effect=ev.json?.data?.effect_state;
   const reason=ev.json?.data?.reason;
-  if(effect==='none'&&(reason==='document_changed'||reason==='observation_changed'||reason==='cooperation_sync_required')&&attempt<5){
-   await sleep(500,options.signal);
+  if(effect==='none'&&(reason==='document_changed'||reason==='observation_changed'||reason==='cooperation_sync_required')&&attempt<11){
+   await sleep(150,options.signal);
    continue;
   }
   if(ev.json?.ok===false||ev.json?.exception)throw new WebAgentError('web_ui_changed','页面表达式执行失败');
@@ -277,8 +308,7 @@ export class BskChatSession implements WebChatSession{
   const before=await evalInBsk<ChatStateInfo>(bin,sessionId,adapter.chatState,{signal});
   const baseChips=(await evalInBsk<AttachmentInfo[]>(bin,sessionId,adapter.attachments,{signal})).length;
   if(prepared.length)await this.uploadFiles(prepared,baseChips,deadline,signal);
-  await this.insertPromptAndSend(turn.prompt,before,deadline,signal);
-  return this.waitAndReadReply(before,deadline,started,signal);
+  return this.sendAndAwaitReply(turn.prompt,before,deadline,started,signal);
  }
 
  private async uploadFiles(files:Array<{name:string;bytes:Uint8Array;mime:string}>,baseChips:number,deadline:number,signal:AbortSignal):Promise<void>{
@@ -349,12 +379,15 @@ export class BskChatSession implements WebChatSession{
   }
  }
 
- private async insertPromptAndSend(prompt:string,before:ChatStateInfo,deadline:number,signal:AbortSignal):Promise<void>{
+ private async sendAndAwaitReply(prompt:string,before:ChatStateInfo,deadline:number,started:number,signal:AbortSignal):Promise<WebChatReply>{
   const {adapter,bin,sessionId}=this;
   const want=prompt.replace(/\s+/g,'').length;
+  const stable=this.timing.stable_ms??2000;
+  const poll=this.timing.poll_ms??400;
   await stageString(bin,sessionId,'__waPrompt',prompt,signal);
   const writeExpr=adapter.composerFromExpr?adapter.composerFromExpr('window.__waPrompt'):`(()=>-1)()`;
-  const waitMs=Math.min(90_000,this.remaining(deadline));
+  const waitMs=Math.max(5000,this.remaining(deadline));
+  // 发送前页面处于静止态，在单次 evaluate Promise 内完成“写入→发送→等待流式稳定→读取回复”，避免流式 DOM 高频变动触发 bsk observation_changed。
   const expr=String.raw`((async()=>{
    ${ERROR_NOTICE_JS}
    try{
@@ -362,86 +395,141 @@ export class BskChatSession implements WebChatSession{
     var len=${writeExpr};
     delete window.__waPrompt;
     if(len!==${jsArg(want)})return {ok:false,code:'web_ui_changed',detail:'提示词未能完整写入输入框'};
-    var readyEnd=Date.now()+Math.min(60000,${jsArg(waitMs)});
+    var totalLimit=${jsArg(waitMs)},begun=Date.now();
+    var readyEnd=begun+Math.min(60000,totalLimit);
     while(!(${adapter.sendReady})){
      if(Date.now()>readyEnd)return {ok:false,code:'web_ui_changed',detail:'发送按钮未就绪'};
      await new Promise(function(r){setTimeout(r,300);});
     }
+    var startHref=location.href;
     if(!(${adapter.send}))return {ok:false,code:'web_ui_changed',detail:'点击发送按钮失败'};
-    var subEnd=Date.now()+Math.min(45000,${jsArg(waitMs)}),beforeUsers=${jsArg(before.users)},beforeKey=${jsArg(before.last_user_key)};
+    var subEnd=Date.now()+Math.min(45000,Math.max(5000,totalLimit-(Date.now()-begun))),beforeUsers=${jsArg(before.users)},beforeKey=${jsArg(before.last_user_key)};
     for(;;){
-     var st=${adapter.chatState};
-     if(st.users>beforeUsers||(st.last_user_key&&st.last_user_key!==beforeKey))return {ok:true};
+     var st0=${adapter.chatState};
+     if(st0.users>beforeUsers||(st0.last_user_key&&st0.last_user_key!==beforeKey))break;
      var curLen=${adapter.composerLength};
-     if(curLen===0&&st.generating)return {ok:true};
-     var notice=${adapter.notice};
-     if(__waErrNotice(notice,false))return {ok:false,code:'notice',notice:notice};
+     if(curLen===0&&(st0.generating||location.href!==startHref))break;
+     var notice0=${adapter.notice};
+     if(__waErrNotice(notice0,false))return {ok:false,code:'notice',notice:notice0};
      if(Date.now()>subEnd)return {ok:false,code:'web_ui_changed',detail:'点击发送后消息未提交'};
      await new Promise(function(r){setTimeout(r,350);});
     }
+    var sendDoneAt=Date.now(),stable=${jsArg(stable)},poll=${jsArg(poll)};
+    var beforeAsst=${jsArg(before.assistants)},beforeAsstKey=${jsArg(before.last_assistant_key)};
+    var sig='',changedAt=sendDoneAt,polls=0,visOverridden=false,seenGen=false;
+    while(Date.now()-begun<totalLimit){
+     var st=${adapter.chatState};
+     if(st.generating)seenGen=true;
+     if(polls++%3===0){
+      var notice=${adapter.notice};
+      if(__waErrNotice(notice,false))return {ok:false,code:'notice',notice:notice};
+      if(st.visibility==='hidden'){${FORCE_VISIBLE};visOverridden=true;}
+     }
+     var hasStarted=st.assistants>beforeAsst||(!!st.last_assistant_key&&st.last_assistant_key!==beforeAsstKey);
+     if(!hasStarted){
+      if(!st.generating&&(seenGen||Date.now()-sendDoneAt>8000))return {ok:false,code:'need_paint',visOverridden:visOverridden};
+      await new Promise(function(r){setTimeout(r,poll);});
+      continue;
+     }
+     if(st.reply_sig!==sig){sig=st.reply_sig;changedAt=Date.now();}
+     var quiet=Date.now()-changedAt;
+     if(!st.generating){
+      if(st.continue_available)return {ok:false,code:'need_continue',visOverridden:visOverridden};
+      if(st.reply_len>0&&quiet>=(st.complete?stable:stable*3)){
+       var text=${adapter.lastReply};
+       return {ok:true,text:text,href:location.href,visOverridden:visOverridden};
+      }
+      if(st.reply_len===0&&quiet>=stable*2)return {ok:false,code:'need_paint',visOverridden:visOverridden};
+     }
+     await new Promise(function(r){setTimeout(r,poll);});
+    }
+    return {ok:false,code:'web_timeout'};
    }finally{delete window.__waPrompt;}
   })())`;
-  const out=await evalInBsk<{ok:boolean;code?:string;detail?:string;notice?:string}>(bin,sessionId,expr,{timeout_ms:waitMs+10_000,signal});
-  if(out.ok)return;
+  const out=await evalInBsk<{ok:boolean;code?:string;detail?:string;notice?:string;text?:string;href?:string;visOverridden?:boolean}>(
+   bin,sessionId,expr,{timeout_ms:waitMs+15_000,signal},
+  ).finally(()=>{
+   void evalInBsk(bin,sessionId,'(()=>{delete window.__waPrompt;return true;})()',{timeout_ms:5000}).catch(()=>undefined);
+  });
+  if(out.visOverridden)this.diagnostics.visibility_overridden=true;
+  if(out.ok)return this.finalizeReplyText(String(out.text??''),String(out.href||this.currentUrl),started);
+  if(out.code==='need_paint'||out.code==='need_continue'){
+   return this.finishAfterPaintOrContinue(before,deadline,started,signal);
+  }
   if(out.code==='notice'&&out.notice){
    const reason=classifyNotice(out.notice);
-   if(reason)throw new WebAgentError(reason);
+   if(reason){await this.bestEffortStop();throw new WebAgentError(reason);}
   }
+  if(out.code==='web_timeout'){await this.bestEffortStop();throw new WebAgentError('web_timeout');}
   throw new WebAgentError((out.code as any)||'web_ui_changed',out.detail);
  }
 
- private async waitAndReadReply(before:ChatStateInfo,deadline:number,started:number,signal:AbortSignal):Promise<WebChatReply>{
+ private finalizeReplyText(text:string,href:string,started:number):WebChatReply{
+  const shortReason=classifyShortReply(text);
+  if(shortReason)throw new WebAgentError(shortReason);
+  if(!text.trim())throw new WebAgentError('web_reply_incomplete','回复为空');
+  this.currentUrl=href||this.currentUrl;
+  return {text,conversation_url:this.currentUrl,elapsed_ms:Date.now()-started};
+ }
+
+ private async waitInPageIdle(deadline:number,signal:AbortSignal):Promise<void>{
   const {adapter,bin,sessionId}=this;
-  const stable=this.timing.stable_ms??2000;
   const poll=this.timing.poll_ms??400;
-  const waitMs=this.remaining(deadline);
+  const limit=Math.max(5000,this.remaining(deadline));
   const expr=String.raw`((async()=>{
    ${ERROR_NOTICE_JS}
-   var begun=Date.now(),limit=${jsArg(waitMs)},stable=${jsArg(stable)},poll=${jsArg(poll)};
-   var beforeAsst=${jsArg(before.assistants)},beforeKey=${jsArg(before.last_assistant_key)};
-   var sig='',changedAt=Date.now(),polls=0,visOverridden=false;
+   var begun=Date.now(),limit=${jsArg(limit)},poll=${jsArg(poll)},seenGen=false;
    while(Date.now()-begun<limit){
     var st=${adapter.chatState};
-    if(polls++%3===0){
-     var notice=${adapter.notice};
-     if(__waErrNotice(notice,false))return {ok:false,code:'notice',notice:notice};
-     if(st.visibility==='hidden'){${FORCE_VISIBLE};visOverridden=true;}
-    }
-    var hasStarted=st.assistants>beforeAsst||(!!st.last_assistant_key&&st.last_assistant_key!==beforeKey);
-    if(!hasStarted){
-     if(Date.now()-begun>180000&&!st.generating)return {ok:false,code:'web_ui_changed',detail:'发送后未出现助手回复'};
-     await new Promise(function(r){setTimeout(r,poll);});
-     continue;
-    }
-    if(st.reply_sig!==sig){sig=st.reply_sig;changedAt=Date.now();}
-    var quiet=Date.now()-changedAt;
-    if(!st.generating&&st.reply_len>0&&quiet>=(st.complete?stable:stable*3)){
-     var text=${adapter.lastReply};
-     return {ok:true,text:text,href:location.href,visOverridden:visOverridden};
-    }
+    if(st.generating)seenGen=true;
+    var notice=${adapter.notice};
+    if(__waErrNotice(notice,false))return {ok:false,code:'notice',notice:notice};
+    if(!st.generating&&(seenGen||Date.now()-begun>5000))return {ok:true};
     await new Promise(function(r){setTimeout(r,poll);});
    }
    return {ok:false,code:'web_timeout'};
   })())`;
-  const out=await evalInBsk<{ok:boolean;code?:string;detail?:string;notice?:string;text?:string;href?:string;visOverridden?:boolean}>(
-   bin,sessionId,expr,{timeout_ms:waitMs+12_000,signal},
-  );
-  if(!out.ok){
-   if(out.code==='notice'&&out.notice){
-    const reason=classifyNotice(out.notice);
-    if(reason){await this.bestEffortStop();throw new WebAgentError(reason);}
-   }
-   if(out.code==='web_timeout'){await this.bestEffortStop();throw new WebAgentError('web_timeout');}
-   throw new WebAgentError((out.code as any)||'web_ui_changed',out.detail);
+  const res=await evalInBsk<{ok:boolean;code?:string;notice?:string}>(bin,sessionId,expr,{timeout_ms:limit+12_000,signal});
+  if(res.ok)return;
+  if(res.code==='notice'&&res.notice){
+   const reason=classifyNotice(res.notice);
+   if(reason){await this.bestEffortStop();throw new WebAgentError(reason);}
   }
-  if(out.visOverridden)this.diagnostics.visibility_overridden=true;
-  const text=String(out.text??'');
-  const shortReason=classifyShortReply(text);
-  if(shortReason)throw new WebAgentError(shortReason);
-  if(!text.trim())throw new WebAgentError('web_reply_incomplete','回复为空');
-  const href=String(out.href||this.currentUrl);
-  this.currentUrl=href;
-  return {text,conversation_url:href,elapsed_ms:Date.now()-started};
+  if(res.code==='web_timeout'){await this.bestEffortStop();throw new WebAgentError('web_timeout');}
+  throw new WebAgentError('web_ui_changed','等待流式输出结束失败');
+ }
+
+ private async finishAfterPaintOrContinue(before:ChatStateInfo,deadline:number,started:number,signal:AbortSignal):Promise<WebChatReply>{
+  const {adapter,bin,sessionId}=this;
+  const stable=this.timing.stable_ms??2000;
+  let continues=0;
+  for(let cycle=0;cycle<10;cycle++){
+   this.remaining(deadline);
+   await wakeBskCompositor(bin,sessionId,signal);
+   await sleep(700,signal);
+   const st=await evalInBsk<ChatStateInfo>(bin,sessionId,adapter.chatState,{signal});
+   if(st.generating){
+    await this.waitInPageIdle(deadline,signal);
+    continue;
+   }
+   if(st.continue_available&&adapter.continueGen&&continues<6){
+    const clicked=await evalInBsk<boolean>(bin,sessionId,adapter.continueGen,{signal});
+    if(clicked){
+     continues++;
+     await this.waitInPageIdle(deadline,signal);
+     continue;
+    }
+   }
+   const hasStarted=st.assistants>before.assistants||(!!st.last_assistant_key&&st.last_assistant_key!==before.last_assistant_key);
+   if(!hasStarted){
+    if(cycle<3){await sleep(1200,signal);continue;}
+    throw new WebAgentError('web_ui_changed','发送后未出现助手回复');
+   }
+   await sleep(stable,signal);
+   const res=await evalInBsk<{text:string;href:string}>(bin,sessionId,`(()=>({text:(${adapter.lastReply}),href:location.href}))()`,{signal});
+   return this.finalizeReplyText(String(res.text??''),String(res.href||this.currentUrl),started);
+  }
+  throw new WebAgentError('web_reply_incomplete','站点连续分段继续生成次数超限');
  }
 }
 
@@ -463,7 +551,10 @@ export function createBskChatTransport(
     const nav=await runBsk(found.bin,['navigate',adapter.startUrl,'--session',sessionId,'--timeout','45s'],{timeout_ms:50_000,signal:opts.signal});
     if(nav.code!==0)throw new WebAgentError('web_browser_unavailable','bsk 导航站点失败');
     const page=await waitBskPageReady(found.bin,sessionId,adapter,60_000,opts.signal);
-    if(page.visibility==='hidden')await evalInBsk(found.bin,sessionId,FORCE_VISIBLE,{signal:opts.signal});
+    if(page.visibility==='hidden'){
+     await wakeBskCompositor(found.bin,sessionId,opts.signal);
+     await evalInBsk(found.bin,sessionId,FORCE_VISIBLE,{signal:opts.signal});
+    }
     await applyBskOptions(found.bin,sessionId,adapter,opts,opts.signal);
     const session=new BskChatSession(found.bin,sessionId,adapter,page.url);
     session.diagnostics.visibility_initial=String(page.visibility??'');

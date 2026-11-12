@@ -178,10 +178,8 @@ export interface CreateLibraryJobRequest {
   template_id?: string;
   project_id?: string;
   agent_settings?: {model:string;reasoning_effort:string};
-  /** 显式选择API整包化名或材料整理，省略时仍使用Agent；与agent_settings互斥。 */
+  /** 显式选择API整包化名，省略时仍使用Agent；与agent_settings互斥。 */
   api_settings?: import('./types').ModelApiConfig;
-  /** 显式选择网页Agent（DeepSeek/Gemini网页）整包化名，仅本机；与agent_settings、api_settings互斥。 */
-  web_settings?: import('./web-agent').WebAgentSettings;
 }
 
 export interface CreateLibraryQuestionRequest {

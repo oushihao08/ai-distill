@@ -64,7 +64,7 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
   library files prepare --manifest JSON --out 新输出目录（DOC/WPS/OFD转PDF、PDF切割、图片原样准备；不上传、不调用模型）
   library revision create --package UUID --version N --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--preserve-images]
-  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级 | --web deepseek|gemini [--web-thinking on|off] [--web-model-label 标签]（仅本机redact）]
+  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级]
   library prepare start --revision UUID (--redaction UUID | --extraction-job UUID) --request-key UUID [--project UUID] [--agent-model 模型 --reasoning-effort 等级 | --web deepseek|gemini [--web-thinking on|off] [--web-model-label 标签]] [--execution-timeout 30m] [--force]
   library prepare resume --job UUID --request-key UUID [--execution-timeout 30m]（显式续作，不启动worker）
   library prepare diagnose --job UUID（只读计数与停止原因，不输出正文）
@@ -521,12 +521,11 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const hasAgentModel=flags.has('agent-model'),hasReasoningEffort=flags.has('reasoning-effort');
         if(hasAgentModel!==hasReasoningEffort)throw new CliError('--agent-model 与 --reasoning-effort 必须同时提供');
         if(hasAgentModel&&kind!=='redact')throw new CliError('Agent模型设置仅用于redact任务');
-        const web=webSettings();
-        if(web&&(kind!=='redact'||hasAgentModel||target!=='local'))throw new CliError('网页Agent仅用于本机redact任务，且不能与Agent模型设置同时提供');
+        if(webSettings())throw new CliError('library job start 不支持网页Agent；网页Agent仅用于 library prepare start 与 step dispatch author_question');
         if(flags.has('pdf-provider')&&kind!=='extract')throw new CliError('--pdf-provider 仅用于extract任务');
         const provider=flags.has('pdf-provider')?required('pdf-provider'):undefined;
         if(provider&&!['glm-ocr','mineru-api','mineru-cli'].includes(provider))throw new CliError('--pdf-provider 无效');
-        const body={kind,request_key:uuid('request-key'),execution_target:target,...(provider?{pdf_provider:provider}:{}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{}) ,...(hasAgentModel?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{}),...(web?{web_settings:web}:{})};
+        const body={kind,request_key:uuid('request-key'),execution_target:target,...(provider?{pdf_provider:provider}:{}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{}) ,...(hasAgentModel?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{}),};
         data=await post(`/api/material-library/revisions/${uuid('revision')}/jobs`,body);break;
       }
       case 'library prepare start': {

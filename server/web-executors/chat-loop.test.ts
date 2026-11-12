@@ -34,16 +34,24 @@ test('non-JSON reply gets one chance to be corrected, then fails with invalid_js
   await expect(runWebJsonChat({transport:fake.transport,settings,first,timeout_ms:5000,check:v=>v})).rejects.toMatchObject({reason_code:expect.any(String)});
   expect(fake.turns[1]!.prompt).toContain('invalid_json');
 });
-test('truncated output is continued and stitched before parsing',async()=>{
-  const whole=JSON.stringify({items:Array.from({length:30},(_,i)=>({id:i,text:'内容'+i}))});
-  const cut=Math.floor(whole.length/2);
-  const fake=fakeTransport(['```json\n'+whole.slice(0,cut),whole.slice(cut)+'\n```']);
+test('truncated output is continued inside ```json fences (preserving escaped quotes and mid-string splits) and stitched before parsing',async()=>{
+  const whole=JSON.stringify({items:Array.from({length:30},(_,i)=>({id:i,text:`第${i}项含"引号"与_下划线_`}))});
+  const cut=whole.indexOf('项含')+1;
+  const fake=fakeTransport([
+    '```json\n'+whole.slice(0,cut)+'\n```',
+    '```json\n'+whole.slice(cut)+'\n```',
+  ]);
   const result=await runWebJsonChat({transport:fake.transport,settings,first,timeout_ms:5000,check:v=>v});
   expect(result.value).toEqual(JSON.parse(whole));expect(result.rounds.map(r=>r.kind)).toEqual(['first','continue']);
-  expect(fake.turns[1]!.prompt).toContain('截断');
+  expect(fake.turns[1]!.prompt).toContain('```json');
 });
-test('stitchReplies drops fences only from continuation parts',()=>{
+test('stitchReplies drops fences only from continuation parts and handles DOM-closed fences, preambles, and CommonMark lone closing fences',()=>{
   expect(stitchReplies(['```json\n{"a":','```json\n1}\n```'])).toBe('```json\n{"a":1}\n```');
+  expect(stitchReplies(['好的\n```json\n{"a":\n```','继续：\n```json\n  1,\n```','"b":2}'])).toBe('好的\n```json\n{"a":  1,"b":2}');
+  expect(JSON.parse(stripFences(stitchReplies(['好的\n```json\n{"a":\n```','继续：\n```json\n  1,\n```','"b":2}'])))).toEqual({a:1,b:2});
+  const k22='```json\n{"texts":[{"id":"f2p70/b684-1#text","text":"printImg.html?dabs=8e27\n```';
+  const k24='e5fb-22df"}],"unresolved":[{"reason":"出现“申请执行人”字样"}]}\n\n```text\n\n```';
+  expect(stitchReplies([k22,k24])).toBe('```json\n{"texts":[{"id":"f2p70/b684-1#text","text":"printImg.html?dabs=8e27e5fb-22df"}],"unresolved":[{"reason":"出现“申请执行人”字样"}]}\n```');
   expect(stripFences('```json\n{"a":1}\n```')).toBe('{"a":1}');
 });
 test('aborted signal never reaches the page and the session is closed',async()=>{

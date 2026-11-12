@@ -6,10 +6,10 @@
 
 | 文件 | 入口与职责 | 调用方 |
 | --- | --- | --- |
-| `chat-loop.ts` | `runWebJsonChat()`：同一对话内“提问→取回单个JSON→校验→反馈修正”，输出被截断时自动要求续写并拼接；每轮写长度/耗时/会话地址到私有目录 | 三个执行器 |
-| `bundle.ts` | `bundleForUpload()`：Agent目录文件→上传文件；数量不超过站点上限则原样逐个上传，超出则按原序合并为带 `<<<<< FILE: 路径 >>>>>` 边界的文本容器，不丢、不摘要、不截断；`WEB_UPLOAD_MAX_FILES` 为站点上限 | 三个执行器 |
+| `chat-loop.ts` | `runWebJsonChat()`：同一对话内“提问→取回单个JSON→校验→反馈修正”；输出被截断时剥离 DOM 提取补上的尾围栏、附末尾 60 字锚点自动要求续写并拼接；每轮写长度/耗时/会话地址到私有目录 | 三个执行器 |
+| `bundle.ts` | `bundleForUpload()`：Agent目录文件→上传文件；数量不超过站点上限则原样逐个上传，超出则按原序合并为带 `<<<<< FILE: 路径 \| bytes=N >>>>>` 边界的文本容器，不丢、不摘要、不截断；`WEB_UPLOAD_MAX_FILES` 为站点上限 | 三个执行器 |
 | `schema-check.ts` | `assertMatchesSchema()`：JSON Schema 子集结构校验，让网页路径与Agent结构化输出获得等价的结构保证（只验结构，不做内容准入） | authoring.ts、preparation.ts |
-| `redaction.ts` | `webMaterialExecutor()`：与 `api-redaction.ts` 同形；上传 `source.json`、`review-hints.json`、`plan-schema.json`（续作加 `resume-material-plan.json`），用原 `compileAgentTextMaterialPlan` 校验并反馈修正；`validation-source.json` 等宿主私有文件不上传 | `material-library/redaction-runner.ts` |
+| `redaction.ts` | `webMaterialExecutor()`：与 `api-redaction.ts` 同形；上传 `source.json`、逐份原文参考 `.txt`、`review-hints.json`、`plan-schema.json`（续作加 `resume-material-plan.json`）；支持模型只返回发生修改/删除的稀疏 `texts` 条目并由 `expandSparsePlanTexts` 按精确 `id` 补齐未改动原文（未知/重复 `id` 原样透传给编译器拦截），再用原 `compileAgentTextMaterialPlan` 校验并反馈修正；`validation-source.json` 等宿主私有文件不上传 | `material-library/redaction-runner.ts` |
 | `preparation.ts` | `webPreparationExecutor()`：把整理提示词中“材料JSON”标记之后的数据作为 `materials.json` 上传，schema 作为 `schema.json`；校验回路为 `task.validate`（调用方传入 compileFixedPreparation） | `material-library/preparation.ts` |
 | `authoring.ts` | `webAuthoringExecutor()`：与 `runAgent` 同形；上传 `input/` 下与Agent读取相同的文件（Skill及引用、附件、`input.json`、`delivery.json` 等，排除本机 `render-package.cjs`），回复中的单个JSON即 `result.json`，经 schema 结构校验和原 `validateDraft` 接收 | `authoring/jobs.ts`（provider='web'） |
 | `common.ts` | 默认传输单例、与Agent同形的结果封装（`provider:'web'`、`returned_model:null`）、每轮私有记录 | 三个执行器 |

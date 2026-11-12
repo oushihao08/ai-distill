@@ -14,6 +14,8 @@ export interface ChatStateInfo{
  generating:boolean;
  /** 站点明确的“本条回复已完成”信号（DeepSeek 操作栏、Gemini footer.complete）。 */
  complete:boolean;
+ /** 站点原生“继续生成 / Continue”按钮是否出现（单轮长度触顶暂停）。 */
+ continue_available?:boolean;
  visibility?:string;
 }
 export interface PageStateInfo{url:string;composer:boolean;login:boolean;challenge?:boolean;text?:string;visibility?:string}
@@ -54,6 +56,7 @@ export interface WebSiteAdapter{
  chatState:string;       // → ChatStateInfo
  lastReply:string;       // → string：最后一条助手回复（markdown 纯文本）
  stop:string;            // → boolean：点击停止生成
+ continueGen?:string;    // → boolean：点击站点原生“继续生成 / Continue”按钮
  /** 返回元素中心 `{x,y}` 以便 CDP 触发可信点击；缺省时不使用。 */
  sendPoint?:string;
 }

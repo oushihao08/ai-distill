@@ -193,7 +193,8 @@ async function main() {
       kind,
       status,
       error_message,
-      created_at
+      created_at,
+      input_snapshot->'atomic_import'->'package_input'->>'name' as in_flight_pkg_name
     FROM ai_distill.library_jobs
     ORDER BY created_at DESC;
   `);
@@ -201,11 +202,27 @@ async function main() {
   await pool.end();
 
   // 构建 DB 索引
-  const pkgMapByName = new Map<string, any>();
+  const pkgListByName = new Map<string, any[]>();
   for (const pkg of pkgRes.rows) {
-    pkgMapByName.set(pkg.name, pkg);
+    const list1 = pkgListByName.get(pkg.name) || [];
+    list1.push(pkg);
+    pkgListByName.set(pkg.name, list1);
+
     const clean = pkg.name.replace(/^豆包高经济第九期-/, '').replace(/^高经九期-/, '');
-    pkgMapByName.set(clean, pkg);
+    const list2 = pkgListByName.get(clean) || [];
+    list2.push(pkg);
+    pkgListByName.set(clean, list2);
+  }
+
+  const inFlightExtractJobsByName = new Map<string, any>();
+  for (const j of dbJobRes.rows) {
+    if (j.kind === 'extract' && j.in_flight_pkg_name && ['running', 'queued'].includes(j.status)) {
+      if (!inFlightExtractJobsByName.has(j.in_flight_pkg_name)) {
+        inFlightExtractJobsByName.set(j.in_flight_pkg_name, j);
+        const clean = j.in_flight_pkg_name.replace(/^豆包高经济第九期-/, '').replace(/^高经九期-/, '');
+        inFlightExtractJobsByName.set(clean, j);
+      }
+    }
   }
 
   const redactionsByRev = new Map<string, any[]>();
@@ -277,7 +294,7 @@ async function main() {
       files.push({ path: fPath, ext, size: st.size });
       totalSize += st.size;
       if (st.size > maxFileSize) maxFileSize = st.size;
-      if (['.doc', '.wps'].includes(ext)) {
+      if (['.doc', '.wps', '.ofd', '.xlsx', '.xls', '.tif', '.tiff'].includes(ext)) {
         hasUnsupported = true;
         unsupportedExts.push(ext);
       }
@@ -296,22 +313,50 @@ async function main() {
     const needsPrepare = maxFileSize > 45 * 1024 * 1024;
 
     const existing = existingItemsMap.get(itemId);
-    const pkgObj =
-      pkgMapByName.get(packageName) ||
-      pkgMapByName.get(`高经九期-${dirName}`) ||
-      pkgMapByName.get(dirName) ||
-      (existing?.details?.包ID && pkgMapByName.get(existing.details.包ID));
+    const matchingPkgs = [
+      ...(pkgListByName.get(packageName) || []),
+      ...(pkgListByName.get(`高经九期-${dirName}`) || []),
+      ...(pkgListByName.get(dirName) || [])
+    ];
+    if (existing?.details?.包ID && existing.details.包ID !== '-') {
+      const p = pkgRes.rows.find((r: any) => r.package_id === existing.details.包ID);
+      if (p) matchingPkgs.push(p);
+    }
+    const uniquePkgs = Array.from(new Map(matchingPkgs.map((p) => [p.package_id, p])).values());
+
+    // 收集所有关联的 revision_id 及其记录
+    const allRevIds = uniquePkgs.map((p) => p.current_revision_id).filter(Boolean);
+    const revRedactions: any[] = [];
+    const revPreps: any[] = [];
+    const revJobs: any[] = [];
+    for (const rId of allRevIds) {
+      if (redactionsByRev.has(rId)) revRedactions.push(...redactionsByRev.get(rId)!);
+      if (prepsByRev.has(rId)) revPreps.push(...prepsByRev.get(rId)!);
+      if (jobsByRev.has(rId)) revJobs.push(...jobsByRev.get(rId)!);
+    }
+
+    // 选取最具进展或最新的 package 作为主对象
+    let pkgObj: any = null;
+    if (uniquePkgs.length > 0) {
+      pkgObj =
+        uniquePkgs.find((p) => {
+          const rid = p.current_revision_id;
+          return (prepsByRev.get(rid)?.length || 0) > 0 || (redactionsByRev.get(rid)?.length || 0) > 0;
+        }) || uniquePkgs[0];
+    }
 
     const curRevisionId = pkgObj?.current_revision_id;
-    const revRedactions = curRevisionId ? redactionsByRev.get(curRevisionId) || [] : [];
-    const revPreps = curRevisionId ? prepsByRev.get(curRevisionId) || [] : [];
-    const revJobs = curRevisionId ? jobsByRev.get(curRevisionId) || [] : [];
 
     // --- 阶段 1：提取入库 (extract) ---
     let s1State = 'planned';
     let s1Outcome = '新入库待提取';
     let s1AttemptId: string | null = null;
     let s1Evidence: string[] = [];
+
+    const inFlightExtJob =
+      inFlightExtractJobsByName.get(packageName) ||
+      inFlightExtractJobsByName.get(`高经九期-${dirName}`) ||
+      inFlightExtractJobsByName.get(dirName);
 
     if (pkgObj) {
       s1State = 'succeeded';
@@ -323,6 +368,18 @@ async function main() {
         inputs: files.map((f) => ({ ref: f.path, size: f.size })),
         external_ids: { package_id: pkgObj?.package_id, revision_id: curRevisionId },
         verification: [{ kind: 'db_query', result: 'succeeded', evidence: `数据库存在包 ${pkgObj.package_id}` }]
+      });
+    } else if (inFlightExtJob) {
+      const sqliteState = activeSqliteJobs.get(inFlightExtJob.job_id);
+      const isRunning = sqliteState === 'running' || inFlightExtJob.status === 'running';
+      s1State = isRunning ? 'running' : 'queued';
+      s1Outcome = `提取入库${isRunning ? '执行中' : '排队中'} (Job: ${inFlightExtJob.job_id})`;
+      s1AttemptId = `ATT-${itemId}-ext-${inFlightExtJob.job_id.slice(0, 6)}`;
+      s1Evidence = [`Job: ${inFlightExtJob.job_id}`, `status: ${inFlightExtJob.status}`];
+
+      await ensureAttempt(s1AttemptId, itemId, 'atomic_import_extract', s1State, nowStr, {
+        inputs: files.map((f) => ({ ref: f.path, size: f.size })),
+        verification: [{ kind: 'db_query', result: s1State, evidence: `提取任务${isRunning ? '运行中' : '排队中'} ${inFlightExtJob.job_id}` }]
       });
     } else if (files.length === 0) {
       s1State = 'blocked';

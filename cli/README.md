@@ -350,7 +350,18 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 ## 本机状态、容量与手动建议
 
-`queue show`读取本机队列及容量；`queue cancel --job UUID`请求取消本机记录。`workflow status`的steps.executions区分本机/其他执行端/未归属，业务成果仍为共享结果。容量429的local_queue_full表示明确未派发，CLI保留lane、上限、占用及请求数；不会自动重试POST。批量4/5/6的already_accepted计为已跳过，不触发新尝试。
+`queue show`读取本机队列及容量（含 `agent`、`api` 与独立 6 槽位的 `web` 通道）；`queue cancel --job UUID`请求取消本机记录。`workflow status`的steps.executions区分本机/其他执行端/未归属，业务成果仍为共享结果。容量429的local_queue_full表示明确未派发，CLI保留lane、上限、占用及请求数；不会自动重试POST。批量4/5/6的already_accepted计为已跳过，不触发新尝试。
+
+### Web Agent 网页执行通道
+
+需要经 DeepSeek 网页（脱敏/整理）或 Gemini 网页（步骤4出题）执行任务时，通过独立 `web` 通道（默认 6 槽位，不占用 `agent` 或 `api` 槽位，本机队列与 `/api/monitor` 同步可见，避免本地 Agent 重复认领）派发：
+
+- 浏览器与登录检查：`bun run ai-distill web status --json`、`bun run ai-distill web doctor [--provider deepseek|gemini] --json`、`bun run ai-distill web close --json`；使用独立 CDP 档案时可用 `bun run ai-distill web login --provider deepseek|gemini`（本机已连接 BrowserSkill 扩展时默认自动走 `bsk` 独立后台窗口复用现有登录，无需重复登录）。
+- 派发旗标（与 `--agent-model` / `--api-*` 互斥）：
+  - 脱敏：`library job start --revision UUID --kind redact --extraction-job UUID --request-key UUID --web deepseek [--web-thinking on|off]`
+  - 整理：`library prepare start --revision UUID --redaction UUID --request-key UUID --web deepseek [--web-thinking on|off]`
+  - 出题：`step dispatch author_question --project UUID --ids UUID,... --web gemini [--web-model-label <模型选项文本>]`
+- 服务端需要已应用 `064_web_agent_lane.sql` 且本机 worker 已加载新代码；产物由原编译器/校验器在同一对话内修正后走原事务直接入库，无需本地 Agent 二次处理。实现与边界见 [web-agent](../server/web-agent/README.md) 与 [web-executors](../server/web-executors/README.md)。
 
 `advice show --workflow UUID`读取建议；`advice generate --workflow UUID`手动派发。批量用`advice generate --project UUID --all`或`--ids UUID,...`，遇到容量不足或写入回执未知后停止后续派发，并保留已取得的ID。相同依据复用；下一次出题冻结有效建议。CLI仍仅是HTTP客户端，不直连PG或SQLite。功能结构、版本和恢复边界以[建议模块](../server/revision-advice/README.md)及[队列模块](../server/execution-queue/README.md)为准。
 

@@ -778,15 +778,13 @@ describe('网页Agent派发参数', () => {
     await runCommand(['step','dispatch','author_question','--project',project,'--ids',question],client);
     expect(JSON.parse(String(calls.find(call=>call.url.pathname.endsWith('/steps/4/run-batch'))?.init?.body))).toEqual({workflow_ids:[question]});
   });
-  test('脱敏与整理任务把 web_settings 交给API，并拒绝与Agent设置、server目标混用',async()=>{
+  test('整理任务把 web_settings 交给API，library job start（含redact）拒绝 --web',async()=>{
     const {client,calls}=fixture(()=>({id:request}));
-    await runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','local','--request-key',request,'--extraction-job',extraction,'--web','deepseek'],client);
-    expect(JSON.parse(String(calls.at(-1)?.init?.body)).web_settings).toEqual({provider:'deepseek'});
     await runCommand(['library','prepare','start','--revision',revision,'--extraction-job',extraction,'--request-key',request,'--web','deepseek','--web-thinking','off'],client);
     expect(JSON.parse(String(calls.at(-1)?.init?.body)).web_settings).toEqual({provider:'deepseek',thinking:false});
-    await expect(runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','server','--request-key',request,'--extraction-job',extraction,'--web','deepseek'],client)).rejects.toThrow('本机');
-    await expect(runCommand(['library','job','start','--revision',revision,'--kind','extract','--target','local','--request-key',request,'--web','deepseek'],client)).rejects.toThrow();
-    await expect(runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','local','--request-key',request,'--extraction-job',extraction,'--web','deepseek','--agent-model','m','--reasoning-effort','low'],client)).rejects.toThrow();
+    await expect(runCommand(['library','prepare','start','--revision',revision,'--extraction-job',extraction,'--request-key',request,'--web','deepseek','--agent-model','m','--reasoning-effort','low'],client)).rejects.toThrow();
+    await expect(runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','local','--request-key',request,'--extraction-job',extraction,'--web','deepseek'],client)).rejects.toThrow('不支持网页Agent');
+    await expect(runCommand(['library','job','start','--revision',revision,'--kind','extract','--target','local','--request-key',request,'--web','deepseek'],client)).rejects.toThrow('不支持网页Agent');
   });
   test('web status 只投影web通道的本机队列项和容量',async()=>{
     const {client}=fixture(()=>({capacity:{web:{limit:6}},items:[{id:'a',lane:'web'},{id:'b',lane:'agent'}]}));

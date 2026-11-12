@@ -1,7 +1,7 @@
 /**
  * 职责：在同一个网页对话里完成“提问 → 取回单个JSON → 业务校验 → 反馈修正”的回路，并处理输出被截断后的续写。
- * 主要入口：`runWebJsonChat()`；调用方为 redaction.ts、preparation.ts、authoring.ts 三个网页执行器。
- * 边界：只与 `WebChatTransport` 交互，不读写目录、不入库；校验由调用方提供（脱敏用原编译器，出题用原接收转换）。
+ * 主要入口：`runWebJsonChat()`；调用方为 preparation.ts、authoring.ts 两个网页执行器。
+ * 边界：只与 `WebChatTransport` 交互，不读写目录、不入库；校验由调用方提供（整理用原编译器，出题用原接收转换）。
  */
 import {extractJsonFromReply,isLikelyTruncatedJson,WebAgentError,type WebChatReply,type WebChatTransport,type WebChatTurn} from '../web-agent';
 import type {WebAgentSettings} from '../../shared/web-agent';
@@ -18,12 +18,39 @@ export interface WebJsonChatOptions<T>{
 }
 export interface WebJsonChatResult<T>{value:T;conversation_url:string;rounds:WebChatRoundLog[]}
 
-const CONTINUE_PROMPT='上一条回复在中途被截断。请严格从被截断处继续输出剩余内容：不要重复已经输出的任何字符，不要重新开始，不要添加说明，不要再使用代码围栏。';
-const FENCE=/^\s*```[a-zA-Z0-9_-]*\s*\n/;
-/** 去掉开头围栏行与结尾围栏，保留其内部文本。 */
-export function stripFences(text:string){return text.replace(FENCE,'').replace(/\n?```\s*$/,'');}
-/** 拼接被截断的多段回复；后续段若又以围栏开头则去掉开头围栏，结尾围栏保留以标示结束。 */
-export function stitchReplies(parts:string[]){return parts.map((part,index)=>index===0?part:part.replace(FENCE,'')).join('');}
+const OPEN_FENCE=/^\s*(`{3,}|~{3,})[a-zA-Z0-9_-]*[ \t]*\r?\n/;
+const INLINE_JSON_FENCE=/^[\s\S]*?(?:^|\n)\s*(`{3,}|~{3,})json[ \t]*\r?\n/i;
+const CLOSE_FENCE=/\n?(`{3,}|~{3,})\s*$/;
+const TRAILING_EMPTY_FENCE=/\r?\n+(`{3,}|~{3,})[a-zA-Z0-9_-]*[ \t]*\r?\n+\1\s*$/;
+
+/** 去掉开头围栏（含前置简短说明文字后的 ```json 围栏）与结尾围栏，保留其内部JSON文本。 */
+export function stripFences(text:string){
+  const stripped=OPEN_FENCE.test(text)?text.replace(OPEN_FENCE,''):text.replace(INLINE_JSON_FENCE,'');
+  return stripped.replace(TRAILING_EMPTY_FENCE,'').replace(CLOSE_FENCE,'');
+}
+/** 拼接被截断的多段回复：去掉前序段由DOM代码块自动补上的结尾围栏，去掉后续段重开的开头围栏，并兼容模型在无开头围栏续写末尾写孤立 ``` 被CommonMark渲染为空代码块的情形。 */
+export function stitchReplies(parts:string[]){
+  if(parts.length<=1)return parts[0]??'';
+  return parts.map((part,index)=>{
+    let chunk=part;
+    const hadOpenFence=index>0&&(OPEN_FENCE.test(chunk)||INLINE_JSON_FENCE.test(chunk));
+    if(hadOpenFence)chunk=OPEN_FENCE.test(chunk)?chunk.replace(OPEN_FENCE,''):chunk.replace(INLINE_JSON_FENCE,'');
+    if(index<parts.length-1){
+      chunk=!hadOpenFence&&TRAILING_EMPTY_FENCE.test(chunk)?chunk.replace(TRAILING_EMPTY_FENCE,''):chunk.replace(CLOSE_FENCE,'');
+    }else if(index>0&&!hadOpenFence&&TRAILING_EMPTY_FENCE.test(chunk)){
+      chunk=chunk.replace(TRAILING_EMPTY_FENCE,'\n```');
+    }
+    return chunk;
+  }).join('');
+}
+function continuePrompt(stitched:string){
+  const tail=stripFences(stitched).slice(-80);
+  return [
+    `上一条回复在中途到达单轮长度上限被截断，末尾停在：${JSON.stringify(tail)}。`,
+    '注意：网页前端会把本条新回复当作独立Markdown消息渲染，不会继承上一条未闭合的代码块。',
+    '因此你的回复第1行必须写 ```json ，第2行起严格紧接上述末尾之后继续输出剩余JSON字符（不要重复已输出的任何字符，不要从头开始），输出结束时最后一行写 ``` 闭合代码块；代码块外不要写任何文字。',
+  ].join('\n');
+}
 /** 去掉围栏后已能完整解析的拼接结果不再算截断（模型续写时漏写结尾围栏的情形）。 */
 function stillTruncated(text:string){
  if(!isLikelyTruncatedJson(text))return false;
@@ -36,7 +63,7 @@ function feedback(error:unknown){
 }
 function parseJson(text:string,truncated:boolean){
   if(!truncated)return extractJsonFromReply(text);
-  return JSON.parse(stripFences(text));
+  try{return extractJsonFromReply(text);}catch{return JSON.parse(stripFences(text));}
 }
 
 /** 单个对话内最多 max_corrections 次修正；同一回复内容重复出现即停止，避免无进展循环。 */
@@ -59,7 +86,7 @@ export async function runWebJsonChat<T>(options:WebJsonChatOptions<T>):Promise<W
       let continuations=0,truncated=false;
       while(stillTruncated(stitchReplies(parts))&&continuations<maxContinuations){
         truncated=true;continuations++;
-        parts.push((await ask({prompt:CONTINUE_PROMPT},'continue')).text);
+        parts.push((await ask({prompt:continuePrompt(stitchReplies(parts))},'continue')).text);
       }
       const text=stitchReplies(parts);
       let value:unknown;

@@ -29,6 +29,7 @@ import {hookAdditionText} from '../workflow-hooks';
 import {AUTHORING_FIXED_PROMPT,DEFAULT_STEP_PROMPTS} from '../../shared/step-prompts';
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 import {readQuestionMaterials,type QuestionMaterials} from '../question-materials';
+import {syncWorkflowMaterialScope} from '../material-library/preparation';
 import type {AuthoringBatchContext,MaterialScopeSelection,MaterialScopeContext} from '../../shared/material-preparation-result';
 import {renderPublicQuestionPackage,runAuthoring,FRESH_AUTHORING_CONTRACT,type AuthoringResult,type AuthoringRule} from './executor';
 import {readAnswerToolPolicyFromStepConfig,type AnswerToolPolicy} from '../answer-models/tool-policy';
@@ -169,7 +170,7 @@ function webStepConfig(raw:unknown,web:WebAgentSettings){
 export async function enqueueAuthoring(pool:Pool,id:string,options?:{web?:WebAgentSettings}){
  const db=await pool.connect();
  try{
-  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);await assertRepairStepAllowed(db,id,4);const source=await prerequisites(db,id);
+  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);await assertRepairStepAllowed(db,id,4);await syncWorkflowMaterialScope(db,id);const source=await prerequisites(db,id);
   const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[source.workflow.project_id])).rows[0]?.config;
   const config=validateStepConfigForExecution(4,options?.web?webStepConfig(raw,options.web):raw?.provider==='web'?raw:mergeCodexDefaults(raw,await readProjectAgentDefaults(db,source.workflow.project_id)));
   const scoreConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[source.workflow.project_id])).rows[0]?.config;

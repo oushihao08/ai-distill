@@ -1,6 +1,6 @@
 /**
  * 职责：网页Agent（DeepSeek/Gemini网页对话）通道的共享契约：提供方、冻结设置校验和固定槽位上限。
- * 主要入口：`validateWebAgentSettings()`；调用方为材料库脱敏/整理派发、出题步骤配置校验、CLI及网页执行器。
+ * 主要入口：`validateWebAgentSettings()`；调用方为材料库整理（prepare）派发、出题步骤配置校验、CLI及网页执行器。
  * 边界：只描述任务冻结的网页执行设置，不含站点选择器、浏览器操作或凭证。
  */
 export const WEB_AGENT_PROVIDERS = ['deepseek', 'gemini'] as const;

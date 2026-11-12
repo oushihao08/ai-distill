@@ -1,6 +1,6 @@
 /**
  * 职责：从网页聊天回复文本中确定性提取唯一完整 JSON 值，并判断文本是否像被截断的 JSON。
- * 公开入口：`extractJsonFromReply(text)`、`isLikelyTruncatedJson(text)`；供 worker 的 web agent 执行器解析脱敏/整理/出题回复。
+ * 公开入口：`extractJsonFromReply(text)`、`isLikelyTruncatedJson(text)`；供 worker 的 web agent 执行器解析整理/出题回复。
  * 规则：优先唯一的 ```json 围栏；无围栏时整段可解析才接受；多候选、截断、非 JSON 一律抛带 reason 的 `WebAgentError`，不猜测补全。
  * `WebAgentError.reason_code` 固定为 `web_reply_incomplete`（截断）或 `web_ui_changed` 以外的调用方可见原因放在 `json_reason`。
  */

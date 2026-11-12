@@ -1,6 +1,6 @@
 /**
- * 文件职责：可选材料整理任务的来源读取、入队/续作、Agent/API 执行、逐图判断与 HTTP 路由装配。
- * 关键入口：`enqueuePreparation()`、`resumePreparation()`、`executePreparation()`、`findMatchingPreparation()`、`registerPreparationRoutes()`；提示词与私有检查点由 `preparation-support.ts` 提供并在此重导出。
+ * 文件职责：可选材料整理任务的来源读取、入队/续作、Agent/API 执行、逐图判断、题目快照整理范围同步与 HTTP 路由装配。
+ * 关键入口：`enqueuePreparation()`、`resumePreparation()`、`executePreparation()`、`findMatchingPreparation()`、`syncWorkflowMaterialScope()`、`refreshWorkflowMaterialScope()`、`registerPreparationRoutes()`；提示词与私有检查点由 `preparation-support.ts` 提供并在此重导出。
  * 边界：未执行或未采用整理不阻止加载与建题；worker 复用 `library_jobs` 租约与 Agent/API 槽位。
  */
 import {documentPagesToModelText} from '../../shared/document-structure';
@@ -11,7 +11,8 @@ import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {runAgent,readAgentDefaults,validateAgentModelSettings} from '../agent';
 import {createModelApiClient,resolveModelApiConfig,type ModelApiConfig} from '../llm-api';
-import {localQueueEnabled,localExecutionQueue,registerLocalJob,forgetLocalRegistrations,releaseRolledBackRegistrations,cachedExternalCall} from '../execution-queue/runtime';
+import {localQueueEnabled,localExecutionQueue,registerLocalJob,forgetLocalRegistrations,releaseRolledBackRegistrations,supersedeForeignPending,cachedExternalCall} from '../execution-queue/runtime';
+import {assertWorkflowNotArchived} from '../workflow-archive-guard';
 import {logEvent,classifyLogError} from '../logging';
 import {runExternalCall} from '../external-call';
 import {validateWebAgentSettings,type WebAgentSettings} from '../../shared/web-agent';
@@ -193,8 +194,64 @@ export async function findMatchingPreparation(db:Db,source:Pick<PreparationSourc
  return{id:String(row.id),result:{...row.result,summary_scope:'visible'} as MaterialPreparationResult};
 }
 
+/** 无本机活动步骤4任务时，将题目快照中的 material_scope 同步为同来源最新成功整理结果；旧快照或无新整理时保持原样。 */
+export async function syncWorkflowMaterialScope(db:PoolClient,workflowId:string){
+ if(!await preparationAvailable(db))return{changed:false,preparation_id:null as string|null,snapshot_digest:null as string|null};
+ await supersedeForeignPending(db,{kind:'step',id:workflowId,ordinal:4});
+ if((await db.query("SELECT 1 FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND status IN ('waiting','running') LIMIT 1",[workflowId])).rowCount)return{changed:false,preparation_id:null as string|null,snapshot_digest:null as string|null};
+ const row=(await db.query('SELECT * FROM ai_distill.question_library_sources WHERE workflow_id=$1 FOR UPDATE',[workflowId])).rows[0];
+ if(!row||row.snapshot_manifest?.version!==2)return{changed:false,preparation_id:null as string|null,snapshot_digest:row?String(row.snapshot_digest):null};
+ let extractionJobId:string|null=null;
+ if(row.redaction_id){
+  extractionJobId=(await db.query(`SELECT r.extraction_job_id FROM ai_distill.library_redactions r
+   JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id AND j.status='succeeded'
+   WHERE r.id=$1 AND r.revision_id=$2`,[row.redaction_id,row.revision_id])).rows[0]?.extraction_job_id??null;
+ }else{
+  extractionJobId=(await db.query(`SELECT j.id FROM ai_distill.library_jobs j
+   WHERE j.package_id=$1 AND j.revision_id=$2 AND j.kind='extract' AND j.status='succeeded'
+   AND EXISTS(SELECT 1 FROM ai_distill.library_documents d WHERE d.revision_id=j.revision_id AND d.extraction_job_id=j.id)
+   ORDER BY j.finished_at DESC NULLS LAST,j.created_at DESC,j.id DESC LIMIT 1`,[row.package_id,row.revision_id])).rows[0]?.id??null;
+ }
+ const currentPrepId=typeof row.snapshot_manifest?.material_scope?.preparation_id==='string'?row.snapshot_manifest.material_scope.preparation_id:null;
+ if(!extractionJobId)return{changed:false,preparation_id:currentPrepId,snapshot_digest:String(row.snapshot_digest)};
+ const prepared=await findMatchingPreparation(db,{package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id?String(row.redaction_id):null,extraction_job_id:String(extractionJobId)},String(row.project_id));
+ if(!prepared||currentPrepId===prepared.id)return{changed:false,preparation_id:currentPrepId,snapshot_digest:String(row.snapshot_digest)};
+ const manifest=structuredClone(row.snapshot_manifest);
+ manifest.material_scope={preparation_id:prepared.id,result:prepared.result};
+ const snapshotDigest=hash(manifest);
+ const deleted=await db.query('DELETE FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId]);
+ if(!deleted.rowCount)throw conflict('题目来源快照已变化');
+ await db.query(`INSERT INTO ai_distill.question_library_sources(workflow_id,project_id,project_material_id,package_id,revision_id,redaction_id,source_digest,snapshot_manifest,snapshot_digest,markdown_artifact_id,index_artifact_id,request_key,request_digest,material_mode,created_at)
+  VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15)`,[row.workflow_id,row.project_id,row.project_material_id,row.package_id,row.revision_id,row.redaction_id,row.source_digest,JSON.stringify(manifest),snapshotDigest,row.markdown_artifact_id,row.index_artifact_id,row.request_key,row.request_digest,row.material_mode,row.created_at]);
+ return{changed:true,preparation_id:prepared.id,snapshot_digest:snapshotDigest};
+}
+
+export async function refreshWorkflowMaterialScope(pool:Pool,workflowId:string){
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN');
+  await assertWorkflowNotArchived(db,workflowId);
+  const current=(await db.query('SELECT project_id,workflow_kind FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[workflowId])).rows[0];
+  if(!current)throw new HTTPException(404,{message:'工作流不存在'});
+  if(current.workflow_kind==='material_package')throw conflict('请在题目上同步材料整理范围');
+  await supersedeForeignPending(db,{kind:'step',id:workflowId,ordinal:4});
+  if((await db.query("SELECT 1 FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 8 AND status IN ('waiting','running') LIMIT 1",[workflowId])).rowCount)throw conflict('题目存在运行或排队中的步骤任务，请完成后再同步整理范围');
+  const synced=await syncWorkflowMaterialScope(db,workflowId);
+  if(synced.changed){
+   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 8",[workflowId]);
+   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[workflowId]);
+   await db.query("UPDATE ai_distill.project_exports SET status='stale',error='材料整理范围已更新',finished_at=now() WHERE project_id=$1 AND (status='running' OR (status='succeeded' AND $2::uuid=ANY(workflow_ids)))",[current.project_id,workflowId]);
+  }
+  await db.query('COMMIT');forgetLocalRegistrations(db);
+  return synced;
+ }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}
+}
+
 /** HTTP只提供可选入口；能力未启用时列表为空，不影响原材料接口。 */
 export function registerPreparationRoutes(app:import('hono').Hono,pool:Pool,root:string){
+ app.post('/api/workflows/:id/material-scope',async c=>{
+  const {uuid}=await import('../validation');return c.json(await refreshWorkflowMaterialScope(pool,uuid(c.req.param('id'))));
+ });
  app.post('/api/material-library/revisions/:id/prepare',async c=>{
   const {uuid}=await import('../validation');const revision=uuid(c.req.param('id'));let body:any;
   try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'整理请求需要有效JSON'});}

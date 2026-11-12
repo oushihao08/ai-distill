@@ -58,6 +58,7 @@ import {classifyLogError,logEvent,loggerHealth,withLogContext} from './logging';
 import {dispatchWorkflowStep,type StepDispatchTask,type WorkflowStepHandlers,type WorkflowStepOrdinal} from './step-dispatch';
 import {registerWorkflowHookRoutes} from './workflow-hook-routes';
 import {registerWorkflowExecutionRoutes} from './workflow-execution-routes';
+import {assertWorkflowNotArchived} from './workflow-archive-guard';
 import {registerRemoteMaterialRoutes} from './remote-material-routes';
 import {readSystemStepPrompts,saveSystemStepPrompts,readSystemAuthoringDefaults,validateAuthoringDefaults} from './system-step-prompts';
 import {lockProjectPromptScope,propagateProjectGroupPrompt,readProjectGroupPrompts,sharedPromptOrdinal} from './project-step-prompts';
@@ -831,6 +832,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const values=body as Record<string,unknown>;
   const fields=[['authoring_direction','出题方向',4000],['scenario','出题场景',180],['role_perspective','角色视角',180]] as const;
   const updates:Record<string,string|null>={};
+  if('title' in values){
+   if(typeof values.title!=='string')throw new HTTPException(400,{message:'题目名称须为非空文本'});
+   updates.title=text(values.title,'题目名称',180,true);
+  }
   for(const [key,label,limit] of fields){
    if(!(key in values))continue;
    const value=values[key];
@@ -841,20 +846,22 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   const db=await pool.connect();
   try{
    await db.query('BEGIN');
-   const current=(await db.query("SELECT project_id,workflow_kind,authoring_direction,scenario,role_perspective FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[id])).rows[0];
+   await assertWorkflowNotArchived(db,id);
+   const current=(await db.query("SELECT project_id,workflow_kind,title,authoring_direction,scenario,role_perspective FROM ai_distill.workflows WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",[id])).rows[0];
    if(!current)throw new HTTPException(404,{message:'工作流不存在'});
    if(current.workflow_kind==='material_package')throw new HTTPException(409,{message:'请在题目上修改出题设置'});
+   const nextTitle='title'in updates&&updates.title?updates.title:String(current.title);
    const direction='authoring_direction'in updates?updates.authoring_direction:current.authoring_direction;
    const scenario='scenario'in updates?updates.scenario:current.scenario;
    const role='role_perspective'in updates?updates.role_perspective:current.role_perspective;
-   const changed=current.authoring_direction!==direction||current.scenario!==scenario||current.role_perspective!==role;
+   const changed=current.title!==nextTitle||current.authoring_direction!==direction||current.scenario!==scenario||current.role_perspective!==role;
    if(changed){
-    await db.query("UPDATE ai_distill.workflows SET authoring_direction=$2,scenario=$3,role_perspective=$4,status='waiting' WHERE id=$1",[id,direction,scenario,role]);
+    await db.query("UPDATE ai_distill.workflows SET title=$2,authoring_direction=$3,scenario=$4,role_perspective=$5,status='waiting' WHERE id=$1",[id,nextTitle,direction,scenario,role]);
     await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='出题设置已更新，任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 8 AND status IN ('waiting','running')",[id]);
     await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 8",[id]);
     await db.query("UPDATE ai_distill.project_exports SET status='stale',error='出题设置已更新',finished_at=now() WHERE project_id=$1 AND (status='running' OR (status='succeeded' AND $2::uuid=ANY(workflow_ids)))",[current.project_id,id]);
    }
-   await db.query('COMMIT');return c.json({authoring_direction:direction,scenario,role_perspective:role,changed});
+   await db.query('COMMIT');return c.json({title:nextTitle,authoring_direction:direction,scenario,role_perspective:role,changed});
   }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
  });
  app.post('/api/workflows/:id/redacted-docx',async c=>{
