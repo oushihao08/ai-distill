@@ -14,8 +14,8 @@
 ## 数据流与执行模式
 
 1. **模型与推理强度映射（`models.ts`）**
-   - 支持显式 `agy:<model>` 前缀（如 `agy:gemini-4-argon`、`agy:gemini-3.8-flash`、`agy:claude-sonnet-4-6`）或原生模型标识。
-   - 对分档模型族（`gemini-4-argon`、`gemini-3.8-flash`），按任务冻结的 `reasoning_effort`（`low` / `medium` / `high`）自动解析为对应的 `gemini-4-argon-<tier>` 或 `gemini-3.8-flash-<tier>`，并同时向 CLI 传递 `--effort`。
+   - 支持显式 `agy:<model>` 前缀（默认首选 `agy:gemini-4-carbon`，同时支持 `agy:gemini-4-argon`、`agy:gemini-3.8-flash`、`agy:claude-sonnet-5-5`、`agy:claude-opus-5-5` 及历史模型标识）或原生模型标识。
+   - 对分档模型族（`gemini-4-carbon`、`gemini-4-argon`、`gemini-3.8-flash`、`claude-sonnet-5-5`、`claude-opus-5-5`），按任务冻结的 `reasoning_effort`（`low` / `medium` / `high`）自动解析为对应的 `<family>-<tier>`（例如 `gemini-4-carbon-medium`），并同时向 CLI 传递 `--effort`。
    - `init` 事件返回实际加载模型标识时，写入 `returned_model`。
 
 2. **普通出题（`execution_profile=fresh_authoring`）**

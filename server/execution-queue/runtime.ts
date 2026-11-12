@@ -4,6 +4,7 @@ import type {Pool,PoolClient,QueryConfig} from 'pg';
 import {logEvent,classifyLogError} from '../logging';
 import {join} from 'node:path';
 import {storageDirectory} from '../paths';
+import {WEB_AGENT_SLOT_LIMIT} from '../../shared/web-agent';
 import {readConcurrencySettings,readActiveConcurrencyLimit} from '../concurrency';
 import {LocalQueue,InvalidLocalCheckpoint,assertJobId,type JobKind,type Lane,type QueueJob,type QueueIntent} from './store';
 export function localQueueEnabled(){const mode=process.env.EXECUTION_QUEUE_MODE;if(mode===undefined||mode==='legacy')return false;if(mode==='local')return true;throw new Error('EXECUTION_QUEUE_MODE只支持local或legacy');}
@@ -42,7 +43,9 @@ export async function supersedeForeignPending(db:Pick<PoolClient,'query'>,scope:
 export async function registerLocalJob(db:Pick<PoolClient,'query'>,id:string,kind:JobKind,lane:Lane,route:string){
  return registerLocalJobs(db,[{id,kind,lane,route}]);
 }
-export function localQueueLimits(q:LocalQueue){const limits=readConcurrencySettings(process.env,q.root);return{agent:readActiveConcurrencyLimit(q.root)??limits.agent,api:readActiveConcurrencyLimit(join(q.root,'.execution-api-slots'))??limits.llmApi,internal:readActiveConcurrencyLimit(join(q.root,'.execution-internal-slots'))??limits.llmApi,hook:1,remote:1};}
+export function localQueueLimits(q:LocalQueue){const limits=readConcurrencySettings(process.env,q.root);return{agent:readActiveConcurrencyLimit(q.root)??limits.agent,api:readActiveConcurrencyLimit(join(q.root,'.execution-api-slots'))??limits.llmApi,internal:readActiveConcurrencyLimit(join(q.root,'.execution-internal-slots'))??limits.llmApi,hook:1,remote:1,web:readActiveConcurrencyLimit(join(q.root,'.execution-web-slots'))??webAgentSlotLimit()};}
+/** 网页通道槽位：环境变量WEB_AGENT_SLOTS，缺省与上限均为WEB_AGENT_SLOT_LIMIT；超出1..上限的数值夹取，非数字用缺省。 */
+export function webAgentSlotLimit(env:NodeJS.ProcessEnv=process.env){const parsed=Number.parseInt(env.WEB_AGENT_SLOTS?.trim()??'',10);return Number.isFinite(parsed)?Math.min(WEB_AGENT_SLOT_LIMIT,Math.max(1,parsed)):WEB_AGENT_SLOT_LIMIT;}
 /** 同一业务事务的新任务先整组原子预留，再登记PG归属；调用方失败时仍按原事务回滚，不拆出部分模型。 */
 const registrations=new WeakMap<object,{queue:LocalQueue;ids:Set<string>}>();
 /** 仅在同一连接ROLLBACK已确认后调用：再次读取归属，释放确定未提交的容量，不删除意图或重放未知请求。 */

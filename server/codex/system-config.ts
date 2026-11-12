@@ -11,7 +11,7 @@ import {basename,dirname,isAbsolute,resolve} from 'node:path';
 import {HTTPException} from 'hono/http-exception';
 import {validateCodexModelSettings,type AdvertisedModel} from './models';
 
-export const DEFAULT_CODEX_SETTINGS={model:'agy:gemini-3.8-flash',reasoning_effort:'medium'};
+export const DEFAULT_CODEX_SETTINGS={model:'agy:gemini-4-carbon',reasoning_effort:'medium'};
 export interface CodexModelSettings {model:string;reasoning_effort:string}
 export type CodexSettingsSource='step'|'project'|'system';
 type CodexSettingsQuery=Pick<Pool,'query'>;

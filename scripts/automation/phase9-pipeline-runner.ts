@@ -511,7 +511,7 @@ async function main() {
       '--project',
       PROJECT_ID,
       '--agent-model',
-      'agy:gemini-3.8-flash',
+      'agy:gemini-4-carbon',
       '--reasoning-effort',
       'medium'
     ], { encoding: 'utf8' });
@@ -558,7 +558,7 @@ async function main() {
       '--extraction-job',
       cand.extraction_job_id,
       '--agent-model',
-      'agy:gemini-3.8-flash',
+      'agy:gemini-4-carbon',
       '--reasoning-effort',
       'medium'
     ], { encoding: 'utf8' });

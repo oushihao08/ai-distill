@@ -24,7 +24,7 @@
 | 输入类别 | API/Codex作答是否收到 | 权威位置 | 说明 |
 | --- | --- | --- | --- |
 | 同版题面 | 是 | `input.ts` | 题面版本参与冻结摘要。 |
-| 本题冻结的完整获准附件正文 | 是 | `jobs.ts` → `input.ts` | 与出题投影同源，包含整理快照中的隐藏脱敏文书。 |
+| 本题冻结的完整获准附件正文 | 是 | `jobs.ts` → `input.ts` | 与出题投影同源，不含整理快照中标记为隐藏的文书。 |
 | 步骤5作答提示词 | 是 | `jobs.ts` → `dispatch.ts`/`file-executor.ts` | 派发时冻结。 |
 | 文字成果呈现约定 | 条件进入 | `input.ts` | 只说明文字成果如何对应交付物，不新增Rubric。 |
 | Rubric、作答思路、标准答案 | 否 | `input.ts`白名单 | 即使作者结果中存在，也不进入作答输入。 |
@@ -45,7 +45,7 @@
 
 接收当前 ordinal 4 出题成功的题面和该题冻结来源模式对应的附件，按项目模型集合创建逐模型任务，模型完成后按本次attempt原样保存答案、usage 和当前集合汇总；发布前要求原attempt仍为`running`，防止已取消、已退回等待或其他终态的迟到响应覆盖当前投影，但不再用当前题面、附件、模型集合或内容摘要阻断已经领取的合法任务，也不按答案内容拒收。调用前冻结输入校验仍保留，评分的版本绑定检查不变。模型集合全部终结后，只要至少一个模型成功，评分步骤即可对成功答案继续评分；失败或跳过的模型不阻断其他答案。
 
-作答模型目录支持各 API provider 与本机 Codex Agent；登记新 API 模型时默认选 SiliconFlow，现有目录模型保持各自冻结渠道。SiliconFlow 使用官方 OpenAI 兼容端点和服务端 `SILICONFLOW_API_KEY`。Codex answer attempt 由 local/all worker 的 Agent 队列消费，API/server worker 排除该 provider；派发时冻结模型和推理强度。隔离会话仅提交题面、该题冻结来源允许的附件、成果呈现约定及步骤作答指令；不提交答案思路、标准答案、Rubric、既有答案、评分结果或项目 Skill。共享材料题若含整理快照，作答读取与出题相同的完整脱敏文书投影，包括标记为隐藏的文书；评分沿用本次作答已冻结的同一材料输入。Codex 会话关闭宿主 Skill、插件、MCP、浏览器、记忆和网络入口，文件系统限制在本次 attempt 工作区。保存执行模式、模型、推理强度和会话 ID 用于追溯，不把“可用工具”冒记为“实际调用工具”。Codex 仅支持本机执行，服务器归属作答拒绝 Codex provider。
+作答模型目录支持各 API provider 与本机 Codex Agent；登记新 API 模型时默认选 SiliconFlow，现有目录模型保持各自冻结渠道。SiliconFlow 使用官方 OpenAI 兼容端点和服务端 `SILICONFLOW_API_KEY`。Codex answer attempt 由 local/all worker 的 Agent 队列消费，API/server worker 排除该 provider；派发时冻结模型和推理强度。隔离会话仅提交题面、该题冻结来源允许的附件、成果呈现约定及步骤作答指令；不提交答案思路、标准答案、Rubric、既有答案、评分结果或项目 Skill。共享材料题若含整理快照，作答读取与出题相同的可见脱敏文书投影，不含标记为隐藏的文书；评分沿用本次作答已冻结的同一材料输入。Codex 会话关闭宿主 Skill、插件、MCP、浏览器、记忆和网络入口，文件系统限制在本次 attempt 工作区。保存执行模式、模型、推理强度和会话 ID 用于追溯，不把“可用工具”冒记为“实际调用工具”。Codex 仅支持本机执行，服务器归属作答拒绝 Codex provider。
 
 远程作答复用同一队列：带固定请求标识的 `enqueueAnswer(..., 'server', requestKey)` 创建服务器归属 attempt；worker 按 `execution_target` 精确领取。服务器远程入口不接受项目步骤钩子；默认本机调用继续归属 `local`。CLI 只查看远程 attempt 状态，答案正文仍由现有工作流结果接口读取。
 

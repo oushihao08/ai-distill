@@ -18,11 +18,19 @@ import {restoreAuthoringResult,selectHistoricalAuthoringResult} from './authorin
 import {storageDirectory} from './paths';
 import {QueueCapacityError} from './execution-queue/store';
 import {readActiveConcurrencyLimit,readConcurrencySettings} from './concurrency';
+import {validateWebAgentSettings,type WebAgentSettings} from '../shared/web-agent';
 
+/** 派发附加上下文：归档交付身份，或仅本次出题派发使用的网页Agent设置（冻结进任务，不改项目配置）。 */
+export interface DispatchContext {delivery_identity?:{task_id:string;org:string};web_settings?:WebAgentSettings}
+/** 解析可选的 web_settings；非法值返回400。 */
+function readWebSettings(value:unknown){
+ if(value===undefined)return undefined;
+ try{return validateWebAgentSettings(value);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'网页Agent设置无效'});}
+}
 interface RouteDependencies {
  pool:Pool;
  storageRoot?:string;
- dispatch:(workflowId:string,ordinal:WorkflowStepOrdinal,context?:{delivery_identity:{task_id:string;org:string}})=>Promise<StepDispatchTask>;
+ dispatch:(workflowId:string,ordinal:WorkflowStepOrdinal,context?:DispatchContext)=>Promise<StepDispatchTask>;
  batchChunkSize?:number;
  repository?:WorkflowExecutionRepository;
  waitForAttempt?:typeof waitForAttempt;
@@ -59,7 +67,16 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
  async function executeStep(c:Context,ordinal:WorkflowStepOrdinal){
   const waitMs=waitDuration(c.req.query('wait_ms'));
   const id=uuid(c.req.param('id')??'');
-  let context:{delivery_identity:{task_id:string;org:string}}|undefined;
+  let context:DispatchContext|undefined;
+  if(ordinal===4){
+   const raw=await c.req.text();
+   if(raw.trim()){
+    let body:unknown;try{body=JSON.parse(raw);}catch{throw new HTTPException(400,{message:'出题参数须为有效JSON'});}
+    if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>key!=='web_settings'))throw new HTTPException(400,{message:'出题参数只允许 web_settings'});
+    const web=readWebSettings((body as {web_settings?:unknown}).web_settings);
+    if(web)context={web_settings:web};
+   }
+  }
   if(ordinal===8){
    const raw=await c.req.text();
    if(raw.trim()){
@@ -122,6 +139,8 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
   if(!Number.isInteger(ordinal)||!STEP_REGISTRY.some(stage=>stage.visible&&stage.ordinal===ordinal))throw new HTTPException(400,{message:'步骤序号无效'});
   let body:unknown={};
   try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'批量执行参数须为有效JSON'});}
+  const batchWeb=readWebSettings((body as {web_settings?:unknown}|null)?.web_settings);
+  if(batchWeb&&ordinal!==4)throw new HTTPException(400,{message:'web_settings仅用于出题步骤'});
   const rawIds=(body as {workflow_ids?:unknown}|null)?.workflow_ids;
   if(rawIds!==undefined&&!Array.isArray(rawIds))throw new HTTPException(400,{message:'workflow_ids须为记录数组'});
   const requestedIds=rawIds===undefined?undefined:[...new Set(rawIds.map(value=>uuid(String(value))))];
@@ -151,7 +170,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
     const eligibility=workflowStepReadiness(ordinal,states);
     if(!eligibility.ready)return{workflow_id:workflowId,status:'not_ready' as const,reason:eligibility.reason};
     try{
-     const task=await dispatch(workflowId,ordinal as WorkflowStepOrdinal);
+     const task=await dispatch(workflowId,ordinal as WorkflowStepOrdinal,batchWeb?{web_settings:batchWeb}:undefined);
      return{workflow_id:workflowId,status:task.completed?'succeeded' as const:'queued' as const,attempt_id:task.id,...(task.ids?{attempt_ids:task.ids}:{}),reused:task.reused??false,...(task.decision?{decision:task.decision,reasons:task.reasons??[]}: {})};
     }catch(error){
      if(error instanceof QueueCapacityError)return{workflow_id:workflowId,status:'capacity_exceeded' as const,reason:error.message};

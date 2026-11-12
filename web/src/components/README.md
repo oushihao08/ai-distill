@@ -118,3 +118,5 @@ LibraryPreparationPanel刷新时恢复该版本最近整理任务，展示当前
 `LibraryPackageCreateDialog.vue`通过独立imports上传任务，不再先建立空包；submitted事件返回任务ID，成功前不返回正式package ID。失败/未知请求保留原request_key，不自动重发。保留并判断核心图片默认关闭；开启后须逐文件勾选需要核心图片的PDF/DOCX/图片，提交`preserve_images`与按文件顺序对应的`image_review_files`，切换选项时更新请求标识。
 
 材料库图片候选的后端参数为 `preserve_images` 和逐文件 `image_review_files`；仅标记文件提取图片。图文DOCX是原文模式题目完成逐图整理后的独立下载，纯文本DOCX仍单独生成。
+
+任务监控：`WorkerMonitor` 接收固定 `source` 与 `label`，按服务读取心跳与队列；`ActiveWorkflowTasks` 显示项目任务的排队、运行和恢复状态。材料库另列业务阶段、执行方式和位置，不将 API 等同于聊天模型。

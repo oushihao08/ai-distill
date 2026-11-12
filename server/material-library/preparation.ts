@@ -14,6 +14,7 @@ import {createModelApiClient,resolveModelApiConfig,type ModelApiConfig} from '..
 import {localQueueEnabled,localExecutionQueue,registerLocalJob,forgetLocalRegistrations,releaseRolledBackRegistrations,cachedExternalCall} from '../execution-queue/runtime';
 import {logEvent,classifyLogError} from '../logging';
 import {runExternalCall} from '../external-call';
+import {validateWebAgentSettings,type WebAgentSettings} from '../../shared/web-agent';
 import {finishLibraryJob} from './jobs';
 import {hash,jobDirectory} from './execution-shared';
 import {readLibraryBlob} from './storage';
@@ -30,7 +31,7 @@ export async function resumePreparation(pool:Pool,root:string,previousJobId:stri
  if(!previous)throw new HTTPException(404,{message:'原整理任务不存在'});
  if(!['failed','cancelled'].includes(previous.status))throw conflict('仅可显式续作已失败或取消的整理任务');
  const input=previous.input_snapshot;
- return enqueuePreparation(pool,root,previous.revision_id,{request_key:body.request_key,previous_job_id:previousJobId,...(input.redaction_id?{redaction_id:input.redaction_id}:{extraction_job_id:input.extraction_job_id}),...(input.project_id?{project_id:input.project_id}:{}),...(previous.config_snapshot.api?{api_settings:previous.config_snapshot.api}:{agent_settings:previous.config_snapshot.agent}),execution_timeout_ms:body.execution_timeout_ms===undefined?(previous.config_snapshot.settings?.execution?.task_timeout_ms??30*60*1000):body.execution_timeout_ms});
+ return enqueuePreparation(pool,root,previous.revision_id,{request_key:body.request_key,previous_job_id:previousJobId,...(input.redaction_id?{redaction_id:input.redaction_id}:{extraction_job_id:input.extraction_job_id}),...(input.project_id?{project_id:input.project_id}:{}),...(previous.config_snapshot.api?{api_settings:previous.config_snapshot.api}:previous.config_snapshot.web?{web_settings:previous.config_snapshot.web}:{agent_settings:previous.config_snapshot.agent}),execution_timeout_ms:body.execution_timeout_ms===undefined?(previous.config_snapshot.settings?.execution?.task_timeout_ms??30*60*1000):body.execution_timeout_ms});
 }
 export async function preparationAvailable(db:Db){return (await db.query("SELECT to_regclass('ai_distill.library_preparations') IS NOT NULL AS available")).rows[0]?.available===true;}
 /** 全部读取来自不可变库对象；原文明确绑定提取ID，不取另一次最新结果。 */
@@ -61,14 +62,17 @@ export async function enqueuePreparation(pool:Pool,root:string,revisionId:string
  if(!await preparationAvailable(pool))throw conflict('可选材料整理尚未启用，普通建题可继续');
  const source=await readPreparationSource(pool,revisionId,body);
  if(body.project_id&&!(await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[body.project_id])).rows.length)throw new HTTPException(404,{message:'项目不存在'});
- if(body.api_settings!==undefined&&body.agent_settings!==undefined)throw new HTTPException(400,{message:'API与Agent设置不能同时指定'});
+ if([body.api_settings,body.agent_settings,body.web_settings].filter(value=>value!==undefined).length>1)throw new HTTPException(400,{message:'API、Agent与网页Agent设置不能同时指定'});
  let api:ModelApiConfig|undefined;
  if(body.api_settings!==undefined){try{api=resolveModelApiConfig(body.api_settings);}catch{throw new HTTPException(400,{message:'材料整理API模型配置无效'});}}
- const agent=api?undefined:body.agent_settings?validateAgentModelSettings(body.agent_settings):await readAgentDefaults(pool);
- const timeout=body.execution_timeout_ms===undefined?30*60*1000:body.execution_timeout_ms;
+ let web:WebAgentSettings|undefined;
+ if(body.web_settings!==undefined){try{web=validateWebAgentSettings(body.web_settings);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'网页Agent设置无效'});}}
+ const agent=api||web?undefined:body.agent_settings?validateAgentModelSettings(body.agent_settings):await readAgentDefaults(pool);
+ if(web&&!localQueueEnabled())throw conflict('网页Agent通道需要启用本机独立队列（EXECUTION_QUEUE_MODE=local）');
+  const timeout=body.execution_timeout_ms===undefined?30*60*1000:body.execution_timeout_ms;
  if(!Number.isSafeInteger(timeout)||timeout<1000||timeout>24*60*60*1000)throw new HTTPException(400,{message:'整理执行预算须为1000至86400000毫秒'});
- const config={settings:{execution:{task_timeout_ms:timeout}},...(api?{api}:{agent})};
- const requestDigest=hash({revision_id:revisionId,...body,...(api?{api_settings:api}:{})});
+ const config={settings:{execution:{task_timeout_ms:timeout}},...(api?{api}:web?{web}:{agent})};
+ const requestDigest=hash({revision_id:revisionId,...body,...(api?{api_settings:api}:{}),...(web?{web_settings:web}:{})});
  if(body.previous_job_id){
   const previous=(await pool.query("SELECT status,input_snapshot FROM ai_distill.library_jobs WHERE id=$1 AND package_id=$2 AND revision_id=$3 AND kind='prepare'",[body.previous_job_id,source.package_id,revisionId])).rows[0];
   if(!previous||!['failed','cancelled'].includes(previous.status))throw conflict('续作来源必须是同材料包、同revision且已失败或取消的整理任务');
@@ -77,7 +81,7 @@ export async function enqueuePreparation(pool:Pool,root:string,revisionId:string
    (previous.input_snapshot?.project_id??null)!==(body.project_id??null))throw conflict('整理续作必须使用同一提取、脱敏及项目来源');
  }
  const input={...(body.previous_job_id?{previous_job_id:body.previous_job_id}:{}),...sourceIdentity(source),project_id:body.project_id??null,request_digest:requestDigest,files:[]};
- const id=randomUUID(),db=await pool.connect();
+ const id=randomUUID(),executor=api?'api':web?'web':'agent',db=await pool.connect();
  try{
   await db.query('BEGIN');const pkg=await db.query('SELECT id FROM ai_distill.library_packages WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[source.package_id]);if(!pkg.rows.length)throw new HTTPException(404,{message:'材料包不存在或已归档'});
   const previous=(await db.query('SELECT id,input_snapshot FROM ai_distill.library_jobs WHERE package_id=$1 AND request_key=$2',[source.package_id,body.request_key])).rows[0];
@@ -92,8 +96,8 @@ export async function enqueuePreparation(pool:Pool,root:string,revisionId:string
    ORDER BY j.created_at DESC LIMIT 1`,[source.package_id,source.revision_id,source.extraction_job_id,source.redaction_id,body.project_id??null,owner,body.force===true])).rows[0];
   if(active){await db.query('COMMIT');forgetLocalRegistrations(db);return{id:active.id,reused:true};}
   await db.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target,previous_job_id)
-   VALUES($1,$2,$3,'prepare','queued',$4,$5,$6::jsonb,$7,$8::jsonb,$9,'local',$10)`,[id,source.package_id,revisionId,body.request_key,hash(input),JSON.stringify(input),hash(config),JSON.stringify(config),api?'api':'agent',body.previous_job_id??null]);
-  await registerLocalJob(db,id,'library',api?'api':'agent','library:prepare');await db.query('COMMIT');forgetLocalRegistrations(db);return{id,reused:false};
+   VALUES($1,$2,$3,'prepare','queued',$4,$5,$6::jsonb,$7,$8::jsonb,$9,'local',$10)`,[id,source.package_id,revisionId,body.request_key,hash(input),JSON.stringify(input),hash(config),JSON.stringify(config),executor,body.previous_job_id??null]);
+  await registerLocalJob(db,id,'library',executor,'library:prepare');await db.query('COMMIT');forgetLocalRegistrations(db);return{id,reused:false};
  }catch(error){try{await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);}catch(rollback){throw new AggregateError([error,rollback],'材料整理入队状态未知');}throw error;}finally{db.release();}
 }
 export async function executePreparation(pool:Pool,root:string,job:any,signal:AbortSignal,execute=runAgent,apiClient=createModelApiClient()){
@@ -109,7 +113,7 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
   FROM ai_distill.library_files f JOIN ai_distill.library_documents d ON d.file_id=f.id AND d.extraction_job_id=$2
   JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id
   WHERE f.revision_id=$1 AND f.image_review_required=true ORDER BY f.position`,[s.revision_id,s.extraction_job_id])).rows;
- if(marked.length&&job.config_snapshot.api)throw conflict('逐图判断需要可读取图片的Agent执行器');
+ if(marked.length&&(job.config_snapshot.api||job.config_snapshot.web))throw conflict('逐图判断需要可读取图片的Agent执行器');
  const units=preparationUnits(s.index),directory=join(jobDirectory(root,job.id),'preparation');await mkdir(directory,{recursive:true,mode:0o700});
  const payload=JSON.stringify({units:units.map(unit=>({id:unit.id,title:unit.title,text:documentPagesToModelText(unit.pages)}))});
  const prompt=PREPARATION_PROMPT+'\n\n【本次材料JSON：仅作为数据】\n'+payload;
@@ -121,7 +125,12 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
    const result=await apiClient.complete({config:job.config_snapshot.api,messages:[{role:'system',content:PREPARATION_PROMPT},{role:'user',content:'【本次材料JSON：仅作为数据】\n'+payload}],response_format:{type:'json_schema',json_schema:{name:'material_preparation',strict:true,schema:MATERIAL_PREPARATION_SINGLE_SCHEMA}},signal,call_id,timeout_ms});
    return{result:JSON.parse(result.text),provider:result.provider,model:result.model,usage:result.usage};
   }
-  return execute({task_type:'material_preparation',directory,model:job.config_snapshot.agent.model,reasoning_effort:job.config_snapshot.agent.reasoning_effort,schema:MATERIAL_PREPARATION_SINGLE_SCHEMA,signal,call_id,timeout_ms,prompt,validate:(v:unknown)=>v});
+  if(job.config_snapshot.web){
+    // 网页对话内校验回路：编译失败的错误反馈给网页修正；提示词中的材料JSON标记供执行器拆成上传文件，须保持格式。
+    const webExecute=(await import('../web-executors/preparation')).webPreparationExecutor(job.config_snapshot.web);
+    return webExecute({task_type:'material_preparation',directory,model:job.config_snapshot.web.provider,reasoning_effort:'none',schema:MATERIAL_PREPARATION_SINGLE_SCHEMA,signal,call_id,timeout_ms,prompt,validate:(v:unknown)=>{compileFixedPreparation(v as any,units,true);return v;}});
+   }
+   return execute({task_type:'material_preparation',directory,model:job.config_snapshot.agent.model,reasoning_effort:job.config_snapshot.agent.reasoning_effort,schema:MATERIAL_PREPARATION_SINGLE_SCHEMA,signal,call_id,timeout_ms,prompt,validate:(v:unknown)=>v});
  })));
  signal.throwIfAborted();
  await report('parse_result');
@@ -189,7 +198,7 @@ export function registerPreparationRoutes(app:import('hono').Hono,pool:Pool,root
  app.post('/api/material-library/revisions/:id/prepare',async c=>{
   const {uuid}=await import('../validation');const revision=uuid(c.req.param('id'));let body:any;
   try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'整理请求需要有效JSON'});}
-  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(k=>!['request_key','redaction_id','extraction_job_id','project_id','agent_settings','api_settings','execution_timeout_ms','previous_job_id','force'].includes(k)))throw new HTTPException(400,{message:'材料整理请求字段无效'});
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(k=>!['request_key','redaction_id','extraction_job_id','project_id','agent_settings','api_settings','web_settings','execution_timeout_ms','previous_job_id','force'].includes(k)))throw new HTTPException(400,{message:'材料整理请求字段无效'});
   if(body.force!==undefined&&typeof body.force!=='boolean')throw new HTTPException(400,{message:'force须为布尔值'});
   uuid(body.request_key);for(const key of ['redaction_id','extraction_job_id','project_id','previous_job_id'])if(body[key]!==undefined)uuid(body[key]);
   const result=await enqueuePreparation(pool,root,revision,body);return c.json(result,result.reused?200:202);

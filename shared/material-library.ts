@@ -7,7 +7,7 @@ export type MaterialBackend = 'legacy' | 'library_v1';
 export type LibraryRevisionState = 'pending' | 'ready';
 export type LibraryJobKind = 'intake' | 'extract' | 'redact' | 'prepare';
 export type LibraryJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
-export type LibraryExecutorKind = 'internal' | 'api' | 'agent';
+export type LibraryExecutorKind = 'internal' | 'api' | 'agent' | 'web';
 export type LibraryExecutionTarget = 'local' | 'server';
 export type LibraryRedactionMode = 'model' | 'declared_redacted';
 export type QuestionMaterialMode = 'redacted' | 'original';
@@ -180,6 +180,8 @@ export interface CreateLibraryJobRequest {
   agent_settings?: {model:string;reasoning_effort:string};
   /** 显式选择API整包化名或材料整理，省略时仍使用Agent；与agent_settings互斥。 */
   api_settings?: import('./types').ModelApiConfig;
+  /** 显式选择网页Agent（DeepSeek/Gemini网页）整包化名，仅本机；与agent_settings、api_settings互斥。 */
+  web_settings?: import('./web-agent').WebAgentSettings;
 }
 
 export interface CreateLibraryQuestionRequest {

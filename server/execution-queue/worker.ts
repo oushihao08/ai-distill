@@ -19,7 +19,7 @@ import {runNextLibraryJob} from '../material-library/runner';
 import {runNextHook} from '../workflow-hook-worker';
 import {runNextRemoteMaterialOperation} from '../remote-material-operations';
 import {logEvent,classifyLogError} from '../logging';
-import {localQueue,withLocalExecution,reconcileRegistrations,cloudJobState,isTransientCommitFailure,PendingLocalCommit,assertLocalQueueEnvironment,reconcileTerminalOutcome,synchronizeLocalCancellations,reconcileFinishedJobs} from './runtime';
+import {localQueue,webAgentSlotLimit,withLocalExecution,reconcileRegistrations,cloudJobState,isTransientCommitFailure,PendingLocalCommit,assertLocalQueueEnvironment,reconcileTerminalOutcome,synchronizeLocalCancellations,reconcileFinishedJobs} from './runtime';
 import type {QueueJob,Lane} from './store';
 async function dispatch(pool:Pool,root:string,job:QueueJob,signal:AbortSignal,metadata?:Record<string,any>){
  const table=job.kind==='library'?'library_jobs':job.kind==='skill'?'project_skill_attempts':job.kind==='hook'?'hook_runs':job.kind==='remote'?'remote_material_operations':job.kind==='advice'?'revision_advice_attempts':'step_attempts';
@@ -48,7 +48,7 @@ export function canRunLocalTask(mode:string,job:QueueJob,raw:{workflow_id?:strin
  if((raw.execution_target??'local')!==target)return false;
  if(mode==='all')return true;
  if(job.route==='publish')return mode==='local';
- if(job.lane==='agent'||job.lane==='hook')return mode==='local';
+ if(job.lane==='agent'||job.lane==='hook'||job.lane==='web')return mode==='local';
  if(job.kind==='step'&&['answer','score'].includes(job.route)){
   if(mode==='materials'||mode==='server'&&job.route==='score')return false;
   const hooks=raw.input?.hooks!==undefined&&raw.input.hooks!==null;
@@ -57,12 +57,12 @@ export function canRunLocalTask(mode:string,job:QueueJob,raw:{workflow_id?:strin
  if(mode==='api'&&target==='local'&&job.lane==='internal')return false;
  return true;
 }
-export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSignal,limits:{agent:number;llmApi:number},beforeDispatch:()=>Promise<boolean>,mode='all',workflowIds?:string[],target='local',drainSignal?:AbortSignal){
+export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSignal,limits:{agent:number;llmApi:number;web?:number},beforeDispatch:()=>Promise<boolean>,mode='all',workflowIds?:string[],target='local',drainSignal?:AbortSignal){
  // 排空只结束领取循环和槽位等待；已领取任务仍使用原signal完成模型、结算与心跳。
  const claimSignal=drainSignal?AbortSignal.any([signal,drainSignal]):signal;
  await assertLocalQueueEnvironment(pool,root);
- const q=localQueue(root);q.recover();const lanes:Lane[]=mode==='server'||mode==='materials'||mode==='api'?['api','internal','remote']:['agent','api','internal','hook','remote'];
- const laneLimit=(lane:Lane)=>lane==='agent'?limits.agent:lane==='api'||lane==='internal'?limits.llmApi:1;
+ const q=localQueue(root);q.recover();const lanes:Lane[]=mode==='server'||mode==='materials'||mode==='api'?['api','internal','remote']:['agent','web','api','internal','hook','remote'];
+ const laneLimit=(lane:Lane)=>lane==='agent'?limits.agent:lane==='web'?limits.web??webAgentSlotLimit():lane==='api'||lane==='internal'?limits.llmApi:1;
  const gateRoot=(lane:Lane)=>lane==='agent'?root:join(root,`.execution-${lane}-slots`);
  const gates=new Map(lanes.map(lane=>[lane,getAgentConcurrencyGate(gateRoot(lane),laneLimit(lane))]));
  let reconciliation:Promise<void>|undefined,nextSync=0;

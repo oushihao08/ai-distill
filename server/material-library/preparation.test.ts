@@ -42,14 +42,15 @@ test('整理结果保留总摘要、每份材料摘要和多个兼容方向场�
  expect(result.combinations[0]!.deliverables).toHaveLength(2);
 });
 
-test('可见性投影排除隐藏正文和依赖隐藏文书的范围，标题相同时不重复添加',()=>{
+test('可见性投影排除隐藏正文、依赖隐藏文书的范围与整包准入评分说明，标题相同时不重复添加',()=>{
  const classified:any=structuredClone(raw);
  classified.documents[0]!.visibility='visible';classified.documents[0]!.visibility_reason='';
  classified.documents[1]!.visibility='visible';classified.documents[1]!.visibility_reason='';
  classified.documents[2]!.visibility='hidden';classified.documents[2]!.visibility_reason='裁判结果已完整载明';
- const compiled=compilePreparation(classified,units),context=visiblePreparationContext(compiled),visible=visiblePreparedDocuments(compiled,units);
+ const compiled={...compilePreparation(classified,units),question_support:{score:10,status:'usable' as const,dimensions:{task_actor:2,factual_basis:2,professional_judgment:2,deliverable_viability:2,information_boundary:2},reason:'doc-3已隐藏',allowed_task_types:['审查'],unsupported_conclusions:[]}},context=visiblePreparationContext(compiled),visible=visiblePreparedDocuments(compiled,units);
  expect(compiled.document_count).toBe(3);expect(context.document_count).toBe(2);expect(context.documents.map(document=>document.title)).toEqual(['借款合同','付款记录']);
  expect(context.combinations.map(combination=>combination.id)).toEqual(['S1']);
+ expect(context.question_support).toBeUndefined();
  expect(visible.map(document=>document.text).join('\n')).not.toContain('裁判文书正文');
  visible[0]!.document.pages[0]!.blocks=[{id:'title',kind:'heading',text:'借款合同',level:1},{id:'body',kind:'paragraph',text:'借款合同正文'}];
  visible[0]!.text='借款合同\n\n借款合同正文';

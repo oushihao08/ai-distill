@@ -6,7 +6,7 @@ import {prepareAgentRedactionArtifacts,readAgentRedactionPlan,writePrivateJson} 
 import {apiMaterialExecutor} from './api-redaction';
 import type {ModelApiConfig} from '../llm-api';
 
-type Options={directory:string;files:PreparationFile[];revision_id:string;extraction_job_id:string;template:{id:string;digest:string;redaction:{prompt:string}};model:string;reasoning_effort:string;api?:ModelApiConfig;signal?:AbortSignal;timeout_ms?:number;previous_directory?:string;execute?:<T>(task:AgentTask<T>)=>Promise<AgentResult<T>>};
+type Options={directory:string;files:PreparationFile[];revision_id:string;extraction_job_id:string;template:{id:string;digest:string;redaction:{prompt:string}};model:string;reasoning_effort:string;api?:ModelApiConfig;/** 网页对话接口：文件作为上传文件提供，回复完整JSON；与API同属内联交付，由执行器运行同一编译器。 */interface_kind?:'web';signal?:AbortSignal;timeout_ms?:number;previous_directory?:string;execute?:<T>(task:AgentTask<T>)=>Promise<AgentResult<T>>};
 const completionSchema={type:'object',additionalProperties:false,properties:{plan_file:{type:'string',enum:['output/material-plan.json']}},required:['plan_file']};
 function timeoutError(){return Object.assign(new Error('Agent脱敏达到执行预算，已停止并保留私有进度'),{reason_code:'agent_redaction_timeout'});}
 export function validateAgentPlanFileDeclaration(value:unknown):{plan_file:string;parsed_plan?:AgentRedactionPlan}{
@@ -35,7 +35,7 @@ export async function prepareAgentLibraryMaterials(options:Options){
 - 原页、标题层级、表格行列及合并关系由宿主持有并按id回填。保持输入阅读顺序；同文不同id是不同位置，不能合并或遗漏；原空字段保持空字符串。
 - 文本id为“块ID#字段路径”，#前是分册所用block_id。块ID带文件/页作用域并沿用原块标识；缺失或重复标识时由宿主补位置，不自行改ID。documents.ranges以first_block_id和last_block_id指定完整文书范围，全部块恰好归属一次；unresolved按具体字段id记录疑点。
 - 若有resume，先读取已有计划，沿用已确认化名并核对全包；可按需保存进度，不要求另写分项文件。
-${options.api?'- API执行接口：上述文件由宿主以内联JSON完整提供，不访问本地路径、不调用shell。直接返回符合plan_schema的完整JSON计划，不返回plan_file。宿主运行同一校验器，valid:false时修正实际条目后返回完整计划，valid:true时由宿主保存文件并结束。':`- 在本次执行预算内运行${validatorCommand}。它直接接受上述计划，内部坐标转换无需你处理。返回valid:false就修正实际条目后再校验；valid:true后最终只返回{"plan_file":"output/material-plan.json"}。超时保留计划，不自行重试。`}`,
+${options.interface_kind==='web'?'- 网页对话执行接口：上述文件已作为上传文件完整提供（source.json、review-hints.json、plan-schema.json，续作时另有resume-material-plan.json），你没有本地路径或shell，不要运行脚本。直接在回复中给出符合plan-schema.json的完整JSON计划：只输出一个```json代码块，块外不写任何说明，不返回plan_file；输出过长被截断时按宿主要求从中断处继续。宿主运行同一校验器，valid:false时修正实际条目后返回完整计划，valid:true时由宿主保存文件并结束。':options.api?'- API执行接口：上述文件由宿主以内联JSON完整提供，不访问本地路径、不调用shell。直接返回符合plan_schema的完整JSON计划，不返回plan_file。宿主运行同一校验器，valid:false时修正实际条目后返回完整计划，valid:true时由宿主保存文件并结束。':`- 在本次执行预算内运行${validatorCommand}。它直接接受上述计划，内部坐标转换无需你处理。返回valid:false就修正实际条目后再校验；valid:true后最终只返回{"plan_file":"output/material-plan.json"}。超时保留计划，不自行重试。`}`,
    validate:validateAgentPlanFileDeclaration,
   });
   const plan=output.result?.parsed_plan??await readAgentRedactionPlan(options.directory);

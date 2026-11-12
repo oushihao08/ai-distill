@@ -761,3 +761,36 @@ test('Siriser下载保留原接口和回执，不覆盖已有文件',async()=>{
   expect(paths).toEqual([`/api/workflows/${question}/siriser-zip`,`/api/workflows/${question}/siriser-zip`]);
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+describe('网页Agent派发参数', () => {
+  const revision = '00000000-0000-4000-8000-000000000010', request = '00000000-0000-4000-8000-000000000011', extraction = '00000000-0000-4000-8000-000000000012';
+  test('author_question 带 --web 时把冻结设置放进批量派发请求体，其余步骤拒绝',async()=>{
+    const {client,calls}=fixture(()=>({results:[{workflow_id:question,status:'queued',attempt_id:attempt}]}));
+    await runCommand(['step','dispatch','author_question','--project',project,'--ids',question,'--web','gemini','--web-thinking','on','--web-model-label','Code'],client);
+    const post=calls.find(call=>call.url.pathname.endsWith('/steps/4/run-batch'));
+    expect(JSON.parse(String(post?.init?.body))).toEqual({workflow_ids:[question],web_settings:{provider:'gemini',thinking:true,model_label:'Code'}});
+    await expect(runCommand(['step','dispatch','model_answer','--project',project,'--ids',question,'--web','gemini'],client)).rejects.toThrow('author_question');
+    await expect(runCommand(['step','dispatch','author_question','--project',project,'--ids',question,'--web','chatgpt'],client)).rejects.toThrow();
+    await expect(runCommand(['step','dispatch','author_question','--project',project,'--ids',question,'--web-thinking','on'],client)).rejects.toThrow('--web');
+  });
+  test('不带 --web 的出题派发请求体保持原样',async()=>{
+    const {client,calls}=fixture(()=>({results:[{workflow_id:question,status:'queued',attempt_id:attempt}]}));
+    await runCommand(['step','dispatch','author_question','--project',project,'--ids',question],client);
+    expect(JSON.parse(String(calls.find(call=>call.url.pathname.endsWith('/steps/4/run-batch'))?.init?.body))).toEqual({workflow_ids:[question]});
+  });
+  test('脱敏与整理任务把 web_settings 交给API，并拒绝与Agent设置、server目标混用',async()=>{
+    const {client,calls}=fixture(()=>({id:request}));
+    await runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','local','--request-key',request,'--extraction-job',extraction,'--web','deepseek'],client);
+    expect(JSON.parse(String(calls.at(-1)?.init?.body)).web_settings).toEqual({provider:'deepseek'});
+    await runCommand(['library','prepare','start','--revision',revision,'--extraction-job',extraction,'--request-key',request,'--web','deepseek','--web-thinking','off'],client);
+    expect(JSON.parse(String(calls.at(-1)?.init?.body)).web_settings).toEqual({provider:'deepseek',thinking:false});
+    await expect(runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','server','--request-key',request,'--extraction-job',extraction,'--web','deepseek'],client)).rejects.toThrow('本机');
+    await expect(runCommand(['library','job','start','--revision',revision,'--kind','extract','--target','local','--request-key',request,'--web','deepseek'],client)).rejects.toThrow();
+    await expect(runCommand(['library','job','start','--revision',revision,'--kind','redact','--target','local','--request-key',request,'--extraction-job',extraction,'--web','deepseek','--agent-model','m','--reasoning-effort','low'],client)).rejects.toThrow();
+  });
+  test('web status 只投影web通道的本机队列项和容量',async()=>{
+    const {client}=fixture(()=>({capacity:{web:{limit:6}},items:[{id:'a',lane:'web'},{id:'b',lane:'agent'}]}));
+    const result=await runCommand(['web','status'],client);
+    expect(result.data.items).toEqual([{id:'a',lane:'web'}]);expect(result.data.capacity).toEqual({limit:6});
+  });
+});

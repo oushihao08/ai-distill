@@ -211,6 +211,8 @@ CLI与HTTP的计划入口共用`shared/material-preparation.ts`的`validateMater
 
 `aliases/codex_plan`表示化名方法和计划协议，不等于固定模型后端。默认读取共用脱敏Agent设置，优先级及历史回退见上文；新建redact任务可显式传`api_settings: ModelApiConfig`，与`agent_settings`互斥，完整非敏感配置进入请求幂等摘要和冻结快照，使用现有API消费池。未指定时不使用通用API默认值替代Agent。不修改共用默认设置或历史结果。
 
+新建redact任务还可显式传`web_settings:{provider:'deepseek'|'gemini',thinking?,model_label?}`（`shared/web-agent.ts`校验），与`agent_settings`、`api_settings`互斥；冻结为`settings.redaction={provider:'web',web,prompt}`，`executor_kind='web'`、lane=`web`，仅允许本机目标，服务器目标与legacy队列模式均409拒绝。`redaction-runner.ts`按需加载`../web-executors/redaction`的`webMaterialExecutor`，外部调用operation为`library_preparation_web`。材料整理（prepare）同样接受`web_settings`并冻结到`config_snapshot.web`；需要逐图判断的材料（`image_review_required`）不能用web或API执行器，返回409。迁移见`064_web_agent_lane.sql`；浏览器传输与站点交互不属于本目录。
+
 `agent-redaction.ts`维护共用输入准备、预算、续作私有产物和最终编译。`api-redaction.ts`只适配模型调用：将同一source/schema/提示词和可用续作计划内联给`llm-api`；宿主执行同一`compileAgentTextMaterialPlan()`，反馈校验错误供模型在剩余预算内修正。API没有本地shell/读文件能力，不把工具脚本作为可执行提示发给模型；供应商失败不自动重试，相同无效计划停止。Agent与API的已有计划可在同一稳定来源上续作；后端或配置变化不作为拒绝条件。结果沿原redaction-runner事务发布，不新增一套脱敏处理链。
 
 此能力当前通过HTTP任务参数选择，未增加页面选择器或CLI快捷参数。源码和单元测试不代表已运行服务加载；八包真实对照只在本地生成产物，不验收业务库发布，见`执行观察/api-aliases-20261027/对比报告.md`。
@@ -284,11 +286,11 @@ HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`
 
 总摘要由Agent根据最终目录、逐份描述及原文概括法律关系、材料构成、主要事实和程序状态，不写整理数量或处理进度；数量由程序计算。单次调用使用本次deadline及完整响应检查点。组合须明确主体、工作、信息时点、交付用途及可见依据；分别处理事件、凭证申请、取得及送达时间，时间不明时注明阶段或适用条件，不猜精确时点。多组选用须同一服务主体、案件与工作关联、场景相容；程序只核验字段和可见引用，不将结构校验冒充语义审查或增加整包准入门槛。
 
-建题POST不接受候选或文书筛选参数。服务端按材料包、revision、脱敏/提取来源摘要及项目自动匹配成功整理；匹配后将摘要、支持范围和可见性冻结到题目来源快照。人工材料预览仍可读取全文；标为隐藏的文书仍发送给出题和作答模型，评分使用本轮作答冻结的同一完整脱敏材料输入。材料DOCX继续按独立交付契约只纳入可见文书。出题、作答、评分的正文范围不再受visibility过滤；整理缺失的历史题维持原来源行为。
+建题POST不接受候选或文书筛选参数。服务端按材料包、revision、脱敏/提取来源摘要及项目自动匹配成功整理；匹配后将摘要、支持范围和可见性冻结到题目来源快照。人工材料预览仍可读取全文；标为隐藏的文书不发送给出题和作答模型，评分使用本轮作答冻结的同一可见脱敏材料输入，材料DOCX同样只纳入可见文书，四个环节范围一致，题面、标答和rubric不得依赖隐藏文书。该规则只作用于新建出题与作答；已冻结的旧题输入和结果不改写，整理缺失的历史题维持原来源行为。
 
 隐藏须绑定明确候选组合，只用于该组合要求生成的同类现成成果，或形成于组合信息截止时点之后且会直接给出待考结果的材料；隐藏后必要案件信息仍须由可见材料支持。没有有效候选组合时程序将全部文书恢复为可见。判决、裁定和执行记录不按文书类型机械判断；混有不可拆分必要案件事实的材料保持可见，并放弃会被其直接泄露的候选。重复文书应采用一致可见性。实际OCR疑点或材料冲突记入逐份`notes`；`warnings`仅由编译器记录摘要缺失、结构/组合引用无效及无候选隐藏回退等实际问题，不采纳模型的正常过程或功能说明作为警告。新规则不回写历史整理结果或题目快照。
 
-`question_support`独立评价整包能否支撑正常法律实务题，不与文书`visibility`混用。Agent只返回五个0至2分维度及理由、允许题型和不能确定的结论；程序计算总分和状态：8至10为`usable`，6至7为`limited`，0至5为`dangerous`。危险结果不保留候选组合；8至10却没有有效候选标记为`preparation_error`。历史结果缺少该字段时继续按原结构读取，不反推分数，不把材料数量或候选数量作为得分依据。
+`question_support`独立评价可见材料能否支撑单方法律实务题，仅供材料库查看与候选准入，不与文书`visibility`混用，也不经`visiblePreparationContext`写入作者的`material-scope.json`。Agent只返回五个0至2分维度及理由、允许题型和不能确定的结论；程序计算总分和状态：8至10为`usable`，6至7为`limited`，0至5为`dangerous`。危险结果不保留候选组合；8至10却没有有效候选标记为`preparation_error`。历史结果缺少该字段时继续按原结构读取，不反推分数，不把材料数量或候选数量作为得分依据。
 
 新整理结果的`document_count`只数完整文书；未归类分组及其结构块单独计数。来源已有类别时沿用，否则Agent只判断现有整条记录的类别，不改变边界；空白、残片、无法确认完整文书或未分册合订文件按未归类保留，全空记录由程序排除完整文书计数。旧结果没有`unit_kind`，其`documents.length`只是整理记录条数，不能当作真实文书份数；详情会显示记录条数、摘要非空数和真实份数未知。出题Agent实际采用的方向、主体、场景及`deliverables`保存在`step_attempts.result.material_scope_selection`（步骤投影也返回该字段）；主组合与`additional_combinations`附加组合均保存在该JSON中；历史单组合仍兼容。`question_material_scope_uses`只保留方向+场景参考索引，冲突不阻断题目保存；每题实际交付以尝试JSON为准。无需新增数据库列或迁移。无法可靠解析的历史题不自动回填；整理结果需要051；053参考索引缺失不阻断整理上下文冻结或出题保存。旧题快照不追溯改变。
 

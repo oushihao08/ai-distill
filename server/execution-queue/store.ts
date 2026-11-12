@@ -6,13 +6,13 @@ import {join,resolve} from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {serialize,deserialize} from 'node:v8';
 export type JobKind='step'|'skill'|'library'|'hook'|'remote'|'advice';
-export type Lane='agent'|'api'|'internal'|'hook'|'remote';
+export type Lane='agent'|'api'|'internal'|'hook'|'remote'|'web';
 export type QueueState='pending_registration'|'queued'|'running'|'result_pending_commit'|'needs_review'|'committed'|'cancelled'|'failed'|'stale';
 export interface QueueJob {id:string;generation:number;kind:JobKind;lane:Lane;state:QueueState;lease:string|null;pid:number|null;cancel_requested:number;cancel_synced:number;created_at:number;updated_at:number;route:string;error:string|null}
 export interface QueueIntent {id:string;kind:JobKind;lane:Lane;route:string}
 export class QueueCapacityError extends Error {
  readonly code='local_queue_full';
- constructor(readonly lane:Lane,readonly limit:number,readonly waiting:number,readonly requested:number){super(`本机 ${lane==='agent'?'Agent':lane==='api'?'API':lane} 待领取容量不足：上限 ${limit}，已占 ${waiting}，本次需 ${requested}；未派发`);this.name='QueueCapacityError';}
+ constructor(readonly lane:Lane,readonly limit:number,readonly waiting:number,readonly requested:number){super(`本机 ${lane==='agent'?'Agent':lane==='api'?'API':lane==='web'?'网页Agent':lane} 待领取容量不足：上限 ${limit}，已占 ${waiting}，本次需 ${requested}；未派发`);this.name='QueueCapacityError';}
 }
 /** 已由业务处理器判定的终态；私有检查点仅供原任务原代次补交，不用于再次执行模型。 */
 export interface StepFailure {status:'failed'|'skipped';message:string;result:unknown}

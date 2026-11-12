@@ -27,6 +27,7 @@ import {DomesticError} from './answer-models/domestic';
 import {answerCapabilityIssue} from './answer-models/input';
 import {validateAcceptanceConfig,validateAcceptancePolicy} from './decisions/config';
 import { text } from './validation';
+import {validateWebAgentSettings,type WebAgentSettings} from '../shared/web-agent';
 import {validateWorkflowConfig,type WorkflowConfig} from '../shared/workflow-config';
 import {currentRevisionAdviceReadiness,repairStepIssue} from './revision-advice/jobs';
 export interface FolderFile { name: string; path: string; sha256: string; size: number; split_from?: string }
@@ -58,7 +59,7 @@ export function workflowStepReadiness(ordinal:number,steps:Map<number,WorkflowSt
  const status=ordinal===1&&current.has_pdf?current.extraction_status??current.status:current.status;
  const retryingRepair=ordinal===4&&acceptance?.status==='succeeded'&&acceptance.result?.decision==='repair'&&steps.get(4)?.revision_advice_ready===true;
  const retryingUnusableScore=ordinal===6&&status==='succeeded'&&!hasComparableScoreResult(current.result);
- if(!['waiting','failed'].includes(status)&&!(status==='succeeded'&&(retryingRepair||retryingUnusableScore)))return{ready:false,reason:current.active?'此步骤已有排队或运行任务':status==='succeeded'?'此步骤已完成':'当前步骤状态不可执行'};
+ if(!['waiting','failed'].includes(status)&&!(status==='succeeded'&&(ordinal===4||retryingRepair||retryingUnusableScore)))return{ready:false,reason:current.active?'此步骤已有排队或运行任务':status==='succeeded'?'此步骤已完成':'当前步骤状态不可执行'};
  if(current.active)return{ready:false,reason:'此步骤已有排队或运行任务'};
  if(ordinal===5){const issue=answerCapabilityIssue(steps.get(4)?.result,{project_name:identity?.project_key});if(issue)return{ready:false,reason:issue};}
  if(ordinal===7){
@@ -186,8 +187,11 @@ export async function registerQuestionFolders(db: PoolClient, projectId: string,
  return {discovered:questions.length,added:added.length,changed:changed.length};
 }
 export type AnswerStepConfig=ModelApiConfig&{prompt:string;workflow?:WorkflowConfig};
-export type AuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';material_processing_mode?:MaterialProcessingMode;workflow?:WorkflowConfig};
-export type ScoringStepConfig=AuthoringStepConfig|{provider:'api';api:ModelApiConfig;prompt:string;workflow?:WorkflowConfig};
+export type CodexAuthoringStepConfig={provider:'codex';model:string;reasoning_effort:string;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';material_processing_mode?:MaterialProcessingMode;workflow?:WorkflowConfig};
+/** 网页Agent出题：设置在派发时冻结；没有模型/推理强度，网页不返回可核实的实际模型。 */
+export type WebAuthoringStepConfig={provider:'web';web:WebAgentSettings;prompt:string;timeout_ms?:number;material_source_mode?:'redacted'|'original';material_processing_mode?:MaterialProcessingMode;workflow?:WorkflowConfig};
+export type AuthoringStepConfig=CodexAuthoringStepConfig|WebAuthoringStepConfig;
+export type ScoringStepConfig=CodexAuthoringStepConfig|{provider:'api';api:ModelApiConfig;prompt:string;workflow?:WorkflowConfig};
 export function validateStepConfig(ordinal:9,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):RedactionConfig;
 export function validateStepConfig(ordinal:4,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):AuthoringStepConfig;
 export function validateStepConfig(ordinal:6,raw:unknown,modelCatalog?:Parameters<typeof validateAgentModel>[2]):ScoringStepConfig;
@@ -226,6 +230,15 @@ function validateStepConfigInternal(ordinal:number,raw:unknown,modelCatalog:Para
   const prompt=value.prompt??SYSTEM_STEP_PROMPTS[6];
   if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)throw new HTTPException(400,{message:'请填写有效的步骤提示词'});
   return{provider:'api',api,prompt,...extension};
+ }
+ if(ordinal===4&&value.provider==='web'){
+  if(Object.keys(value).some(key=>!['provider','web','prompt','workflow','timeout_ms','material_source_mode','material_processing_mode'].includes(key)))throw new HTTPException(400,{message:'网页出题设置格式无效'});
+  let web:WebAgentSettings;try{web=validateWebAgentSettings(value.web);}catch(error){throw new HTTPException(400,{message:error instanceof Error?error.message:'网页Agent设置无效'});}
+  const webPrompt=value.prompt??SYSTEM_STEP_PROMPTS[4];
+  if(typeof webPrompt!=='string'||!webPrompt.trim()||webPrompt.length>12000)throw new HTTPException(400,{message:'请填写有效的步骤提示词'});
+  const webTimeout=value.timeout_ms;
+  if(webTimeout!==undefined&&(!Number.isInteger(webTimeout)||Number(webTimeout)<60000||Number(webTimeout)>7200000))throw new HTTPException(400,{message:'出题超时须为 1 至 120 分钟的毫秒数'});
+  return{provider:'web',web,prompt:webPrompt,...(webTimeout!==undefined?{timeout_ms:webTimeout as number}:{}),...extension};
  }
  const provider = 'codex';
  if (value.provider !== undefined && value.provider !== provider) throw new HTTPException(400, { message: `此步骤使用${provider}` });
@@ -275,10 +288,10 @@ export async function projectStepSummary(pool: Pool, projectId: string, material
  return visible.map(stage=>{
   const stored=configs.rows.find(row=>row.ordinal===stage.ordinal)?.config;
   const isCodex=[4,6,9].includes(stage.ordinal);
-  const explicit=Boolean(stored&&(stored.provider==='api'||typeof stored.model==='string'&&typeof stored.reasoning_effort==='string'));
+  const explicit=Boolean(stored&&(stored.provider==='api'||stored.provider==='web'||typeof stored.model==='string'&&typeof stored.reasoning_effort==='string'));
   const defaults={model:codexSettings.model,reasoning_effort:codexSettings.reasoning_effort};
   const config=stage.ordinal===9?mergeRedactionDefaults({...stored,prompt:typeof stored?.prompt==='string'?stored.prompt:SYSTEM_STEP_PROMPTS[9]},defaults):stage.ordinal===5?answerStepSettings(stored):isCodex?{
-   ...(stage.ordinal===6&&stored?.provider==='api'?{...stored,prompt:typeof stored.prompt==='string'?stored.prompt:SYSTEM_STEP_PROMPTS[6]}:{provider:'codex',...mergeCodexDefaults({prompt:SYSTEM_STEP_PROMPTS[stage.ordinal as 4|6],...(stored??{})},defaults)}),
+   ...((stage.ordinal===6&&stored?.provider==='api')||(stage.ordinal===4&&stored?.provider==='web')?{...stored,prompt:typeof stored.prompt==='string'?stored.prompt:SYSTEM_STEP_PROMPTS[stage.ordinal as 4|6]}:{provider:'codex',...mergeCodexDefaults({prompt:SYSTEM_STEP_PROMPTS[stage.ordinal as 4|6],...(stored??{})},defaults)}),
   }:stored??{};
   const hasProjectPrompt=typeof stored?.prompt==='string';
   return{ordinal:stage.ordinal,position:stage.position,name:stage.name,key:stage.key,implemented:stage.defaultEnabled,...totals.get(stage.ordinal),config,...(isCodex?{config_source:explicit?'step':hasProjectPrompt?'project':stage.ordinal===9&&config.provider==='api'?'system':codexSettings.source}:{})};

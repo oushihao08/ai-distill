@@ -2,7 +2,7 @@
  * 运行方式：由 Bun test 收集本文件用例；修改对应模块时针对该文件回归验证。
  */
 import {LocalQueue} from '../execution-queue/store';
-import {withLocalExecution,PendingLocalCommit} from '../execution-queue/runtime';
+import {withLocalExecution,PendingLocalCommit,withLocalQueueRoot,localQueue} from '../execution-queue/runtime';
 import {test,expect,beforeAll,afterAll} from 'bun:test';
 import {mkdtemp,rm,mkdir,writeFile,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -78,6 +78,7 @@ async function projectFixture(){
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC'))return{rows:[{id:state.latestId??state.job?.id}],rowCount:1};
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts WHERE id=$1')){const active=!state.cancelled&&(!state.latestId||state.latestId===state.job?.id);return{rows:active?[{id:state.job?.id}]:[],rowCount:active?1:0};}
   if(sql.startsWith('SELECT status FROM ai_distill.step_attempts'))return{rows:[{status:'running'}],rowCount:1};
+  if(sql.startsWith('INSERT INTO ai_distill.execution_dispatches'))return{rows:[{executor_id:values[2]}],rowCount:1};
   return{rows:[],rowCount:sql.startsWith('SELECT')?0:1};
  };
  const pool={query,connect:async()=>({query,release(){}})} as unknown as Pool;
@@ -98,13 +99,13 @@ test('上传材料原文件名从数据库传入作者并用于公开题包表�
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
-test('整理快照含隐藏文书时把完整脱敏正文交给出题Agent并保存实际交付成果',async()=>{
+test('整理快照含隐藏文书时只把可见脱敏正文交给出题Agent并保存实际交付成果',async()=>{
  const f=await projectFixture();let received:any;try{
   f.state.library='redacted';f.state.preparation=true;f.state.text='可见证据正文\n隐藏裁判结果正文';
   await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
   const selection={direction:'证据分析',party:'原告',scenes:['诉前准备'],deliverables:['证据目录','争点清单'],additional_combinations:[{direction:'应诉准备',party:'原告',scenes:['庭审准备'],deliverables:['庭审提纲']}]};
   await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{received=options;return{...authored,draft:{...authored.draft,material_scope_selection:selection}} as any;});
-  expect(received.materials).toHaveLength(1);expect(received.materials[0].text).toContain('可见证据正文');expect(received.materials[0].text).toContain('隐藏裁判结果正文');
+  expect(received.materials).toHaveLength(1);expect(received.materials[0].text).toContain('可见证据正文');expect(received.materials[0].text).not.toContain('隐藏裁判结果正文');
   expect(received.material_scope.result.documents.map((document:any)=>document.title)).toEqual(['证据材料']);
   const completed=f.calls.find(call=>call.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"));
   expect(JSON.parse(completed!.values[1]).material_scope_selection).toEqual(selection);
@@ -440,6 +441,46 @@ test('旧冻结任务缺少批次参考仍执行，作者缺少设计摘要仍�
  const f=await projectFixture();try{
   await enqueueAuthoring(f.pool,'workflow');delete f.saved.input.batch_context;f.saved.input.digest=inputDigest(f.saved.input);f.state.job=f.saved;
   await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{expect(options.batch_context).toBeUndefined();return authored;});
+  expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+
+/** 网页Agent出题：仅本机队列模式可派发；设置冻结进本次任务，项目步骤配置与Codex模型字段不受影响。 */
+async function withLocalMode<T>(root:string,run:()=>Promise<T>){
+ process.env.EXECUTION_QUEUE_MODE='local';
+ try{return await withLocalQueueRoot(root,run);}
+ finally{try{localQueue(root).close();}catch{/* 队列可能未创建 */}process.env.EXECUTION_QUEUE_MODE='legacy';}
+}
+test('网页出题派发冻结网页设置、登记web通道且不带Codex模型字段',async()=>{
+ const f=await projectFixture();try{
+  await withLocalMode(f.root,()=>enqueueAuthoring(f.pool,'workflow',{web:{provider:'gemini',thinking:true}}));
+  expect(f.saved.config.provider).toBe('web');expect(f.saved.config.web).toEqual({provider:'gemini',thinking:true});
+  expect(f.saved.config).not.toHaveProperty('model');expect(f.saved.config).not.toHaveProperty('reasoning_effort');
+  const dispatch=f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.execution_dispatches'));
+  expect(dispatch?.values[3]).toBe('web');expect(dispatch?.values[4]).toBe('authoring');
+  expect(f.state.projectConfig.provider).toBe('codex');
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('项目步骤配置本身为网页出题时同样走web通道；非法网页设置被拒绝',async()=>{
+ const f=await projectFixture();try{
+  f.state.projectConfig={provider:'web',web:{provider:'deepseek'}};
+  await withLocalMode(f.root,()=>enqueueAuthoring(f.pool,'workflow'));
+  expect(f.saved.config).toMatchObject({provider:'web',web:{provider:'deepseek'}});
+  expect(f.calls.find(c=>c.sql.startsWith('INSERT INTO ai_distill.execution_dispatches'))?.values[3]).toBe('web');
+  await expect(withLocalMode(f.root,()=>enqueueAuthoring(f.pool,'workflow',{web:{provider:'chatgpt'} as any}))).rejects.toThrow();
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('legacy队列模式没有web消费者，网页出题派发被拒绝且不创建任务',async()=>{
+ const f=await projectFixture();try{
+  await expect(enqueueAuthoring(f.pool,'workflow',{web:{provider:'gemini'}})).rejects.toThrow('本机独立队列');
+  expect(f.calls.some(c=>c.sql.startsWith('INSERT INTO ai_distill.step_attempts'))).toBe(false);
+ }finally{await rm(f.root,{recursive:true,force:true});}
+});
+test('web尝试被执行时作者收到网页执行器与占位模型，结果照常保存',async()=>{
+ const f=await projectFixture();let received:any;try{
+  await withLocalMode(f.root,()=>enqueueAuthoring(f.pool,'workflow',{web:{provider:'gemini'}}));f.state.job=f.saved;
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{received=options;return authored;});
+  expect(received.model).toBe('web:gemini');expect(received.reasoning_effort).toBe('none');expect(typeof received.execute).toBe('function');
   expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });

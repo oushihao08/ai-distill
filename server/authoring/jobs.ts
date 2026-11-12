@@ -7,7 +7,7 @@ import {resolveProjectPath} from '../paths';
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
-import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {localQueueEnabled,supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {frozenRevisionAdvice,validFrozenAdvice,assertRepairStepAllowed,type FrozenAdvice} from '../revision-advice/jobs';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
@@ -20,6 +20,8 @@ import {createHash} from 'node:crypto';
 import {mkdir,realpath,rm,writeFile} from 'node:fs/promises';
 import {dirname,join,relative,resolve} from 'node:path';
 import {validateStepConfigForExecution} from '../project-folders';
+import {validateWebAgentSettings,type WebAgentSettings} from '../../shared/web-agent';
+import {webAuthoringExecutor} from '../web-executors/authoring';
 import {readRuleFile,readProjectPrompt,resolveEffectiveProjectSkill,scanProjectPrompt,verifyRuleSnapshot,type ProjectPromptSnapshot} from '../rule-files';
 import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,prepareCommittedStageHooks,runCommittedStageHooks,StageHookError,type FrozenStageHooks} from '../lifecycle/scripts';
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
@@ -157,19 +159,27 @@ function freezeMaterialScope(prepared:any,batch:AuthoringBatchContext):MaterialS
  * 校验当前有效Skill与题目冻结来源后，固定题目、附件清单和步骤配置并创建 ordinal 4 尝试。
  * 相同输入的活动任务会复用；出题成功后再次点击会新建尝试，并使后续结果失效。
  */
-export async function enqueueAuthoring(pool:Pool,id:string){
+/** 把项目步骤配置转成网页出题配置：保留提示词/流程/材料模式/超时，去掉Codex模型字段。 */
+function webStepConfig(raw:unknown,web:WebAgentSettings){
+ const {model:_model,reasoning_effort:_effort,provider:_provider,web:_web,...rest}=(raw&&typeof raw==='object'&&!Array.isArray(raw)?raw:{}) as Record<string,unknown>;
+ void _model;void _effort;void _provider;void _web;
+ return{...rest,provider:'web',web};
+}
+/** options.web：仅本次派发改用网页Agent出题；项目步骤配置不变，设置冻结进本次任务配置。 */
+export async function enqueueAuthoring(pool:Pool,id:string,options?:{web?:WebAgentSettings}){
  const db=await pool.connect();
  try{
   await db.query('BEGIN');await assertWorkflowNotArchived(db,id);await assertRepairStepAllowed(db,id,4);const source=await prerequisites(db,id);
   const raw=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[source.workflow.project_id])).rows[0]?.config;
-  const config=validateStepConfigForExecution(4,mergeCodexDefaults(raw,await readProjectAgentDefaults(db,source.workflow.project_id)));
+  const config=validateStepConfigForExecution(4,options?.web?webStepConfig(raw,options.web):raw?.provider==='web'?raw:mergeCodexDefaults(raw,await readProjectAgentDefaults(db,source.workflow.project_id)));
   const scoreConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[source.workflow.project_id])).rows[0]?.config;
   const answerConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5',[source.workflow.project_id])).rows[0]?.config;
   const answerCapabilities=readAnswerToolPolicyFromStepConfig(answerConfig)??{server_tools:[],local_tools:[]};
   const scoreWorkflow=validateWorkflowConfig(scoreConfig?.workflow);
   const scoringPolicy:ScoringPolicy|undefined=scoreWorkflow?.contract==='model_report_v1'?{contract:scoreWorkflow.contract,rules_text:scoreWorkflow.rules_text,reference_answer:scoreWorkflow.reference_answer}:undefined;
+  if(config.provider==='web'&&!localQueueEnabled())throw new HTTPException(409,{message:'网页Agent出题需要本机独立队列（EXECUTION_QUEUE_MODE=local）'});
   const hooks=await freezeStageHooks(dirname(source.skill_path),config.workflow);
-  const loggingConfig=config as {model?:string;reasoning_effort?:string};
+  const loggingConfig=(config.provider==='web'?{model:`web:${config.web.provider}`}:config) as {model?:string;reasoning_effort?:string};
   const advice=await frozenRevisionAdvice(db,id);
   const batchContext=await freezeAuthoringBatch(db,source.workflow.project_id,id);
   const materialScope=freezeMaterialScope('loaded_materials' in source?source.loaded_materials?.material_scope:undefined,batchContext);
@@ -181,7 +191,7 @@ export async function enqueueAuthoring(pool:Pool,id:string){
   if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND status IN ('waiting','running') LIMIT 1",[id])).rowCount)throw new HTTPException(409,{message:'此题目已有出题任务'});
   const attempt=crypto.randomUUID();
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,4,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=4",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
-  await registerLocalJob(db,attempt,'step','agent','authoring');
+  await registerLocalJob(db,attempt,'step',config.provider==='web'?'web':'agent','authoring');
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=4",[id]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal>4 AND ordinal<=8",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='题目更新，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal>4 AND ordinal<=8 AND status IN ('waiting','running')",[id]);
@@ -327,7 +337,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
     }
     for (const row of staleRows)
         withLogContext({ component: 'authoring', project_id: row.project_id, workflow_id: row.workflow_id, ordinal: 4, attempt_id: row.id, operation: 'authoring' }, () => logEvent('attempt.recovered_interrupted', { level: 'error', state: 'failed', threshold_ms: 300000, ...(row.heartbeat_at ? { last_heartbeat_at: new Date(row.heartbeat_at).toISOString() } : {}) }));
-    const restoreLogContext = enterLogContext({ component: 'authoring', workflow_id: job.workflow_id, project_id: job.project_id, ordinal: 4, attempt_id: job.id, operation: 'authoring', provider: 'codex', model: job.config?.model, reasoning_effort: job.config?.reasoning_effort });
+    const restoreLogContext = enterLogContext({ component: 'authoring', workflow_id: job.workflow_id, project_id: job.project_id, ordinal: 4, attempt_id: job.id, operation: 'authoring', provider: job.config?.provider === 'web' ? 'web' : 'codex', model: job.config?.provider === 'web' ? `web:${job.config.web?.provider}` : job.config?.model, reasoning_effort: job.config?.reasoning_effort });
     logEvent('attempt.claimed', { level: 'info', state: 'running' });
     logEvent('attempt.started', { level: 'info', state: 'running', material_count: job.input?.materials?.length ?? 0 });
     const cancellation = watchTaskCancellation(pool, job.id, signal, false);
@@ -346,7 +356,15 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
             throw Object.assign(new Error('stale input'), { reason_code: 'authoring_input_binding_changed' });
         const materials = await readMaterials(pool, root, job, binding.loaded_materials);
         const projectContextFiles = await readProjectContext(job);
-        if (!isRegisteredAgentProvider(job.config?.provider) || typeof job.config.model !== 'string' || !job.config.model.trim() || typeof job.config.reasoning_effort !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(job.config.reasoning_effort))
+        if (job.config?.provider === 'web') {
+            try {
+                validateWebAgentSettings(job.config.web);
+            }
+            catch (error) {
+                throw Object.assign(new Error('invalid frozen config', { cause: error }), { reason_code: 'authoring_frozen_config_invalid' });
+            }
+        }
+        else if (!isRegisteredAgentProvider(job.config?.provider) || typeof job.config.model !== 'string' || !job.config.model.trim() || typeof job.config.reasoning_effort !== 'string' || !['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(job.config.reasoning_effort))
             throw new Error('invalid frozen config');
         logEvent('attempt.input_validated', { level: 'info', material_count: materials.length });
         const legacyRulesInput = job.input.rule_version_id ? { version_id: job.input.rule_version_id, source_digest: job.input.rule_source_digest, files: projectContextFiles } : undefined;
@@ -392,15 +410,15 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     step_prompt: (job.config.prompt ?? DEFAULT_STEP_PROMPTS[4])
                         + (job.input.revision_advice ? `\n\n<本次手动返修建议>\n${job.input.revision_advice.text}\n以上建议仅供修正设计；案件事实以本次附件为准，不得以降低评分要求制造达标。\n</本次手动返修建议>` : '')
                         + hookAdditionText(additions),
-                    model: job.config.model,
-                    reasoning_effort: job.config.reasoning_effort,
+                    model: job.config.provider === 'web' ? `web:${job.config.web.provider}` : job.config.model,
+                    reasoning_effort: job.config.provider === 'web' ? 'none' : job.config.reasoning_effort,
                     // 业务心跳只证明执行器存活，不能让始终没有完整结果的调用无限占槽。
                     // 出题单次墙钟时间硬限制为 30 分钟；到线后由现有失败结算释放本机容量。
                     timeout_ms: Math.min(job.config.timeout_ms ?? 1_800_000, 1_800_000),
                     signal,
                     execute: options => runExternalCall({
                         attempt_id: job.id, operation: 'author'
-                    }, call_id => runAgent({
+                    }, call_id => (job.config.provider === 'web' ? webAuthoringExecutor(job.config.web) : runAgent)({
                         ...options, call_id, task_type: 'question_authoring'
                     }))
                 };

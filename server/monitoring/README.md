@@ -30,7 +30,7 @@ worker-monitor.ts 在 worker 生命周期采样并写共享存储快照；resour
 - macOS系统内存继续使用`memory_pressure -Q`，进程RSS使用`ps`。Windows系统可用物理内存使用`node:os`的`totalmem()`／`freemem()`，进程工作集使用系统自带Windows PowerShell的`Get-Process -Id`批量读取；禁用profile和交互、隐藏窗口、3秒超时。两平台均将可用比例向下取整为整数百分比，再据该百分比估算字节数；采样方法分别为`macos_memory_pressure_percentage`和`windows_available_physical_memory`，API同时接受两种快照。
 - 进程采样只包含当前worker和登记Agent PID，不扫描所有系统进程或读取进程参数/环境；已退出、无权限或重复返回的PID保持unknown，不影响其他PID及系统内存。Windows失败时不调用Unix命令兜底；其他系统的系统内存仍为unknown。
 - 共享`.worker-monitor.json`是同存储位置最后写入的worker快照，不是多worker合并清单。30秒以上旧心跳（或未来偏移超过5秒）投影为stale；stale不能证明供应商任务已经结束，也不能据此自动重派。
-- `readActiveWorkflowTasks()`最多返回500条运行尝试；channel按冻结provider区分Codex作答与API评分，未知provider保持unknown；明细不替代本机队列容量。
+- `readActiveWorkflowTasks()`最多返回500条运行尝试；channel按冻结provider区分Codex作答与API评分，未知provider保持unknown；明细不替代本机队列容量。出题步骤的冻结`provider='web'`归入`web`通道；材料库任务的`executor_kind='web'`同样可见。`/api/monitor`的`local_execution_queue.items[].lane==='web'`列出被领取到网页通道的任务，`/api/system/execution-queue`另给`capacity.web`；队列状态不证明网页端仍在生成。
 - 全局库计数是任务历史状态数，非去重材料包数；活动明细最多100条，计数可能大于明细长度。安全progress只含白名单计数，是本地执行器阶段信息，不是供应商token/页生成进度。
 - 项目任务统计查询不含library_jobs，后者通过独立队列摘要展示。快照中的auth/quota通常为unknown，不进行实时登录/额度探针。
 
@@ -51,3 +51,9 @@ local模式的任务计数直接读取所属SQLite queued/running，不再周期
 本机材料库明细与count均限定传入的任务ID，HTTP返回的历史数量仍来自SQLite聚合；legacy未传ID范围时保持全局读取。监控每条SQL取得连接后的驱动读取时限为5秒，当前createPool获取连接仍限15秒；这不是整个HTTP请求5秒截止。查询失败由pg-pool释放并销毁连接，API保留unavailable，不把失败伪装成零任务。独立步骤与材料摘要仍并行读取，不更改业务连接池大小、心跳或取消检查间隔。
 
 材料队列识别可选`prepare`任务及其安全进度；它共享Agent容量，但不属于原有编号业务步骤。
+
+## 本机监控状态与独立服务
+
+`GET /api/monitor` 的项目任务和材料任务均以本机队列状态投影，包含排队、运行、等待登记、等待同步与待核实；数据库状态仅用于关联业务信息，不覆盖本机执行状态。待核实不计入运行。材料任务的成功、失败数为历史任务数，非材料包数。尚未发布材料包的原子提取显示“待入库材料”。
+
+当前 API 可通过 `MONITOR_PEER_URLS=http://127.0.0.1:3701` 配置额外独立服务；多个地址用逗号分隔。仅允许显式配置的本机 HTTP 地址，不扫描端口，不共享或迁移队列。`GET /api/monitor-sources` 列出服务；`GET /api/monitor?source=<列表ID>` 只读代理对应监控，超时15秒，不跟随重定向。各服务独立呈现，避免共享并发额度重复求和。修改环境配置或后端源码需重新加载 API，不能据源码修改宣称运行服务已生效。

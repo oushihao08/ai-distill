@@ -32,6 +32,7 @@ import {clearGeneratedData} from './generated-data';
 import {enqueueScore} from './scoring/jobs';
 import {scoreExecutionInstructions} from './scoring/executor';
 import {enqueueAuthoring} from './authoring/jobs';
+import type {WebAgentSettings} from '../shared/web-agent';
 import {reviseQuestionOpening} from './authoring/revise';
 import {enqueueProjectSkill,listProjectSkillAttempts} from './skill-generation/jobs';
 import {enqueueAnswer} from './answer-models/jobs';
@@ -243,17 +244,39 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   finally{await rm(directory,{recursive:true,force:true});}
  });
  registerExecutionQueueRoutes(app,pool,storageRoot);
+ // Only explicitly configured loopback services may be read; this never dispatches or adopts tasks.
+ const monitorPeers=(process.env.MONITOR_PEER_URLS??'').split(',').map(value=>value.trim()).filter(Boolean).map(value=>{
+  const url=new URL(value);
+  if(url.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||url.username||url.password||url.pathname!=='/'||url.search||url.hash)throw new Error('MONITOR_PEER_URLS 只接受本机 HTTP 服务地址');
+  return url.origin;
+ });
+ app.get('/api/monitor-sources',c=>c.json([{id:'local',label:'当前服务'},...monitorPeers.map((url,index)=>({id:String(index),label:url}))]));
  app.get('/api/monitor', async c => { try {
+  const source=c.req.query('source');
+  if(source&&source!=='local'){
+   if(!/^\d+$/.test(source)||!monitorPeers[Number(source)])throw new HTTPException(400,{message:'监控服务未配置'});
+   const response=await fetch(`${monitorPeers[Number(source)]}/api/monitor`,{signal:AbortSignal.timeout(15000),redirect:'error'});
+   if(!response.ok)throw new HTTPException(502,{message:'独立服务监控读取失败'});
+   return c.json(await response.json());
+  }
   const executionQueue=localQueueEnabled()?localQueue(storageRoot):null;
-  const local_execution_queue=executionQueue?{executor_id:executionQueue.executorId,items:executionQueue.monitorJobs().map(({id,kind,lane,state,cancel_requested})=>({id,kind,lane,state,cancel_requested}))}:null;
-  const activeAdviceIds=local_execution_queue?.items.filter(job=>job.kind==='advice'&&job.state==='running').map(job=>job.id)??[];
+  const local_execution_queue=executionQueue?{executor_id:executionQueue.executorId,items:executionQueue.monitorJobs().map(({id,kind,lane,state,updated_at,cancel_requested})=>({id,kind,lane,state,updated_at,cancel_requested}))}:null;
+  const activeAdviceIds=local_execution_queue?.items.filter(job=>job.kind==='advice').map(job=>job.id)??[];
   const [monitor,active_workflow_tasks,material_library,logging]=await Promise.all([
    readWorkerMonitor(storageRoot),
-   readActiveWorkflowTasks(pool,local_execution_queue?.items.filter(job=>job.kind==='step'&&job.state==='running').map(job=>job.id)).then(async items=>({status:'known' as const,items:[...items,...await readActiveRevisionAdviceTasks(pool,activeAdviceIds)]})).catch(error=>{logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable' as const,items:[] as Awaited<ReturnType<typeof readActiveWorkflowTasks>>};}),
+   readActiveWorkflowTasks(pool,local_execution_queue?.items.filter(job=>job.kind==='step').map(job=>job.id)).then(async items=>({status:'known' as const,items:[...items,...await readActiveRevisionAdviceTasks(pool,activeAdviceIds)]})).catch(error=>{logEvent('monitor.active_tasks_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable' as const,items:[] as Awaited<ReturnType<typeof readActiveWorkflowTasks>>};}),
    readMaterialLibraryQueue(pool,local_execution_queue?.items.filter(job=>job.kind==='library').map(job=>job.id)),
    loggerHealth(),
   ]);
-  if(local_execution_queue){const own=new Set(local_execution_queue.items.map(j=>j.id));const running=new Set(local_execution_queue.items.filter(j=>j.state==='running').map(j=>j.id));active_workflow_tasks.items=active_workflow_tasks.items.filter(j=>running.has(j.attempt_id));if(material_library.status==='known'){const counts=executionQueue!.stateCounts('library');material_library.items=material_library.items.filter(j=>own.has(j.job_id));material_library.totals={...material_library.totals,queued:counts.queued??0,running:counts.running??0,succeeded:counts.committed??0,failed:counts.failed??0,cancelled:counts.cancelled??0};}}
+  if(local_execution_queue){
+   const own=new Map(local_execution_queue.items.map(job=>[job.id,job]));
+   active_workflow_tasks.items=active_workflow_tasks.items.filter(job=>own.has(job.attempt_id)).map(job=>({...job,state:own.get(job.attempt_id)!.state}));
+   if(material_library.status==='known'){
+    const counts=executionQueue!.stateCounts('library');
+    material_library.items=material_library.items.filter(job=>own.has(job.job_id)).map(job=>({...job,state:own.get(job.job_id)!.state}));
+    material_library.totals={...material_library.totals,queued:counts.queued??0,running:counts.running??0,succeeded:counts.committed??0,failed:counts.failed??0,cancelled:counts.cancelled??0};
+   }
+  }
   return c.json({...monitor,active_workflow_tasks,material_library,logging,local_execution_queue});
  } catch(error) { throw error; } });
  app.get('/api/health', async c => {
@@ -1077,10 +1100,10 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      return new Response(file, { headers: { 'Content-Type': materialMime(result.rows[0].original_name), 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(result.rows[0].original_name)}`, 'Cache-Control': 'no-store' } });
    } catch (error) { throw error; }
  });
- const workflowStepHandlers=(workflowId:string,deliveryIdentity?:{task_id:string;org:string}):WorkflowStepHandlers<StepDispatchTask>=>({
+ const workflowStepHandlers=(workflowId:string,deliveryIdentity?:{task_id:string;org:string},webSettings?:WebAgentSettings):WorkflowStepHandlers<StepDispatchTask>=>({
   1:()=>enqueueIngestion(pool,workflowId),
   2:()=>enqueueExtraction(pool,workflowId),
-  4:()=>enqueueAuthoring(pool,workflowId),
+  4:()=>enqueueAuthoring(pool,workflowId,webSettings?{web:webSettings}:undefined),
   5:()=>enqueueAnswer(pool,workflowId,storageRoot),
   6:()=>enqueueScore(pool,workflowId),
   7:()=>runAcceptance(pool,workflowId),
@@ -1109,7 +1132,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    if(!identity)throw new HTTPException(404,{message:'工作流不存在'});
    if(identity.workflow_kind==='material_package'&&![1,2,9].includes(ordinal))throw new HTTPException(409,{message:'材料包只执行入库和脱敏'});
    if(identity.source_workflow_id&&[1,2,9].includes(ordinal))throw new HTTPException(409,{message:'派生题目使用已冻结的材料快照'});
-   return dispatchWorkflowStep(ordinal,workflowStepHandlers(workflowId,context?.delivery_identity));
+   return dispatchWorkflowStep(ordinal,workflowStepHandlers(workflowId,context?.delivery_identity,context?.web_settings));
   },
  });
  registerRemoteMaterialRoutes(app,pool,storageRoot);

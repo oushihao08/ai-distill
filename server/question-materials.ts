@@ -4,7 +4,7 @@
  * 使用场景：出题与作答使用包含隐藏文书的脱敏投影附件，评分沿用作答冻结输入；归档/导出按各自契约读取；不执行OCR或脱敏；数据库回读后可写本机受管快照缓存，不修改原件。
  */
 import {createHash} from 'node:crypto';
-import {materializePreparation,preparationUnits,renderPreparationDocuments,validateSelectedMaterialIndex,visiblePreparationContext} from '../shared/material-preparation-result';
+import {visiblePreparedDocuments,preparationUnits,renderPreparationDocuments,validateSelectedMaterialIndex,visiblePreparationContext} from '../shared/material-preparation-result';
 import {readFile,realpath,stat,mkdir,lstat,writeFile,rename,rm} from 'node:fs/promises';
 import {resolve,relative,sep,isAbsolute} from 'node:path';
 import type {Pool,PoolClient} from 'pg';
@@ -181,8 +181,8 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
   const content=renderPreparationDocuments(docs);
   return{origin,attachments:[attachment],model_attachments:content.trim()?[{...attachment,content,sha256:hash(content)}]:[],digest:String(row.snapshot_digest)};
  }
- // visibility 只用于整理结果的界面/范围提示；出题、作答和评分必须共享完整脱敏正文。
- const modelDocuments=materializePreparation(prepared.result,preparationUnits(parsedIndex));
+ // 隐藏文书不进入出题、作答和评分的模型正文，与材料DOCX交付同一可见范围；冻结来源附件仍保留完整正文用于来源绑定。
+ const modelDocuments=visiblePreparedDocuments(prepared.result,preparationUnits(parsedIndex));
  const content=renderPreparationDocuments(modelDocuments);
  const modelAttachment:QuestionMaterialAttachment={...attachment,sha256:hash(content),content};
  return{origin,attachments:[attachment],model_attachments:[...(content.trim()?[modelAttachment]:[])],digest:String(row.snapshot_digest),material_scope:{preparation_id:prepared.preparation_id,result:visiblePreparationContext(prepared.result)}};

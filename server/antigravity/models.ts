@@ -12,20 +12,27 @@ export const AGY_DRIVER_ID='agy';
 export const AGY_MODEL_PREFIX='agy:';
 
 const TIERED_FAMILIES:Record<string,readonly string[]>={
+ 'gemini-4-carbon':['low','medium','high'],
  'gemini-4-argon':['low','medium','high'],
  'gemini-3.8-flash':['low','medium','high'],
+ 'claude-sonnet-5-5':['low','medium','high'],
+ 'claude-opus-5-5':['low','medium','high'],
 };
 
 const DEFAULT_AGY_MODELS:AdvertisedModel[]=[
+ {slug:'agy:gemini-4-carbon',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]},
  {slug:'agy:gemini-4-argon',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]},
  {slug:'agy:gemini-3.8-flash',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]},
+ {slug:'agy:claude-sonnet-5-5',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]},
+ {slug:'agy:claude-opus-5-5',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]},
  {slug:'agy:claude-sonnet-4-6',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'},{effort:'xhigh'},{effort:'max'}]},
  {slug:'agy:claude-opus-4-6-thinking',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'},{effort:'xhigh'},{effort:'max'}]},
  {slug:'agy:gpt-oss-120b',supported_reasoning_levels:[{effort:'medium'}]},
 ];
 
 const NATIVE_AGY_PATTERNS=[
- /^gemini-(?:4-argon|3\.8-flash)(?:-(?:low|medium|high))?$/i,
+ /^gemini-(?:4-carbon|4-argon|3\.8-flash)(?:-(?:low|medium|high))?$/i,
+ /^claude-(?:sonnet-5-5|opus-5-5)(?:-(?:low|medium|high))?$/i,
  /^claude-(?:sonnet-4-6|opus-4-6-thinking)$/i,
  /^gpt-oss-120b(?:-medium)?$/i,
 ];
@@ -63,7 +70,7 @@ export function resolveAgyModelAndEffort(model:string,effort:string):{model:stri
   const tierSuffix=normalizedEffort==='low'?'low':normalizedEffort==='medium'?'medium':'high';
   return{model:`${raw.toLowerCase()}-${tierSuffix}`,effort:normalizedEffort};
  }
- const tierMatch=raw.match(/^(gemini-(?:4-argon|3\.8-flash))-(low|medium|high)$/i);
+ const tierMatch=raw.match(/^((?:gemini-(?:4-carbon|4-argon|3\.8-flash)|claude-(?:sonnet-5-5|opus-5-5)))-(low|medium|high)$/i);
  if(tierMatch){
   return{model:`${tierMatch[1]!.toLowerCase()}-${tierMatch[2]!.toLowerCase()}`,effort:normalizedEffort};
  }

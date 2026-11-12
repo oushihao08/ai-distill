@@ -33,12 +33,12 @@ const strings=(v:unknown)=>Array.isArray(v)?v.filter((x):x is string=>typeof x==
 export function preparationBlocks(units:PreparationUnit[]):PreparationBlock[]{return units.flatMap((unit,ui)=>unit.pages.flatMap((p,pi)=>p.blocks.map((block,bi)=>({id:`u${ui+1}p${pi+1}b${bi+1}`,unit_id:unit.id,page:p.page,block}))));}
 export function preparationVisibility(document:Pick<PreparationDocument,'visibility'>):PreparationVisibility{return document.visibility==='hidden'?'hidden':'visible';}
 export function preparationUnitKind(document:Pick<PreparationDocument,'unit_kind'>):PreparationDocumentKind|undefined{return document.unit_kind==='document'||document.unit_kind==='unassigned'?document.unit_kind:undefined;}
-/** 仅生成可供作者读取的摘要投影，不暴露隐藏文书及只由隐藏文书支撑的范围。 */
+/** 仅生成可供作者读取的摘要投影，不暴露隐藏文书、只由隐藏文书支撑的范围及整包准入评分说明。 */
 export function visiblePreparationContext(result:MaterialPreparationResult):MaterialPreparationResult{
  const documents=result.documents.filter(document=>preparationVisibility(document)==='visible');
  const visibleIds=new Set(documents.map(document=>document.id));
  const combinations=result.combinations.filter(combination=>combination.document_ids.length>0&&combination.document_ids.every(id=>visibleIds.has(id)));
- const projection:MaterialPreparationResult={format:result.format,package_summary:result.summary_scope==='visible'?result.package_summary:documents.map(document=>`${document.title}${document.summary?`：${document.summary}`:''}`).join('\n'),...(result.summary_scope?{summary_scope:result.summary_scope}:{}),documents,combinations,...(result.question_support?{question_support:result.question_support}:{}),warnings:[]};
+ const projection:MaterialPreparationResult={format:result.format,package_summary:result.summary_scope==='visible'?result.package_summary:documents.map(document=>`${document.title}${document.summary?`：${document.summary}`:''}`).join('\n'),...(result.summary_scope?{summary_scope:result.summary_scope}:{}),documents,combinations,warnings:[]};
  const counts=preparationCounts({...result,documents,document_count:result.document_count===undefined?undefined:documents.filter(document=>document.unit_kind==='document').length,unassigned_group_count:documents.filter(document=>document.unit_kind==='unassigned').length,unassigned_block_count:documents.filter(document=>document.unit_kind==='unassigned').reduce((sum,document)=>sum+document.block_ids.length,0)});
  return counts.known?{...projection,document_count:counts.document_count,unassigned_group_count:counts.unassigned_group_count,unassigned_block_count:counts.unassigned_block_count}:projection;
 }

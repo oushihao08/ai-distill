@@ -5,6 +5,7 @@
 
 | 脚本 | 当前用途和边界 |
 | --- | --- |
+| `verify-web-agent.ts` | 真实本机Chrome（后台、临时档案）+ 本地假聊天页，验证网页Agent传输的上传/长文本/读取/取消/6会话并发/实例复用/清理；不访问真实站点、数据库或模型，不碰`.storage`档案。 |
 | `verify-worker-transactions.ts` | 显式本机端口、固定专用`worker_verify`数据库与随机schema，复用生产材料任务函数及真实任务表约束；验证取消/提交锁竞争、失租、回滚、JSONB原因、提交后回执异常。只用合成数据，退出删schema；不读取业务连接配置、不跑全量迁移或模型，须显式指定证据输出路径。 |
 | `verify-answer-flow.ts` | 随机临时 schema 与合成输入；默认用注入执行器，不调用模型；`--real-score` 会调用真实 Codex 评分。写入其声明的结果文件。 |
 | `verify-authoring-flow.ts` | 随机临时 schema 与合成输入，但会调用真实 Codex 出题；写入结果文件。 |

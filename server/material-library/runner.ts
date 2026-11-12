@@ -183,7 +183,7 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   }).finally(()=>{heartbeatRunning=false;});
  },heartbeatMs);
  try{
-  logEvent('library_job.started',{level:'info',state:'running',provider:job.executor_kind==='api'?(job.config_snapshot.api?.provider??job.config_snapshot.settings?.redaction?.api?.provider):job.executor_kind==='agent'?'codex':undefined,material_count:job.input_snapshot.files?.length??0});
+  logEvent('library_job.started',{level:'info',state:'running',provider:job.executor_kind==='api'?(job.config_snapshot.api?.provider??job.config_snapshot.settings?.redaction?.api?.provider):job.executor_kind==='agent'?'codex':job.executor_kind==='web'?(job.config_snapshot.web?.provider??job.config_snapshot.settings?.redaction?.web?.provider):undefined,material_count:job.input_snapshot.files?.length??0});
   if(local.signal.aborted)throw local.signal.reason;
   const lifecycleContext={stage:job.kind==='intake'?'intake':job.kind==='extract'?'extract':'redact',execution_id:job.id,project_id:job.input_snapshot?.project_id,signal:local.signal};
   if(job.kind!=='prepare')await emitLifecycle(pool,'before',lifecycleContext);

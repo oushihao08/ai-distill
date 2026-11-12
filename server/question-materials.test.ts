@@ -65,7 +65,7 @@ test('reads a shared package snapshot in a legacy project without changing its p
  expect(statements.some(sql=>sql.includes('ordinal=9'))).toBe(false);
 });
 
-test('整理快照将可见和隐藏文书共同投影给出题作答与评分输入',async()=>{
+test('整理快照只把可见文书投影给出题作答与评分输入，冻结来源仍保留完整正文',async()=>{
  const fullText='可见证据正文\n隐藏裁判结果正文';
  const structuredIndex={format:'redacted-index-v2',redacted_sha256:digest(fullText),materials:[{material_id:'material-1',markdown:fullText,document:{format:'redacted-structure-v1',pages:[{page:1,blocks:[{id:'b1',kind:'paragraph',text:'可见证据正文'},{id:'b2',kind:'paragraph',text:'隐藏裁判结果正文'}]}]}}]};
  const preparation={format:'material-preparation-v2',package_summary:'可见证据摘要',documents:[
@@ -85,10 +85,10 @@ test('整理快照将可见和隐藏文书共同投影给出题作答与评分�
  });
  const source=await readQuestionMaterials(db,workflowId);
  expect(source.attachments[0]!.content).toContain('隐藏裁判结果正文');
- expect(source.model_attachments).toHaveLength(1);expect(source.model_attachments![0]!.content).toContain('可见证据正文');expect(source.model_attachments![0]!.content).toContain('隐藏裁判结果正文');
+ expect(source.model_attachments).toHaveLength(1);expect(source.model_attachments![0]!.content).toContain('可见证据正文');expect(source.model_attachments![0]!.content).not.toContain('隐藏裁判结果正文');
  expect(source.material_scope?.result.documents.map(document=>document.title)).toEqual(['证据材料']);
  const answer=buildAnswerInput({question_version:'v1',question:'依据附件分析',attachment_ids:['markdown-1'],material_origin:source.origin,answer_requirements:{input_mode:'text',output_mode:'text',tools:[]}},source.model_attachments!.map(item=>({id:item.id,kind:'redacted_markdown',sha256:item.sha256,text:item.content})));
- expect(answer.materials[0]!.text).toContain('可见证据正文');expect(answer.materials[0]!.text).toContain('隐藏裁判结果正文');
+ expect(answer.materials[0]!.text).toContain('可见证据正文');expect(answer.materials[0]!.text).not.toContain('隐藏裁判结果正文');
 });
 
 test('reads and validates the frozen original extraction for a library question',async()=>{

@@ -34,7 +34,7 @@ SQLite使用WAL/FULL同步及短事务，目录0700、文件0600；不能放在�
 - `POST /api/system/execution-queue/adopt`：`{jobs:[{id,kind}]}`，kind为step/skill/library/hook/remote；1–100个明确的旧waiting/queued任务。已属于其他执行器、正在运行或同步钩子拒绝。route/lane由业务记录解析，不接受客户端伪造。
 - `POST /api/system/execution-queue/:id/cancel`：只取消本机记录；返回cancel_requested与cloud_synced。其他机请求应通过明确业务取消入口通知，不能冒充本机已停止。
 - `POST /api/system/execution-queue/:id/reconcile-failed`：仅供本机故障对账，提交 `{failure_event_id,failure_instance_id}`。要求本机队列任务已停止且处于`needs_review`、存在未决调用、指定worker实例的结构化日志含匹配的`attempt.failed`且没有后续成功事件，同时PG中的归属、代次、最新attempt和step仍匹配并处于`running`；全部通过后在一个事务内将attempt和step结算为`failed`，不重放调用。保留供应商的可重试标记，但设置本次`retryable=false`以阻止隐式重试；日志扫描受50文件/20 MiB限制，超限或证据不完整即拒绝。
-- `GET /api/monitor`：local_execution_queue提供本机实际状态；活动任务过滤为本机正在执行，待登记/同步/核实单列；全局业务列表仍共享，不按本机队列隐藏其他机成果。
+- `GET /api/monitor`：local_execution_queue提供本机实际状态；活动任务限定本机归属，排队/运行/待登记/同步/核实均按本机状态展示；全局业务列表仍共享，不按本机队列隐藏其他机成果。
 
 CLI继续调用原HTTP派发入口，不直连SQLite或PG。本机队列管理CLI见下方容量与状态投影章节。
 
@@ -104,3 +104,7 @@ worker监控和`/api/monitor`只投影活动、待登记、待同步及待核实
 页面与批量的active判断排除符合上述条件的他机待办，仍保留实际运行/未知及前置结果保护。共享step残留running不能仅因本机无进程就自动置为成功、失败或允许重复调用。此变更不会自动清理已有needs_review，也不以超时推断外部调用已结束。
 
 `runtime.test.ts`使用临时SQLite执行经PG类型/时间语法适配的筛选与更新，覆盖结果/心跳/产物/续作/归属保护、事务回滚以及材料库派发容量失败；`worker.test.ts`验证被替代队列项在模式/范围过滤前结算。它们不证明PostgreSQL行锁竞争、真实双机或部署验收。
+
+## 网页Agent通道（lane=web）
+
+网页Agent（DeepSeek/Gemini网页对话）使用独立`web`通道：槽位默认6，可由`WEB_AGENT_SLOTS`（1–6，超出夹取，非数字取默认）覆盖；跨进程槽位目录为`<STORAGE_DIR>/.execution-web-slots`，不占Agent/API槽位，待领取容量与运行上限同样按lane独立计数（`GET /api/system/execution-queue`的`capacity.web`；超限返回429且`lane=web`、消息显示“网页Agent”）。仅mode为`local`/`all`的worker消费该通道，`server`/`materials`/`api`模式不启用。该通道承载材料库脱敏/整理（`library_jobs.executor_kind='web'`，只允许本机目标）与出题（步骤ordinal 4，`config.provider='web'`，route仍为`authoring`）；步骤的lane由出题派发处按冻结provider登记，`POST /adopt`同样按provider解析。需要064迁移放宽`execution_dispatches.lane`与`library_jobs`约束；库任务在legacy模式下拒绝web派发。浏览器会话/站点操作由`server/web-agent/`与`server/web-executors/`负责，本目录只处理排队、容量与领取。

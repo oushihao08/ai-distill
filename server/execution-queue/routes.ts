@@ -30,7 +30,7 @@ async function verifiedFailureEvent(root:string,attemptId:string,eventId:string,
 export function registerExecutionQueueRoutes(app:Hono,pool:Pool,root:string){
  app.get('/api/system/execution-queue',c=>{
   if(!localQueueEnabled())return c.json({mode:'legacy',executor_id:null,items:[]});
-  const q=localQueue(root),limits=localQueueLimits(q);return c.json({mode:'local',executor_id:q.executorId,capacity:{agent:q.capacity('agent',limits.agent),api:q.capacity('api',limits.api)},items:q.list().map(({pid,lease,error,...job})=>job)});
+  const q=localQueue(root),limits=localQueueLimits(q);return c.json({mode:'local',executor_id:q.executorId,capacity:{agent:q.capacity('agent',limits.agent),api:q.capacity('api',limits.api),web:q.capacity('web',limits.web)},items:q.list().map(({pid,lease,error,...job})=>job)});
  });
  app.post('/api/system/execution-queue/adopt',async c=>{
   if(!localQueueEnabled())throw new HTTPException(409,{message:'尚未启用本机独立队列'});
@@ -48,7 +48,7 @@ export function registerExecutionQueueRoutes(app:Hono,pool:Pool,root:string){
    else if(input.kind==='skill'){route='skill';lane='agent';}
    else if(input.kind==='hook'){if(j.mode!=='async')throw new HTTPException(409,{message:'同步钩子属于原主任务'});route='hook';lane='hook';}
    else if(input.kind==='remote'){route='remote';lane='remote';}
-   else{route=({1:'intake',2:'extract',4:'authoring',5:'answer',6:'score',8:'publish',9:'redact'} as Record<number,string>)[j.ordinal];if(!route)throw new HTTPException(409,{message:'该步骤不属于后台执行队列'});lane=j.ordinal===1||j.ordinal===8?'internal':j.ordinal===2?'api':j.ordinal===4?'agent':j.config?.provider==='codex'||j.ordinal===6&&j.config?.provider!=='api'?'agent':'api';}
+   else{route=({1:'intake',2:'extract',4:'authoring',5:'answer',6:'score',8:'publish',9:'redact'} as Record<number,string>)[j.ordinal];if(!route)throw new HTTPException(409,{message:'该步骤不属于后台执行队列'});lane=j.ordinal===1||j.ordinal===8?'internal':j.ordinal===2?'api':j.ordinal===4?(j.config?.provider==='web'?'web':'agent'):j.config?.provider==='codex'||j.ordinal===6&&j.config?.provider!=='api'?'agent':'api';}
    intents.push({id:input.id,kind:input.kind,lane,route});accepted.push(input.id);
   }await registerLocalJobs(db,intents);await db.query('COMMIT');forgetLocalRegistrations(db);return c.json({executor_id:q.executorId,ids:accepted});
   }catch(error){await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);throw error;}finally{db.release();}

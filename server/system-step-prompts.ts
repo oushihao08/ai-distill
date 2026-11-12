@@ -44,7 +44,7 @@ export async function saveSystemStepPrompts(db:Queryable,value:unknown,authoring
 }
 
 /** 出题专用默认值不继承通用Agent默认，避免影响评分和脱敏。 */
-export const DEFAULT_AUTHORING_SETTINGS={model:'agy:gemini-3.8-flash',reasoning_effort:'medium'} as const;
+export const DEFAULT_AUTHORING_SETTINGS={model:'agy:gemini-4-carbon',reasoning_effort:'medium'} as const;
 export interface AuthoringDefaults {model:string;reasoning_effort:string}
 export function validateAuthoringDefaults(value:unknown):AuthoringDefaults{
  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('出题默认设置须为JSON对象');

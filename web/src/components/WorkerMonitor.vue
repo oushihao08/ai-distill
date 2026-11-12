@@ -8,7 +8,8 @@ import { useResource } from '@/composables/useResource';
 import { dateLabel, fileSize } from '@/utils/format';
 import type { ActiveWorkflowTask,MaterialLibraryQueueStatus,WorkerMonitorStatus } from '@server/monitoring/worker-monitor';
 type MonitorResponse=WorkerMonitorStatus&{active_workflow_tasks:{status:'known'|'unavailable';items:ActiveWorkflowTask[]};material_library:MaterialLibraryQueueStatus;local_execution_queue?:{executor_id:string;items:{id:string;kind:string;lane:string;state:string;updated_at?:number;cancel_requested:number}[]}|null};
-const {data,error,loading,refresh}=useResource<MonitorResponse>('/monitor');
+const props=withDefaults(defineProps<{source?:string;label?:string}>(),{source:'local',label:'当前服务'});
+const {data,error,loading,refresh}=useResource<MonitorResponse>(`/monitor?source=${encodeURIComponent(props.source)}`);
 let timer:ReturnType<typeof setInterval>|undefined;
 onMounted(()=>{timer=setInterval(()=>{if(!loading.value&&!document.hidden)void refresh();},10000);});
 onUnmounted(()=>clearInterval(timer));
@@ -20,14 +21,15 @@ const activeTasksStatus=computed(()=>data.value?.active_workflow_tasks.status??'
 const libraryJobs=computed(()=>data.value?.material_library.status==='known'?data.value.material_library.items:[]);
 const libraryTotals=computed(()=>data.value?.material_library.status==='known'?data.value.material_library.totals:null);
 const libraryKindLabel={intake:'入库核验',extract:'文本提取',redact:'脱敏',prepare:'材料整理'};
-const libraryStateLabel={queued:'排队',running:'运行'};
+const libraryStateLabel:Record<string,string>={queued:'排队',running:'运行',pending_registration:'等待确认入队',result_pending_commit:'等待结果同步',needs_review:'待核实'};
+const executorLabel:Record<string,string>={agent:'Agent',api:'API 服务',internal:'本地程序',web:'网页Agent'};
 const localQueue=computed(()=>data.value?.local_execution_queue);
 const queueCounts=computed(()=>{const items=localQueue.value?.items??[];const count=(lane:string,state:string)=>items.filter(i=>i.lane===lane&&i.state===state).length;return{agentQueued:count('agent','queued'),agentRunning:count('agent','running'),apiQueued:count('api','queued'),apiRunning:count('api','running'),pending:items.filter(i=>['pending_registration','result_pending_commit'].includes(i.state)).length,review:items.filter(i=>i.state==='needs_review').length};});
 const recoveryItems=computed(()=>(localQueue.value?.items??[]).filter(item=>['pending_registration','result_pending_commit','needs_review'].includes(item.state)));
 const recoveryLabel:Record<string,string>={pending_registration:'等待确认入队',result_pending_commit:'等待结果同步',needs_review:'等待核实'};
 </script>
 <template><Column class="surface-card p-16" :gap="12">
- <Row x="between" wrap :gap="8"><h2 class="section-title">执行器监控</h2><span class="text-sm text-muted">{{ data ? labels[data.status] : '正在读取…' }}</span></Row>
+ <Row x="between" wrap :gap="8"><h2 class="section-title">执行器监控 · {{ props.label }}</h2><span class="text-sm text-muted">{{ data ? labels[data.status] : '正在读取…' }}</span></Row>
  <p v-if="error" class="text-sm text-error">{{ error }}</p>
  <p v-if="data?.status==='paused'" class="text-sm text-muted">可用内存低于 {{ data.dispatch?.min_available_percent }}%，暂停领取新任务；运行中的任务继续，内存恢复后自动派发。</p>
  <Row v-if="current" wrap :gap="16" class="text-sm text-muted">
@@ -53,15 +55,15 @@ const recoveryLabel:Record<string,string>={pending_registration:'等待确认入
  </details>
  <ActiveWorkflowTasks :status="activeTasksStatus" :tasks="activeTasks" />
  <section class="border border-subtle rounded-md p-12">
-  <Row x="between" wrap :gap="8"><h3 class="text-sm font-semibold text-ink-heading">独立材料库队列</h3><span v-if="libraryTotals" class="text-xs text-muted">排队 {{ libraryTotals.queued }} · 运行 {{ libraryTotals.running }} · 成功 {{ libraryTotals.succeeded }} · 失败 {{ libraryTotals.failed }}</span><span v-else class="text-xs text-muted">{{ data?.material_library.status==='unavailable'?'尚未应用材料库迁移或读取不可用':'读取中' }}</span></Row>
+  <Row x="between" wrap :gap="8"><h3 class="text-sm font-semibold text-ink-heading">材料库任务</h3><span v-if="libraryTotals" class="text-xs text-muted">排队 {{ libraryTotals.queued }} · 运行 {{ libraryTotals.running }} · 历史成功 {{ libraryTotals.succeeded }} · 历史失败 {{ libraryTotals.failed }}</span><span v-else class="text-xs text-muted">{{ data?.material_library.status==='unavailable'?'尚未应用材料库迁移或读取不可用':'读取中' }}</span></Row>
   <Column v-if="libraryJobs.length" :gap="6" class="mt-8">
    <Row v-for="job in libraryJobs" :key="job.job_id" wrap x="between" :gap="8" class="text-xs text-muted">
-    <span>{{ job.package_name }} · {{ libraryKindLabel[job.kind] }} · {{ libraryStateLabel[job.state] }} · {{ job.executor_kind }}/{{ job.execution_target }}</span>
+    <span>{{ job.package_name }} · {{ libraryKindLabel[job.kind] }} · {{ libraryStateLabel[job.state] ?? job.state }} · {{ executorLabel[job.executor_kind] }} · {{ job.execution_target === 'local' ? '本机' : '服务端' }}</span>
     <span v-if="job.progress.total_files">{{ job.progress.completed_files??0 }}/{{ job.progress.total_files }} 份材料</span>
     <span v-if="job.error_code" class="text-error">{{ job.error_code }}</span>
    </Row>
   </Column>
-  <p v-else-if="libraryTotals" class="mt-8 text-xs text-muted">当前没有排队或运行中的材料库任务。</p>
+  <p v-else-if="libraryTotals" class="mt-8 text-xs text-muted">当前没有活动材料库任务。</p>
  </section>
  <p class="text-xs text-muted">{{ data?.heartbeat_at ? `最后采样 ${dateLabel(data.heartbeat_at)}` : '等待 worker 上报' }}。认证与额度状态尚未采集；内存统计仅包含 worker 进程。</p>
 </Column></template>

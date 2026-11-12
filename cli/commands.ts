@@ -17,6 +17,7 @@ import {exportFailedQuestions} from './failed-export';
 import {exportPreparedMaterials} from './material-export';
 import {feishuTarget,readFeishuConfig,syncFeishuBatch,FEISHU_REQUEST_TIMEOUT_MS} from './feishu';
 import {validateMaterialPreparationPlan} from '../shared/material-preparation';
+import {WEB_AGENT_PROVIDERS,validateWebAgentSettings,type WebAgentSettings} from '../shared/web-agent';
 
 export const HELP = `ai-distill：工作流工具（全部命令支持 --json；仅本机命令接受 --api http://127.0.0.1:3700）
 远程材料（经 SSH 隧道，凭证从 .env 读取）：
@@ -63,8 +64,8 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   library package update --package UUID --version N --file JSON | library package archive|restore --package UUID --version N
   library files prepare --manifest JSON --out 新输出目录（DOC/WPS/OFD转PDF、PDF切割、图片原样准备；不上传、不调用模型）
   library revision create --package UUID --version N --request-key UUID --manifest JSON [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--preserve-images]
-  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级]
-  library prepare start --revision UUID (--redaction UUID | --extraction-job UUID) --request-key UUID [--project UUID] [--agent-model 模型 --reasoning-effort 等级] [--execution-timeout 30m] [--force]
+  library job start --revision UUID --kind intake|extract|redact --target local|server --request-key UUID [--pdf-provider glm-ocr|mineru-api|mineru-cli] [--extraction-job UUID] [--previous-job UUID] [--template 模板ID] [--project 期次UUID] [--agent-model 模型 --reasoning-effort 等级 | --web deepseek|gemini [--web-thinking on|off] [--web-model-label 标签]（仅本机redact）]
+  library prepare start --revision UUID (--redaction UUID | --extraction-job UUID) --request-key UUID [--project UUID] [--agent-model 模型 --reasoning-effort 等级 | --web deepseek|gemini [--web-thinking on|off] [--web-model-label 标签]] [--execution-timeout 30m] [--force]
   library prepare resume --job UUID --request-key UUID [--execution-timeout 30m]（显式续作，不启动worker）
   library prepare diagnose --job UUID（只读计数与停止原因，不输出正文）
   library prepare list --package UUID [--revision UUID] [--redaction UUID] [--project UUID] | library prepare show --preparation UUID [--content]
@@ -96,7 +97,8 @@ export const HELP = `ai-distill：工作流工具（全部命令支持 --json；
   queue show | queue cancel --job UUID
   advice show --workflow UUID
   advice generate (--workflow UUID | --project UUID (--ids UUID,... | --all))
-  step dispatch STEP_KEY --project UUID (--ids UUID,... | --all)
+  step dispatch STEP_KEY --project UUID (--ids UUID,... | --all) [--web deepseek|gemini [--web-thinking on|off] [--web-model-label 标签]]（--web 仅 author_question：本次改由网页Agent出题）
+  web status | web doctor | web login --provider deepseek|gemini | web close（网页Agent通道：6个独立槽位；专用浏览器档案，不占Agent/API槽位）
   export create --project UUID [--batch 批次]
 下载（仅写指定的新本机文件，不覆盖）：
   library documents export --plan Codex处理计划.json --out 新目录（校验原文并应用计划；不调用模型、不入库）
@@ -209,9 +211,9 @@ const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'library batch plan':['kind','project','project-query','q','redaction-state','preparation-state','extraction-state','out'],
       'library batch run':['file'],
       'library revision create':['package','version','request-key','manifest','pdf-provider','preserve-images'],
-      'library job start':['revision','kind','target','request-key','pdf-provider','extraction-job','previous-job','template','project','agent-model','reasoning-effort'],
+      'library job start':['revision','kind','target','request-key','pdf-provider','extraction-job','previous-job','template','project','agent-model','reasoning-effort','web','web-thinking','web-model-label'],
       'library job show':['job'],'library job cancel':['job'],'library job wait':['job','timeout'],
-      'library prepare start':['revision','redaction','extraction-job','request-key','project','agent-model','reasoning-effort','execution-timeout','force'],'library prepare resume':['job','request-key','execution-timeout'],'library prepare diagnose':['job'],'library prepare list':['package','revision','redaction','project'],'library prepare show':['preparation','content'],
+      'library prepare start':['revision','redaction','extraction-job','request-key','project','agent-model','reasoning-effort','execution-timeout','force','web','web-thinking','web-model-label'],'library prepare resume':['job','request-key','execution-timeout'],'library prepare diagnose':['job'],'library prepare list':['package','revision','redaction','project'],'library prepare show':['preparation','content'],
       'library template list':[],'library template show':['template'],
       'library redaction revalidate':['redaction'],
       'library documents show':['revision','extraction-job','file'],'library documents export':['plan','out'],'library documents import':['plan','request-key'],'library redaction show':['redaction','file'],
@@ -228,7 +230,7 @@ const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'material text':['workflow','material','redacted-only'],'rules list':['project'],'rules file':['project','path'],
       'models catalog':[],'models show':['project'],'attempt show':['attempt'],'attempt wait':['ids','timeout','full'],
       'queue show':[],'queue diagnose':[],'queue cancel':['job'],'advice show':['workflow'],'advice generate':['workflow','project','ids','all'],
-      'result list':[],'result show':['workflow'],'step list':[],'step dispatch':['project','ids','all'],
+      'result list':[],'result show':['workflow'],'step list':[],'step dispatch':['project','ids','all','web','web-thinking','web-model-label'],'web status':[],'web doctor':[],'web login':['provider'],'web close':[],
       'export list':['project'],'export create':['project','batch'],'export download':['export','out'],
       'siriser download':['workflow','out'],
       'feishu config show':['project'],'feishu config set':['project','base-token','table'],
@@ -253,6 +255,14 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
     for(const key of flags.keys()) if(![...COMMAND_FLAGS[command],'json','api'].includes(key)) throw new CliError(`未知参数：--${key}`);
     const required=(key:string)=>{const value=flags.get(key);if(typeof value!=='string'||!value.trim())throw new CliError(`缺少 --${key}`);return value;};
     const uuid=(key:string)=>id(required(key),key);
+    /** 读取 --web/--web-thinking/--web-model-label；任一网页参数出现但缺 --web 即拒绝。 */
+    const webSettings=():WebAgentSettings|undefined=>{
+      if(!flags.has('web')){if(flags.has('web-thinking')||flags.has('web-model-label'))throw new CliError('--web-thinking/--web-model-label 须与 --web 同用');return undefined;}
+      const thinking=flags.has('web-thinking')?required('web-thinking'):undefined;
+      if(thinking!==undefined&&!['on','off'].includes(thinking))throw new CliError('--web-thinking 只接受 on 或 off');
+      try{return validateWebAgentSettings({provider:required('web'),...(thinking?{thinking:thinking==='on'}:{}),...(flags.has('web-model-label')?{model_label:required('web-model-label')}:{})});}
+      catch(error){throw new CliError(error instanceof Error?error.message:'网页Agent设置无效');}
+    };
     const api=client??new ApiClient(flags.has('api')?required('api'):process.env.AI_DISTILL_API_URL);
     const get=(path:string)=>api.json(path,'GET',undefined,signal);
     const post=(path:string,body:unknown={})=>api.json(path,'POST',body,signal);
@@ -511,16 +521,20 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         const hasAgentModel=flags.has('agent-model'),hasReasoningEffort=flags.has('reasoning-effort');
         if(hasAgentModel!==hasReasoningEffort)throw new CliError('--agent-model 与 --reasoning-effort 必须同时提供');
         if(hasAgentModel&&kind!=='redact')throw new CliError('Agent模型设置仅用于redact任务');
+        const web=webSettings();
+        if(web&&(kind!=='redact'||hasAgentModel||target!=='local'))throw new CliError('网页Agent仅用于本机redact任务，且不能与Agent模型设置同时提供');
         if(flags.has('pdf-provider')&&kind!=='extract')throw new CliError('--pdf-provider 仅用于extract任务');
         const provider=flags.has('pdf-provider')?required('pdf-provider'):undefined;
         if(provider&&!['glm-ocr','mineru-api','mineru-cli'].includes(provider))throw new CliError('--pdf-provider 无效');
-        const body={kind,request_key:uuid('request-key'),execution_target:target,...(provider?{pdf_provider:provider}:{}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{}) ,...(hasAgentModel?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})};
+        const body={kind,request_key:uuid('request-key'),execution_target:target,...(provider?{pdf_provider:provider}:{}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('template')?{template_id:required('template')}:{}),...(flags.has('extraction-job')?{extraction_job_id:uuid('extraction-job')}:{}) ,...(flags.has('previous-job')?{previous_job_id:uuid('previous-job')}:{}) ,...(hasAgentModel?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{}),...(web?{web_settings:web}:{})};
         data=await post(`/api/material-library/revisions/${uuid('revision')}/jobs`,body);break;
       }
       case 'library prepare start': {
         if(flags.has('redaction')===flags.has('extraction-job'))throw new CliError('须且只能提供 --redaction 或 --extraction-job');
         if(flags.has('agent-model')!==flags.has('reasoning-effort'))throw new CliError('Agent模型和强度须同时提供');
-        data=await post(`/api/material-library/revisions/${uuid('revision')}/prepare`,{request_key:uuid('request-key'),...(flags.has('force')?{force:true}:{}),...(flags.has('execution-timeout')?{execution_timeout_ms:duration(required('execution-timeout'),86400000)}:{}),...(flags.has('redaction')?{redaction_id:uuid('redaction')}:{extraction_job_id:uuid('extraction-job')}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('agent-model')?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{})});break;
+        const web=webSettings();
+        if(web&&flags.has('agent-model'))throw new CliError('网页Agent不能与Agent模型设置同时提供');
+        data=await post(`/api/material-library/revisions/${uuid('revision')}/prepare`,{request_key:uuid('request-key'),...(flags.has('force')?{force:true}:{}),...(flags.has('execution-timeout')?{execution_timeout_ms:duration(required('execution-timeout'),86400000)}:{}),...(flags.has('redaction')?{redaction_id:uuid('redaction')}:{extraction_job_id:uuid('extraction-job')}),...(flags.has('project')?{project_id:uuid('project')}:{}),...(flags.has('agent-model')?{agent_settings:{model:required('agent-model'),reasoning_effort:required('reasoning-effort')}}:{}),...(web?{web_settings:web}:{})});break;
       }
       case 'library prepare resume': data=await post(`/api/material-library/jobs/${uuid('job')}/prepare-resume`,{request_key:uuid('request-key'),...(flags.has('execution-timeout')?{execution_timeout_ms:duration(required('execution-timeout'),86400000)}:{})});break;
       case 'library prepare diagnose': {
@@ -696,16 +710,31 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         return{outcome:results.every(row=>row.status==='queued')?'complete':'partial',project_id:project,results,advice_attempt_ids:results.filter(row=>row.status==='queued').map(row=>row.id)};
       }
       case 'monitor show': data=await get('/api/monitor');break;
+      case 'web status': {
+        const queue=object(await get('/api/system/execution-queue'),'本机队列');
+        const items=Array.isArray(queue.items)?queue.items.filter((item:any)=>item.lane==='web'):[];
+        const {webBrowserStatus}=await import('../server/web-agent');
+        data={capacity:queue.capacity?.web??null,items,browser:await webBrowserStatus(),providers:WEB_AGENT_PROVIDERS};break;
+      }
+      case 'web doctor': {const {webDoctor}=await import('../server/web-agent');data=await webDoctor();break;}
+      case 'web login': {
+        const provider=required('provider');
+        if(!(WEB_AGENT_PROVIDERS as readonly string[]).includes(provider))throw new CliError('--provider 仅支持 deepseek 或 gemini');
+        const {webLogin}=await import('../server/web-agent');await webLogin(provider as WebAgentSettings['provider']);data={provider,message:'登录窗口已关闭；运行 web doctor 核对登录状态'};break;
+      }
+      case 'web close': {const {webCloseBrowser}=await import('../server/web-agent');await webCloseBrowser();data={closed:true};break;}
       case 'step dispatch': {
         const step=getStepDefinition(words[2]);
         if(!step?.visible)throw new CliError('步骤 key 无效或属于隐藏步骤，请查看 step list');
+        const web=webSettings();
+        if(web&&step.ordinal!==4)throw new CliError('--web 仅用于 author_question');
         const {project,selected}=await scope(step.ordinal);
         const batches: any[]=[];const results:any[]=[];let failed=false;
         // 不重试 POST。后续分组发生网络错误时保留已经取得的任务 ID，并停止继续派发。
         for(let i=0;i<selected.length;i+=100) {
           const workflowIds=selected.slice(i,i+100);
           try {
-            const response=object(await post(`/api/projects/${project}/steps/${step.ordinal}/run-batch`,{workflow_ids:workflowIds}),'派发');
+            const response=object(await post(`/api/projects/${project}/steps/${step.ordinal}/run-batch`,{workflow_ids:workflowIds,...(web?{web_settings:web}:{})}),'派发');
             const rows=dispatchResults(response.results,workflowIds);
             batches.push({workflow_ids:workflowIds,data:response});results.push(...rows);
           } catch(error) {
