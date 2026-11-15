@@ -137,7 +137,7 @@ test('Codex settings preserve database choices independently of the local catalo
 });
 test('unsaved Codex project steps inherit the system model and reasoning defaults',async()=>{
  const pool={query:async(sql:string)=>{
-  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-system',reasoning_effort:'high'}],rowCount:1};
@@ -150,7 +150,7 @@ test('unsaved Codex project steps inherit the system model and reasoning default
 });
 test('project Codex defaults feed steps while an explicit step config remains highest priority',async()=>{
  const pool={query:async(sql:string)=>{
-  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[{ordinal:4,config:{provider:'codex',model:'gpt-6-astra',reasoning_effort:'ultra'}}],rowCount:1};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:'gpt-6-astra',codex_reasoning_effort:'ultra'}],rowCount:1};
   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-system',reasoning_effort:'medium'}],rowCount:1};
@@ -259,7 +259,7 @@ test('项目根目录的材料不被忽略，损坏PDF不能作为可解析材�
 
 test('library project summary exposes only authoring through publishing even before its first question',async()=>{
  const pool={query:async(sql:string)=>{
-  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))')||sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array(')||sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
   if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-6-luna',reasoning_effort:'medium'}],rowCount:1};
   throw new Error(`Unexpected query: ${sql}`);
@@ -277,11 +277,11 @@ test('project summary counts database running state from another executor withou
 
 
 test('步骤状态聚合传输后还原原rows结构并保留筛选参数',async()=>{
- const rows=[{workflow_id:'fixture',ordinal:5,status:'succeeded',enabled:true,active:false,result:{models:[{status:'succeeded',attempt_id:'answer'}]}}];
+ const rows=[['fixture','project','question',null,false,5,'succeeded',null,null,null,{models:[{status:'succeeded',attempt_id:'answer'}]},true,true,false,null,null,null,null,false,null]];
  let received:any[]=[];
- const pool={query:async(sql:string,args:unknown[])=>{expect(sql).toContain('jsonb_agg(to_jsonb(state_rows))');received=args;return{rows:[{items:rows}],rowCount:1};}} as unknown as Pool;
+ const pool={query:async(sql:string,args:unknown[])=>{expect(sql).toContain('jsonb_agg(jsonb_build_array(');received=args;return{rows:[{items:rows}],rowCount:1};}} as unknown as Pool;
  const result=await readProjectWorkflowStepRows(pool,'phase',['fixture']);
- expect(result.rows).toEqual([{...rows[0],executions:undefined,revision_advice_ready:false}]);expect(result.rowCount).toBe(1);expect(received).toEqual(['phase',['fixture']]);
+ expect(result.rows[0]).toMatchObject({workflow_id:'fixture',project_key:'project',ordinal:5,status:'succeeded',result:rows[0]![10],enabled:true,active:false,revision_advice_ready:false});expect(result.rowCount).toBe(1);expect(received).toEqual(['phase',['fixture']]);
  const empty=await readProjectWorkflowStepRows({query:async()=>({rows:[{items:[]}],rowCount:1})} as unknown as Pool,'empty');
  expect(empty.rows).toEqual([]);expect(empty.rowCount).toBe(0);
 });

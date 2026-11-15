@@ -213,11 +213,17 @@ export async function projectLibraryJobExecutions<T extends {id:string;status:st
 }
 
 export async function readLibraryJob(pool:Pool,id:string){
- const row=(await pool.query(`SELECT id,package_id,revision_id,kind,status,origin,executor_kind,execution_target,progress,result_summary,error_code,error_message,previous_job_id,cancel_requested_at,
-  input_snapshot->>'extraction_job_id' AS extraction_job_id,input_snapshot->>'material_processing_mode' AS material_processing_mode,config_snapshot->'redaction_template'->>'id' AS redaction_template_id,created_at,started_at,finished_at
-  FROM ai_distill.library_jobs WHERE id=$1`,[id])).rows[0];
+ const local=localQueueEnabled();
+ const row=(await pool.query(`SELECT j.id,j.package_id,j.revision_id,j.kind,j.status,j.origin,j.executor_kind,j.execution_target,j.progress,j.result_summary,j.error_code,j.error_message,j.previous_job_id,j.cancel_requested_at,
+  j.input_snapshot->>'extraction_job_id' AS extraction_job_id,j.input_snapshot->>'material_processing_mode' AS material_processing_mode,j.config_snapshot->'redaction_template'->>'id' AS redaction_template_id,j.created_at,j.started_at,j.finished_at
+  ${local?',d.executor_id,d.generation':''}
+  FROM ai_distill.library_jobs j ${local?'LEFT JOIN ai_distill.execution_dispatches d ON d.job_id=j.id AND d.job_kind=\'library\'':''} WHERE j.id=$1`,[id])).rows[0];
  if(!row)throw new HTTPException(404,{message:'材料处理任务不存在'});
- return(await projectLibraryJobExecutions(pool,[row]))[0];
+ if(!local)return row;
+ const {executor_id:_executor_id,generation:_generation,...job}=row;
+ if(!['queued','running'].includes(row.status))return job;
+ const execution=projectStepExecution({id:row.id,status:row.status,executor_id:row.executor_id??null,generation:row.generation??null});
+ return{...job,...(execution?{execution}:{})};
 }
 
 export async function cancelLibraryJob(pool:Pool,id:string){

@@ -1,8 +1,8 @@
 /** 文件职责：封装页面读取单个 API 资源时共用的加载、错误与取消状态。
- * 关键方法与用法：useResource<T>(path) 返回 data/error/loading/refresh，挂载时读取；手动刷新遇到进行中的读取时补一次新状态，卸载后不再续发，卸载时中止请求。
+ * 关键方法与用法：useResource<T>(path,{immediate?}) 返回 data/error/loading/refresh，默认挂载时读取，也可由前置请求触发；手动刷新遇到进行中的读取时补一次新状态，卸载后不再续发，卸载时中止请求。
  */
 import { api } from '../api/client';
-export function useResource<T>(path: string) {
+export function useResource<T>(path: string,options:{immediate?:boolean}={}) {
  const data = shallowRef<T>();
  const error = shallowRef('');
  const loading = shallowRef(false);
@@ -23,7 +23,7 @@ export function useResource<T>(path: string) {
   })();
   try{await inFlight;}finally{inFlight=undefined;loading.value=false;}
  }
- onMounted(refresh);
+ onMounted(()=>{if(options.immediate!==false)void refresh();});
  onUnmounted(() => {disposed=true;controller?.abort();});
  return { data, error, loading, refresh };
 }

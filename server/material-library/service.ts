@@ -191,9 +191,7 @@ export async function readLibraryPackage(pool:Pool,id:string){
 }
 
 export async function readLibraryRevisions(pool:Pool,id:string){
- const visible=await pool.query('SELECT id FROM ai_distill.library_packages WHERE id=$1 AND deleted_at IS NULL',[id]);
- if(!visible.rowCount)throw new HTTPException(404,{message:'材料包不存在'});
- return(await pool.query(`SELECT r.id,r.package_id,r.parent_revision_id,r.state,r.manifest_sha256,r.file_count,r.created_at,r.sealed_at,
+ const rows=(await pool.query(`SELECT r.id,r.package_id,r.parent_revision_id,r.state,r.manifest_sha256,r.file_count,r.created_at,r.sealed_at,
   load_check.estimated_page_count AS load_estimated_docx_pages,load_check.load_eligible,
   COALESCE(jsonb_agg(jsonb_build_object('id',f.id,'original_name',f.original_name,'position',f.position,'sha256',b.sha256,'size_bytes',b.size_bytes,'content_type',b.content_type,'redaction_mode',f.redaction_mode,'image_review_required',f.image_review_required) ORDER BY f.position) FILTER(WHERE f.id IS NOT NULL),'[]'::jsonb) AS files,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id',red.id,'extraction_job_id',red.extraction_job_id,'redaction_job_id',red.redaction_job_id,'output_digest',red.output_digest,'redaction_template_id',red.validation_report->>'redaction_template_id','redaction_template_workflow',COALESCE(red.validation_report->>'redaction_template_workflow',(SELECT j.config_snapshot->'redaction_template'->>'workflow' FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id)),'redaction_template_name',red.validation_report->>'redaction_template_name','load_estimated_docx_pages',red_check.estimated_page_count,'load_eligible',red_check.load_eligible,'usable_for_question',(red.validation_report->>'usable_for_question'='true' AND r.state='ready'
@@ -210,7 +208,12 @@ export async function readLibraryRevisions(pool:Pool,id:string){
    WHERE extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
     AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=extraction_job.id)=r.file_count
    ORDER BY extraction_job.finished_at DESC,extraction_job.id DESC LIMIT 1) load_check ON true
-  WHERE r.package_id=$1 GROUP BY r.id,load_check.estimated_page_count,load_check.load_eligible ORDER BY r.created_at DESC,r.id`,[id,LIBRARY_LOAD_ASSESSMENT_VERSION])).rows;
+  WHERE r.package_id=$1 AND EXISTS(SELECT 1 FROM ai_distill.library_packages p WHERE p.id=r.package_id AND p.deleted_at IS NULL)
+  GROUP BY r.id,load_check.estimated_page_count,load_check.load_eligible ORDER BY r.created_at DESC,r.id`,[id,LIBRARY_LOAD_ASSESSMENT_VERSION])).rows;
+ if(rows.length)return rows;
+ const visible=await pool.query('SELECT id FROM ai_distill.library_packages WHERE id=$1 AND deleted_at IS NULL',[id]);
+ if(!visible.rowCount)throw new HTTPException(404,{message:'材料包不存在'});
+ return rows;
 }
 
 export async function updateLibraryPackage(pool:Pool,id:string,expectedVersion:number,value:unknown){

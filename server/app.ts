@@ -434,6 +434,12 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
     await db.query('COMMIT'); return c.json(result.rows[0],201);
    } catch(error) { await db.query('ROLLBACK'); if(error&&typeof error==='object'&&'code'in error&&error.code==='23505'){const constraint='constraint'in error?String(error.constraint):'';throw new HTTPException(409,{message:constraint==='projects_group_phase_no'?'该主项目已登记相同期号，请核对已有期次':constraint==='project_groups_name_key'?'主项目名称已存在，请选择已有主项目':'项目记录发生唯一性冲突，请刷新并核对已有记录'});}throw error; } finally { db.release(); }
  });
+ app.get('/api/projects/:id/preview',async c=>{
+  const id=uuid(c.req.param('id'));
+  const result=await pool.query('SELECT id,name,description,parent_name,phase_no,project_group_id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[id]);
+  if(!result.rowCount)throw new HTTPException(404,{message:'项目不存在'});
+  return c.json({project:result.rows[0]});
+ });
  app.get('/api/projects/:id', async c => {
    const id = uuid(c.req.param('id'));
    const projectPromise=pool.query(`SELECT p.*,system_config.model AS __system_codex_model,system_config.reasoning_effort AS __system_codex_reasoning_effort,

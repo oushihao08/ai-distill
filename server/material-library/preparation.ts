@@ -112,11 +112,20 @@ async function reusePreparation(pool:Pool,job:any,source:PreparationSource,units
   ORDER BY (p.project_id IS NOT DISTINCT FROM $2::uuid) DESC,p.created_at DESC`,[source.revision_id,job.input_snapshot.project_id??null,source.material_mode==='redacted'])).rows;
  if(!candidates.length)return;
  const target=await revisionFileIdentities(pool,source.revision_id);
+ const revisionFiles=new Map([[source.revision_id,target]]);
+ const priorSources=new Map<string,PreparationSource>();
  for(const candidate of candidates){
   try{
-   const fileMapping=fileIdentityMapping(await revisionFileIdentities(pool,candidate.revision_id),target,true);
+   let files=revisionFiles.get(candidate.revision_id);
+   if(!files){files=await revisionFileIdentities(pool,candidate.revision_id);revisionFiles.set(candidate.revision_id,files);}
+   const fileMapping=fileIdentityMapping(files,target,true);
    if(!fileMapping)continue;
-   const priorSource=await readPreparationSource(pool,candidate.revision_id,candidate);
+   const sourceKey=`${candidate.revision_id}:${candidate.redaction_id??candidate.extraction_job_id}`;
+   let priorSource=priorSources.get(sourceKey);
+   if(!priorSource){
+    priorSource=candidate.revision_id===source.revision_id&&candidate.redaction_id===source.redaction_id&&candidate.extraction_job_id===source.extraction_job_id?source:await readPreparationSource(pool,candidate.revision_id,candidate);
+    priorSources.set(sourceKey,priorSource);
+   }
    const mapping=preparationUnitMapping(preparationUnits(priorSource.index),units);
    if(!mapping)continue;
    // 原件ID与已分册文书ID分别映射；不会因重新生成UUID而重复整理。

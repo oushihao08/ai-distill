@@ -1,6 +1,6 @@
 <!--
 职责：作为项目详情路由，编排材料包／题目列表、设置弹窗、步骤派发、分页题目记录及导出。
-关键方法与用法：`runStep()` 派发步骤，`syncFolder()` 同步来源目录，`removeProject()` 删除项目，`exportProject()` 先按每题冻结的材料模式补齐附件 DOCX，再生成并下载 Excel；路由参数 `id` 指定项目。
+关键方法与用法：先读取项目预览显示期次，再读取完整状态；`runStep()` 派发步骤，`syncFolder()` 同步来源目录，`removeProject()` 删除项目，`exportProject()` 先按每题冻结的材料模式补齐附件 DOCX，再生成并下载 Excel；路由参数 `id` 指定项目。
 -->
 
 <script setup lang="ts">
@@ -22,7 +22,9 @@ import { useResource } from '../composables/useResource';
 import { type ProjectDetail,type ProjectStage } from '../types/api';
 const answerModelsVersion=shallowRef(0);
 const route=useRoute();const router=useRouter();
-const {data,error,loading,refresh}=useResource<ProjectDetail>(`/projects/${route.params.id}`);
+const {data:preview, error:previewError, loading:previewLoading, refresh:refreshPreview}=useResource<{project:Pick<ProjectDetail['project'],'id'|'name'|'description'|'parent_name'|'phase_no'|'project_group_id'>}>(`/projects/${route.params.id}/preview`);
+const {data,error,loading,refresh}=useResource<ProjectDetail>(`/projects/${route.params.id}`,{immediate:false});
+watch(preview,value=>{if(value)void refresh();});
 // 模型摘要由设置保存事件刷新，任务状态刷新不重复读取配置。
 usePageBreadcrumbs(()=>{const project=data.value?.project;return [{title:'出题项目',to:'/'},...(project?.project_group_id?[{title:project.parent_name||'主项目',to:`/project-groups/${project.project_group_id}`}]:[]),{title:project?.phase_name||project?.name||'期次工作区'}];});
 const editOpen=shallowRef(false);const tagsOpen=shallowRef(false);const deleteOpen=shallowRef(false);const modelSettingsOpen=shallowRef(false);const materialsSettingsOpen=shallowRef(false);
@@ -136,10 +138,13 @@ async function savedProject(){editOpen.value=false;await refresh();}
 async function savedTags(){tagsOpen.value=false;await refresh();}
 </script>
 <template><Column :gap="16">
- <RouterLink :to="data?.project.project_group_id?`/project-groups/${data.project.project_group_id}`:'/'" class="link-text text-sm">← 所属主项目的期次</RouterLink>
+ <RouterLink :to="(data?.project.project_group_id??preview?.project.project_group_id)?`/project-groups/${data?.project.project_group_id??preview?.project.project_group_id}`:'/'" class="link-text text-sm">← 所属主项目的期次</RouterLink>
+ <v-alert v-if="previewError&&!preview" type="error" role="alert">{{ previewError }}</v-alert>
+ <v-btn v-if="previewError&&!preview" color="primary" :loading="previewLoading" @click="refreshPreview">重新读取</v-btn>
  <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
  <v-btn v-if="error&&!data" color="primary" :loading="loading" :disabled="loading" @click="refresh">重新读取</v-btn>
-  <p v-if="loading&&!data" class="text-muted">正在读取项目…</p>
+ <p v-if="previewLoading&&!preview" class="text-muted">正在读取项目…</p>
+ <Column v-if="preview&&!data" :gap="8"><h1 class="text-2xl font-bold text-ink-heading break-words">{{ preview.project.name }}</h1><p class="text-xs text-muted">第 {{ preview.project.phase_no??'—' }} 期 · 正在读取题目和步骤状态…</p></Column>
  <template v-if="data">
   <Row x="between" wrap :gap="12"><Column :gap="6" class="min-w-0"><h1 class="text-2xl font-bold text-ink-heading break-words">{{ data.project.name }}</h1><p class="text-xs text-muted">第 {{ data.project.phase_no??'—' }} 期 · 题目、作答模型与评测结果属于本期</p><p v-if="data.project.description" class="text-sm text-muted">{{ data.project.description }}</p></Column><Row wrap :gap="8"><v-btn @click="modelSettingsOpen=true">本期作答模型</v-btn><v-btn @click="openMaterialsSettings">主项目资料与 skill</v-btn><v-btn :disabled="busy!==null" @click="editOpen=true">编辑本期配置</v-btn><v-btn :loading="loading" @click="answerModelsVersion++;refresh()">刷新</v-btn><v-btn color="error" :disabled="busy!==null" @click="deleteOpen=true">删除本期</v-btn></Row></Row>
   <Row class="surface-card p-12" x="between" wrap y="center" :gap="8"><Row wrap y="center" :gap="6"><span class="text-sm font-medium text-ink-heading">本期题目标签</span><v-chip v-for="tag in data.project.question_tags??[]" :key="tag" size="small" color="primary" variant="tonal">{{ tag }}</v-chip><span v-if="!data.project.question_tags?.length" class="text-sm text-muted">尚未创建</span></Row><v-btn size="small" variant="outlined" :disabled="busy!==null" @click="tagsOpen=true">{{ data.project.question_tags?.length?'管理标签':'创建标签' }}</v-btn></Row>

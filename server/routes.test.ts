@@ -188,7 +188,17 @@ test('project creation records the parent and phase and reuses that parent skill
 test('project listing and project detail return persisted rows',async()=>{
  const app=setup(sql=>sql.includes('FROM ai_distill.projects')?{rows:[{id,name:'project',workflow_count:2}],rowCount:1}:{rows:[{id,title:'workflow',material_count:2}],rowCount:1});
  expect((await(await app.request('/api/projects')).json()as any[])[0].workflow_count).toBe(2);
+ const preview=await(await app.request(`/api/projects/${id}/preview`)).json()as any;expect(preview.project.id).toBe(id);
  const detail=await(await app.request(`/api/projects/${id}`)).json()as any;expect(detail.project.id).toBe(id);expect(detail.workflows[0].material_count).toBe(2);
+});
+test('project preview reads only project metadata before the full step snapshot',async()=>{
+ const calls:string[]=[];
+ const app=setup(sql=>{calls.push(sql);return{rows:[{id,name:'phase',phase_no:9}],rowCount:1};});
+ const response=await app.request(`/api/projects/${id}/preview`);
+ expect(response.status).toBe(200);
+ expect(await response.json()).toEqual({project:{id,name:'phase',phase_no:9}});
+ expect(calls).toHaveLength(1);
+ expect(calls[0]).toContain('FROM ai_distill.projects WHERE id=$1');
 });
 test('project detail shares one step-state read with the question table projection',async()=>{
  const workflowId='22222222-2222-4222-8222-222222222222',calls:string[]=[];
@@ -196,7 +206,7 @@ test('project detail shares one step-state read with the question table projecti
   calls.push(sql);
   if(sql.includes('FROM ai_distill.projects p LEFT JOIN ai_distill.system_codex_config'))return{rows:[{id,name:'project',local_skill_path:'/nonexistent',material_backend:'legacy',codex_model:null,codex_reasoning_effort:null,__system_codex_model:'gpt-6-luna',__system_codex_reasoning_effort:'medium'}],rowCount:1};
   if(sql.startsWith('SELECT w.id,w.project_id,w.title'))return{rows:[{id:workflowId,has_authored:true}],rowCount:1};
-  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[{items:[
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))return{rows:[{items:[
    {workflow_id:workflowId,workflow_kind:'question',source_workflow_id:null,library_source:false,ordinal:4,status:'succeeded',error:null,started_at:null,finished_at:null,result:null,implemented:true,enabled:true,has_pdf:false,extraction_status:null,active:false},
    {workflow_id:workflowId,workflow_kind:'question',source_workflow_id:null,library_source:false,ordinal:5,status:'waiting',error:null,started_at:null,finished_at:null,result:null,implemented:true,enabled:true,has_pdf:false,extraction_status:null,active:false},
   ]}],rowCount:1};
@@ -207,7 +217,7 @@ test('project detail shares one step-state read with the question table projecti
  expect(response.status).toBe(200);
  expect(body.workflow_status[workflowId].attempt_summary).toEqual({has_authored:true});
  expect(body.workflow_status[workflowId].steps.map((step:any)=>step.ordinal)).toEqual([4,5]);
- expect(calls.filter(sql=>sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))).toHaveLength(1);
+ expect(calls.filter(sql=>sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))).toHaveLength(1);
  expect(calls.filter(sql=>sql.includes('LEFT JOIN ai_distill.system_codex_config'))).toHaveLength(1);
  expect(calls.some(sql=>sql.startsWith('SELECT credential_home,model,reasoning_effort'))).toBe(false);
  expect(body.project).not.toHaveProperty('__system_codex_model');
@@ -219,7 +229,7 @@ test('project detail starts independent workflow and step reads before project l
   if(sql.includes('FROM ai_distill.projects p LEFT JOIN ai_distill.system_codex_config'))return projectPending;
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
   if(sql.startsWith('SELECT w.id,w.project_id,w.title')){workflowStarted=true;return{rows:[],rowCount:0};}
-  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))')){stepSummaryStarted=true;return{rows:[{items:[]}],rowCount:1};}
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array(')){stepSummaryStarted=true;return{rows:[{items:[]}],rowCount:1};}
   return empty;
  });
  const responsePending=app.request(`/api/projects/${id}`);

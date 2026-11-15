@@ -225,9 +225,11 @@ test('查库正文直接进入单次请求，不落输入文件且完整检查�
  const root=await mkdtemp(join(tmpdir(),'preparation-run-'));
  try{
   const source={format:'redacted-index-v2',prepared_documents:[{id:'unit',title:'执行依据',text:'判决记载执行依据'}]};const index=JSON.stringify(source);
-  let published:any,updates=0;const phases:string[]=[];
+  let published:any,updates=0,reuse=false,sourceReads=0;const phases:string[]=[];
   const db={query:async(sql:string,values:any[]=[])=>{
-   if(sql.includes('SELECT r.package_id'))return{rows:[{package_id:id,revision_id:projectId,extraction_job_id:'extract',output_digest:'source-digest',text_content:index,sha256:hash(index)}]};
+   if(sql.includes('SELECT r.package_id')){sourceReads++;return{rows:[{package_id:id,revision_id:projectId,extraction_job_id:'extract',output_digest:'source-digest',text_content:index,sha256:hash(index)}]};}
+   if(sql.startsWith('SELECT p.* FROM ai_distill.library_preparations'))return{rows:reuse?[{job_id:id,revision_id:projectId,redaction_id:id,extraction_job_id:'extract',result:published}]:[]};
+   if(sql.startsWith('SELECT f.id,b.sha256'))return{rows:[{id:'file',sha256:'a'.repeat(64),size_bytes:1,image_review_required:false}]};
    if(sql.includes('FOR UPDATE'))return{rows:[{id,revision_id:projectId}]};
    if(sql.startsWith('INSERT INTO ai_distill.library_preparations'))published=JSON.parse(values[7]);
    if(sql.includes('SET progress=$3'))phases.push(JSON.parse(values[2]).phase);
@@ -267,6 +269,10 @@ test('查库正文直接进入单次请求，不落输入文件且完整检查�
    return{text:JSON.stringify({package_summary:'API整理摘要',documents:[{id:'unit',summary:'判决是执行依据',document_type:'判决',tags:['依据'],notes:'',visibility:'visible',visibility_reason:''}],combinations:[combination]}),provider:'nvidia',model:input.config.model,usage:{}};
   }} as any);
   expect(apiCalls).toBe(1);expect(published.package_summary).toBe('API整理摘要');
+  reuse=true;sourceReads=0;
+  await executePreparation(pool as any,root,{...job,id:crypto.randomUUID()},signal,async()=>{throw new Error('同来源整理应直接复用');});
+  expect(sourceReads).toBe(1);
+  expect(published.package_summary).toBe('API整理摘要');
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

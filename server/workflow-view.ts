@@ -28,8 +28,10 @@ export async function readProjectWorkflowViews(pool:Pool,projectId:string,ids:st
 /** 项目详情已经读取的步骤状态行和出题标记可直接复用，避免首屏再次扫描同一批工作流。 */
 export function projectWorkflowViewsFromSnapshot(snapshot:{states:Awaited<ReturnType<typeof readProjectWorkflowStepRows>>;hasAuthored:Map<string,boolean>},ids:string[]):Record<string,ProjectWorkflowView>{
  const views:Record<string,ProjectWorkflowView>={};
+ const rowsByWorkflow=new Map<string,typeof snapshot.states.rows>();
+ for(const row of snapshot.states.rows){const id=String(row.workflow_id);const rows=rowsByWorkflow.get(id);if(rows)rows.push(row);else rowsByWorkflow.set(id,[row]);}
  for(const id of ids){
-  const rows=snapshot.states.rows.filter(row=>row.workflow_id===id);
+  const rows=rowsByWorkflow.get(id)??[];
   if(!rows.length)continue;
   const map=new Map<number,WorkflowStepState>(rows.map(row=>[row.ordinal,row]));
   views[id]={steps:rows.map(row=>{

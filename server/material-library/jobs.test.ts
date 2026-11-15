@@ -140,13 +140,15 @@ test('library status read overlays local review without changing business status
  const root=await mkdtemp(join(tmpdir(),'library-status-')),previous=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='local';
  const q=localQueue(root),id=crypto.randomUUID();q.intent(id,'library','agent','library:redact');q.confirm(id);const claimed=q.claim('agent')!;q.finish(id,claimed.lease!,'needs_review');
  const row={id,status:'running',finished_at:null};let owner:any={job_id:id,executor_id:q.executorId,generation:0};const sqls:string[]=[];
- const pool={query:async(sql:string)=>{sqls.push(sql);return{rows:sql.includes('execution_dispatches')?[owner]:[row]};}} as any;
+ const pool={query:async(sql:string)=>{sqls.push(sql);return{rows:[{...row,executor_id:owner.executor_id,generation:owner.generation}]};}} as any;
  try{
   const read=()=>withLocalQueueRoot(root,()=>readLibraryJob(pool,id));
   expect(await read()).toMatchObject({status:'running',finished_at:null,execution:{state:'needs_review',active:false}});
   owner={...owner,generation:1};expect((await read()).execution.state).toBe('generation_mismatch');
   owner={job_id:id,executor_id:crypto.randomUUID(),generation:0};expect((await read()).execution.scope).toBe('other_executor');
   row.status='succeeded';expect(await read()).not.toHaveProperty('execution');expect(sqls.every(sql=>sql.startsWith('SELECT'))).toBe(true);expect(q.get(id)?.state).toBe('needs_review');
+  expect(sqls).toHaveLength(4);
+  expect(sqls.every(sql=>sql.includes('LEFT JOIN ai_distill.execution_dispatches'))).toBe(true);
  }finally{if(previous===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=previous;q.close();await rm(root,{recursive:true,force:true});}
 });
 

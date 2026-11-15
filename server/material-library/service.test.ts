@@ -14,13 +14,14 @@ test('library package filters do not leave untyped gaps for the optional usage p
  const calls:{sql:string;values:unknown[]}[]=[];
  const pool={query:async(sql:string,values:unknown[])=>{calls.push({sql,values});return{rows:[],rowCount:0};}} as any;
  await readLibraryPackages(pool);
- expect(calls[0]?.values).toHaveLength(8);
+ expect(calls[0]?.values).toHaveLength(9);
  expect(calls[0]?.sql).toContain("$8::text='any'");
- expect(calls[0]?.sql).not.toContain('$9');
+ expect(calls[0]?.sql).toContain('eligibility.assessment_version=$9');
  await readLibraryPackages(pool,{usage_project_id:'11111111-1111-4111-8111-111111111111'});
- expect(calls[1]?.values).toHaveLength(9);
+ expect(calls[1]?.values).toHaveLength(10);
  expect(calls[1]?.sql).toContain('requested_phase.id=$8::uuid');
  expect(calls[1]?.sql).toContain("$9::text='any'");
+ expect(calls[1]?.sql).toContain('eligibility.assessment_version=$10');
 });
 
 test('validates package metadata and preserves stable unique tags',()=>{
@@ -76,11 +77,22 @@ test('package usage marks a prior source superseded when the latest archive uses
 
 test('revision detail exposes usable redaction ids so projects can select the exact frozen standard-material set',async()=>{
  const calls:string[]=[];
- const pool={query:async(sql:string)=>{calls.push(sql);return sql.startsWith('SELECT id FROM ai_distill.library_packages')?{rows:[{id:'package'}],rowCount:1}:{rows:[{id:'revision-a',redactions:[{id:'redaction-a',usable_for_question:'true'}]}],rowCount:1};}} as any;
+ const pool={query:async(sql:string)=>{calls.push(sql);return{rows:[{id:'revision-a',redactions:[{id:'redaction-a',usable_for_question:'true'}]}],rowCount:1};}} as any;
  const revisions=await readLibraryRevisions(pool,'package');
  expect(revisions).toMatchObject([{id:'revision-a',redactions:[{id:'redaction-a',usable_for_question:'true'}]}]);
- expect(calls[1]).toContain('AS redactions');
- expect(calls[1]).toContain("'image_review_required',f.image_review_required");
+ expect(calls).toHaveLength(1);
+ expect(calls[0]).toContain('AS redactions');
+ expect(calls[0]).toContain("'image_review_required',f.image_review_required");
+ expect(calls[0]).toContain('p.deleted_at IS NULL');
+});
+
+test('revision detail preserves empty visible packages and rejects archived packages',async()=>{
+ const calls:string[]=[];let visible=true;
+ const pool={query:async(sql:string)=>{calls.push(sql);return sql.startsWith('SELECT id FROM ai_distill.library_packages')?{rows:visible?[{id:'package'}]:[],rowCount:visible?1:0}:{rows:[],rowCount:0};}} as any;
+ expect(await readLibraryRevisions(pool,'package')).toEqual([]);
+ expect(calls).toHaveLength(2);
+ visible=false;
+ await expect(readLibraryRevisions(pool,'package')).rejects.toThrow('材料包不存在');
 });
 
 test('同原文字节可在TXT和MD之间复用，其他类型冲突不放宽且不改旧对象',async()=>{
