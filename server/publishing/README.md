@@ -1,5 +1,7 @@
 # 达标题目归档
 
+材料交付名称统一经 `shared/material-filenames.ts` 净化，DOCX与PDF均去掉传入旧名称中的哈希/UUID片段；清理后重名以顺序号区分，并避让已有同名序号。CLI的PDF交付复用同一入口。缺少文书名时仅用“材料”，不从未知正文猜造文种。内部内容校验摘要和私有转换缓存不进入交付名称。此规则只作用于重新导出／上传，不自动改写远端附件。
+
 当前执行绑定以项目、题目、任务、材料包、revision和附件ID为准。已派发任务不再因正文/配置/提示词/整理结果的内容摘要或环境指纹变化而被拒绝；保留任务取消、最新任务归属、材料集合完整性、结构格式和路径边界检查。摘要字段仍用于历史记录、内容寻址及缓存，不作为上述业务执行前后的版本准入门槛。本段覆盖下文历史指纹绑定描述。
 
 
@@ -10,7 +12,7 @@ Skill Dependency 的出题后本地直交另由 `GET /api/workflows/:id/skill-de
 | 文件 | 职责与入口 |
 | --- | --- |
 | `feishu.ts` | 豆包出题草稿上传及已归档题目的同步；校验冻结材料DOCX和远端记录。草稿上传不写归档步骤，归档同步成功后才允许把同版本草稿行升级为已完成。 |
-| `material-pdf.ts` | HTTP交付与本地CLI共用的材料DOCX到图像PDF转换器；不读取数据库或调用业务API，依赖已有LibreOffice/Python及PDF工具。 |
+| `material-pdf.ts` | HTTP交付与本地CLI共用的材料DOCX到图像PDF转换及18MB分册入口；不读取数据库或调用业务API，依赖已有LibreOffice/Python及PDF工具。 |
 | `feishu-verification.ts` | 六字段固定投影、逐字符差异和材料身份校验的纯函数；新记录考点复用豆包普通数字投影，旧版标签仅用于同版旧值核验。 |
 | `feishu.test.ts`、`feishu-verification.test.ts` | 隔离替身验证同步分支及材料/文本规则，不访问真实服务。 |
 | `feishu-api.ts` | 豆包字段/选项、建表与隐藏系统关联；通用远端操作调用toolSkills的CLI，客户端须finally关闭。 |
@@ -92,7 +94,7 @@ HTTP归档入口只持久派发并返回任务ID（202），通过attempt接口/
 | `PUT /api/projects/:id/feishu-delivery` | `{"default_target":{"base_token":"…","table_id":"tbl…"},"attachment_format":"docx|pdf"}`（至少提供一项）；传入`default_target`时核实远端结构，合并写入project_step_configs.ordinal=8的feishu_delivery键，保留未传字段，不清空题目或归档。 |
 | `POST /api/projects/:id/feishu-tables` | `{"table_name":"第六期第二批","base_token":"…"}`；base_token可省略，创建空表并返回target，不改变默认目标；同名表拒绝创建，未知响应先核对远端。 |
 | `POST /api/workflows/:id/feishu-sync` | 空body使用期次默认目标与`attachment_format`；可选`target`临时指定目标，可选`attachment_format`（`docx`|`pdf`）覆盖本次附件格式。只同步当前有效的达标归档，不重新评分或归档；逐题请求，不将大批量上传放在单次长HTTP请求中。 |
-| `POST /api/workflows/:id/feishu-draft-sync` | 同样可省略或指定`target`、`attachment_format`及`revision_attempt_id`；要求当前步骤4出题成功且题目尚未归档。上传题面、rubric、思路、标答文本和冻结材料DOCX（或经`scripts/runtime/docx-to-image-pdf.py`转换的图像PDF），将“题目是否完成”设为“未完成”；不改工作流状态或归档回执。 |
+| `POST /api/workflows/:id/feishu-draft-sync` | 同样可省略或指定`target`、`attachment_format`及`revision_attempt_id`；显式`attachment_format:"docx"`时可设`combined_material:true`。明确替换同题旧记录时可指定`replace_record_id`（不能与`revision_attempt_id`同时使用）：必须命中同一UUID且完成状态为未完成或已完成的记录，仅更新六项题目正文和输入附件，保留人员字段及原完成状态；旧行系统同步ID为空时补写同一UUID，不覆盖不同ID，并回读核对。调用方须先备份旧记录。要求当前步骤4出题成功且题目尚未归档；不改工作流状态或归档回执。 |
 
 第八期的两个交付目标在 `feishu-targets.ts` 中同时冻结显示名称、`base_token`、`table_id`：“第八期-内部”为本期默认目标，“第八期-久盈”通过显式 `target` 交付。两者均不按名称搜索或临时创表；名称只用于人工识别，业务定位以冻结 ID 为准。
 
@@ -103,13 +105,14 @@ HTTP归档入口只持久派发并返回任务ID（202），通过attempt接口/
 PDF转换的LibreOffice查找顺序为`LIBREOFFICE_PATH`、macOS的`/Applications/LibreOffice.app`或`LibreOfficeDev.app`、当前服务用户`~/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/libreoffice-headless/libreoffice/LibreOfficeDev.app/Contents/MacOS/soffice`，最后由Python脚本使用服务PATH查找。自动候选须可执行；不自动安装依赖或修改服务环境。`PYTHON3_PATH`仍可指定转换用Python。代码更新需要API重载后生效，CLI启动环境不会改变已运行服务。
 
 1. 先取当前有效出题attempt的冻结输入与题目版本。材料导出器核对来源版本、材料身份、数量、大小和摘要；不从当前目录另挑材料，也不跨题混合。草稿须出题成功且尚未归档；正式同步须当前归档和达标有效。
-2. 有可用材料整理结果时，依其中**可见文书及其顺序**生成；否则按该题原件顺序取冻结正文/结构。普通豆包来源依主项目布局合成一份DOCX：保留各文书正文，首标题与文书名相同则复用，否则补边界标题；同名文书标第几份，重复件只标记而不删除。新材料库的选用材料快照强制**逐文书导出**，文书有几份就生成几份DOCX，不套用合册布局。整理结果存在但没有可见文书时拒绝导出，不回退整包正文。具体投影与布局由[材料导出模块](../materials/README.md#材料docx布局与来源顺序)维护。
-3. 按实际导出件顺序读取DOCX字节，以冻结DOCX字节SHA-256前16位生成`材料-<摘要>.docx`（或`attachment_format=pdf`时的`材料-<摘要>.pdf`；PDF由现有`scripts/runtime/docx-to-image-pdf.py`转换图像版并缓存于`<STORAGE_DIR>/feishu-material-pdfs/<workflow_id>/`，依赖本机`soffice`），逐份上传取得飞书`file_token`。所有token填入目标表内**同一workflow UUID对应记录**的“输入附件”字段；“题目ID”和隐藏“系统同步ID”也使用该UUID。先按这两个稳定ID查现有记录，拒绝同表多行命中；不凭任务名称或材料文件名猜测题目归属。
-4. 新建记录后回读本次上传token、附件数量和题目字段；已有记录按生成文件的摘要名称、数量和顺序核对附件，同时逐字符核对题目ID及六项业务字段。远端差异或来源在过程中变化则停止并记录失败。这里**不下载远端附件逐字节复核**；`succeeded`表示本次远端记录和附件关联回读通过，不等于平台后续人工验收。
+2. 有可用材料整理结果时，依其中**可见文书及其顺序**生成；否则按该题原件顺序取冻结正文/结构。普通材料预览仍按[材料导出模块](../materials/README.md#材料docx布局与来源顺序)的项目布局；豆包高经济价值法律主项目的**飞书DOCX交付固定合册**，每题一份，按冻结来源顺序拼接并保留文书边界标题。医疗主项目继续分件；PDF交付不受此规则影响。整理结果存在但没有可见文书时拒绝导出，不回退整包正文。
+3. 按实际导出件顺序读取DOCX字节，直接使用导出的脱敏真实文书文件名（如`001-民事起诉状.docx`，或`attachment_format=pdf`时的`001-民事起诉状.pdf`，不含哈希摘要；PDF由现有`scripts/runtime/docx-to-image-pdf.py`转换图像版并缓存于`<STORAGE_DIR>/feishu-material-pdfs/<workflow_id>/`，依赖本机`soffice`），逐份上传取得飞书`file_token`。所有token填入目标表内**同一workflow UUID对应记录**的“输入附件”字段；“题目ID”和隐藏“系统同步ID”也使用该UUID。先按这两个稳定ID查现有记录，拒绝同表多行命中；不凭任务名称或材料文件名猜测题目归属。
+   DOCX 分件超过100份时用本机`python3`的`zipfile`将原分件逐件装入`分件材料（N份）.zip`作为单个附件，内部中文文件名使用UTF-8；ZIP 内的独立文书文件名、顺序和字节不变。压缩失败即停止同步，不回退合册或删减分件。
+4. 新建记录后回读本次上传token、附件数量和题目字段；已有记录按当前生成文件的真实名称、数量和顺序核对附件，同时逐字符核对题目ID及六项业务字段；题目ID及六项业务字段完全一致而既有附件为另一种格式或历史`材料-<摘要>`哈希名时，允许原地替换为当前真实名称附件。远端差异或来源在过程中变化则停止并记录失败。这里**不下载远端附件逐字节复核**；`succeeded`表示本次远端记录和附件关联回读通过，不等于平台后续人工验收。
 
 ### 回执、失败与验证边界
 
-步骤8及对应当前归档attempt的`result.feishu_sync`保留最近同步回执；`result.feishu_deliveries[base_token/table_id]`按目标保存回执，不用新表提交覆盖旧表提交记录。已有记录的附件按摘要文件名核对并复用；新建记录的创建请求使用独立随机幂等键。改默认配置不会把历史题目自动补传到新表。
+步骤8及对应当前归档attempt的`result.feishu_sync`保留最近同步回执；`result.feishu_deliveries[base_token/table_id]`按目标保存回执，不用新表提交覆盖旧表提交记录。已有记录的附件按真实文件名、数量与顺序核对并复用；新建记录的创建请求使用独立随机幂等键。改默认配置不会把历史题目自动补传到新表。
 
 凭证缺失、权限、字段冲突、来源变化、重复记录和网络不明响应均保留失败，不盲重试未知写请求。显式事务内的事务级advisory lock兼容PgBouncer事务池；材料导出先归还连接，再进入远端同步事务，期间复用同一连接。并发建表竞争只报告本次请求冲突，不创建重复表。
 
@@ -127,7 +130,7 @@ PDF转换的LibreOffice查找顺序为`LIBREOFFICE_PATH`、macOS的`/Application
 
 适用于豆包现有飞书交付入口，不增加模型审查或定时任务。`feishu-verification.ts`统一六字段投影与精确比较；rubric保留条目、分数、标准及计分规则。生成前将有效出题attempt的材料artifact ID/SHA及来源版本与DOCX读取源比较，随后核对原件数量、材料ID、SHA和记录的字节大小；共享材料对照快照关联的源artifact大小。旧来源以出题绑定的脱敏attempt输入校验原件集合，实际字节大小由同SHA原件复核。材料身份或冻结正文证据不符即失败，不补造历史数据。脱敏DOCX读取已核验的冻结正文，原始PDF本机备份缺失不阻断跨机器交付；存在但大小/SHA错误的备份仍拒绝。普通材料预览导出不增加出题门槛。
 
-新建或已有记录均逐字符比较题目ID、六字段；缺失、空格、换行、截断均报告差异。附件核对本次上传token，已有附件按生成文件摘要名称匹配；不下载远端文件。处理前后复核题目全文版本、出题输入和归档attempt，晚到结果不能写入新版本。
+新建或已有记录均逐字符比较题目ID、六字段；缺失、空格、换行、截断均报告差异。附件核对本次上传token，已有附件按生成文件的真实名称、数量与顺序匹配；不下载远端文件。处理前后复核题目全文版本、出题输入和归档attempt，晚到结果不能写入新版本。
 
 `feishu_sync.verification`记录`passed`、`failed`或`incomplete`，带检查时间、题目/rubric版本、安全差异字段及字符位置；不保存正文片段。差异停止当前题交付，网络错误记未完成；本地归档不回滚。工作流API仅投影安全回执，题目页面明确展示通过/失败/未完成、差异项和飞书链接。CLI批次保留逐题回执并汇总已通过/差异/未完成数量；旧回执无verification不能当作本次核对通过。源码需经授权重载后才生效。
 
@@ -147,6 +150,8 @@ CLI等待仅确认本地归档attempt终态。`workflow delivery show`通过工�
 
 ### 显式草稿修订同步
 
-草稿同步可携带 `revision_attempt_id`，必须与当前题包 `manual_revision.attempt_id` 一致。主体名称修订会在本地尝试中同时冻结修订前后的六项题目字段、材料绑定和旧材料 DOCX 摘要文件名；既有记录只有完整匹配旧字段及旧附件时，才上传新附件并把发生变化的题目字段精确迁移到新值。远端已是完整新值时只回读核对；出现新旧混合状态、缺少旧附件证据或未知写入时停止，不自动重发。更新后回读全部字段并拒绝无关字段变化；普通同步继续拒绝远端正文差异。飞书账号允许既有人员字段或文本字段，本同步不写该字段。
+草稿同步可携带 `revision_attempt_id`，必须与当前题包 `manual_revision.attempt_id` 一致。主体名称修订会在本地尝试中同时冻结修订前后的六项题目字段、材料绑定和旧材料 DOCX 真实文件名（兼容既有记录中的历史`材料-<摘要>`哈希名）；既有记录只有完整匹配旧字段及旧附件时，才上传新附件并把发生变化的题目字段精确迁移到新值。远端已是完整新值时只回读核对；出现新旧混合状态、缺少旧附件证据或未知写入时停止，不自动重发。更新后回读全部字段并拒绝无关字段变化；普通同步继续拒绝远端正文差异。飞书账号允许既有人员字段或文本字段，本同步不写该字段。
 
 脱敏建题显式 copy_originals=false 的冻结来源使用 original_copy=omitted 标记；交付按冻结 library_file_id/revision 和库原件摘要/大小核对，不要求不存在的本机原件副本。旧快照无该标记仍遵循原校验。
+
+材料PDF上传统一经`materialPdfAttachments()`生成带名称的附件列表：每份最多18,000,000字节，超限复用`server/materials/pdf-split.ts`按连续页无损拆分，名称为`<文书名>-页0001-0030.pdf`（不含哈希摘要）；未超限为`<文书名>.pdf`；回读数量按分册列表而非DOCX数量校验。分册缓存独立于完整转换件，缓存复用校验连续页码、页数和大小；单页仍超限则失败，不压缩降质、不省略页。CLI立即使用当前源码，HTTP须运行实例加载新代码后生效；本次修改不自动重启。

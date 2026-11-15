@@ -8,6 +8,7 @@ import {join} from 'node:path';
 import type {JobKind,Lane} from './store';
 import {uuid} from '../validation';
 import {sanitizeLogRecord} from '../logging';
+import {readActiveWorkflowTasks,readActiveRevisionAdviceTasks,readMaterialLibraryQueue} from '../monitoring/worker-monitor';
 
 /** 只接受本机worker日志中可核实的失败事件；扫描上限与诊断CLI一致，截断即拒绝。 */
 async function verifiedFailureEvent(root:string,attemptId:string,eventId:string,instanceId:string){
@@ -28,9 +29,21 @@ async function verifiedFailureEvent(root:string,attemptId:string,eventId:string,
  return failure;
 }
 export function registerExecutionQueueRoutes(app:Hono,pool:Pool,root:string){
- app.get('/api/system/execution-queue',c=>{
+ app.get('/api/system/execution-queue',async c=>{
   if(!localQueueEnabled())return c.json({mode:'legacy',executor_id:null,items:[]});
-  const q=localQueue(root),limits=localQueueLimits(q);return c.json({mode:'local',executor_id:q.executorId,capacity:{agent:q.capacity('agent',limits.agent),api:q.capacity('api',limits.api),web:q.capacity('web',limits.web)},items:q.list().map(({pid,lease,error,...job})=>job)});
+  const q=localQueue(root),limits=localQueueLimits(q),jobs=q.list(),active=q.monitorJobs();
+  // 只为活动ID读取冻结身份；历史行不触发全库配置读取，租约令牌仍不公开。
+  const [steps,advice,library]=await Promise.all([
+   readActiveWorkflowTasks(pool,active.filter(j=>j.kind==='step').map(j=>j.id)),
+   readActiveRevisionAdviceTasks(pool,active.filter(j=>j.kind==='advice').map(j=>j.id)),
+   readMaterialLibraryQueue(pool,active.filter(j=>j.kind==='library').map(j=>j.id)),
+  ]);
+  const identities=new Map([...steps,...advice].map(j=>[j.attempt_id,j]));
+  const materials=new Map(library.status==='known'?library.items.map(j=>[j.job_id,j]):[]);
+  return c.json({mode:'local',executor_id:q.executorId,identity_status:library.status==='unavailable'?'partial':'known',capacity:{agent:q.capacity('agent',limits.agent),api:q.capacity('api',limits.api),web:q.capacity('web',limits.web)},items:jobs.map(({pid,lease,error,...job})=>{
+   const identity=identities.get(job.id)??materials.get(job.id);
+   return{...job,executor_id:q.executorId,claimed_by_pid:job.state==='running'?pid:null,provider:identity?.provider??null,requested_model:identity?.requested_model??null,reasoning_effort:identity?.reasoning_effort??null};
+  })});
  });
  app.post('/api/system/execution-queue/adopt',async c=>{
   if(!localQueueEnabled())throw new HTTPException(409,{message:'尚未启用本机独立队列'});

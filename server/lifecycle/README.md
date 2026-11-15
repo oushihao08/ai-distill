@@ -90,4 +90,4 @@ Work必需五件套失败不提交归档。豆包飞书在本地归档后执行�
 
 ## 材料DOCX布局
 
-`material-docx.ts` 提供同步纯策略，材料导出器调用 `materialDocxLayout(identity)`。默认逐文书 `separate`，Work及未注册项目沿用此默认；`projects/doubao-materials.ts` 将豆包高经济价值及旧名豆包高经注册为 `combined`。新项目可通过 `registerMaterialDocxLayout(key, layout)` 注册差异；布局不改变脱敏、来源模式或业务步骤。逐份文件名使用分册名称及序号，正文不增加标题；合并由公共组合器处理边界标题。
+`material-docx.ts` 提供同步纯策略，材料导出器调用 `materialDocxLayout(identity)`。默认逐文书 `separate`，Work及未注册项目沿用此默认；`projects/doubao-materials.ts` 将豆包高经济价值注册为 `separate`（逐文书真实文件名），仅旧名豆包高经保留历史 `combined` 兼容。新项目可通过 `registerMaterialDocxLayout(key, layout)` 注册差异；布局不改变脱敏、来源模式或业务步骤。逐份文件名使用分册名称及序号，正文不增加标题；合并由公共组合器处理边界标题。

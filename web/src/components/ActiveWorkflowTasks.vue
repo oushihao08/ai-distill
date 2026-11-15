@@ -32,12 +32,14 @@ const channels=computed(()=>
    <Row x="between" wrap :gap="8"><h4 class="text-sm font-medium">{{ group.label }}</h4><span class="text-xs text-muted">任务 {{ group.tasks.length }} 项</span></Row>
    <Column class="w-full overflow-x-auto">
     <v-table density="compact" class="min-w-720px">
-     <thead><tr><th scope="col">项目</th><th scope="col">题目</th><th scope="col">正在执行的任务</th><th scope="col">状态</th><th scope="col">开始时间</th></tr></thead>
+     <thead><tr><th scope="col">项目</th><th scope="col">题目</th><th scope="col">正在执行的任务</th><th scope="col">请求后端 / 模型</th><th scope="col">领取归属</th><th scope="col">状态</th><th scope="col">开始时间</th></tr></thead>
      <tbody>
       <tr v-for="task in group.tasks" :key="task.attempt_id">
        <td><RouterLink :to="`/projects/${task.project_id}`" class="link-text">{{ task.project_name }}</RouterLink></td>
        <td><RouterLink :to="`/workflows/${task.workflow_id}`" class="link-text">{{ task.question_title }}</RouterLink></td>
        <td>{{ task.step_name }}</td>
+       <td><Column :gap="4"><span>{{ task.provider ?? '后端待核实' }} · {{ task.requested_model ?? '模型未记录或不适用' }}</span><span v-if="task.reasoning_effort" class="text-xs text-muted">推理：{{ task.reasoning_effort }}</span></Column></td>
+       <td><Column :gap="4" class="text-xs"><code>{{ task.attempt_id }}</code><span>执行器 {{ task.executor_id ?? '未归属或旧接口' }} · 代次 {{ task.generation ?? '未知' }}</span><span>{{ task.claimed_by_pid ? `已领取 · PID ${task.claimed_by_pid}` : task.state==='queued'?'待领取':'领取进程未确认' }}</span></Column></td>
        <td>{{ stateLabels[task.state] ?? task.state }}</td>
        <td class="whitespace-nowrap">{{ task.started_at?dateLabel(task.started_at):'—' }}</td>
       </tr>

@@ -1,6 +1,7 @@
 /** 职责：读取本期材料/题包同源快照，生成名称修订预览并原子应用；由材料库HTTP路由调用，不运行模型或覆盖历史。 */
 import type {Pool,PoolClient} from 'pg';
 import {randomUUID} from 'node:crypto';
+import {basename} from 'node:path';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
 import {nameRevisionHash as hash,previewMaterialNames,previewQuestionNames} from '../authoring/name-revision-preview';
@@ -24,8 +25,13 @@ async function previousFeishuAttachmentNames(db:PoolClient,workflowId:string){
  if(!row)return null;
  if(typeof row.content!=='string'||hash(row.content)!==row.sha256)throw conflict('现有材料DOCX清单摘要不匹配');
  let manifest:any;try{manifest=JSON.parse(row.content);}catch{throw conflict('现有材料DOCX清单损坏');}
- if(!Array.isArray(manifest?.materials)||!manifest.materials.length||manifest.materials.some((item:any)=>typeof item?.docx_sha256!=='string'||!/^[a-f0-9]{64}$/.test(item.docx_sha256)))throw conflict('现有材料DOCX清单缺少附件摘要');
- return manifest.materials.map((item:any)=>`材料-${item.docx_sha256.slice(0,16)}.docx`);
+ if(!Array.isArray(manifest?.materials)||!manifest.materials.length||manifest.materials.some((item:any)=>typeof item?.docx_sha256!=='string'||!/^[a-f0-9]{64}$/.test(item.docx_sha256)||typeof item?.docx_artifact_id!=='string'))throw conflict('现有材料DOCX清单缺少附件摘要');
+ const artifactIds=manifest.materials.map((item:any)=>item.docx_artifact_id);
+ const artifactRows=(await db.query("SELECT id,storage_path FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=ANY($2::uuid[])",[workflowId,artifactIds])).rows;
+ const pathById=new Map(artifactRows.map((item:any)=>[String(item.id),typeof item.storage_path==='string'?basename(item.storage_path):''] as const));
+ const names=manifest.materials.map((item:any)=>pathById.get(item.docx_artifact_id)||'');
+ if(names.some((name:string)=>!name.endsWith('.docx')))throw conflict('现有材料DOCX产物路径缺失');
+ return names;
 }
 export interface NameRevisionContext {project_id:string;redaction:any;originals:any[];workflows:any[]}
 

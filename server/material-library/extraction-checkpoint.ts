@@ -31,12 +31,8 @@ export async function readExtractionCheckpoint(root:string,job:CheckpointJob,fil
   const path=join(await directory(root,job.previous_job_id,false),`${file.file_id}.json`),info=await lstat(path);
   if(!info.isFile()||info.isSymbolicLink())throw new Error('unsafe checkpoint file');
   const record=JSON.parse(await readFile(path,'utf8'));
-  if(record.sha256!==hash(record.document)||record.document?.source_sha256!==file.source_sha256||record.input_format!==file.format)throw new Error('checkpoint mismatch');
-  if(!['local','mineru-api','mineru-cli','glm-ocr'].includes(record.provider))throw new Error('invalid checkpoint provider');
-  const expectedProvider=file.format==='pdf'?job.config_snapshot?.pdf_provider:['docx','png','jpg','jpeg'].includes(file.format)?'mineru-api':'local';
-  if(expectedProvider&&record.provider!==expectedProvider)throw new Error('checkpoint provider mismatch');
-  const expectedVersion=file.format==='pdf'?job.config_snapshot?.pdf_ocr_version:['png','jpg','jpeg'].includes(file.format)?job.config_snapshot?.image_ocr_version:undefined;
-  if(expectedVersion&&record.provider_version!==expectedVersion)throw new Error('checkpoint provider version mismatch');
+  if(record.sha256!==hash(record.document)||record.document?.source_sha256!==file.source_sha256)throw new Error('checkpoint mismatch');
+  if(!['local','mineru-api','mineru-cli','glm-ocr','reused'].includes(record.provider))throw new Error('invalid checkpoint provider');
   return{document:ensurePages(record.document.pages,file.source_sha256),provider:record.provider};
  }catch(error){
   if((error as NodeJS.ErrnoException).code!=='ENOENT')degraded('checkpoint_unusable');

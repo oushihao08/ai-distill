@@ -58,12 +58,17 @@ const recoveryLabel:Record<string,string>={pending_registration:'等待确认入
   <Row x="between" wrap :gap="8"><h3 class="text-sm font-semibold text-ink-heading">材料库任务</h3><span v-if="libraryTotals" class="text-xs text-muted">排队 {{ libraryTotals.queued }} · 运行 {{ libraryTotals.running }} · 历史成功 {{ libraryTotals.succeeded }} · 历史失败 {{ libraryTotals.failed }}</span><span v-else class="text-xs text-muted">{{ data?.material_library.status==='unavailable'?'尚未应用材料库迁移或读取不可用':'读取中' }}</span></Row>
   <Column v-if="libraryJobs.length" :gap="6" class="mt-8">
    <Row v-for="job in libraryJobs" :key="job.job_id" wrap x="between" :gap="8" class="text-xs text-muted">
-    <span>{{ job.package_name }} · {{ libraryKindLabel[job.kind] }} · {{ libraryStateLabel[job.state] ?? job.state }} · {{ executorLabel[job.executor_kind] }} · {{ job.execution_target === 'local' ? '本机' : '服务端' }}</span>
+    <Column :gap="4">
+     <span>{{ job.package_name }} · {{ libraryKindLabel[job.kind] }} · {{ libraryStateLabel[job.state] ?? job.state }} · {{ executorLabel[job.executor_kind] }} · {{ job.execution_target === 'local' ? '本机' : '服务端' }}</span>
+     <span>请求后端：{{ job.provider ?? '待核实或本地程序' }} · 模型：{{ job.requested_model ?? '未记录或不适用' }}<template v-if="job.reasoning_effort"> · 推理：{{ job.reasoning_effort }}</template></span>
+     <code>任务 {{ job.job_id }}</code>
+     <span>执行器 {{ job.executor_id ?? '未归属或旧接口' }} · 代次 {{ job.generation ?? '未知' }} · {{ job.claimed_by_pid ? `已领取 · PID ${job.claimed_by_pid}` : job.state==='queued'?'待领取':'领取进程未确认' }}</span>
+    </Column>
     <span v-if="job.progress.total_files">{{ job.progress.completed_files??0 }}/{{ job.progress.total_files }} 份材料</span>
     <span v-if="job.error_code" class="text-error">{{ job.error_code }}</span>
    </Row>
   </Column>
   <p v-else-if="libraryTotals" class="mt-8 text-xs text-muted">当前没有活动材料库任务。</p>
  </section>
- <p class="text-xs text-muted">{{ data?.heartbeat_at ? `最后采样 ${dateLabel(data.heartbeat_at)}` : '等待 worker 上报' }}。认证与额度状态尚未采集；内存统计仅包含 worker 进程。</p>
+ <p class="text-xs text-muted">{{ data?.heartbeat_at ? `最后采样 ${dateLabel(data.heartbeat_at)}` : '等待 worker 上报' }}。后端与模型取自任务冻结请求，不表示供应商已返回实际模型。任务ID、执行器和代次用于多终端对账；未知任务不要重新领取。认证与额度状态尚未采集。</p>
 </Column></template>

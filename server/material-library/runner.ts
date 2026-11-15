@@ -17,7 +17,7 @@ import {mineruToken} from '../materials/pdf-extraction/mineru-credentials';
 import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
-import {finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,libraryExternalExtractionTimeoutMs,LIBRARY_JOB_LEASE_MS,assertLibraryExtractionUsable} from './jobs';
+import {withLibraryPublicationLock,finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,libraryExternalExtractionTimeoutMs,LIBRARY_JOB_LEASE_MS,assertLibraryExtractionUsable} from './jobs';
 import {readLibraryBlob,cleanupRolledBackLibraryBlobs,installLibraryBlob,lockLibraryBlobWrites} from './storage';
 import {extractImageCandidates,glmImageRole,shouldExtractImageCandidates,type ImageCandidate} from './image-candidates';
 import {extractGlmOcrImageRegions,GlmOcrPdfExtractor} from '../materials/pdf-extraction/glm-ocr';
@@ -27,6 +27,7 @@ import {executeRedaction} from './redaction-runner';
 import {executePreparation} from './preparation';
 import {withTaskSignal} from '../task-signal';
 import {cleanupExtractionArtifacts,readExtractionCheckpoint,writeExtractionCheckpoint} from './extraction-checkpoint';
+import {readReusableExtraction,type ReusedExtraction,type ReusedImageCandidate} from './result-reuse';
 
 
 async function sourceBytes(root:string,item:any){
@@ -69,11 +70,13 @@ async function documentExtractor(root:string,jobId:string,provider:unknown,forma
 }
 
 export async function executeExtraction(pool:Pool,root:string,job:any,signal:AbortSignal,extractorOverride?:DocumentExtractor){
- const files=job.input_snapshot.files as any[],results:{item:any;document:ReturnType<typeof ensurePages>;issues:Record<string,unknown>[];images?:ImageCandidate[]}[]=[];
+ const files=job.input_snapshot.files as any[],results:{item:any;document:ReturnType<typeof ensurePages>;issues:Record<string,unknown>[];images?:ImageCandidate[];existingImages?:ReusedImageCandidate[];reused:boolean;reusedFrom?:string}[]=[];
  let extraction:{directory:string;extractor:DocumentExtractor}|null=null;
  for(const [index,item] of files.entries()){
   if(signal.aborted)throw new Error('材料任务已取消');
-  const bytes=await sourceBytes(root,item);const cached=await readExtractionCheckpoint(root,job,item);let document=cached?.document,actualProvider=cached?.provider??'local';
+  const bytes=await sourceBytes(root,item);
+  const cached:ReusedExtraction|undefined=await readExtractionCheckpoint(root,job,item)??await readReusableExtraction(pool,item);
+  let document=cached?.document,actualProvider=cached?.provider??'local';
   if(!document&&(item.format==='txt'||item.format==='md'))document=ensurePages(extractLocalDocument(bytes,item.format).pages,item.source_sha256);
   else if(!document){
    if(!extraction){
@@ -93,7 +96,17 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
    collectExtractedPageIssues(page).map(kind=>({page:page.page,kind}))
   );
   let images:ImageCandidate[]|undefined;
-  if(shouldExtractImageCandidates(job.config_snapshot?.preserve_images,item.image_review_required,item.format)){
+  const wantsImages=shouldExtractImageCandidates(job.config_snapshot?.preserve_images,item.image_review_required,item.format);
+  let existingImages=wantsImages?cached?.image_candidates:undefined;
+  if(existingImages){
+   for(const image of existingImages){
+    const blob=(await pool.query("SELECT sha256,storage_path FROM ai_distill.library_blobs WHERE id=$1 AND storage_kind='file'",[image.blob_id])).rows[0];
+    if(!blob||blob.sha256!==image.sha256){existingImages=undefined;break;}
+    try{await readLibraryBlob(root,blob.storage_path,image.sha256);}
+    catch(error){logEvent('library_result.reuse_unusable',{level:'warn',kind:'extract_image',...classifyLogError(error)});existingImages=undefined;break;}
+   }
+  }
+  if(wantsImages&&!existingImages){
    const imageDirectory=join(jobDirectory(root,job.id),'image-source');await mkdir(imageDirectory,{recursive:true,mode:0o700});
    const imageSource=join(imageDirectory,`${item.file_id}.${item.format}`);
    await writeFile(imageSource,Buffer.from(bytes),{mode:0o600});
@@ -104,11 +117,15 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
    }else images=await extractImageCandidates(imageSource,item.format,signal);
    if(images.length>300||images.reduce((sum,image)=>sum+image.bytes.byteLength,0)>100*1024*1024)throw new Error('图片候选数量或总大小超过限制');
   }
-  results.push({item,document,issues,images});
-  if(!await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'extract',completed_files:index+1,total_files:files.length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)}))throw stopReason(await libraryStopReason(pool,job)??'lease_lost');
+  results.push({item,document,issues,images,existingImages,reused:!!cached,reusedFrom:cached?.source_job_id??(cached?job.previous_job_id:undefined)});
+  if(!await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'extract',completed_files:index+1,total_files:files.length,reused_files:results.filter(result=>result.reused).length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)}))throw stopReason(await libraryStopReason(pool,job)??'lease_lost');
  }
- if(job.input_snapshot.atomic_import)assertLibraryExtractionUsable(results.map(result=>({issues:result.issues,pages:result.document.pages,page_count:result.document.pages.length})));
- const summaries=await finishLibraryJob(pool,job.id,job.lease_token,{file_count:results.length,page_count:results.reduce((sum,result)=>sum+result.document.pages.length,0),issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)},async db=>{
+ if(job.input_snapshot.atomic_import){
+  const emptyFileIds=results.filter(result=>result.document.pages.every(page=>!page.text.trim())).map(result=>result.item.file_id);
+  if(emptyFileIds.length)logEvent('library_extract.unusable_files',{level:'warn',library_file_ids:emptyFileIds,empty_file_count:emptyFileIds.length});
+  assertLibraryExtractionUsable(results.map(result=>({issues:result.issues,pages:result.document.pages,page_count:result.document.pages.length})));
+ }
+ const summaries=await finishLibraryJob(pool,job.id,job.lease_token,{file_count:results.length,reused_files:results.filter(result=>result.reused).length,reused_sources:results.filter(result=>result.reusedFrom).map(result=>({file_id:result.item.file_id,job_id:result.reusedFrom})),page_count:results.reduce((sum,result)=>sum+result.document.pages.length,0),issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)},async db=>{
   await publishAtomicLibraryImport(db,root,job);
   for(const result of results){
    const imageCandidates=[];
@@ -124,7 +141,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
      imageCandidates.push({id:image.id,page:image.page,position:image.position,sha256:image.sha256,blob_id:blobId,...(image.role?{role:image.role}:{})});
     }
    }
-   const {blob,document}=await storeExtractedDocument(db,result.document,result.images?imageCandidates:undefined);
+   const {blob,document}=await storeExtractedDocument(db,result.document,result.existingImages??(result.images?imageCandidates:undefined));
    if(job.input_snapshot.atomic_import)assertLibraryExtractionUsable([{issues:result.issues,pages:document.pages,page_count:document.pages.length}]);
    await db.query(`INSERT INTO ai_distill.library_documents(id,revision_id,file_id,extraction_job_id,document_blob_id,source_sha256,text_sha256,page_count,issues)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[crypto.randomUUID(),job.revision_id,result.item.file_id,job.id,blob.id,result.item.source_sha256,hash(document.pages.map(page=>page.text).join('\n')),document.pages.length,JSON.stringify(result.issues)]);
@@ -156,16 +173,16 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
  const deadlineTimer=setTimeout(()=>local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded')),Math.max(0,deadline-Date.now()));
  if(deadline<=Date.now())local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded'));
  // 仅在最后已确认的租约内容忍瞬时数据库故障；独立计时器也覆盖查询悬挂。
- let heartbeatRunning=false,settled=false,heartbeatFailed=false;
+ let heartbeatRunning=false,settled=false,heartbeatFailed=false,publicationLocked=false;
  let leaseTimer:ReturnType<typeof setTimeout>;
  const armLease=(expires:number)=>{clearTimeout(leaseTimer);leaseTimer=setTimeout(()=>local.abort(stopReason('heartbeat_unavailable')),Math.max(0,expires-Date.now()));};
  armLease(Number.isFinite(Date.parse(job.lease_expires_at))?Date.parse(job.lease_expires_at):Date.now()+LIBRARY_JOB_LEASE_MS);
  const heartbeat=setInterval(()=>{
-  if(heartbeatRunning||settled)return;
+  if(heartbeatRunning||settled||publicationLocked)return;
   heartbeatRunning=true;
   const sentAt=Date.now();
   void heartbeatLibraryJob(pool,job.id,job.lease_token).then(async active=>{
-   if(settled||local.signal.aborted)return;
+   if(settled||publicationLocked||local.signal.aborted)return;
    if(active){
     armLease(sentAt+LIBRARY_JOB_LEASE_MS);
     if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info'});
@@ -187,12 +204,15 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   if(local.signal.aborted)throw local.signal.reason;
   const lifecycleContext={stage:job.kind==='intake'?'intake':job.kind==='extract'?'extract':'redact',execution_id:job.id,project_id:job.input_snapshot?.project_id,signal:local.signal};
   if(job.kind!=='prepare')await emitLifecycle(pool,'before',lifecycleContext);
-  await withTaskSignal(local.signal,async()=>{
+  await withLibraryPublicationLock(job.id,()=>{
+   publicationLocked=true;clearInterval(heartbeat);clearTimeout(leaseTimer);
+   logEvent('library_job.publication_locked',{level:'info'});
+  },()=>withTaskSignal(local.signal,async()=>{
    if(job.kind==='intake')await executeIntake(pool,root,job,local.signal);
    else if(job.kind==='extract')await executeExtraction(pool,root,job,local.signal);
    else if(job.kind==='prepare')await executePreparation(pool,root,job,local.signal);
    else await executeRedaction(pool,root,job,local.signal);
-  });
+  }));
   if(job.kind!=='prepare')await emitLifecycle(pool,'committed',lifecycleContext);
   logEvent('library_job.completed',{level:'info',state:'succeeded'});
  }catch(error){

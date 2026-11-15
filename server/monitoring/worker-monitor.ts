@@ -3,6 +3,8 @@
  * 关键方法与用途：`createWorkerMonitor()` 管理启停、心跳和资源采样；`readWorkerMonitor()` 读取净化后的快照；`readActiveWorkflowTasks()` 与 `readActiveRevisionAdviceTasks()` 查询本机运行中的步骤和返修建议任务。
  * 使用场景：`worker.ts` 控制任务领取，`app.ts` 提供本地资源状态与步骤占用明细。
  */
+import {isRegisteredAgentProvider} from '../agent/driver';
+import {frozenExecutionIdentity,stepIdentitySql,libraryIdentitySql,type ExecutionIdentity} from "./execution-identity";
 import type {Pool,QueryConfig} from 'pg';
 import {mkdir,readFile,writeFile,rename,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -18,13 +20,13 @@ export interface WorkerMonitorStatus {
  dispatch:{allowed:boolean;policy:'memory_only_unknown_allow';memory_state:'known'|'unknown';min_available_percent:number;reason:'low_available_memory'|'memory_above_threshold'|'memory_unknown'|'stopped'}|null;
  advice:ReturnType<typeof adviseDispatch>|null;snapshot:ResourceSnapshot|null;
 }
-export interface ActiveWorkflowTask {
+export interface ActiveWorkflowTask extends ExecutionIdentity {
  channel:'agent'|'api'|'web'|'unknown';project_id:string;workflow_id:string;project_name:string;question_title:string;step_name:string;
  state:string;started_at:string|null;attempt_id:string;
 }
 export type MaterialLibraryQueueStatus=
  |{status:'unavailable'}
- |{status:'known';totals:{queued:number;running:number;succeeded:number;failed:number;cancelled:number};items:{job_id:string;package_id:string;revision_id:string;package_name:string;kind:'intake'|'extract'|'redact'|'prepare';state:string;executor_kind:'internal'|'api'|'agent'|'web';execution_target:'local'|'server';progress:Record<string,string|number>;error_code:string|null;created_at:string|null;started_at:string|null}[]};
+ |{status:'known';totals:{queued:number;running:number;succeeded:number;failed:number;cancelled:number};items:(ExecutionIdentity & {job_id:string;package_id:string;revision_id:string;package_name:string;kind:'intake'|'extract'|'redact'|'prepare';state:string;executor_kind:'internal'|'api'|'agent'|'web';execution_target:'local'|'server';progress:Record<string,string|number>;error_code:string|null;created_at:string|null;started_at:string|null})[]};
 /** 监控取得连接后每条只读SQL驱动读取限5秒；pg-pool在查询失败时销毁连接，不将仍在读的连接放回池。 */
 export const MONITOR_QUERY_TIMEOUT_MS=5000;
 function monitorQuery(pool:Pool,text:string,values?:unknown[]){const query:QueryConfig&{query_timeout:number}={text,query_timeout:MONITOR_QUERY_TIMEOUT_MS};return pool.query(query,values);}
@@ -39,8 +41,8 @@ export async function readActiveWorkflowTasks(pool:Pool,attemptIds?:string[]):Pr
  if(attemptIds?.length===0)return[];
  const ids=attemptIds?[...new Set(attemptIds)].sort():undefined;
  return shareMonitorRead(pool,`active:${ids?.join(',')??'*'}`,async()=>{
- const result=await monitorQuery(pool,"SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,s.name AS step_name,a.status AS state,a.started_at,CASE WHEN a.ordinal=5 AND a.config->>'provider'='codex' THEN 'agent' WHEN a.ordinal=5 THEN 'api' WHEN a.ordinal=6 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=4 AND a.config->>'provider'='web' THEN 'web' WHEN a.ordinal IN (4,6) THEN 'agent' WHEN a.ordinal=9 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=9 AND a.config->>'provider'='codex' THEN 'agent' ELSE 'unknown' END AS channel FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=a.ordinal WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND (a.status='running' OR ($1::uuid[] IS NOT NULL AND a.id=ANY($1::uuid[]))) AND a.ordinal IN (4,5,6,8,9) AND ($1::uuid[] IS NULL OR a.id=ANY($1::uuid[])) ORDER BY a.started_at,a.id LIMIT 500",[ids??null]);
- return result.rows.map(row=>({attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:row.state,channel:row.channel,started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
+ const result=await monitorQuery(pool,"SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,s.name AS step_name,a.status AS state,a.started_at,a.config->>'provider' AS configured_provider,"+stepIdentitySql+",CASE WHEN a.ordinal=5 AND a.config->>'provider'='codex' THEN 'agent' WHEN a.ordinal=5 THEN 'api' WHEN a.ordinal=6 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=4 AND a.config->>'provider'='web' THEN 'web' WHEN a.ordinal IN (4,6) THEN 'agent' WHEN a.ordinal=9 AND a.config->>'provider'='api' THEN 'api' WHEN a.ordinal=9 AND a.config->>'provider'='codex' THEN 'agent' ELSE 'unknown' END AS channel FROM ai_distill.step_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id JOIN ai_distill.projects p ON p.id=w.project_id JOIN ai_distill.steps s ON s.workflow_id=a.workflow_id AND s.ordinal=a.ordinal WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND (a.status='running' OR ($1::uuid[] IS NOT NULL AND a.id=ANY($1::uuid[]))) AND a.ordinal IN (4,5,6,8,9) AND ($1::uuid[] IS NULL OR a.id=ANY($1::uuid[])) ORDER BY a.started_at,a.id LIMIT 500",[ids??null]);
+ return result.rows.map(row=>({...frozenExecutionIdentity(row,isRegisteredAgentProvider(row.configured_provider)?'agent':row.channel),attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:row.state,channel:isRegisteredAgentProvider(row.configured_provider)?'agent':row.channel,started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
  });
 }
 /** 只投影本机队列中已运行的返修建议；建议任务不属于 step_attempts，须单独合入监控明细。 */
@@ -51,12 +53,12 @@ export async function readActiveRevisionAdviceTasks(pool:Pool,attemptIds:string[
   const schema=await monitorQuery(pool,"SELECT to_regclass('ai_distill.revision_advice_attempts') IS NOT NULL AS available");
   if(schema.rows[0]?.available!==true)return[];
   const result=await monitorQuery(pool,`SELECT a.id AS attempt_id,w.project_id,a.workflow_id,p.name AS project_name,w.title AS question_title,
-   '返修建议'::text AS step_name,a.status AS state,a.started_at
+   '返修建议'::text AS step_name,a.status AS state,a.started_at,${stepIdentitySql}
    FROM ai_distill.revision_advice_attempts a JOIN ai_distill.workflows w ON w.id=a.workflow_id
    JOIN ai_distill.projects p ON p.id=w.project_id
    WHERE w.deleted_at IS NULL AND p.deleted_at IS NULL AND a.id=ANY($1::uuid[])
    ORDER BY a.started_at,a.id LIMIT 500`,[ids]);
-  return result.rows.map(row=>({attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:row.state,channel:'agent',started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
+  return result.rows.map(row=>({...frozenExecutionIdentity(row,row.channel??'agent'),attempt_id:String(row.attempt_id),project_id:String(row.project_id),workflow_id:String(row.workflow_id),project_name:String(row.project_name),question_title:String(row.question_title),step_name:String(row.step_name),state:row.state,channel:'agent',started_at:row.started_at instanceof Date?row.started_at.toISOString():row.started_at?new Date(row.started_at).toISOString():null}));
  });
 }
 function safeLibraryProgress(value:unknown):Record<string,string|number>{
@@ -84,7 +86,7 @@ export async function readMaterialLibraryQueue(pool:Pool,jobIds?:string[]):Promi
      count(*) FILTER(WHERE status='succeeded')::int AS succeeded,count(*) FILTER(WHERE status='failed')::int AS failed,count(*) FILTER(WHERE status='cancelled')::int AS cancelled
     FROM ai_distill.library_jobs WHERE ($1::uuid[] IS NULL OR id=ANY($1::uuid[]))
    ), active_jobs AS (
-    SELECT j.id,j.package_id,j.revision_id,COALESCE(p.name,CASE WHEN j.package_id IS NULL THEN '（待入库材料）' ELSE '（材料包信息不可用）' END) AS package_name,j.kind,j.status,j.executor_kind,j.execution_target,j.progress,j.error_code,j.created_at,j.started_at
+    SELECT j.id,j.package_id,j.revision_id,COALESCE(p.name,CASE WHEN j.package_id IS NULL THEN '（待入库材料）' ELSE '（材料包信息不可用）' END) AS package_name,j.kind,j.status,j.executor_kind,j.execution_target,${libraryIdentitySql},j.progress,j.error_code,j.created_at,j.started_at
     FROM ai_distill.library_jobs j LEFT JOIN ai_distill.library_packages p ON p.id=j.package_id
     WHERE (j.status IN ('queued','running') OR ($1::uuid[] IS NOT NULL AND j.id=ANY($1::uuid[]))) AND ($1::uuid[] IS NULL OR j.id=ANY($1::uuid[])) ORDER BY j.created_at,j.id LIMIT CASE WHEN $1::uuid[] IS NULL THEN 100 ELSE cardinality($1::uuid[]) END
    )
@@ -94,7 +96,7 @@ export async function readMaterialLibraryQueue(pool:Pool,jobIds?:string[]):Promi
   if(!Array.isArray(row.items))throw new Error('invalid library queue items');
   const items=row.items.map((item:any)=>{
    if(!['intake','extract','redact','prepare'].includes(item.kind)||!['internal','api','agent','web'].includes(item.executor_kind)||!['local','server'].includes(item.execution_target))throw new Error('invalid library queue row');
-   return{job_id:String(item.id),package_id:String(item.package_id),revision_id:String(item.revision_id),package_name:String(item.package_name),kind:item.kind,state:item.status,executor_kind:item.executor_kind,execution_target:item.execution_target,progress:safeLibraryProgress(item.progress),error_code:typeof item.error_code==='string'?item.error_code:null,created_at:safeTimestamp(item.created_at),started_at:safeTimestamp(item.started_at)};
+   return{...frozenExecutionIdentity(item,item.executor_kind),job_id:String(item.id),package_id:String(item.package_id),revision_id:String(item.revision_id),package_name:String(item.package_name),kind:item.kind,state:item.status,executor_kind:item.executor_kind,execution_target:item.execution_target,progress:safeLibraryProgress(item.progress),error_code:typeof item.error_code==='string'?item.error_code:null,created_at:safeTimestamp(item.created_at),started_at:safeTimestamp(item.started_at)};
   });
   return{status:'known',totals,items};
  }catch(error){logEvent('monitor.library_queue_read_failed',{level:'error',component:'worker_monitor',...classifyLogError(error)});return{status:'unavailable'};}

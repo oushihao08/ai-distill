@@ -25,6 +25,14 @@ types.ts 定义 PdfExtractionProvider／Result；默认 `MineruApiFirstPdfExtrac
 
 Document Mind 对照客户端读取 `ALIYUN_DOCMIND_ACCESS_KEY_ID`、`ALIYUN_DOCMIND_ACCESS_KEY_SECRET` 和可选 `ALIYUN_DOCMIND_ENDPOINT`，输出 Markdown 并删除会过期的 OSS 临时图片链接。它尚未接入 `PDF_EXTRACTION_PROVIDER`，也不自动入库；真实调用仅证明供应商链路和当次文件结果。
 
+### GLM-OCR 失败诊断
+
+`glm-ocr.ts` 的正文提取与图片裁块共用一次 `layout_parsing` 请求入口；保持原有30分钟截止，不自动重传。HTTP非成功响应保留 `http_status` 和固定 `glm_ocr_http_<状态码>`：401/403归认证或权限类，429归限额类 `rate_limit`（不能据此区分余额、额度或并发限制），408/504归超时，其他归供应商HTTP失败。配置缺失、请求连接失败、响应流读取失败、JSON无效及正文页数/块结构不符分别保留固定原因码。外层取消或截止原因原样传递；读取响应期间的取消、超时不冒记为JSON错误。
+
+这些字段由现有 `runExternalCall()` 写入关联 job/file/call ID 的 `call.failed` 日志，材料任务可沿用固定原因码；不保存错误响应正文、原始异常cause、请求URL、原件或凭证。HTTP失败先释放响应流，清理错误不覆盖原HTTP状态。图片裁块后续下载及本地PDF工具失败仍遵循原有边界，不将此诊断范围扩大为所有提取错误。
+
+`glm-ocr.test.ts` 使用合成原件、页数预检与HTTP替身，覆盖错误分类、取消/超时、无重复请求、成功结构/SHA及真实日志落盘和敏感字段隔离；不调用付费模型或业务数据库。代码需由worker重新加载后才影响新执行；测试通过不证明历史 `unknown` 的具体原因，也不会自动重试历史失败包。
+
 ## 维护边界
 
 云端 MinerU 会接收 PDF，不是本地 OCR。直连 API 通过官方文件上传地址接口传输本地 PDF，任务完成后解析 ZIP 中的 `content_list.json`；轮询与下载设置限时，取消时不启动 CLI 回退。CLI 保留作为 API 失败后的路径。保留页数、页来源与异常，不仅取整段 Markdown；不要更改材料任务契约来适配单一供应商。

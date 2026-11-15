@@ -9,6 +9,7 @@ import {assertAuthoringMaterialBinding,assertOriginalManifest} from '../publishi
 
 import {preparationUnits,validateSelectedMaterialIndex,visiblePreparedDocuments,isHiddenPreparationBlock} from '../../shared/material-preparation-result';
 import {canonicalJson} from '../../shared/workflow-config';
+import {materialFilenameStem} from '../../shared/material-filenames';
 import {createHash,randomUUID} from 'node:crypto';
 import {chmod,lstat,mkdir,readFile,realpath,rename,rm,writeFile} from 'node:fs/promises';
 import {basename,dirname,isAbsolute,join,relative,resolve,sep} from 'node:path';
@@ -58,8 +59,18 @@ function safeLabel(value:string,fallback:string){
  let label='';for(const character of normalized){if(Buffer.byteLength(label+character)>190)break;label+=character;}label||=fallback;
  return label;
 }
+/** 无整理分册时：原文模式去掉源扩展名；脱敏模式严禁回退未脱敏original_name，仅取脱敏标题或通用标签。 */
+function fallbackSectionTitle(material:Original,document:RedactedDocumentStructure,materialMode:'redacted'|'original'){
+ if(materialMode==='original')return basename(material.original_name).replace(/\.(?:pdf|docx?|ofd|txt|md)$/i,'').trim()||'原文材料';
+ for(const page of document.pages)for(const block of page.blocks){
+  if(block.kind!=='heading')continue;
+  const heading=block.text.replace(/\s+/g,' ').trim();
+  if(heading&&heading.length<=80&&!/^【?(?:附件\s*\d+|原附件第\s*\d+\s*页)】?$/.test(heading))return heading;
+ }
+ return '脱敏材料';
+}
 /** 分册导出与工作簿完整性核对共用文件名，避免把分册数量误当成原PDF数量。 */
-export function preparedDocxFilename(doc:{title:string},index:number){return `${String(index+1).padStart(3,'0')}-${safeLabel(doc.title,'材料')}.docx`;}
+export function preparedDocxFilename(doc:{title:string},index:number){return `${String(index+1).padStart(3,'0')}-${materialFilenameStem(doc.title)}.docx`;}
 /** 下载与工作流重置共用附件库契约，同时接受旧项目／题目与新项目／期数／题目路径。 */
 export function isLibraryDocxPath(path:string){const segments=path.split('/'),legacy=segments.length===5&&segments[3]==='成果',phased=segments.length===6&&segments[4]==='成果';return segments[0]==='附件库'&&(legacy||phased)&&segments.slice(1,-2).every(Boolean)&&Boolean(segments.at(-1)?.endsWith('.docx'))&&!segments.some(segment=>!segment||segment==='.'||segment==='..'||/[\\\u0000-\u001f]/.test(segment));}
 async function ensureDirectory(path:string,restrictAccess=true,allowParentAliases=false){
@@ -311,7 +322,7 @@ async function contextForExport(db:Pool|PoolClient,workflowId:string):Promise<Ex
 }
 
 /** 按项目布局导出逐文书或合并DOCX，使用题目冻结来源；不改变工作流步骤。 */
-export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,storageRoot:string,projectExportsRoot:string,expectedMode?:'redacted'|'original',options:{allowPublicationInProgress?:boolean;expectedAuthoringInput?:unknown}={}){
+export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,storageRoot:string,projectExportsRoot:string,expectedMode?:'redacted'|'original',options:{allowPublicationInProgress?:boolean;expectedAuthoringInput?:unknown;deliveryLayout?:'combined'}={}){
  const db=await pool.connect();let tx=false;const changes:FileChange[]=[];
  try{
   await db.query('BEGIN');tx=true;
@@ -355,13 +366,13 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
    const target=join(location.originalDir,`${material.id.slice(0,8)}_${name}`);if(!beneath(location.questionDir,target))throw new HTTPException(409,{message:'附件归档路径无效'});
    await installFile(target,bytes,material.sha256,changes);
   }
-  // 整理结果存在时只用可见文书及其顺序；否则按原件顺序取冻结正文/结构。
-  // 选用材料快照强制逐文书导出，其他来源才采用项目布局（豆包为合册）。
-  // 合册只操作显示副本，不去重、不改冻结正文或原始附件。
+  // 整理结果存在时只用可见文书及其顺序；否则按原件顺序取冻结正文/结构，脱敏模式不暴露原始文件名。
+  // 选用材料快照与现行豆包高经济价值、医疗、Work均逐文书分件导出；仅历史旧名豆包高经保留合册。
+  // 导出只操作显示副本，不去重、不改冻结正文或原始附件。
   const preparedSections=context.prepared_documents?.map(doc=>({id:doc.id,title:doc.title,duplicate_of:doc.duplicate_of??null,document:doc.document??preparedTextDocument(doc.text,doc.id)}));
   if(context.preparation_applied&&!preparedSections?.length)throw new HTTPException(409,{message:'材料整理结果没有可见文书，不能生成DOCX'});
-  const sourceSections=preparedSections?.length?preparedSections:context.originals.map(material=>({id:material.id,title:material.original_name,duplicate_of:null,document:context.materialDocuments.get(material.id)?.document??preparedTextDocument(context.materialMarkdown.get(material.id)!,material.id)}));
-  const exportItems=planMaterialDocxExports(sourceSections,context.selected_materials?'separate':materialDocxLayout(context),materialMode).map(prepared=>({material:context.originals.find(item=>item.id===prepared.id)??context.originals[0]!,prepared}));
+  const sourceSections=preparedSections?.length?preparedSections:context.originals.map(material=>{const document=context.materialDocuments.get(material.id)?.document??preparedTextDocument(context.materialMarkdown.get(material.id)!,material.id);return{id:material.id,title:fallbackSectionTitle(material,document,materialMode),duplicate_of:null,document};});
+  const exportItems=planMaterialDocxExports(sourceSections,options.deliveryLayout??(context.selected_materials?'separate':materialDocxLayout(context)),materialMode).map(prepared=>({material:context.originals.find(item=>item.id===prepared.id)??context.originals[0]!,prepared}));
   for(const {material,prepared} of exportItems){
    const filename=prepared.filename,docxPath=join(dirname(location.docxPath),filename),storagePath=location.storagePath.replace(/[^/]+$/,filename);
    const current=prior.find(row=>row.material_id===material.id&&row.storage_path===storagePath);
@@ -371,7 +382,7 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
     ?priorManifest?.format==='material-docx-manifest-v3'&&priorManifest.snapshot_digest===context.material_snapshot_digest&&priorManifest.material_mode===materialMode&&canonicalJson(priorManifest.material_origin)===canonicalJson(context.material_origin)
     :priorManifest?.format==='redacted-docx-manifest-v1'&&priorManifest.attempt_id===context.attempt_id;
    const sourceDigest=priorManifest&&'source_sha256'in priorManifest?priorManifest.source_sha256:priorManifest?.redacted_sha256;
-   const manifestMaterial=priorManifest?.materials.find(item=>item.material_id===material.id&&item.document_sha256===document_sha256),manifestMatches=priorSourceMatches&&sourceDigest===context.redacted_sha256&&priorManifest?.renderer_version===REDACTED_DOCX_RENDERER_VERSION&&manifestMaterial?.source_sha256===material.sha256&&manifestMaterial?.document_sha256===document_sha256&&manifestMaterial?.docx_artifact_id===current?.id&&manifestMaterial?.docx_sha256===current?.sha256;
+   const manifestMaterial=priorManifest?.materials.find(item=>(current?item.docx_artifact_id===String(current.id)&&item.material_id===material.id&&item.document_sha256===document_sha256:item.material_id===material.id&&item.document_sha256===document_sha256)),manifestMatches=priorSourceMatches&&sourceDigest===context.redacted_sha256&&priorManifest?.renderer_version===REDACTED_DOCX_RENDERER_VERSION&&manifestMaterial?.source_sha256===material.sha256&&manifestMaterial?.document_sha256===document_sha256&&manifestMaterial?.docx_artifact_id===current?.id&&manifestMaterial?.docx_sha256===current?.sha256;
    if(current?.attempt_id===context.attempt_id&&current.storage_path===storagePath&&manifestMatches){
     try{const existing=await readSafeFile(projectExportsRoot,storagePath);if(digest(existing)===current.sha256){artifacts.push({artifact_id:String(current.id),material_id:material.id,filename,sha256:current.sha256,reused:true});manifestMaterials.push({material_id:material.id,source_sha256:material.sha256,document_sha256,docx_artifact_id:String(current.id),docx_sha256:current.sha256});continue;}}catch(error){if(!(error instanceof HTTPException&&error.status===404))throw error;}
    }

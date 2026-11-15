@@ -5,8 +5,11 @@
  */
 import type {Pool} from 'pg';
 import {createHash} from 'node:crypto';
+import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {HTTPException} from 'hono/http-exception';
-import {exportCurrentMaterialDocx,readCurrentMaterialDocx} from '../materials/redacted-docx-export';
+import {exportCurrentMaterialDocx,readCurrentMaterialDocx,readCurrentRedactionForDocx} from '../materials/redacted-docx-export';
 import {logEvent} from '../logging';
 import {canonicalJson} from '../../shared/workflow-config';
 import {feishuTextFields,compareFeishuText,VerificationError} from './feishu-verification';
@@ -14,7 +17,23 @@ import {feishuTextFields,compareFeishuText,VerificationError} from './feishu-ver
 import {feishuClient,SyncError,ensureFeishuSchema,createFeishuTable,removeEmptyFeishuRows} from './feishu-api';
 import {readFeishuDeliveryConfig,validateFeishuTarget,type FeishuTarget,type FeishuAttachmentFormat} from './feishu-targets';
 
-import {convertMaterialDocxToImagePdf} from './material-pdf';
+import {materialPdfAttachments,materialPdfBaseNames,isLegacyHashAttachmentList} from './material-pdf';
+
+const DOUBAO_LEGAL_GROUP='315407cd-43db-49d1-8eb3-c2dff77af859';
+
+/** 飞书单个附件字段容纳不了超长分件列表时，保留每份独立 DOCX 于一个 ZIP。 */
+async function bundleDocxParts(files:NonNullable<Awaited<ReturnType<typeof readCurrentMaterialDocx>>>[],names:string[]){
+ const directory=await mkdtemp(join(tmpdir(),'ai-distill-feishu-parts-'));
+ try{
+  for(const [index,file] of files.entries())await writeFile(join(directory,names[index]!),file.bytes,{mode:0o600,flag:'wx'});
+  const output=join(directory,'分件材料.zip');
+  // Python zipfile 为非 ASCII 条目写入 UTF-8 标志；系统 zip 在部分 macOS 环境下会使中文名乱码。
+  const script='import sys,zipfile\nwith zipfile.ZipFile(sys.argv[1], "w", compression=zipfile.ZIP_STORED) as archive:\n for name in sys.argv[2:]: archive.write(name, arcname=name)';
+  const child=Bun.spawn({cmd:[process.env.PYTHON3_PATH??'python3','-c',script,output,...names],cwd:directory,stdout:'ignore',stderr:'pipe'});
+  if(await child.exited!==0)throw new SyncError('feishu_material_zip_failed');
+  return{bytes:await readFile(output),name:`分件材料（${names.length}份）.zip`};
+ }finally{await rm(directory,{recursive:true,force:true});}
+}
 
 /** 可见题目ID与隐藏系统ID均关联workflow UUID；普通文本字段不锁定或冻结。 */
 export async function syncArchivedWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,targetOverride?:FeishuTarget,allowRecreateDeleted=false,attachmentFormatOverride?:FeishuAttachmentFormat){
@@ -22,18 +41,22 @@ export async function syncArchivedWorkflowToFeishu(pool:Pool,workflowId:string,s
 }
 
 /** 显式上传当前出题结果为未完成草稿；不要求达标/归档，也不更改工作流步骤。 */
-export async function syncAuthoredWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,targetOverride?:FeishuTarget,revisionAttemptId?:string,attachmentFormatOverride?:FeishuAttachmentFormat){
- return syncWorkflowToFeishu(pool,workflowId,storageRoot,assetRoot,'draft',targetOverride,false,revisionAttemptId,attachmentFormatOverride);
+export async function syncAuthoredWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,targetOverride?:FeishuTarget,revisionAttemptId?:string,attachmentFormatOverride?:FeishuAttachmentFormat,combinedMaterial=false,replaceRecordId?:string){
+ return syncWorkflowToFeishu(pool,workflowId,storageRoot,assetRoot,'draft',targetOverride,false,revisionAttemptId,attachmentFormatOverride,combinedMaterial,replaceRecordId);
 }
 
-async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,stage:'draft'|'archived',targetOverride?:FeishuTarget,allowRecreateDeleted=false,revisionAttemptId?:string,attachmentFormatOverride?:FeishuAttachmentFormat){
+async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,stage:'draft'|'archived',targetOverride?:FeishuTarget,allowRecreateDeleted=false,revisionAttemptId?:string,attachmentFormatOverride?:FeishuAttachmentFormat,combinedMaterial=false,replaceRecordId?:string){
  workflowId=workflowId.toLowerCase();
+ // 草稿交付跨数据库校验和远端分页；子进程预算须覆盖整段会话，而非单次请求。
+ const openFeishuClient=()=>feishuClient(stage==='draft'?{timeoutMs:600_000}:{});
  const context=(await pool.query(`SELECT w.project_id,p.project_group_id,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1 AND w.deleted_at IS NULL AND p.deleted_at IS NULL`,[workflowId])).rows[0];
  if(!context)return{status:'not_applicable'};
  const settings=await readFeishuDeliveryConfig(pool,String(context.project_id));
  if(!settings)return{status:'not_applicable'};
  const target=targetOverride?validateFeishuTarget(targetOverride):settings.default_target;
  const attachmentFormat:FeishuAttachmentFormat=attachmentFormatOverride??settings.attachment_format??'docx';
+  // 法律主项目的飞书DOCX交付沿用合册，一题一份，保留文书边界标题。
+  combinedMaterial=attachmentFormat==='docx'&&(combinedMaterial||String(context.project_group_id)===DOUBAO_LEGAL_GROUP);
  const base=target.base_token;
  let tableId='table_id' in target?target.table_id:undefined;
  let db=await pool.connect(),connectionHeld=true;let transaction=false,archiveId:string|undefined,archiveAttemptId:string|undefined;
@@ -58,17 +81,20 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
   // 生成器自行管理事务；先归还连接再导出，避免占满池后等待第二条连接。
   db.release();connectionHeld=false;
   if(!initial.authoring_input)throw new VerificationError('feishu_authoring_materials_missing',['材料来源']);
-  // 以本次有效出题attempt的冻结输入校验材料来源，再由导出器按来源决定附件数量：
-  // 普通豆包材料按项目布局合册；选用材料快照逐文书导出。这里不自行拼接正文或改变顺序。
+  // 以本次有效出题attempt的冻结输入校验材料来源；法律主项目飞书DOCX合册，其余布局沿用导出器规则。
+  // 合册保留原卷文书顺序和边界，附件名不使用内部摘要。
   let exported:Awaited<ReturnType<typeof exportCurrentMaterialDocx>>;
-  try{exported=await exportCurrentMaterialDocx(pool,workflowId,storageRoot,assetRoot,undefined,{expectedAuthoringInput:initial.authoring_input});}
+  try{exported=await exportCurrentMaterialDocx(pool,workflowId,storageRoot,assetRoot,undefined,{expectedAuthoringInput:initial.authoring_input,...(combinedMaterial?{deliveryLayout:'combined' as const}:{})});}
   catch(error){if(error instanceof HTTPException&&error.status===409)throw new VerificationError('feishu_material_validation_failed',['附件数量/大小/版本/SHA-256']);throw error;}
   verification.materials='passed';
   const files:NonNullable<Awaited<ReturnType<typeof readCurrentMaterialDocx>>>[]=[];
+  const verifiedSource=await readCurrentRedactionForDocx(pool,workflowId);
   for(const artifact of exported.artifacts){
-   const file=await readCurrentMaterialDocx(pool,artifact.artifact_id,assetRoot);
+   const file=await readCurrentMaterialDocx(pool,artifact.artifact_id,assetRoot,{workflow_id:workflowId,source:verifiedSource});
    if(!file)throw new SyncError('feishu_attachment_missing');files.push(file);
   }
+  if(combinedMaterial&&files.length!==1)throw new SyncError('feishu_combined_attachment_count');
+  const pdfAttachments=attachmentFormat==='pdf'?await materialPdfAttachments(files,workflowId,storageRoot):undefined;
   db=await pool.connect();connectionHeld=true;
   // PgBouncer事务池不保证跨事务会话一致；锁必须位于同一显式事务中，并随事务结束释放。
   await db.query('BEGIN');transaction=true;
@@ -79,8 +105,8 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
 
   const lockedSnapshot=await snapshot();
   if(!lockedSnapshot||snapshotKey(lockedSnapshot)!==archiveId||(stage==='archived'&&lockedSnapshot.archive_attempt_id!==archiveAttemptId))throw new VerificationError('feishu_source_changed',['题目版本']);
-  api=await feishuClient();const tables=await api.list(`/bitable/v1/apps/${base}/tables`);
-  const remote=api;
+  api=await openFeishuClient();const tables=await api.list(`/bitable/v1/apps/${base}/tables`);
+  const remote={call:(path:string,method='GET',body?:unknown)=>api!.call(path,method,body)};
   const phase='table_name' in target?target.table_name:String(context.phase_name??'').trim();
   if(!tableId&&!phase)throw new SyncError('feishu_phase_missing');
   if(!tableId){
@@ -111,47 +137,56 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
   const matches=(await api.list(path+'/records')).filter(r=>r.fields?.['系统同步ID']===workflowId||r.fields?.['题目ID']===workflowId);
   if(matches.length>1)throw new VerificationError('feishu_duplicate_question_records',['题目ID重复']);
   const existing=matches[0];
-  const expected=feishuTextFields(workflowId,initial.question,stage==='draft'?'未完成':'已完成');
+  const existingCompletion=existing?.fields?.['题目是否完成'];
+  if(replaceRecordId&&(stage!=='draft'||revisionAttemptId||!existing||existing.record_id!==replaceRecordId||(existing.fields?.['系统同步ID']&&existing.fields['系统同步ID']!==workflowId)||existing.fields?.['题目ID']!==workflowId||!['未完成','已完成'].includes(existingCompletion)))throw new VerificationError('feishu_replace_identity_mismatch',['题目ID','系统同步ID','题目是否完成']);
+  const completionStatus=replaceRecordId?existingCompletion:stage==='draft'?'未完成':'已完成';
+  const expected=feishuTextFields(workflowId,initial.question,completionStatus);
   // 普通重试保留已上传旧版编号，不因展示改版覆盖正文；仍逐字符验证同版全部字段。
   const legacyExpected=feishuTextFields(workflowId,initial.question,stage==='draft'?'未完成':'已完成','legacy');
   if(existing&&!revisionAttemptId&&existing.fields?.['考点rubric']===legacyExpected['考点rubric'])expected['考点rubric']=legacyExpected['考点rubric']!;
-  // 飞书附件名按冻结DOCX字节摘要生成，扩展名随交付格式（docx/pdf）固定，保证草稿与归档跨机核对一致。
-  // 名称供已有记录比对，不代表远端文件字节已重新下载核验。
-  const digests=files.map(file=>createHash('sha256').update(file.bytes).digest('hex').slice(0,16));
-  const extension=attachmentFormat==='pdf'?'pdf':'docx',alternateExtension=extension==='pdf'?'docx':'pdf';
-  const currentAttachmentNames=digests.map(digest=>`材料-${digest}.${extension}`);
-  const alternateAttachmentNames=digests.map(digest=>`材料-${digest}.${alternateExtension}`);
+  // 飞书附件名直接使用分件导出产物的真实脱敏文书文件名（docx或同标题pdf/按页分册pdf），不再使用哈希命名。
+  // 当远端同题正文逐字符一致而附件仍为相反扩展名或历史哈希命名时，允许原地替换为当前真实文件名。
+  const pdfStems=materialPdfBaseNames(files),docxNames=combinedMaterial?['材料.docx']:pdfStems.map(stem=>`${stem}.docx`);
+  const zippedDocx=!pdfAttachments&&files.length>100?await bundleDocxParts(files,docxNames):undefined;
+  const currentAttachmentNames=zippedDocx?[zippedDocx.name]:pdfAttachments?pdfAttachments.map(file=>file.name):docxNames;
+  const alternateAttachmentNames=attachmentFormat==='pdf'?docxNames:pdfStems.map(stem=>`${stem}.pdf`);
   const hasAttachmentNames=(value:unknown,names:string[])=>Array.isArray(value)&&value.length===names.length&&value.every((file:any,index:number)=>file?.name===names[index]);
+  const matchesSplitPdfStems=(value:unknown)=>Array.isArray(value)&&value.length>0&&value.every((file:any)=>typeof file?.name==='string'&&pdfStems.some(stem=>file.name===`${stem}.pdf`||(file.name.startsWith(`${stem}-页`)&&file.name.endsWith('.pdf'))));
   const uploadCurrentAttachments=async()=>{
-   const payloads=attachmentFormat==='pdf'?await convertMaterialDocxToImagePdf(files,workflowId,storageRoot):files.map(file=>file.bytes);
-   const mimeType=attachmentFormat==='pdf'?'application/pdf':'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+   const payloads=zippedDocx?[zippedDocx.bytes]:pdfAttachments?pdfAttachments.map(file=>file.bytes):files.map(file=>file.bytes);
+   const mimeType=zippedDocx?'application/zip':attachmentFormat==='pdf'?'application/pdf':'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
    const attachments=[];
+   let sessionStartedAt=0;
    for(const [index,payload] of payloads.entries()){
+    if(!sessionStartedAt||Date.now()-sessionStartedAt>=45_000||payload.byteLength>=4_000_000){
+     await api!.close();api=await openFeishuClient();sessionStartedAt=Date.now();
+    }
     const filename=currentAttachmentNames[index]!;
     const form=new FormData();form.set('file_name',filename);form.set('parent_type','bitable_file');form.set('parent_node',base);form.set('size',String(payload.byteLength));form.set('file',new Blob([new Uint8Array(payload)],{type:mimeType}),filename);
     const uploaded=await api!.call('/drive/v1/medias/upload_all','POST',form);
     if(typeof uploaded.file_token!=='string')throw new SyncError('feishu_upload_missing_token');
     attachments.push({file_token:uploaded.file_token});
    }
+   await api!.close();api=await openFeishuClient();
    return attachments;
   };
   const assertCurrent=async()=>{
    const latest=await snapshot();
    if(!latest||snapshotKey(latest)!==archiveId||(stage==='archived'&&latest.archive_attempt_id!==archiveAttemptId)||canonicalJson(latest.question)!==canonicalJson(initial.question)||canonicalJson(latest.authoring_input)!==canonicalJson(initial.authoring_input))throw new VerificationError('feishu_source_changed',['题目版本']);
   };
-  // 新记录回读本次上传token；已有记录回读摘要文件名、数量及顺序，并逐字符核对题目字段。
-  // 当远端正文无差异且仅因同摘要材料在docx/pdf间切换或由草稿升为归档时，原地更新并回读新token。
+  // 新记录回读本次上传token；已有记录回读真实分件文件名、数量及顺序，并逐字符核对题目字段。
+  // 当远端正文无差异且仅因docx/pdf格式切换、历史哈希附件升级或由草稿升为归档时，原地更新并回读新token。
   // 此处不下载飞书附件，故成功回执只证明记录字段和附件关联的回读结果。
   const verify=async(recordId:string,uploadedTokens?:string[])=>{
    let readback=await remote.call(path+'/records/'+recordId),actual=readback.record?.fields??{};
    const compare=()=>{
     const differences=compareFeishuText(expected,actual),remoteFiles=actual['输入附件'];
-    if(!Array.isArray(remoteFiles)||remoteFiles.length!==files.length||remoteFiles.some((file:any,index:number)=>uploadedTokens?!uploadedTokens.includes(file.file_token):file.name!==currentAttachmentNames[index]))differences.push({field:'输入附件',expected_length:files.length,actual_length:Array.isArray(remoteFiles)?remoteFiles.length:null,first_difference:0});
+    if(!Array.isArray(remoteFiles)||remoteFiles.length!==currentAttachmentNames.length||remoteFiles.some((file:any,index:number)=>uploadedTokens?file.file_token!==uploadedTokens[index]:file.name!==currentAttachmentNames[index]))differences.push({field:'输入附件',expected_length:currentAttachmentNames.length,actual_length:Array.isArray(remoteFiles)?remoteFiles.length:null,first_difference:0});
     return differences;
    };
    let differences=compare();
    const canUpgradeStatus=stage==='archived'&&actual['题目是否完成']==='未完成';
-   const canSwitchFormat=!uploadedTokens&&hasAttachmentNames(actual['输入附件'],alternateAttachmentNames);
+   const canSwitchFormat=!uploadedTokens&&(hasAttachmentNames(actual['输入附件'],alternateAttachmentNames)||(attachmentFormat==='docx'&&matchesSplitPdfStems(actual['输入附件']))||isLegacyHashAttachmentList(actual['输入附件']));
    if(differences.length&&(canUpgradeStatus||canSwitchFormat)&&!differences.some((difference:any)=>!(canUpgradeStatus&&difference.field==='题目是否完成')&&!(canSwitchFormat&&difference.field==='输入附件'))){
     const updates:Record<string,unknown>={};
     if(canUpgradeStatus&&actual['题目是否完成']==='未完成')updates['题目是否完成']='已完成';
@@ -173,6 +208,24 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
    if(differences.length)throw new VerificationError('feishu_record_readback_mismatch',differences.map(x=>x.field));
   };
   let revisionUploadedTokens:string[]|undefined;
+  if(existing&&replaceRecordId){
+   const before=(await remote.call(path+'/records/'+replaceRecordId)).record?.fields??{};
+   if((before['系统同步ID']&&before['系统同步ID']!==workflowId)||before['题目ID']!==workflowId||before['题目是否完成']!==completionStatus)throw new VerificationError('feishu_replace_identity_mismatch',['题目ID','系统同步ID','题目是否完成']);
+   // 显式替换同时修正同名但内容错配的附件；仅比较文件名无法识别误传的材料.docx。
+   const changed=compareFeishuText(expected,before).length>0||!hasAttachmentNames(before['输入附件'],currentAttachmentNames)||Boolean(zippedDocx)||Boolean(replaceRecordId);
+   if(changed){
+    const uploaded=await uploadCurrentAttachments();
+    const fields:Record<string,unknown>={};
+    if(!before['系统同步ID'])fields['系统同步ID']=workflowId;
+    for(const key of ['任务名称','任务类型','prompt','考点rubric','作答思路','标准答案-文本'])if(before[key]!==expected[key])fields[key]=expected[key];
+    fields['输入附件']=uploaded;
+    await assertCurrent();
+    await remote.call(path+'/records/'+replaceRecordId,'PUT',{fields});
+    const after=(await remote.call(path+'/records/'+replaceRecordId)).record?.fields??{};
+    for(const key of new Set([...Object.keys(before),...Object.keys(after)]))if(!(key in fields)&&canonicalJson(before[key]??null)!==canonicalJson(after[key]??null))throw new VerificationError('feishu_unrelated_field_changed',[key]);
+    revisionUploadedTokens=uploaded.map(item=>item.file_token);
+   }
+  }
   if(existing&&revisionAttemptId){
    const revision=initial.question.manual_revision;
    if(stage!=='draft'||revision?.attempt_id!==revisionAttemptId)throw new VerificationError('feishu_revision_mismatch',['题目版本']);
@@ -193,8 +246,8 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
     const priorComparisons=[recordedStatus,recordedStatus==='已完成'?'未完成':'已完成'].flatMap(status=>(['numbered','legacy'] as const).map(layout=>compareFeishuText(feishuTextFields(workflowId,beforeQuestion,status as '已完成'|'未完成',layout),actual)));
     const differences=priorComparisons.find(items=>items.length===0)??priorComparisons[0]!;
     const previousAttachmentNames=revision.before?.attachment_names;
-    const previousAttachmentAlts=Array.isArray(previousAttachmentNames)?previousAttachmentNames.map((name:unknown)=>typeof name==='string'?name.replace(/\.docx$/,'.pdf'):''):[];
-    const subjectNameRevision=revision.kind==='subject_names',previousAttachmentsMatch=Array.isArray(previousAttachmentNames)&&previousAttachmentNames.length>0&&(hasAttachmentNames(actual['输入附件'],previousAttachmentNames)||hasAttachmentNames(actual['输入附件'],previousAttachmentAlts));
+    const previousAttachmentAlts=Array.isArray(previousAttachmentNames)?previousAttachmentNames.map((name:unknown)=>typeof name==='string'?name.replace(/\.docx$/i,'.pdf'):''):[];
+    const subjectNameRevision=revision.kind==='subject_names',previousAttachmentsMatch=(Array.isArray(previousAttachmentNames)&&previousAttachmentNames.length>0&&(hasAttachmentNames(actual['输入附件'],previousAttachmentNames)||hasAttachmentNames(actual['输入附件'],previousAttachmentAlts)))||isLegacyHashAttachmentList(actual['输入附件']);
     if(differences.length||(subjectNameRevision?!previousAttachmentsMatch:!currentAttachments))throw new VerificationError('feishu_revision_old_value_conflict',[...differences.map((d:any)=>d.field),...((subjectNameRevision?previousAttachmentsMatch:currentAttachments)?[]:['输入附件'])]);
     const mutableFields=['任务名称','任务类型','prompt','考点rubric','作答思路','标准答案-文本','题目是否完成'];
     const fields:Record<string,unknown>=Object.fromEntries(mutableFields.filter(key=>actual[key]!==expected[key]).map(key=>[key,expected[key]]));

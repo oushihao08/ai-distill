@@ -1,6 +1,5 @@
 /** 验证同步编排的旧记录回读、补ID、重复、版本变化与网络失败；所有数据库、DOCX、飞书均用替身，无真实写入。 */
 import {expect,test,mock} from 'bun:test';
-import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {feishuTextFields} from './feishu-verification';
 // mock.module为进程级替身；隔离子进程，避免污染同次运行的材料/路由测试。
@@ -11,9 +10,9 @@ if(process.env.AI_DISTILL_FEISHU_TEST_ISOLATED!=='1'){
  });
 }else{
 const id='11111111-1111-4111-8111-111111111111',base='base1234567890',table='tbl123456789',bytes=Buffer.from('verified docx');
-const filename=`材料-${createHash('sha256').update(bytes).digest('hex').slice(0,16)}.docx`;
+const filename='001-民事起诉状.docx';
 let state:any;
-mock.module('../materials/redacted-docx-export',()=>({exportCurrentMaterialDocx:async(...args:any[])=>{state.exportOptions=args[5];return{artifacts:[{artifact_id:'docx'}]};},readCurrentMaterialDocx:async()=>({bytes,filename:'脱敏材料.docx'})}));
+mock.module('../materials/redacted-docx-export',()=>({exportCurrentMaterialDocx:async(...args:any[])=>{state.exportOptions=args[5];return{artifacts:[{artifact_id:'docx'}]};},readCurrentMaterialDocx:async()=>({bytes,filename})}));
 mock.module('./feishu-targets',()=>({readFeishuDeliveryConfig:async()=>({default_target:{base_token:base,table_id:table}}),validateFeishuTarget:(x:any)=>x}));
 mock.module('../logging',()=>({logEvent:()=>{}}));
 mock.module('./feishu-api',()=>({SyncError:class extends Error{constructor(public code:string){super(code);}},ensureFeishuSchema:async()=>{},createFeishuTable:async()=>({table_id:table}),removeEmptyFeishuRows:async()=>{},feishuClient:async()=>({close:async()=>{state.closed=true;},list:async(path:string)=>path.endsWith('/records')?state.rows:[],call:async(path:string,method='GET',body?:any)=>{

@@ -454,9 +454,8 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     model: job.config.provider === 'web' ? `web:${job.config.web.provider}` : job.config.model,
                     reasoning_effort: job.config.provider === 'web' ? 'none' : job.config.reasoning_effort,
                     provider: job.config.provider,
-                    // 业务心跳只证明执行器存活，不能让始终没有完整结果的调用无限占槽。
-                    // 出题单次墙钟时间硬限制为 30 分钟；到线后由现有失败结算释放本机容量。
-                    timeout_ms: Math.min(job.config.timeout_ms ?? 1_800_000, 1_800_000),
+                    // 使用派发时冻结的墙钟时限；到线后由现有失败结算释放本机容量。
+                    timeout_ms: job.config.timeout_ms ?? 1_800_000,
                     signal,
                     execute: options => runExternalCall({
                         attempt_id: job.id, operation: 'author'

@@ -8,6 +8,7 @@ import {projectStepExecution} from '../execution-queue/status';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {currentTaskSignal} from '../task-signal';
+import {AsyncLocalStorage} from 'node:async_hooks';
 import {HTTPException} from 'hono/http-exception';
 import {canonicalJson} from '../../shared/workflow-config';
 import {AGENT_TEXT_REDACTION_PROTOCOL} from '../../shared/agent-material-plan';
@@ -119,6 +120,17 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
    if(previousRequest.input_snapshot?.request_digest!==requestDigest)throw conflict('同一任务请求标识对应不同输入');
    await db.query('COMMIT');forgetLocalRegistrations(db);return{id:previousRequest.id,reused:true};
   }
+  // 同版原件已成功提取时直接返回既有身份；模型、provider、配置或请求键变化不要求重提取。
+  if(request.kind==='extract'&&!request.previous_job_id&&files.length){
+   const completed=(await db.query(`SELECT j.id FROM ai_distill.library_jobs j
+    WHERE j.revision_id=$1 AND j.kind='extract' AND j.status='succeeded'
+     AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.extraction_job_id=j.id AND d.revision_id=$1)=$2
+     AND NOT EXISTS(SELECT 1 FROM ai_distill.library_files f JOIN ai_distill.library_blobs b ON b.id=f.blob_id
+      WHERE f.revision_id=$1 AND NOT EXISTS(SELECT 1 FROM ai_distill.library_documents d
+       WHERE d.extraction_job_id=j.id AND d.file_id=f.id AND d.source_sha256=b.sha256))
+    ORDER BY j.finished_at DESC,j.id DESC LIMIT 1`,[revisionId,files.length])).rows[0];
+   if(completed){await db.query('COMMIT');forgetLocalRegistrations(db);return{id:completed.id,reused:true};}
+  }
   const settings=(await readLibraryProcessingSettings(db,storageRoot)).processing_settings as Record<string,any>;
   const projectMode=request.project_id?await readProjectMaterialProcessingMode(db,request.project_id):undefined;
   if(request.kind==='extract'&&files.some(file=>['pdf','docx','png','jpg','jpeg'].includes(fileFormat(file.original_name)))){
@@ -128,6 +140,16 @@ export async function enqueueLibraryJob(pool:Pool,packageId:string,revisionId:st
   const template=request.kind==='redact'?resolveLibraryTemplate(settings,projectMode?projectRedactionTemplate(projectMode,request.template_id):request.template_id):undefined;
   // 请求重放已在上方返回；此处只拒绝新建旧流程，不改写历史任务快照。
   if(template&&template.workflow!=='codex_plan')throw conflict('字段映射脱敏已退役，请选择Agent化名模板');
+  if(request.kind==='redact'&&!request.previous_job_id){
+   const completed=(await db.query(`SELECT j.id FROM ai_distill.library_redactions r
+    JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id AND j.status='succeeded'
+    WHERE r.revision_id=$1 AND r.validation_report->>'usable_for_question'='true'
+     AND r.validation_report->>'material_processing_mode'='aliases'
+     AND (j.result_summary->'latest_program_validation'->>'valid') IS DISTINCT FROM 'false'
+     AND EXISTS(SELECT 1 FROM ai_distill.library_jobs e WHERE e.id=$2 AND e.revision_id=$1 AND e.kind='extract' AND e.status='succeeded')
+    ORDER BY r.created_at DESC LIMIT 1`,[revisionId,request.extraction_job_id])).rows[0];
+   if(completed){await db.query('COMMIT');forgetLocalRegistrations(db);return{id:completed.id,reused:true};}
+  }
   if(template?.workflow==='codex_plan'){
    // 所有项目共用材料库的脱敏模型；仅旧API配置缺少Agent模型时回退通用默认。
    const agentSettings=request.api_settings||request.web_settings?undefined:request.agent_settings??(isRegisteredAgentProvider(settings.redaction?.provider)
@@ -265,6 +287,12 @@ export async function validateAtomicPublicationConstraints(db:Pick<import('pg').
  }
 }
 
+// 发布事务取得任务行锁后，独占提交权；通知所属 runner 停止竞争同一行的租约心跳。
+const publicationLockContext=new AsyncLocalStorage<{jobId:string;onLocked:()=>void}>();
+export function withLibraryPublicationLock<T>(jobId:string,onLocked:()=>void,run:()=>Promise<T>){
+ return publicationLockContext.run({jobId,onLocked},run);
+}
+
 export async function finishLibraryJob(pool:Pool,jobId:string,leaseToken:string,resultSummary:Record<string,unknown>,publish:(db:import('pg').PoolClient)=>Promise<void>){
  const signal=currentTaskSignal();signal?.throwIfAborted();if(localCancellationRequested())throw new Error('本机任务已取消');
  const db=await pool.connect();
@@ -273,6 +301,7 @@ export async function finishLibraryJob(pool:Pool,jobId:string,leaseToken:string,
   const job=(await db.query("SELECT id,revision_id,input_snapshot ? 'atomic_import' AS atomic_import FROM ai_distill.library_jobs WHERE id=$1 AND lease_token=$2 AND status='running' AND cancel_requested_at IS NULL AND lease_expires_at>now() AND deadline_at>now() FOR UPDATE",[jobId,leaseToken])).rows[0];
   if(!job)throw conflict('材料任务已取消、失租或超过执行期限，结果未发布');
   signal?.throwIfAborted();
+  const guard=publicationLockContext.getStore();if(guard?.jobId===jobId)guard.onLocked();
   await publish(db);
   signal?.throwIfAborted();
   const saved=await db.query("UPDATE ai_distill.library_jobs SET status='succeeded',result_summary=$3::jsonb,finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1 AND lease_token=$2 AND status='running' RETURNING id",[jobId,leaseToken,JSON.stringify(resultSummary)]);

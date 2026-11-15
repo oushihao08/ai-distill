@@ -17,7 +17,7 @@
 | `jobs.ts` | 旧步骤2入队、冻结MinerU配置/转换版本、按执行端领取/缓存/发布；更新步骤1处理状态，非全局库队列。 |
 | `process.ts` | `processMaterials()`核对原件/缓存，生成私有页结构；只对可重试问题页做一次子集复识别并保留issues，无页级能力则标记不可复查，不整份重传。旧无调用的检查点清理入口已移除，不删除历史缓存。 |
 | `pdf.ts` | 当前共享Page/DocumentBlock和确定性`documentBlocksToText()`；`command()`封装Poppler；`extractPdf()`是旧Vision页级路径，非当前MinerU主入口。 |
-| `pdf-split.ts` | `splitLargePdf()`供旧目录同步，按页/大小拆至受管缓存，不修改来源；不是所有全局库上传的自动拆片器；有qpdf时按范围导出并清除未引用资源，避免共享资源被逐页重复携带，无qpdf仍用Poppler兼容路径。 |
+| `pdf-split.ts` | `splitLargePdf()`供旧目录同步和飞书材料PDF分册（可显式指定大小、页数和受管缓存根目录，旧调用默认值不变），按页/大小拆至受管缓存，不修改来源；不是所有全局库上传的自动拆片器；有qpdf时按范围导出并清除未引用资源，避免共享资源被逐页重复携带，无qpdf仍用Poppler兼容路径。 |
 | `pdf-extraction/` | MinerU API/CLI与结构转换，详见本目录README。 |
 | `config.ts` | `loadExtractionConfig()`读JSON兼容识别配置，仅用EXTRACTION_CONFIG_PATH选文件；不是当前MinerU逐字段环境配置合并器。 |
 | `vision.ts` | 旧智谱聊天视觉/实体客户端，保留调查与测试路径；独立GLM-OCR版面解析不复用此客户端。 |
@@ -110,7 +110,9 @@ PNG/JPG/JPEG提取只使用MinerU API原图直传，不转PDF，不调用或回�
 
 ### 材料DOCX布局与来源顺序
 
-材料DOCX布局由 `../lifecycle/material-docx.ts` 按主项目选择：默认 `separate`，按分册名称逐份输出且不额外插入正文标题；豆包高经济价值（兼容旧名豆包高经）对普通来源注册 `combined`。**新材料库选用材料快照**带`selected_materials`标记，导出器强制采用`separate`，即使项目注册了合册布局也逐文书输出。不能把豆包交付概括为所有来源固定一份附件。
+`preparedDocxFilename()` 与飞书交付共用 `shared/material-filenames.ts`：保留业务文书名称、移除历史哈希或UUID片段，以文书顺序号防止重名覆盖。净化只影响导出名称，不改冻结标题、正文或来源摘要；原文与脱敏来源边界不变。
+
+材料DOCX布局由 `../lifecycle/material-docx.ts` 按主项目选择：默认 `separate`，按分册名称逐份输出且不额外插入正文标题；豆包高经济价值显式注册 `separate`（逐份脱敏文书真实名称输出；无整理结果的历史脱敏回退分册优先提取脱敏首标题或使用“脱敏材料”，不暴露未脱敏原件名），仅旧名豆包高经保留历史 `combined` 兼容。**新材料库选用材料快照**带`selected_materials`标记，导出器强制采用`separate`，即使项目注册了合册布局也逐文书输出。不能把豆包交付概括为固定一份附件。
 
 题目冻结快照含材料整理结果时，按其中可见文书的顺序和边界导出；没有整理结果时，按该题原件顺序使用冻结正文/结构。整理结果存在但没有可见文书时明确拒绝，不回退整包正文。合并时复用与分册名相同的首标题，缺少时补文书边界标题；同名分册标“第N份”，`duplicate_of`关联标“重复件”，不因此删除正文或扫描件。合册只组合显示副本，不修改脱敏结果或冻结快照，也不重新OCR。`planMaterialDocxExports()`是实际导出与本地验收共用的纯计划入口；飞书上传与题目ID绑定见[交付流程](../publishing/README.md#材料附件生成上传与题目绑定)。
 

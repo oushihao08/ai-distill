@@ -52,6 +52,18 @@ export async function executeOperation(api:FeishuClient,operation:Operation):Pro
   case 'list':return api.list(operation.path!);
   case 'upload':{
    const file=Bun.file(operation.file!);const info=await stat(operation.file!);if(!info.isFile())throw new FeishuError('feishu_upload_not_file');
+   // 大附件使用分片素材上传；保留PDF原字节，不降低清晰度，不自动重试。
+   if(file.size>20*1024*1024){
+    const prepared=await api.call('/drive/v1/medias/upload_prepare','POST',{file_name:operation.name??file.name?.split('/').at(-1)??'file',parent_type:'bitable_file',parent_node:operation.parent!,size:file.size});
+    const {upload_id,block_size,block_num}=prepared;
+    if(typeof upload_id!=='string'||!Number.isSafeInteger(block_size)||block_size<1||!Number.isSafeInteger(block_num)||block_num!==Math.ceil(file.size/block_size))throw new FeishuError('feishu_upload_prepare_invalid');
+    for(let seq=0;seq<block_num;seq++){
+     const part=file.slice(seq*block_size,Math.min(file.size,(seq+1)*block_size));
+     const form=new FormData();form.set('upload_id',upload_id);form.set('seq',String(seq));form.set('size',String(part.size));form.set('file',part,'part');
+     await api.call('/drive/v1/medias/upload_part','POST',form);
+    }
+    return api.call('/drive/v1/medias/upload_finish','POST',{upload_id,block_num});
+   }
    const form=new FormData();form.set('file_name',operation.name??file.name?.split('/').at(-1)??'file');form.set('parent_type','bitable_file');form.set('parent_node',operation.parent!);form.set('size',String(file.size));form.set('file',file);
    return api.call('/drive/v1/medias/upload_all','POST',form);
   }

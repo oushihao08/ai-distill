@@ -108,3 +108,9 @@ worker监控和`/api/monitor`只投影活动、待登记、待同步及待核实
 ## 网页Agent通道（lane=web）
 
 网页Agent（DeepSeek/Gemini网页对话）使用独立`web`通道：槽位默认6，可由`WEB_AGENT_SLOTS`（1–6，超出夹取，非数字取默认）覆盖；跨进程槽位目录为`<STORAGE_DIR>/.execution-web-slots`，不占Agent/API槽位，待领取容量与运行上限同样按lane独立计数（`GET /api/system/execution-queue`的`capacity.web`；超限返回429且`lane=web`、消息显示“网页Agent”）。仅mode为`local`/`all`的worker消费该通道，`server`/`materials`/`api`模式不启用。该通道仅承载材料整理（`library_jobs.kind='prepare'`、`executor_kind='web'`，只允许本机目标；`redact` 仅离线作业台使用 `web`）与出题（步骤ordinal 4，`config.provider='web'`，route仍为`authoring`）；步骤的lane由出题派发处按冻结provider登记，`POST /adopt`同样按provider解析。需要064迁移放宽`execution_dispatches.lane`与`library_jobs`约束；库任务在legacy模式下拒绝web派发。浏览器会话/站点操作由`server/web-agent/`与`server/web-executors/`负责，本目录只处理排队、容量与领取。
+
+## 多终端身份对账
+
+`GET /api/system/execution-queue`每项保留lane/state/generation，并增加 `executor_id` 和仅running时的 `claimed_by_pid`；活动step/library/advice按同ID读取冻结的 `provider`、`requested_model`、`reasoning_effort`，历史终态及不支持的任务保持null。监控接口提供相同领取标记；不返回租约令牌、完整配置或检查点。冻结身份读取失败明确失败/partial，不使用旧配置补值。
+
+同机多个终端必须请求同一服务，或显式共用同一STORAGE_DIR及其runtime队列、槽位数据库；任务主键、BEGIN IMMEDIATE原子领取、PID/租约及PG executor/generation共同约束同一任务的消费。不共用运行目录的独立服务不是一个共享槽位池；不同机器不迁移或重新认领正在运行和未知任务。不要仅按界面排队标签重新派发。本次增加可见标记，不改变既有领取/替代策略，也不证明未观察的其他机器已升级。

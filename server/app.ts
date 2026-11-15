@@ -261,7 +261,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
    return c.json(await response.json());
   }
   const executionQueue=localQueueEnabled()?localQueue(storageRoot):null;
-  const local_execution_queue=executionQueue?{executor_id:executionQueue.executorId,items:executionQueue.monitorJobs().map(({id,kind,lane,state,updated_at,cancel_requested})=>({id,kind,lane,state,updated_at,cancel_requested}))}:null;
+  const local_execution_queue=executionQueue?{executor_id:executionQueue.executorId,items:executionQueue.monitorJobs().map(({id,kind,lane,state,updated_at,cancel_requested,pid,generation})=>({id,kind,lane,state,updated_at,cancel_requested,executor_id:executionQueue.executorId,claimed_by_pid:state==='running'?pid:null,generation}))}:null;
   const activeAdviceIds=local_execution_queue?.items.filter(job=>job.kind==='advice').map(job=>job.id)??[];
   const [monitor,active_workflow_tasks,material_library,logging]=await Promise.all([
    readWorkerMonitor(storageRoot),
@@ -271,10 +271,11 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   ]);
   if(local_execution_queue){
    const own=new Map(local_execution_queue.items.map(job=>[job.id,job]));
-   active_workflow_tasks.items=active_workflow_tasks.items.filter(job=>own.has(job.attempt_id)).map(job=>({...job,state:own.get(job.attempt_id)!.state}));
+   const ownership=(id:string)=>{const item=own.get(id)!;return{executor_id:item.executor_id,claimed_by_pid:item.claimed_by_pid,generation:item.generation,state:item.state};};
+   active_workflow_tasks.items=active_workflow_tasks.items.filter(job=>own.has(job.attempt_id)).map(job=>({...job,...ownership(job.attempt_id)}));
    if(material_library.status==='known'){
     const counts=executionQueue!.stateCounts('library');
-    material_library.items=material_library.items.filter(job=>own.has(job.job_id)).map(job=>({...job,state:own.get(job.job_id)!.state}));
+    material_library.items=material_library.items.filter(job=>own.has(job.job_id)).map(job=>({...job,...ownership(job.job_id)}));
     material_library.totals={...material_library.totals,queued:counts.queued??0,running:counts.running??0,succeeded:counts.committed??0,failed:counts.failed??0,cancelled:counts.cancelled??0};
    }
   }
@@ -883,10 +884,12 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  app.post('/api/workflows/:id/feishu-draft-sync',async c=>{
   const raw=await c.req.text();let body:Record<string,unknown>={};
   if(raw.trim()){try{const parsed=JSON.parse(raw);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('invalid');body=parsed;}catch{throw new HTTPException(400,{message:'请提交有效JSON对象'});}}
-  if(Object.keys(body).some(key=>!['target','revision_attempt_id','attachment_format'].includes(key)))throw new HTTPException(400,{message:'仅允许target、revision_attempt_id和attachment_format'});
+  if(Object.keys(body).some(key=>!['target','revision_attempt_id','attachment_format','combined_material','replace_record_id'].includes(key)))throw new HTTPException(400,{message:'草稿同步参数无效'});
   const target=body.target===undefined?undefined:validateFeishuTarget(body.target);
   const attachmentFormat=body.attachment_format===undefined?undefined:validateFeishuAttachmentFormat(body.attachment_format);
-  const result=await syncAuthoredWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,body.revision_attempt_id===undefined?undefined:uuid(String(body.revision_attempt_id)),attachmentFormat);
+  if(body.combined_material!==undefined&&(body.combined_material!==true||attachmentFormat!=='docx'))throw new HTTPException(400,{message:'combined_material仅在显式DOCX交付时可设为true'});
+  if(body.replace_record_id!==undefined&&(body.revision_attempt_id!==undefined||typeof body.replace_record_id!=='string'||!/^rec[A-Za-z0-9]+$/.test(body.replace_record_id)))throw new HTTPException(400,{message:'替换旧题须指定有效记录ID，且不可同时指定修订attempt'});
+  const result=await syncAuthoredWorkflowToFeishu(pool,uuid(c.req.param('id')),storageRoot,assetExportRoot,target,body.revision_attempt_id===undefined?undefined:uuid(String(body.revision_attempt_id)),attachmentFormat,body.combined_material===true,body.replace_record_id as string|undefined);
   return c.json(result);
  });
  app.post('/api/workflows/:id/material-docx',async c=>{

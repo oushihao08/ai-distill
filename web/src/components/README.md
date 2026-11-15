@@ -120,3 +120,5 @@ LibraryPreparationPanel刷新时恢复该版本最近整理任务，展示当前
 材料库图片候选的后端参数为 `preserve_images` 和逐文件 `image_review_files`；仅标记文件提取图片。图文DOCX是原文模式题目完成逐图整理后的独立下载，纯文本DOCX仍单独生成。
 
 任务监控：`WorkerMonitor` 接收固定 `source` 与 `label`，按服务读取心跳与队列；`ActiveWorkflowTasks` 显示项目任务的排队、运行和恢复状态。材料库另列业务阶段、执行方式和位置，不将 API 等同于聊天模型。
+
+监控身份：`ActiveWorkflowTasks`和`WorkerMonitor`材料库明细展示任务冻结请求后端（Codex/AGY或API provider）、模型/推理档位、完整任务ID、executor ID、代次及领取worker PID；通道与请求后端分别显示。旧API缺字段显示待核实，不猜模型；领取不等于供应商仍在生成。实际防重由后端队列完成，组件不参与领取。

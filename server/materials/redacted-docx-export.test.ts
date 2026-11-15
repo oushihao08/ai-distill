@@ -84,7 +84,7 @@ test('new phase exports use project, phase, and question directory levels',async
  const f=await fixture({parentName:'豆包高经济价值',phaseName:'第五期',sourceKey:'题目3'});
  const result=await exportRedactedDocx(f.pool,workflowId,f.storageRoot,f.projectExportsRoot);
  expect(result.archive_path).toBe('附件库/豆包高经济价值/第五期/题目3');
- expect(f.docxArtifacts[0]?.storage_path).toBe(`附件库/豆包高经济价值/第五期/题目3/成果/脱敏材料.docx`);
+ expect(f.docxArtifacts[0]?.storage_path).toBe(`附件库/豆包高经济价值/第五期/题目3/成果/001-脱敏材料.docx`);
  expect(await Bun.file(join(f.projectExportsRoot,f.docxArtifacts[0]!.storage_path)).exists()).toBe(true);
 });
 
@@ -283,7 +283,8 @@ test('layout policy defaults to separate documents and combines only registered 
  const sections=[{id:'a',title:'民事起诉状',document},{id:'b',title:'民事起诉状',document:structuredClone(document)}],before=JSON.stringify(sections);
  expect(materialDocxLayout({parent_name:'Work法律全场景'})).toBe('separate');
  expect(materialDocxLayout({parent_name:'其他项目'})).toBe('separate');
- expect(materialDocxLayout({parent_name:'豆包高经济价值'})).toBe('combined');
+ expect(materialDocxLayout({parent_name:'豆包高经济价值'})).toBe('separate');
+ expect(materialDocxLayout({parent_name:'豆包高经'})).toBe('combined');
  const separate=planMaterialDocxExports(sections,'separate','redacted');
  expect(separate.map(d=>d.filename)).toEqual(['001-民事起诉状.docx','002-民事起诉状.docx']);
  expect(separate[0]!.document.pages[0]!.blocks).toHaveLength(2);

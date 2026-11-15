@@ -13,6 +13,56 @@ export const GLM_OCR_VERSION='glm-ocr-layout-structured-v1';
 const MAX_BYTES=50*1024*1024,MAX_PAGES=100,TIMEOUT_MS=30*60*1000;
 const isRecord=(value:unknown):value is Record<string,unknown>=>Boolean(value&&typeof value==='object'&&!Array.isArray(value));
 
+type GlmErrorKind='authentication'|'rate_limit'|'network'|'timeout'|'provider'|'configuration'|'invalid_response';
+// 仅附带固定分类与状态，不携带供应商正文、原始异常 cause、请求地址或凭证。
+function glmError(kind:GlmErrorKind,reason_code:string,message:string,http_status?:number){
+ return Object.assign(new Error(message),{kind,reason_code,...(http_status!==undefined?{http_status}:{})});
+}
+
+function checkStopped(signal:AbortSignal|undefined,active:AbortSignal){
+ // 外层取消/截止原因由任务拥有，保留其原始身份，不能包装成网络失败。
+ signal?.throwIfAborted();
+ if(active.aborted)throw glmError('timeout','glm_ocr_timeout','GLM-OCR请求超过30分钟');
+}
+
+/** 同一次 layout 请求覆盖响应体读取；任何失败都不自动重传原件。 */
+async function requestGlmLayout(bytes:Buffer,env:NodeJS.ProcessEnv,fetcher:typeof fetch,active:AbortSignal,signal?:AbortSignal,cropImages=false):Promise<unknown>{
+ checkStopped(signal,active);
+ const key=env.ZHIPU_API_KEY?.trim();
+ if(!key)throw glmError('configuration','glm_ocr_missing_key','未配置 ZHIPU_API_KEY');
+ let url:URL;
+ try{
+  url=new URL(`${(env.ZHIPU_BASE_URL??'https://open.bigmodel.cn/api/paas/v4').replace(/\/$/,'')}/layout_parsing`);
+  if(!['https:','http:'].includes(url.protocol)||url.username||url.password)throw new Error('invalid endpoint');
+ }catch{throw glmError('configuration','glm_ocr_invalid_endpoint','GLM-OCR接口地址配置无效');}
+ let response:Response;
+ try{
+  response=await fetcher(url,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:'glm-ocr',file:`data:application/pdf;base64,${bytes.toString('base64')}`,...(cropImages?{return_crop_images:true}:{}),request_id:crypto.randomUUID()}),signal:active});
+ }catch(error){
+  checkStopped(signal,active);
+  if(error instanceof Error&&error.name==='TimeoutError')throw glmError('timeout','glm_ocr_timeout','GLM-OCR请求超时');
+  throw glmError('network','glm_ocr_request_failed','GLM-OCR请求连接失败');
+ }
+ checkStopped(signal,active);
+ if(!response.ok){
+  const status=response.status,kind=status===401||status===403?'authentication':status===429?'rate_limit':status===408||status===504?'timeout':'provider';
+  const failure=glmError(kind,`glm_ocr_http_${status}`,`GLM-OCR返回HTTP ${status}`,status);
+  // 不读取错误响应正文；释放响应流，且清理异常不能覆盖已收到的 HTTP 失败。
+  try{await response.body?.cancel();}catch{throw failure;}
+  throw failure;
+ }
+ let raw:unknown;
+ try{raw=await response.json();}
+ catch(error){
+  checkStopped(signal,active);
+  if(error instanceof Error&&error.name==='TimeoutError')throw glmError('timeout','glm_ocr_timeout','GLM-OCR响应读取超时',response.status);
+  if(error instanceof SyntaxError)throw glmError('invalid_response','glm_ocr_invalid_json','GLM-OCR返回无效JSON',response.status);
+  throw glmError('network','glm_ocr_response_read_failed','GLM-OCR响应读取失败',response.status);
+ }
+ checkStopped(signal,active);
+ return raw;
+}
+
 function decodeHtml(value:string){
  const named:Record<string,string>={nbsp:'\u00a0',amp:'&',lt:'<',gt:'>',quot:'"',apos:"'"};
  return value.replace(/&(#x[\da-f]+|#\d+|nbsp|amp|lt|gt|quot|apos);/gi,(raw,entity:string)=>{
@@ -87,10 +137,10 @@ function textBlocks(id:string,content:string,defaultKind:'paragraph'|'caption'|'
 }
 
 function blockFromLayout(value:unknown,page:number,index:number):DocumentBlock[]{
- if(!isRecord(value))throw new Error(`GLM-OCR第${page}页布局块无效`);
+ if(!isRecord(value))throw glmError('invalid_response','glm_ocr_invalid_block',`GLM-OCR第${page}页布局块无效`);
  const content=value.content;
  if(content===undefined)return[];
- if(typeof content!=='string')throw new Error(`GLM-OCR第${page}页布局块正文无效`);
+ if(typeof content!=='string')throw glmError('invalid_response','glm_ocr_invalid_content',`GLM-OCR第${page}页布局块正文无效`);
  const id=`p${page}-b${index+1}`,label=typeof value.label==='string'?value.label.toLowerCase():'',native=typeof value.native_label==='string'?value.native_label.toLowerCase():'';
  if(label==='table'||native==='table'){
   const rows=parseTableHtml(content);
@@ -109,11 +159,11 @@ function blockFromLayout(value:unknown,page:number,index:number):DocumentBlock[]
 }
 
 export function parseGlmOcrResponse(value:unknown,expectedPages:number):Page[]{
- if(!isRecord(value)||!isRecord(value.data_info)||value.model!=='glm-ocr')throw new Error('GLM-OCR响应结构无效');
+ if(!isRecord(value)||!isRecord(value.data_info)||value.model!=='glm-ocr')throw glmError('invalid_response','glm_ocr_invalid_structure','GLM-OCR响应结构无效');
  const reported=value.data_info.num_pages,details=value.layout_details;
- if(reported!==expectedPages||!Array.isArray(details)||details.length!==expectedPages)throw new Error('GLM-OCR返回页数与原件不一致');
+ if(reported!==expectedPages||!Array.isArray(details)||details.length!==expectedPages)throw glmError('invalid_response','glm_ocr_page_mismatch','GLM-OCR返回页数与原件不一致');
  return details.map((layout,pageIndex)=>{
-  if(!Array.isArray(layout))throw new Error(`GLM-OCR第${pageIndex+1}页布局无效`);
+  if(!Array.isArray(layout))throw glmError('invalid_response','glm_ocr_invalid_layout',`GLM-OCR第${pageIndex+1}页布局无效`);
   const structure=layout.flatMap((block,index)=>blockFromLayout(block,pageIndex+1,index));
   const text=documentBlocksToText(structure),issues=text.trim()?undefined:['empty_page'];
   return{page:pageIndex+1,text,structure,method:'ocr',model:'glm-ocr',...(pageIndex===0&&value.usage!==undefined?{usage:value.usage}:{}),...(issues?{issues}:{})};
@@ -122,13 +172,11 @@ export function parseGlmOcrResponse(value:unknown,expectedPages:number):Page[]{
 
 /** 保图模式专用：只取版面识别出的独立图片裁块，正文仍由原提取供应商负责。 */
 export async function extractGlmOcrImageRegions(path:string,signal?:AbortSignal,env:NodeJS.ProcessEnv=process.env,fetcher:typeof fetch=fetch):Promise<{page:number;position:number;native_label:string;bytes:Uint8Array;content_type:'image/png'|'image/jpeg'}[]>{
+ signal?.throwIfAborted();
  const bytes=await readFile(path),info=await command(['pdfinfo',path]),pageCount=Number(info.match(/^Pages:\s+(\d+)/m)?.[1]);
  if(!Number.isInteger(pageCount)||pageCount<1||bytes.length>MAX_BYTES||pageCount>MAX_PAGES)throw new Error('GLM-OCR图片裁块原件超过限制');
- const key=env.ZHIPU_API_KEY?.trim();if(!key)throw new Error('保图模式需要 ZHIPU_API_KEY');
  const active=signal?AbortSignal.any([signal,AbortSignal.timeout(TIMEOUT_MS)]):AbortSignal.timeout(TIMEOUT_MS);
- const response=await fetcher(`${(env.ZHIPU_BASE_URL??'https://open.bigmodel.cn/api/paas/v4').replace(/\/$/,'')}/layout_parsing`,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:'glm-ocr',file:`data:application/pdf;base64,${bytes.toString('base64')}`,return_crop_images:true,request_id:crypto.randomUUID()}),signal:active});
- if(!response.ok)throw new Error(`GLM-OCR图片裁块返回HTTP ${response.status}`);
- const raw:unknown=await response.json();
+ const raw=await requestGlmLayout(bytes,env,fetcher,active,signal,true);
  if(!isRecord(raw)||raw.model!=='glm-ocr'||!isRecord(raw.data_info)||raw.data_info.num_pages!==pageCount||!Array.isArray(raw.layout_details)||raw.layout_details.length!==pageCount)throw new Error('GLM-OCR图片裁块页数或结构无效');
  const images:{page:number;position:number;native_label:string;bytes:Uint8Array;content_type:'image/png'|'image/jpeg'}[]=[];
  for(const [pageIndex,layout] of raw.layout_details.entries()){
@@ -154,18 +202,13 @@ export class GlmOcrPdfExtractor implements PdfExtractionProvider{
  readonly id='glm-ocr' as const;
  constructor(private readonly env:NodeJS.ProcessEnv=process.env,private readonly fetcher:typeof fetch=fetch){}
  async extract(path:string,signal?:AbortSignal):Promise<PdfExtractionResult>{
+  signal?.throwIfAborted();
   const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex');
   const info=await command(['pdfinfo',path]),pageCount=Number(info.match(/^Pages:\s+(\d+)/m)?.[1]);
   if(!Number.isInteger(pageCount)||pageCount<1)throw new Error('PDF页数无效');
   if(bytes.length>MAX_BYTES||pageCount>MAX_PAGES)throw new Error('文件超过GLM-OCR单文件限制（50 MiB、100页），请先使用材料预处理切片');
-  const key=this.env.ZHIPU_API_KEY?.trim();if(!key)throw new Error('未配置 ZHIPU_API_KEY');
   const timeout=AbortSignal.timeout(TIMEOUT_MS),active=signal?AbortSignal.any([signal,timeout]):timeout;
-  let response:Response;
-  try{
-   response=await this.fetcher(`${(this.env.ZHIPU_BASE_URL??'https://open.bigmodel.cn/api/paas/v4').replace(/\/$/,'')}/layout_parsing`,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:'glm-ocr',file:`data:application/pdf;base64,${bytes.toString('base64')}`,request_id:crypto.randomUUID()}),signal:active});
-  }catch(error){if(signal?.aborted)throw signal.reason??new Error('PDF提取已取消');if(error instanceof Error&&error.name==='TimeoutError')throw new Error('GLM-OCR请求超过30分钟');throw new Error('GLM-OCR请求失败；未记录请求内容及凭证');}
-  if(!response.ok)throw new Error(`GLM-OCR返回HTTP ${response.status}`);
-  let raw:unknown;try{raw=await response.json();}catch{throw new Error('GLM-OCR返回无效JSON');}
+  const raw=await requestGlmLayout(bytes,this.env,this.fetcher,active,signal);
   return{provider:this.id,sha256,pages:parseGlmOcrResponse(raw,pageCount)};
  }
 }

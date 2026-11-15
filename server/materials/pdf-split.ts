@@ -29,9 +29,13 @@ async function pageCount(path: string): Promise<number> {
  return pages;
 }
 
-export async function splitLargePdf(path: string, sourceBytes: Uint8Array): Promise<{name:string;path:string}[]> {
+export async function splitLargePdf(path: string, sourceBytes: Uint8Array, options:{maxBytes?:number;maxPages?:number;cacheRoot?:string;balanced?:boolean}={}): Promise<{name:string;path:string}[]> {
+ const maxBytes=options.maxBytes??MAX_FILE,maxPages=options.maxPages??MAX_PDF_PAGES;
+ const root=options.cacheRoot??splitRoot();
+ if(!Number.isSafeInteger(maxBytes)||maxBytes<1||!Number.isSafeInteger(maxPages)||maxPages<1)throw new Error('无效PDF分片限制');
+ if(!Buffer.from(await readFile(path)).equals(Buffer.from(sourceBytes)))throw new Error('PDF来源字节不一致');
  const pages=await pageCount(path);
- if (sourceBytes.length <= MAX_FILE && pages <= MAX_PDF_PAGES) return [{name:basename(path),path}];
+ if (sourceBytes.length <= maxBytes && pages <= maxPages) return [{name:basename(path),path}];
  const sourceBase=basename(path,'.pdf');
  const sourceRange=sourceBase.match(/^(.*)-页(\d{4,})-(\d{4,})$/i);
  const rangeStart=sourceRange?Number(sourceRange[2]):1;
@@ -40,16 +44,23 @@ export async function splitLargePdf(path: string, sourceBytes: Uint8Array): Prom
  const prefix=hasSourceRange?sourceRange![1]:sourceBase;
  const pageOffset=hasSourceRange?rangeStart-1:0;
  let compactSplit=false;try{await run('qpdf',['--version'],{timeout:5000});compactSplit=true;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('qpdf不可用，请检查安装');}
- const splitVersion=compactSplit?'qpdf-resource-pruned-v1':'poppler-v1';
- const digest=createHash('sha256').update(splitVersion).update(String(MAX_FILE)).update(String(MAX_PDF_PAGES)).update(basename(path)).update(sourceBytes).digest('hex');
- const directory=join(splitRoot(),digest);
+ const splitVersion=(compactSplit?'qpdf-resource-pruned-v1':'poppler-v1')+(options.balanced?'-balanced-pages-v1':'');
+ const digest=createHash('sha256').update(splitVersion).update(String(maxBytes)).update(String(maxPages)).update(basename(path)).update(sourceBytes).digest('hex');
+ const directory=join(root,digest);
  const existing=await readdir(directory).catch(()=>[]);
  if(existing.length&&existing.every(name=>name.endsWith('.pdf'))){
   const files=existing.sort().map(name=>({name,path:join(directory,name)}));
-  if((await Promise.all(files.map(file=>stat(file.path)))).every(info=>info.size>0&&info.size<=MAX_FILE))return files;
+  let next=pageOffset+1,valid=files.length<=100;
+  for(const file of files){
+   const range=file.name.match(/-页(\d+)-(\d+)\.pdf$/),info=await stat(file.path);
+   if(!range||Number(range[1])!==next||Number(range[2])<next||info.size<1||info.size>maxBytes){valid=false;break;}
+   const count=Number(range[2])-next+1;if(await pageCount(file.path)!==count){valid=false;break;}next+=count;
+  }
+  if(valid&&next===pageOffset+pages+1)return files;
+  throw new HTTPException(409,{message:'PDF分片缓存不完整，请保留证据并使用新的受管缓存目录'});
  }
- await mkdir(splitRoot(),{recursive:true,mode:0o700});
- const temporary=await mkdtemp(join(splitRoot(),'.building-'));
+ await mkdir(root,{recursive:true,mode:0o700});
+ const temporary=await mkdtemp(join(root,'.building-'));
  let phase='pdfseparate';
  try {
   const pagePattern=join(temporary,'page-%d.pdf');
@@ -63,18 +74,25 @@ export async function splitLargePdf(path: string, sourceBytes: Uint8Array): Prom
    else await run('pdfunite',[...Array.from({length:last-first+1},(_,index)=>join(temporary,`page-${first+index}.pdf`)),target]);
    if(await pageCount(target)!==last-first+1)throw new Error('PDF分片页数不一致');
    phase='verify_parts';
-   if((await stat(target)).size<=MAX_FILE){result.push({name,path:target});return;}
+   if((await stat(target)).size<=maxBytes){result.push({name,path:target});return;}
    await rm(target);
+   if(options.balanced&&first!==last)throw new Error('balanced_range_too_large');
    if(first===last)throw new HTTPException(400,{message:`PDF 第 ${first} 页单独保存后仍超过单文件限制`});
    const middle=Math.floor((first+last)/2);
    await writeRange(first,middle);await writeRange(middle+1,last);
   }
-  for(let first=1;first<=pages;first+=MAX_PDF_PAGES)await writeRange(first,Math.min(first+MAX_PDF_PAGES-1,pages));
+  if(options.balanced){
+   let count=Math.min(pages,Math.max(2,Math.ceil(sourceBytes.length/maxBytes),Math.ceil(pages/maxPages)));
+   while(true){
+    try{for(let i=0;i<count;i++)await writeRange(Math.floor(i*pages/count)+1,Math.floor((i+1)*pages/count));break;}
+    catch(error){if(!(error instanceof Error)||error.message!=='balanced_range_too_large'||count>=pages)throw error;for(const file of result)await rm(file.path);result.length=0;count++;}
+   }
+  }else for(let first=1;first<=pages;first+=maxPages)await writeRange(first,Math.min(first+maxPages-1,pages));
   if(result.length>100)throw new HTTPException(400,{message:'PDF 分片超过100份限制'});
   phase='cleanup_pages';
   if(!compactSplit)for(let page=1;page<=pages;page++)await rm(join(temporary,`page-${page}.pdf`));
   phase='verify_source';
- if(createHash('sha256').update(splitVersion).update(String(MAX_FILE)).update(String(MAX_PDF_PAGES)).update(basename(path)).update(await readFile(path)).digest('hex')!==digest)throw new HTTPException(409,{message:'PDF 在拆分过程中发生变化，请重试同步'});
+ if(createHash('sha256').update(splitVersion).update(String(maxBytes)).update(String(maxPages)).update(basename(path)).update(await readFile(path)).digest('hex')!==digest)throw new HTTPException(409,{message:'PDF 在拆分过程中发生变化，请重试同步'});
   phase='cache_commit';
   try { await rename(temporary,directory); }
   catch(error){if(!['EEXIST','ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code??''))throw error;}

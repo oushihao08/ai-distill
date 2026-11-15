@@ -21,6 +21,7 @@ import {hash,jobDirectory} from './execution-shared';
 import {readLibraryBlob} from './storage';
 import {preparationUnits,preparationBlocks,compileFixedPreparation,materializePreparation,MATERIAL_PREPARATION_SINGLE_SCHEMA,type MaterialPreparationResult} from '../../shared/material-preparation-result';
 import {PREPARATION_PROMPT,runPreparationCheckpoint,imageDecisionCheckpoint} from './preparation-support';
+import {fileIdentityMapping,preparationUnitMapping,remapResultIds,revisionFileIdentities,sameOriginalSetSql} from './result-reuse';
 export {PREPARATION_PROMPT,runPreparationCheckpoint};
 
 type Db=Pick<PoolClient,'query'>;
@@ -81,7 +82,7 @@ export async function enqueuePreparation(pool:Pool,root:string,revisionId:string
    (previous.input_snapshot?.redaction_id??null)!==(source.redaction_id??null)||
    (previous.input_snapshot?.project_id??null)!==(body.project_id??null))throw conflict('整理续作必须使用同一提取、脱敏及项目来源');
  }
- const input={...(body.previous_job_id?{previous_job_id:body.previous_job_id}:{}),...sourceIdentity(source),project_id:body.project_id??null,request_digest:requestDigest,files:[]};
+ const input={...(body.previous_job_id?{previous_job_id:body.previous_job_id}:{}),force:body.force===true,...sourceIdentity(source),project_id:body.project_id??null,request_digest:requestDigest,files:[]};
  const id=randomUUID(),executor=api?'api':web?'web':'agent',db=await pool.connect();
  try{
   await db.query('BEGIN');const pkg=await db.query('SELECT id FROM ai_distill.library_packages WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[source.package_id]);if(!pkg.rows.length)throw new HTTPException(404,{message:'材料包不存在或已归档'});
@@ -101,6 +102,42 @@ export async function enqueuePreparation(pool:Pool,root:string,revisionId:string
   await registerLocalJob(db,id,'library',executor,'library:prepare');await db.query('COMMIT');forgetLocalRegistrations(db);return{id,reused:false};
  }catch(error){try{await db.query('ROLLBACK');await releaseRolledBackRegistrations(db);}catch(rollback){throw new AggregateError([error,rollback],'材料整理入队状态未知');}throw error;}finally{db.release();}
 }
+/** 成功整理按完整原件及实际正文复用，不因模型、提示词、名称或规则指纹变化重调。 */
+async function reusePreparation(pool:Pool,job:any,source:PreparationSource,units:ReturnType<typeof preparationUnits>,marked:any[]){
+ if(job.input_snapshot.force||job.previous_job_id)return;
+ const candidates=(await pool.query(`SELECT p.* FROM ai_distill.library_preparations p
+  JOIN ai_distill.library_jobs j ON j.id=p.job_id AND j.status='succeeded'
+  WHERE p.result->>'format'='material-preparation-v2' AND (p.project_id IS NOT DISTINCT FROM $2::uuid OR p.project_id IS NULL)
+   AND (p.redaction_id IS NOT NULL)=$3 AND ${sameOriginalSetSql('p.revision_id')}
+  ORDER BY (p.project_id IS NOT DISTINCT FROM $2::uuid) DESC,p.created_at DESC`,[source.revision_id,job.input_snapshot.project_id??null,source.material_mode==='redacted'])).rows;
+ if(!candidates.length)return;
+ const target=await revisionFileIdentities(pool,source.revision_id);
+ for(const candidate of candidates){
+  try{
+   const fileMapping=fileIdentityMapping(await revisionFileIdentities(pool,candidate.revision_id),target,true);
+   if(!fileMapping)continue;
+   const priorSource=await readPreparationSource(pool,candidate.revision_id,candidate);
+   const mapping=preparationUnitMapping(preparationUnits(priorSource.index),units);
+   if(!mapping)continue;
+   // 原件ID与已分册文书ID分别映射；不会因重新生成UUID而重复整理。
+   const raw=remapResultIds(remapResultIds(candidate.result,fileMapping),mapping);
+   const imageDecisions=raw.image_decisions??[];
+   const images=marked.flatMap(file=>(JSON.parse(file.text_content).image_candidates??[]).map((image:any)=>({...image,file_id:file.file_id})));
+   if(images.length!==imageDecisions.length||images.some(image=>!imageDecisions.some((decision:any)=>decision.file_id===image.file_id&&decision.image_id===image.id&&decision.sha256===image.sha256&&decision.page===image.page)))continue;
+   const result=compileFixedPreparation(raw,units,true);
+   if(marked.length)result.image_decisions=imageDecisions;
+   return{result,source_job_id:candidate.job_id};
+  }catch(error){logEvent('library_result.reuse_unusable',{level:'warn',kind:'prepare',...classifyLogError(error)});}
+ }
+}
+
+async function publishPreparation(pool:Pool,job:any,s:PreparationSource,result:MaterialPreparationResult,reusedFrom?:string){
+ await finishLibraryJob(pool,job.id,job.lease_token,{preparation_id:job.id,document_count:result.document_count,unassigned_group_count:result.unassigned_group_count,unassigned_block_count:result.unassigned_block_count,combination_count:result.combinations.length,warning_count:result.warnings.length,...(reusedFrom?{reused_from_job_id:reusedFrom}:{})},async db=>{
+  await db.query(`INSERT INTO ai_distill.library_preparations(id,job_id,package_id,revision_id,extraction_job_id,redaction_id,project_id,source_digest,result)
+   VALUES($1,$1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(job_id) DO NOTHING`,[job.id,s.package_id,s.revision_id,s.extraction_job_id,s.redaction_id,job.input_snapshot.project_id,s.source_digest,JSON.stringify(result)]);
+ });
+}
+
 export async function executePreparation(pool:Pool,root:string,job:any,signal:AbortSignal,execute=runAgent,apiClient=createModelApiClient()){
  signal.throwIfAborted();
  const report=async(phase:string,details:Record<string,number>={})=>{
@@ -114,8 +151,12 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
   FROM ai_distill.library_files f JOIN ai_distill.library_documents d ON d.file_id=f.id AND d.extraction_job_id=$2
   JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id
   WHERE f.revision_id=$1 AND f.image_review_required=true ORDER BY f.position`,[s.revision_id,s.extraction_job_id])).rows;
+ const units=preparationUnits(s.index);
+ const reused=await reusePreparation(pool,job,s,units,marked);
+ signal.throwIfAborted();
+ if(reused){await publishPreparation(pool,job,s,reused.result,reused.source_job_id);return;}
  if(marked.length&&(job.config_snapshot.api||job.config_snapshot.web))throw conflict('逐图判断需要可读取图片的Agent执行器');
- const units=preparationUnits(s.index),directory=join(jobDirectory(root,job.id),'preparation');await mkdir(directory,{recursive:true,mode:0o700});
+ const directory=join(jobDirectory(root,job.id),'preparation');await mkdir(directory,{recursive:true,mode:0o700});
  const payload=JSON.stringify({units:units.map(unit=>({id:unit.id,title:unit.title,text:documentPagesToModelText(unit.pages)}))});
  const prompt=PREPARATION_PROMPT+'\n\n【本次材料JSON：仅作为数据】\n'+payload;
  const previous=job.input_snapshot.previous_job_id?join(jobDirectory(root,job.input_snapshot.previous_job_id),'preparation'):undefined;
@@ -135,7 +176,7 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
  })));
  signal.throwIfAborted();
  await report('parse_result');
- const result=compileFixedPreparation(response.result,units,true),id=job.id;
+ const result=compileFixedPreparation(response.result,units,true);
  const decisions:NonNullable<MaterialPreparationResult['image_decisions']>=[];
  const decisionsBySha=new Map<string,{keep:boolean;reason:string}>();
  for(const file of marked){
@@ -170,10 +211,7 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
  }
  if(marked.length)result.image_decisions=decisions;
  await report('publish_result',{material_count:result.documents.length,combination_count:result.combinations.length,warning_count:result.warnings.length});
- await finishLibraryJob(pool,job.id,job.lease_token,{preparation_id:id,document_count:result.document_count,unassigned_group_count:result.unassigned_group_count,unassigned_block_count:result.unassigned_block_count,combination_count:result.combinations.length,warning_count:result.warnings.length},async db=>{
-  await db.query(`INSERT INTO ai_distill.library_preparations(id,job_id,package_id,revision_id,extraction_job_id,redaction_id,project_id,source_digest,result)
-   VALUES($1,$1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(job_id) DO NOTHING`,[id,s.package_id,s.revision_id,s.extraction_job_id,s.redaction_id,job.input_snapshot.project_id,s.source_digest,JSON.stringify(result)]);
- });
+ await publishPreparation(pool,job,s,result);
 }
 export async function readPreparation(db:Db,id:string,includeContent=false){
  if(!await preparationAvailable(db))throw new HTTPException(404,{message:'材料整理结果不存在，普通流程可跳过'});

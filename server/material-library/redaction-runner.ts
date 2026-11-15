@@ -13,6 +13,43 @@ import {prepareAgentLibraryMaterials} from './agent-redaction';
 import {apiMaterialExecutor} from './api-redaction';
 import {hash,jobDirectory,ensurePages} from './execution-shared';
 import {AGENT_TEXT_REDACTION_PROTOCOL} from '../../shared/agent-material-plan';
+import {fileIdentityMapping,remapResultIds,revisionFileIdentities,sameOriginalSetSql} from './result-reuse';
+import {redactionJobCurrentValidationSql} from './processing-policy';
+import {logEvent,classifyLogError} from '../logging';
+
+/** 成功整包化名只在原件集合完全相同时复用；仍为当前包发布独立结果和来源绑定。 */
+async function reuseRedaction(pool:Pool,job:RedactionJob){
+ if(job.previous_job_id)return false;
+ const candidates=(await pool.query(`SELECT r.*,m.text_content AS markdown,m.sha256 AS markdown_sha256,
+  i.text_content AS index_content,i.sha256 AS index_sha256 FROM ai_distill.library_redactions r
+  JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id AND j.status='succeeded'
+  JOIN ai_distill.library_blobs m ON m.id=r.markdown_blob_id JOIN ai_distill.library_blobs i ON i.id=r.index_blob_id
+  WHERE r.validation_report->>'usable_for_question'='true' AND ${redactionJobCurrentValidationSql('j')}
+   AND r.validation_report->>'material_processing_mode'='aliases' AND ${sameOriginalSetSql('r.revision_id')}
+  ORDER BY r.created_at DESC`,[job.revision_id])).rows;
+ const target=await revisionFileIdentities(pool,job.revision_id);
+ for(const candidate of candidates){
+  let index:any,report:any;
+  try{
+   if(hash(candidate.markdown)!==candidate.markdown_sha256||hash(candidate.index_content)!==candidate.index_sha256)continue;
+   const mapping=fileIdentityMapping(await revisionFileIdentities(pool,candidate.revision_id),target);
+   if(!mapping)continue;
+   index=remapResultIds(JSON.parse(candidate.index_content),mapping);
+   if(index.text_protocol!==AGENT_TEXT_REDACTION_PROTOCOL||index.format!=='redacted-index-v2'||!Array.isArray(index.materials)||index.materials.length!==target.length)continue;
+   const ids=new Set(index.materials.map((item:any)=>item.material_id));
+   if(target.some(file=>!ids.has(file.id)))continue;
+   report=remapResultIds(candidate.validation_report,mapping);
+  }catch(error){logEvent('library_result.reuse_unusable',{level:'warn',kind:'redact',...classifyLogError(error)});continue;}
+  const indexText=JSON.stringify(index),outputDigest=hash({source:job.input_digest,markdown:hash(candidate.markdown),index:hash(indexText)});
+  await finishLibraryJob(pool,job.id,job.lease_token,{...report,output_digest:outputDigest,reused_from_job_id:candidate.redaction_job_id},async db=>{
+   const markdown=await insertLibraryTextBlob(db,candidate.markdown,'text/markdown; charset=utf-8'),indexBlob=await insertLibraryTextBlob(db,indexText,'application/vnd.ai-distill.redacted-index+json');
+   await db.query(`INSERT INTO ai_distill.library_redactions(id,package_id,revision_id,extraction_job_id,redaction_job_id,markdown_blob_id,index_blob_id,input_digest,output_digest,validation_report)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,[crypto.randomUUID(),job.package_id,job.revision_id,job.input_snapshot.extraction_job_id,job.id,markdown.id,indexBlob.id,job.input_digest,outputDigest,JSON.stringify(report)]);
+  });
+  return true;
+ }
+ return false;
+}
 
 /** 只描述本执行器实际读取的冻结字段；原始队列行的其他元数据不参与正文组装。 */
 type RedactionJob={
@@ -58,6 +95,7 @@ export async function executeRedaction(pool:Pool,root:string,job:RedactionJob,si
  const documents=await readExtractedDocuments(pool,job),settings=job.config_snapshot.settings;
  // 旧队列可能早于派发前检查；在任何收费调用之前按相同门槛再次核对。
  assertLibraryExtractionUsable(documents);
+ if(await reuseRedaction(pool,job))return;
  const template=job.config_snapshot.redaction_template;
  if(template?.workflow==='codex_plan'){
   const agentConfig=settings.redaction;

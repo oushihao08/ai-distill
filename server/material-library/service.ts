@@ -45,7 +45,10 @@ export function validateProcessingSettings(value:unknown){
   try{redaction.api=resolveModelApiConfig(redaction.api);}catch{throw new HTTPException(400,{message:'材料库 API 模型设置无效'});}
  }
  if(isRegisteredAgentProvider(redaction.provider)&&(typeof redaction.model!=='string'||!redaction.model.trim()||typeof redaction.reasoning_effort!=='string'||redaction.api!==undefined))throw new HTTPException(400,{message:'材料库 Agent 模型设置无效'});
- if(Object.keys(execution).some(key=>!['task_timeout_ms','request_timeout_ms'].includes(key))||![execution.task_timeout_ms,execution.request_timeout_ms].every(item=>Number.isSafeInteger(item)&&item>0&&item<=1800000))throw new HTTPException(400,{message:'材料库执行预算无效'});
+ // 整包脱敏任务允许35分钟；单次请求仍限制30分钟，两类预算分别校验。
+ if(Object.keys(execution).some(key=>!['task_timeout_ms','request_timeout_ms'].includes(key))||
+  !Number.isSafeInteger(execution.task_timeout_ms)||execution.task_timeout_ms<=0||execution.task_timeout_ms>35*60*1000||
+  !Number.isSafeInteger(execution.request_timeout_ms)||execution.request_timeout_ms<=0||execution.request_timeout_ms>30*60*1000)throw new HTTPException(400,{message:'材料库执行预算无效'});
  if(Object.keys(policy).some(key=>!['preserve_amounts','preserve_dates'].includes(key))||policy.preserve_amounts!==true||policy.preserve_dates!==true)throw new HTTPException(400,{message:'材料库金额和日期策略必须保持原文'});
  if(settings.redaction_templates!==undefined){
   if(!Array.isArray(settings.redaction_templates)||settings.redaction_templates.length>20)throw new HTTPException(400,{message:'脱敏模板列表无效'});

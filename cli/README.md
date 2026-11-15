@@ -394,13 +394,15 @@ OFD依赖需经授权显式执行`bun scripts/runtime/ofd/install.ts`安装；�
 
 `feishu local-sync --manifest 本地题包清单.json --out 新回执.json --base-token BASE --table TABLE`直接读取本地快照、转换PDF并调用飞书，不创建业务API客户端、不连接数据库、不要求API或worker运行。复用`feishu-verification.ts`字段投影/逐字符核对、`material-pdf.ts`转换器及现有飞书CLI传输。仅交付“未完成”草稿，不写后端同步回执或归档；本地快照不证明数据库当前版本。不能并发交付同一批题目，未知请求先按题目ID及本地回执对账。
 
-本地清单格式如下；`question`是完整题包快照，包含现有交付字段及题面/rubric版本，`files`为既有材料导出件及真实SHA-256，文件路径相对清单目录。上传前整批校验本地文件，正文冲突拒绝覆盖；同摘要DOCX可原地改传PDF，其余附件冲突停止。回执文件必须不存在，逐题保存创建请求ID、record ID、核对结果，最后全表分页对账。清单及回执含业务信息，应保存在私有运行目录。
+本地清单格式如下；`question`是完整题包快照，包含现有交付字段及题面/rubric版本，`files`为既有材料导出件（可选`name`，省略取`path`文件名）及真实SHA-256，文件路径相对清单目录，交付PDF沿用导出的真实文书文件名（不含哈希摘要）。上传前整批校验本地文件，正文冲突拒绝覆盖；题目ID与六项正文完全一致时，既有DOCX或历史`材料-<摘要>`哈希附件可原地改传当前真实文书名PDF，其余附件冲突停止。回执文件必须不存在，逐题保存创建请求ID、record ID、核对结果，最后全表分页对账。清单及回执含业务信息，应保存在私有运行目录。
 
 ```json
 {"version":1,"items":[{"workflow_id":"题目UUID","question":{"question_version":"原题面版本","rubric_version":"原rubric版本","task_name":"任务名称","task_type":"任务类型","question":"题面正文","rubric":[{"id":"R1","max_score":1,"criterion":"判据"}],"answer_approach":"作答思路","reference_answer":"标准答案"},"files":[{"path":"材料.docx","sha256":"文件的64位SHA-256"}]}]}
 ```
 
-公共PDF转换器优先使用执行进程的`LIBREOFFICE_PATH`，再查macOS应用目录、同用户Codex自带的LibreOffice，最后使用该进程PATH。本地交付直接使用CLI环境；原HTTP交付仍使用API环境，CLI环境不会改变已运行API。两种批次收到非成功回执均停止，剩余题目保持pending。
+公共PDF转换器优先使用执行进程的`LIBREOFFICE_PATH`，再查macOS应用目录、同用户Codex自带的LibreOffice，最后使用该进程PATH。本地交付直接使用CLI环境；原HTTP交付仍使用API环境，CLI环境不会改变已运行API。本地交付的上传、记录写入与回读使用独立认证会话预算；上传完成后重新查重并核对原记录，再写入。两种批次收到非成功回执均停止，剩余题目保持pending。
+
+本地交付逐题查重使用整张表内题目ID或系统同步ID精确匹配的分页查询，匹配后单独读取该记录完整字段核对；批末遍历身份与附件字段，逐题正文仍通过完整记录回读核验。避免每题反复下载其他题目的长正文，字段比较、防重范围和分页完整性不变。
 
 - 查询或更换该期默认表与交付附件格式：`feishu config show/set`；`set`支持`--base-token BASE --table TABLE`与`--attachment-format docx|pdf`（至少一项），核对既有表字段后合并保存配置，不自动补传旧题。`sync`、`sync-batch`、`draft-sync`、`draft-sync-batch`同样支持可选`--attachment-format docx|pdf`单次覆盖，省略时沿用该期`feishu_delivery.attachment_format`（默认`docx`）。`pdf`模式由服务端调用现有`scripts/runtime/docx-to-image-pdf.py`转换图像版PDF，需API所在机器具备`soffice`。
 - 一次性交付N题到新表：固定N个当前已达标、已归档的workflow ID；先运行`feishu table create`，记录返回的base_token/table_id，再运行`feishu sync-batch`显式传入这两个ID。只建一张表，不为每道题单独建表，不改变期次默认目标。
@@ -470,3 +472,5 @@ bun run ai-distill library batch run --file /tmp/phase7-prepare.json
 `workflow opening revise --workflow UUID --file JSON` 调用开头修订HTTP入口；JSON字段、版本冲突、历史保留和后续失效规则见[出题模块](../server/authoring/README.md#显式开头修订)。不直连数据库。随后 `feishu draft-sync --workflow UUID --revision-attempt 修订attempt_UUID` 显式同步该版；可带 --base-token/--table，远端旧值冲突停止，不能直接重复覆盖。
 
 原子材料上传的可选图片链路：`library import` 和 `library revision create` 可加 `--preserve-images`；清单文件项可加 `"image_review_required":true`，必须与该开关一起使用。省略开关时维持纯文本提取；开启后也仅标记文件提取图片并在材料整理阶段逐图判断，图片不会进入脱敏输入。图文 DOCX 是题目冻结原文且已有逐图整理结果时的独立 `GET /api/workflows/:id/material-image-docx` 下载，原 `material-docx` 仍为纯文本。
+
+`feishu local-sync`的PDF附件每份不超过18,000,000字节；超限按连续页、页数尽量平均无损拆分，文件名含原页码范围，所有分册顺序写入同一题目的“输入附件”。数量与回读按分册计算，DOCX摘要仍绑定来源；完整PDF缓存保留，不以压缩降质替代分册。
