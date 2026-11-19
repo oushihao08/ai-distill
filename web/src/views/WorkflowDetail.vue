@@ -9,10 +9,9 @@ import { api } from '../api/client';
 import { useResource } from '../composables/useResource';
 import {workflowStepDisplay} from '../utils/workflow-status';
 import { dateLabel, fileSize, numberedRubric } from '../utils/format';
-import { readAnswerStepResult, statusLabels, type Attempt, type WorkflowDetail, type Step, type RedactionProgress } from '../types/api';
-import RevisionAdvice from '../components/RevisionAdvice.vue';
+import { isStepSealed } from '@shared/step-registry';
+import { statusLabels, type Attempt, type WorkflowDetail, type Step, type RedactionProgress } from '../types/api';
 import WorkflowHookRecords from '../components/WorkflowHookRecords.vue';
-import ModelEvaluationSummary from '../components/ModelEvaluationSummary.vue';
 import MaterialRecordsTable from '../components/MaterialRecordsTable.vue';
 import MaterialPackageQuestionForm from '../components/MaterialPackageQuestionForm.vue';
 import MaterialPackageQuestions from '../components/MaterialPackageQuestions.vue';
@@ -47,29 +46,12 @@ const derivedQuestion=computed(()=>Boolean(data.value?.workflow.source_workflow_
 const libraryQuestion=computed(()=>data.value?.question_material_origin?.kind==='library_v1');
 const questionMaterialMode=computed(()=>data.value?.question_material_origin?.kind==='library_v1'?data.value.question_material_origin.material_mode:'redacted');
 const questionMaterialModeLabel=computed(()=>questionMaterialMode.value==='original'?'原文':'脱敏');
-const visibleSteps=computed(()=>data.value?.steps.filter(step=>step.ordinal!==10&&(materialPackage.value?[1,9].includes(step.ordinal):derivedQuestion.value?![1,2,9].includes(step.ordinal):true))??[]);
+const visibleSteps=computed(()=>data.value?.steps.filter(step=>step.ordinal!==10&&!isStepSealed(step.ordinal)&&(materialPackage.value?[1,9].includes(step.ordinal):derivedQuestion.value?![1,2,9].includes(step.ordinal):true))??[]);
 const authoredStep=computed(()=>visibleSteps.value.find(step=>step.ordinal===4));
-const activeTask=computed(()=>data.value?.attempts.some(a=>a.ordinal!==10&&['waiting','running'].includes(a.status)));
-const revisionDisabledReason=computed(()=>{
- const steps=data.value?.steps??[];
- if(steps.find(step=>step.ordinal===7)?.result?.decision==='accepted')return '当前题目已达标，无需生成返修建议。';
- if(steps.some(step=>[4,5,6].includes(step.ordinal)&&step.active))return '出题、作答或评分已有活动任务，结束后可生成返修建议。';
- if(steps.find(step=>step.ordinal===4)?.status!=='succeeded')return '请先完成出题。';
- const answers=steps.find(step=>step.ordinal===5)?.result?.models,scores=steps.find(step=>step.ordinal===6)?.result?.models;
- if(!Array.isArray(answers)||!Array.isArray(scores)||!scores.length)return '请先取得当前作答和评分记录。';
- return '';
-});
+const activeTask=computed(()=>data.value?.attempts.some(a=>a.ordinal!==10&&!isStepSealed(a.ordinal)&&['waiting','running'].includes(a.status)));
 const hasSucceededAuthoring=computed(()=>data.value?.attempts.some(attempt=>attempt.ordinal===4&&attempt.status==='succeeded')??false);
-const visibleAttempts=computed(()=>[...(data.value?.attempts??[])].filter(attempt=>attempt.ordinal!==10).sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at)));
+const visibleAttempts=computed(()=>[...(data.value?.attempts??[])].filter(attempt=>attempt.ordinal!==10&&!isStepSealed(attempt.ordinal)).sort((a,b)=>Date.parse(b.started_at)-Date.parse(a.started_at)));
 const sortedAttempts=visibleAttempts;
-const answerDiagnosticLabels:Record<string,string>={invalid_response_shape:'响应结构无效',missing_choice:'响应缺少结果',unexpected_choice_count:'响应结果数量异常',invalid_choice_shape:'结果结构无效',incomplete_finish_reason:'响应未正常结束',invalid_message_shape:'消息结构无效',invalid_message_role:'消息角色异常',empty_content:'响应正文为空',unexpected_tool_call:'返回了未支持的工具调用',refusal_response:'模型返回拒答',invalid_usage_shape:'用量字段格式异常',invalid_model_field:'模型字段格式异常',invalid_completion_id:'响应ID格式异常',invalid_json:'响应JSON无效',result_validation_failed:'答案内容未通过校验'};
-function answerDiagnostic(attempt:Attempt){
- const result=attempt.result as {error?:{reason_code?:unknown}}|null;
- const code=result?.error?.reason_code;
- if(typeof code==='string')return `${answerDiagnosticLabels[code]??'响应校验未通过'}（${code}）`;
- if(attempt.ordinal===5&&attempt.status==='failed'&&attempt.error?.includes('未返回完整有效的内容'))return '历史记录未保存细分原因码';
- return null;
-}
 function materialScopeSelections(step:Step){
  const value=step.result?.material_scope_selection;
  if(!value||typeof value!=='object')return [];
@@ -87,7 +69,6 @@ const currentStep=computed(()=>visibleSteps.value.find(step=>!['succeeded','skip
 const currentStepLabel=computed(()=>{
  const step=currentStep.value;
  if(!step)return '全部完成';
- if(step.ordinal===6){const models=readAnswerStepResult(visibleSteps.value.find(item=>item.ordinal===5)?.result)?.models;if(models?.length&&models.every(model=>model.status==='skipped'&&model.outcome==='qualified_timeout_unscored'))return '持续生成达到上限，本轮免评分并直接通过';}
  return workflowStepDisplay(data.value??undefined,step.ordinal).label;
 });
 
@@ -108,7 +89,6 @@ const syncingFeishu=shallowRef(false);
 const feishuReceipt=computed(()=>(data.value?.steps.find(step=>step.ordinal===8)?.result?.feishu_sync as FeishuSyncReceipt|undefined)??feishuDraftReceipt.value);
 const feishuIssues=computed(()=>[...new Set([...(feishuReceipt.value?.verification?.fields??[]),...(feishuReceipt.value?.verification?.differences??[]).map(item=>item.field)])].join('、'));
 const archived=computed(()=>stepStatus(8)==='succeeded');
-const answerDisabled=computed(()=>archived.value || submitting.value || stepStatus(4)!=='succeeded' || data.value?.attempts.some(attempt=>attempt.ordinal===5 && ['waiting','running'].includes(attempt.status)));
 const authorDisabled=computed(()=>archived.value || submitting.value || (!derivedQuestion.value&&!libraryQuestion.value&&data.value?.steps.find(step=>step.ordinal===9)?.status!=='succeeded') || data.value?.attempts.some(attempt=>attempt.ordinal===4 && ['waiting','running'].includes(attempt.status)));
 function addMaterial(){materialOpen.value=true;}
 async function intake(){try{submitting.value=true;await api(`/workflows/${route.params.id}/intake`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'接收失败';}finally{submitting.value=false;}}
@@ -120,31 +100,16 @@ async function redact() {
 }
 async function clearGenerated(){try{submitting.value=true;const result=await api<{file_cleanup:string}>(`/workflows/${route.params.id}/generated`,{method:'DELETE'});clearOpen.value=false;await refresh();if(result.file_cleanup!=='completed')error.value='数据库已清理，但隔离文件清理未完成，请检查存储权限';}catch(cause){error.value=cause instanceof Error?cause.message:'清理失败';}finally{submitting.value=false;}}
 async function author(){try{submitting.value=true;await api(`/workflows/${route.params.id}/author`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'出题提交失败';}finally{submitting.value=false;}}
-async function answer(){try{submitting.value=true;await api(`/workflows/${route.params.id}/answer`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'作答提交失败';}finally{submitting.value=false;}}
-const answerReadyForScoring=computed(()=>{
- const answerStep=visibleSteps.value.find(step=>step.ordinal===5);
- if(answerStep?.status==='succeeded')return true;
- const models=readAnswerStepResult(answerStep?.result)?.models;
- return !!models?.length&&models.every(model=>['succeeded','failed','skipped'].includes(model.status))&&models.some(model=>model.status==='succeeded'&&typeof model.attempt_id==='string');
-});
-const scoreDisabled=computed(()=>archived.value || submitting.value || !answerReadyForScoring.value || data.value?.attempts.some(attempt=>attempt.ordinal===6 && ['waiting','running'].includes(attempt.status)));
-async function score(){try{submitting.value=true;await api(`/workflows/${route.params.id}/score`,{method:'POST'});await refresh();}catch(cause){error.value=cause instanceof Error?cause.message:'评分提交失败';}finally{submitting.value=false;}}
-const acceptanceDecision=computed(()=>visibleSteps.value.find(step=>step.ordinal===7)?.result?.decision);
-const publishDisabled=computed(()=>archived.value || submitting.value || activeTask.value || stepStatus(7)!=='succeeded' || acceptanceDecision.value!=='accepted');
+const publishDisabled=computed(()=>archived.value || submitting.value || activeTask.value || stepStatus(4)!=='succeeded');
 function goToDelivery(){document.getElementById('workflow-step-8')?.scrollIntoView({behavior:'smooth',block:'center'});}
 const deliveryPrerequisiteMessage=computed(()=>{
- const required:[number,string][]=[[4,'出题'],[5,'模型作答'],[6,'独立评分'],[7,'达标判断']];
- const missing=required.filter(([ordinal])=>stepStatus(ordinal)!=='succeeded').map(([,name])=>name);
- if(missing.length)return `交付前尚未完成：${missing.join('、')}。`;
- if(acceptanceDecision.value==='repair')return '当前题目未达标，完成返修并重新作答、评分后才能交付。';
- if(acceptanceDecision.value==='quarantine')return '当前题目的达标结果已隔离，核对材料或题目版本后才能交付。';
- if(acceptanceDecision.value!=='accepted')return '当前没有有效的达标结论，暂不能交付。';
- return '交付条件已满足。';
+ if(stepStatus(4)!=='succeeded')return '交付前尚未完成：出题。';
+ return '出题已完成，可直接进入交付归档。';
 });
 const isWorkProject=computed(()=>data.value?.project.parent_name==='Work法律全场景');
-const isDoubaoProject=computed(()=>['豆包高经济价值','豆包高经济价值-医疗'].includes(data.value?.project.parent_name??''));
+const isDoubaoProject=computed(()=>['豆包高经济价值','豆包高经济价值-医疗','豆包高经济价值-返修'].includes(data.value?.project.parent_name??''));
 const archiveIdentityValid=computed(()=>(!archiveTaskId.value.trim()&&!archiveOrg.value.trim())||(/^LAW-\d{3,}$/.test(archiveTaskId.value.trim())&&/^[a-z0-9][a-z0-9-]{1,31}$/.test(archiveOrg.value.trim())));
-const attemptNames:Record<number,string>={1:'入库',2:'PDF文本提取（入库内部）',3:'旧规则绑定（历史）',4:'出题',5:'模型作答',6:'独立评分',7:'达标判断',8:'归档达标题目',9:'脱敏与检查'};
+const attemptNames:Record<number,string>={1:'入库',2:'PDF文本提取（入库内部）',3:'旧规则绑定（历史）',4:'出题',8:'交付归档',9:'脱敏与检查'};
 function attemptStatusLabel(attempt:Attempt){
  const decision=attempt.ordinal===7&&attempt.result&&typeof attempt.result==='object'&&'decision' in attempt.result?String(attempt.result.decision??''):'';
  return ({accepted:'达标',repair:'未达标',waiting:'等待判定条件',quarantine:'隔离'} as Record<string,string>)[decision]??statusLabels[attempt.status];
@@ -155,7 +120,7 @@ function attemptStatusColor(attempt:Attempt){
  if(attempt.ordinal===7&&attempt.result&&typeof attempt.result==='object'&&'decision' in attempt.result&&attempt.result.decision==='quarantine')return 'error';
  return attempt.status==='succeeded'?'success':attempt.status==='failed'?'error':attempt.status==='running'?'primary':'secondary';
 }
-const artifactAttempts:Record<number,number[]>={1:[1,2],9:[9],4:[4],5:[5],6:[6],8:[8]};
+const artifactAttempts:Record<number,number[]>={1:[1,2],9:[9],4:[4],8:[8]};
 function artifactsForStep(step:Step){
  const ordinals=new Set(artifactAttempts[step.ordinal]??[]);
  return (data.value?.artifacts??[]).filter(artifact=>{
@@ -188,7 +153,7 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
  <v-btn v-if="error&&!data" color="primary" :loading="loading" :disabled="loading" @click="refresh">重新读取</v-btn>
  <p v-if="loading && !data" class="text-muted">正在读取工作流…</p>
  <template v-if="data">
-  <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ materialPackage?'材料包':derivedQuestion?'派生题目':'题目' }}</v-chip><v-chip color="secondary">{{ currentStep ? `${currentStep.name} · ${currentStepLabel}` : materialPackage?'材料已处理':'全部完成' }}</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料 · 状态以最近一次刷新为准</p></Column><Row wrap :gap="8"><RevisionAdvice v-if="!materialPackage" :workflow-id="data.workflow.id" variant="outlined" :disabled="!!revisionDisabledReason" :disabled-reason="revisionDisabledReason" /><v-btn v-if="!derivedQuestion" color="error" variant="text" :disabled="archived || submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
+  <Row x="between" wrap :gap="16"><Column :gap="8"><Row wrap :gap="8"><h1 class="text-3xl font-bold text-ink-heading break-words">{{ data.workflow.title }}</h1><v-chip color="secondary">{{ materialPackage?'材料包':derivedQuestion?'派生题目':'题目' }}</v-chip><v-chip color="secondary">{{ currentStep ? `${currentStep.name} · ${currentStepLabel}` : materialPackage?'材料已处理':'全部完成' }}</v-chip><v-chip v-if="data.question_material_origin?.kind==='library_v1'&&data.question_material_origin.load_eligible===false" color="warning" variant="tonal">材料 ≤10页（约 {{ data.question_material_origin.load_estimated_docx_pages }} 页）</v-chip></Row><p class="text-sm text-muted">创建于 {{ dateLabel(data.workflow.created_at) }} · {{ data.materials.length }} 份材料 · 状态以最近一次刷新为准</p></Column><Row wrap :gap="8"><v-btn v-if="!derivedQuestion" color="error" variant="text" :disabled="archived || submitting || activeTask" @click="clearOpen=true">重置整条工作流</v-btn><v-btn color="secondary" :loading="loading" :disabled="loading" @click="refresh"><template #prepend><UiIcon name="refresh" /></template>刷新状态</v-btn></Row></Row>
   <v-alert v-if="feishuReceipt" :type="feishuReceipt.verification?.status==='passed'?'success':feishuReceipt.verification?.status==='failed'?'error':'warning'">
    {{ feishuReceipt.stage==='draft'?'飞书草稿':'飞书交付' }} · {{ feishuReceipt.verification?.status==='passed'?'核对通过':feishuReceipt.verification?.status==='failed'?'核对失败':'核对未完成' }}
    <span v-if="feishuReceipt.attachment_format"> · 附件：{{ feishuReceipt.attachment_format.toUpperCase() }}</span>
@@ -220,9 +185,6 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
       <v-btn color="primary" variant="outlined" @click="goToDelivery">前往交付</v-btn>
      </Row>
   <v-btn v-if="step.ordinal===4" color="primary" variant="flat" :loading="submitting" :disabled="authorDisabled" @click="author">{{ hasSucceededAuthoring ? '重新生成题目' : '生成题目' }}</v-btn>
-     <v-btn v-if="step.ordinal===5" color="primary" variant="flat" :loading="submitting" :disabled="answerDisabled" @click="answer">模型作答</v-btn>
-     <v-btn v-if="step.ordinal===6" color="primary" variant="flat" :loading="submitting" :disabled="scoreDisabled" @click="score">独立评分</v-btn>
-     <span v-if="step.ordinal===7 && !step.result" class="text-xs text-muted">独立评分完成后自动判定</span>
    <Column v-if="step.ordinal===8" :gap="8" class="w-full"><Row v-if="isWorkProject" stack-on-mobile :gap="8"><v-text-field v-model="archiveTaskId" label="Harbor task_id（选填）" placeholder="LAW-001" hint="生成Siriser五件套无需填写；仅额外转换Harbor时使用。" persistent-hint :disabled="submitting" /><v-text-field v-model="archiveOrg" label="Harbor org（选填）" placeholder="小写字母或数字" hint="与task_id成对填写；无值时留空。" persistent-hint :disabled="submitting" /></Row><Row wrap y="center" :gap="8"><v-btn color="primary" variant="flat" :loading="submitting" :disabled="publishDisabled||(isWorkProject&&!archiveIdentityValid)" @click="publish">{{ step.status==='succeeded' ? '已归档' : '归档题目并执行项目交付' }}</v-btn><v-btn v-if="isDoubaoProject && stepStatus(4)==='succeeded' && !archived" color="secondary" variant="outlined" :loading="syncingFeishu" :disabled="submitting||syncingFeishu||activeTask" @click="syncFeishu('draft')">同步飞书草稿</v-btn><v-btn v-if="isDoubaoProject && step.status==='succeeded'" color="secondary" variant="outlined" :loading="syncingFeishu" :disabled="submitting||syncingFeishu" @click="syncFeishu('archived')">补传飞书</v-btn><v-btn v-if="step.status==='succeeded'" color="error" variant="outlined" :disabled="submitting" @click="withdrawArchiveOpen=true">撤回归档</v-btn><v-btn v-if="isWorkProject && step.status==='succeeded'" :href="`/api/workflows/${data.workflow.id}/siriser-zip`" color="primary" variant="outlined">下载五件套 ZIP</v-btn><v-btn v-if="step.status==='succeeded' && step.result?.archive_workbook" :href="`/api/workflows/${data.workflow.id}/archive-xlsx`" color="secondary" variant="outlined">下载本题归档 Excel</v-btn><span v-if="step.status==='succeeded' && step.result?.delivery" class="text-xs text-muted">{{ deliveryLabel(step) }}</span></Row></Column>
     </template>
     <template #artifacts="{step}">
@@ -245,7 +207,6 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
    <Column class="w-full lg:w-auto min-w-0 lg:flex-1" :gap="16">
     <Column v-if="!data.materials.length && data.workflow.source_manifest?.length" class="surface-panel p-16" :gap="8"><p class="text-xs text-muted">待入库目录材料：</p><span v-for="source in data.workflow.source_manifest" :key="source.name" class="text-xs text-muted break-all">{{ source.name }} · {{ fileSize(source.size) }}</span></Column>
     <MaterialRecordsTable :workflow-id="data.workflow.id" :materials="data.materials" :steps="data.steps" :redaction-status="data.steps.find(step=>step.ordinal===9)?.status" :redaction-queued="data.attempts.some(attempt=>attempt.ordinal===9 && attempt.status==='waiting')" :disabled="submitting||derivedQuestion" :prefer-redacted="questionMaterialMode==='redacted'" @add="addMaterial" @delete="deleting=$event" @updated="refresh" />
-    <ModelEvaluationSummary v-if="!materialPackage" :steps="visibleSteps" :attempts="data.attempts" />
     <WorkflowHookRecords v-if="!materialPackage" :key="data.workflow.id" :workflow-id="data.workflow.id" @updated="refresh" />
     <section class="surface-card  p-16 min-w-0"><Column :gap="12"><Row x="between"><h2 class="section-title">最近执行状态</h2><span class="text-sm text-muted">{{ visibleAttempts.length }} 次</span></Row>
      <Column class="w-full overflow-x-auto">
@@ -257,7 +218,7 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
           <td class="text-sm">{{ attemptNames[attempt.ordinal] ?? `步骤 ${attempt.ordinal}` }}</td>
           <td class="whitespace-nowrap"><v-chip size="small" :color="attemptStatusColor(attempt)">{{ attemptStatusLabel(attempt) }}</v-chip></td>
           <td class="whitespace-nowrap text-xs">{{ dateLabel(attempt.started_at) }}</td>
-          <td class="text-xs text-danger">{{ attempt.error || '—' }}<div v-if="answerDiagnostic(attempt)" class="text-muted">{{ answerDiagnostic(attempt) }}</div></td>
+          <td class="text-xs text-danger">{{ attempt.error || '—' }}</td>
          </tr>
         </template>
         <tr v-if="!data.attempts.length"><td colspan="4" class="text-sm text-muted py-12">暂无执行记录</td></tr>

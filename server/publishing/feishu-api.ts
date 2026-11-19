@@ -28,6 +28,7 @@ export async function ensureFeishuSchema(api:Awaited<ReturnType<typeof feishuCli
   const hidden=Array.isArray(property.hidden_fields)?property.hidden_fields:[];
   if(!hidden.includes(internalId))await api.call(path+'/views/'+view.view_id,'PATCH',{property:{...property,hidden_fields:[...hidden,internalId]}});
  }
+ return new Set(actual.map(f=>String(f.field_name)));
 }
 
 /** 新目标统一使用同一字段及选项；不复制旧表记录，也不生成空白占位行。 */

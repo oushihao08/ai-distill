@@ -2,18 +2,23 @@
  * 文件职责：维护工作流步骤稳定 key、数据库 ordinal 与界面 position 的对应关系。
  * 关键导出与用法：STEP_REGISTRY 是步骤定义源，STEP_BY_KEY／STEP_BY_ORDINAL 提供索引，getStepDefinition(key) 按 key 查询；服务端装配步骤、前端汇总显示共用该注册表。新增步骤必须分配新 ordinal，不重编号历史记录。
  */
+export const SEALED_STEP_ORDINALS=[5,6,7] as const;
+export function isStepSealed(ordinal:number){return (SEALED_STEP_ORDINALS as readonly number[]).includes(ordinal);}
+export function isEvaluationPipelineSealed(){return SEALED_STEP_ORDINALS.every(isStepSealed);}
+
 export const STEP_REGISTRY = [
-  { key: 'receive_materials', ordinal: 1, position: 1, name: '入库（含PDF文本提取）', handler: 'intake', defaultEnabled: true, required: true, visible: true },
+  { key: 'receive_materials', ordinal: 1, position: 1, name: '入库（含PDF文本提取）', handler: 'intake', defaultEnabled: true, required: true, visible: true, sealed: false },
   // Kept as an internal attempt identity for extraction history and retries.
-  { key: 'extract_text', ordinal: 2, position: 99, name: 'PDF文本提取', handler: 'extract', defaultEnabled: false, required: false, visible: false },
-  { key: 'redact_materials', ordinal: 9, position: 2, name: '脱敏与检查', handler: 'redact', defaultEnabled: true, required: false, visible: true },
+  { key: 'extract_text', ordinal: 2, position: 99, name: 'PDF文本提取', handler: 'extract', defaultEnabled: false, required: false, visible: false, sealed: false },
+  { key: 'redact_materials', ordinal: 9, position: 2, name: '脱敏与检查', handler: 'redact', defaultEnabled: true, required: false, visible: true, sealed: false },
   // Legacy attempt identity only; new workflows do not bind numbered project rules.
-  { key: 'load_rules', ordinal: 3, position: 99, name: '历史规则绑定', handler: 'rules', defaultEnabled: false, required: false, visible: false },
-  { key: 'author_question', ordinal: 4, position: 3, name: '出题', handler: 'author', defaultEnabled: true, required: false, visible: true },
-  { key: 'model_answer', ordinal: 5, position: 4, name: '模型作答', handler: 'answer', defaultEnabled: true, required: false, visible: true },
-  { key: 'independent_score', ordinal: 6, position: 5, name: '独立评分', handler: 'score', defaultEnabled: true, required: false, visible: true },
-  { key: 'accept_or_revise', ordinal: 7, position: 6, name: '达标判断', handler: 'decision', defaultEnabled: true, required: false, visible: true },
-  { key: 'publish_export', ordinal: 8, position: 7, name: '归档达标题目', handler: 'publish', defaultEnabled: true, required: false, visible: true },
+  { key: 'load_rules', ordinal: 3, position: 99, name: '历史规则绑定', handler: 'rules', defaultEnabled: false, required: false, visible: false, sealed: false },
+  { key: 'author_question', ordinal: 4, position: 3, name: '出题', handler: 'author', defaultEnabled: true, required: false, visible: true, sealed: false },
+  // 暂时封存作答、评分与达标判断步骤，保留历史 ordinal 与 position 以便后续恢复。
+  { key: 'model_answer', ordinal: 5, position: 4, name: '模型作答', handler: 'answer', defaultEnabled: true, required: false, visible: false, sealed: true },
+  { key: 'independent_score', ordinal: 6, position: 5, name: '独立评分', handler: 'score', defaultEnabled: true, required: false, visible: false, sealed: true },
+  { key: 'accept_or_revise', ordinal: 7, position: 6, name: '达标判断', handler: 'decision', defaultEnabled: true, required: false, visible: false, sealed: true },
+  { key: 'publish_export', ordinal: 8, position: 7, name: '交付归档', handler: 'publish', defaultEnabled: true, required: false, visible: true, sealed: false },
 ] as const;
 
 export type StepKey = typeof STEP_REGISTRY[number]['key'];

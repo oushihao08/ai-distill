@@ -3,10 +3,10 @@
  * 关键入口：`enqueueLibraryJob()` 冻结任务；`assertLibraryExtractionUsable()` 在派发和执行前检查提取完整性；`claimLibraryJob()` 在 worker 持有资源槽后领取；终态更新须匹配 lease_token。
  * 使用场景：材料库 routes 与现有 worker API/Agent/材料消费池；本模块不创建项目步骤或 step_attempt。
  */
-import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localQueueEnabled,localCancellationRequested} from '../execution-queue/runtime';
+import {supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localQueueEnabled,localCancellationRequested,hasActiveLocalExecution} from '../execution-queue/runtime';
 import {projectStepExecution} from '../execution-queue/status';
 import {createHash,randomUUID} from 'node:crypto';
-import type {Pool} from 'pg';
+import type {Pool,QueryConfig} from 'pg';
 import {currentTaskSignal} from '../task-signal';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {HTTPException} from 'hono/http-exception';
@@ -264,8 +264,10 @@ export async function claimLibraryJob(pool:Pool,executor:LibraryExecutorKind,tar
 }
 
 export async function heartbeatLibraryJob(pool:Pool,jobId:string,leaseToken:string,progress?:Record<string,unknown>){
- const result=await pool.query(`UPDATE ai_distill.library_jobs SET heartbeat_at=now(),lease_expires_at=now()+($3::text||' milliseconds')::interval,progress=COALESCE($4::jsonb,progress)
-  WHERE id=$1 AND lease_token=$2 AND status='running' AND cancel_requested_at IS NULL AND deadline_at>now() RETURNING id`,[jobId,leaseToken,LIBRARY_JOB_LEASE_MS,progress?JSON.stringify(progress):null]);
+ // 查询卡住时驱动会以错误释放该连接；runner只在确认写入成功后延长本地租约。
+ const query:QueryConfig&{query_timeout:number}={text:`UPDATE ai_distill.library_jobs SET heartbeat_at=now(),lease_expires_at=now()+($3::text||' milliseconds')::interval,progress=COALESCE($4::jsonb,progress)
+  WHERE id=$1 AND lease_token=$2 AND status='running' AND cancel_requested_at IS NULL AND deadline_at>now() RETURNING id`,values:[jobId,leaseToken,LIBRARY_JOB_LEASE_MS,progress?JSON.stringify(progress):null],query_timeout:10_000};
+ const result=await pool.query(query);
  return result.rowCount===1;
 }
 
@@ -301,6 +303,7 @@ export function withLibraryPublicationLock<T>(jobId:string,onLocked:()=>void,run
 
 export async function finishLibraryJob(pool:Pool,jobId:string,leaseToken:string,resultSummary:Record<string,unknown>,publish:(db:import('pg').PoolClient)=>Promise<void>){
  const signal=currentTaskSignal();signal?.throwIfAborted();if(localCancellationRequested())throw new Error('本机任务已取消');
+ if(hasActiveLocalExecution())await heartbeatLibraryJob(pool,jobId,leaseToken);
  const db=await pool.connect();
  try{
   await db.query('BEGIN');

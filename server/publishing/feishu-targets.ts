@@ -11,21 +11,26 @@ import {feishuClient,createFeishuTable,ensureFeishuSchema,SyncError,FEISHU_FIELD
 
 const DEFAULT_BASE='DuizblJJwavfGjsB4KJcPH0TnRg',
  LEGAL_GROUP='315407cd-43db-49d1-8eb3-c2dff77af859',
- MEDICAL_GROUP='e23bfcec-5403-42df-ad92-ea071f6ab24a';
-/** 两个豆包主项目共用同一套同步实现，但期次目标按主项目分别冻结，不互相回退。 */
-const ENABLED_GROUPS=new Set([LEGAL_GROUP,MEDICAL_GROUP]);
+ MEDICAL_GROUP='e23bfcec-5403-42df-ad92-ea071f6ab24a',
+ REVISION_GROUP='95e1e1d7-a567-4d48-90a6-3191821d93d6';
+/** 豆包法律、医疗与返修主项目共用同一套同步实现，但期次目标按主项目分别冻结，不互相回退。 */
+const ENABLED_GROUPS=new Set([LEGAL_GROUP,MEDICAL_GROUP,REVISION_GROUP]);
 export interface FeishuTarget {base_token:string;table_id:string}
 export type FeishuAttachmentFormat='docx'|'pdf';
 export interface FrozenFeishuTarget extends FeishuTarget {name:string}
-/** 第八期与医疗第九期交付坐标冻结；同步时使用具体ID，不按表名搜索或自动换表。 */
+/** 第八期、医疗第九期与第六期返修交付坐标冻结；同步时使用具体ID，不按表名搜索或自动换表。 */
 export const FROZEN_FEISHU_TARGETS={
  eighthPeriodJiuying:{name:'第八期-久盈',base_token:DEFAULT_BASE,table_id:'tbl5Y22Kleq8Ade6'},
  eighthPeriodInternal:{name:'第八期-内部',base_token:DEFAULT_BASE,table_id:'tblERmxMpoWIDKAi'},
- ninthPeriodMedical:{name:'第九期-医疗',base_token:DEFAULT_BASE,table_id:'tblDxEX3XN2uYGxV'}
+ ninthPeriodMedical:{name:'第九期-医疗',base_token:DEFAULT_BASE,table_id:'tblDxEX3XN2uYGxV'},
+ sixthPeriodRevision:{name:'第六期返修',base_token:DEFAULT_BASE,table_id:'tbltG8eGJOWdKsYh'}
 } as const satisfies Record<string,FrozenFeishuTarget>;
 const PHASE_DEFAULT_TARGETS:Record<string,FeishuTarget>={
  '第六期':{base_token:DEFAULT_BASE,table_id:'tblbT3gCovrk5lf0'},
  '第八期':FROZEN_FEISHU_TARGETS.eighthPeriodInternal
+};
+const REVISION_PHASE_DEFAULT_TARGETS:Record<string,FeishuTarget>={
+ '第六期':FROZEN_FEISHU_TARGETS.sixthPeriodRevision
 };
 /** 医疗主项目只对本表已登记的期次启用自动交付；未登记期次不按名称临时找表或建表。
  * 2026-11-10 按用户指定，第一期的题目同样交付到「第九期-医疗」表，与第九期共用同一冻结目标。 */
@@ -57,11 +62,17 @@ async function project(pool:Pick<Pool,'query'>,id:string){
 export async function readFeishuDeliveryConfig(pool:Pick<Pool,'query'>,projectId:string):Promise<{default_target:DefaultTarget;source:'phase_default'|'configured';attachment_format:FeishuAttachmentFormat}|null>{
  const row=await project(pool,projectId);if(!row)return null;
  const group=String(row.project_group_id??'');if(!ENABLED_GROUPS.has(group))return null;
- const attachmentFormat=row.settings?.attachment_format===undefined?'docx':validateFeishuAttachmentFormat(row.settings.attachment_format);
+ const defaultFormat:FeishuAttachmentFormat=group===LEGAL_GROUP||group===REVISION_GROUP?'pdf':'docx';
+ const attachmentFormat=row.settings?.attachment_format===undefined?defaultFormat:validateFeishuAttachmentFormat(row.settings.attachment_format);
  if(row.settings?.default_target)return{default_target:validateFeishuTarget(row.settings.default_target),source:'configured',attachment_format:attachmentFormat};
  const phase=String(row.phase_name??'').trim();if(!phase)throw bad('期次名称缺失');
  if(group===MEDICAL_GROUP){
   const target=MEDICAL_PHASE_DEFAULT_TARGETS[phase];
+  if(!target)return null;
+  return{default_target:target,source:'phase_default',attachment_format:attachmentFormat};
+ }
+ if(group===REVISION_GROUP){
+  const target=REVISION_PHASE_DEFAULT_TARGETS[phase];
   if(!target)return null;
   return{default_target:target,source:'phase_default',attachment_format:attachmentFormat};
  }
@@ -75,7 +86,7 @@ function remoteError(error:unknown):never{if(error instanceof HTTPException)thro
 export function registerFeishuTargetRoutes(app:Hono,pool:Pool){
  app.get('/api/projects/:id/feishu-delivery',async c=>{
   const id=uuid(c.req.param('id'));await requireProject(pool,id);
-  return c.json({...await readFeishuDeliveryConfig(pool,id),capabilities:{target_override:true,per_target_receipts:true,draft_sync:true,attachment_format:true},fields:FEISHU_FIELDS.map(([name,type])=>({name,type,hidden:name==='系统同步ID'}))});
+  return c.json({...await readFeishuDeliveryConfig(pool,id),capabilities:{target_override:true,per_target_receipts:true,draft_sync:true,attachment_format:true,combined_material:true},fields:FEISHU_FIELDS.map(([name,type])=>({name,type,hidden:name==='系统同步ID'}))});
  });
  app.put('/api/projects/:id/feishu-delivery',async c=>{
   const id=uuid(c.req.param('id'));await requireProject(pool,id);const body=await payload(c);

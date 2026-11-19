@@ -9,7 +9,7 @@ description: 定时推进高经第八期八个固定来源目录的材料入库�
 
 ## 每轮执行
 
-1. 重新完整读取仓库 `AGENTS.md`、本 Skill、`skill/SKILL.md`、`.storage/automation-runs/phase8-three-roots-materials-20261105/state.json` 和逐包状态表。重新扫描八个来源的完整文件清单与 SHA256。经 `ai-distill` CLI 和本机 HTTP API 回读 imports、当前 package/revision、redaction、preparation、monitor、queue diagnose/show 与并发设置；不直连数据库。实时 API 优先于旧台账。完整原件 SHA256 集合与全库某当前 revision 完全相同的包标记重复并排除。
+1. 重新完整读取仓库 `AGENTS.md`、本 Skill、`skill/SKILL.md`、`.storage/automation-runs/phase8-three-roots-materials-20261105/state.json` 和逐包状态表。重新扫描八个来源的完整文件清单与 SHA256。经 `ai-distill` CLI 和本机 HTTP API 回读 imports（`?page=N&page_size=200` 按 `has_more` 翻完，不局限于默认50条）、当前 package/revision（`packages?page=N&page_size=200` 按 `total_count` 翻完，不局限于默认30条）、redaction、preparation（判存附加 `summary_only=true`）、monitor、queue diagnose/show 与并发设置；不直连数据库。实时 API 优先于旧台账。完整原件 SHA256 集合与全库某当前 revision 完全相同的包标记重复并排除。
 2. 遍历全部 132 行，推导每包当前唯一的下一阶段。已有活动、排队、成功或原请求回执未知的任务不重派。只有取得正式 `package_id/revision_id` 才派 aliases；只有成功且取得 `redaction_id` 才派材料整理。按 `queue show` 的当前 `running`、`queued`、`reserved`、`waiting`、`available`、`limit` 分别计算 Agent 与 API 的运行层和等待层空位。历史配置数字不是容量事实。
 3. **强制持续补位**：对每条 lane，只要运行层或等待层有空位且仍有合规 ready 包，就逐个提交；每提交一个，立即保存完整回执、回读任务与队列并重算，再寻找下一个。继续到该 lane 的运行层与等待层都满，或遍历完整张表后确实没有该 lane 的 ready 包。不得固定每轮派发数量，不得因一个包阻塞、413、文件名拒绝或 `outcome_unknown` 停止其他独立包。未知回执只锁定原包和原 request-key；服务整体不可用或容量读数不可靠时停止该 lane 写入并留证。
 4. 若空位仍在，明确记录 Agent/API 各自的运行与等待占用、空位数、已检查的全部候选、每个未派发原因和下一步。不能把 `running`、队列健康或“本轮已派发”当成满载。一个包完成上游阶段时，立即将其下游任务纳入本轮 ready 集合；还有槽位就继续补。

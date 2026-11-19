@@ -46,19 +46,22 @@ export function remapResultIds<T>(value:T,mapping:ReadonlyMap<string,string>):T{
 
 /** 单文件成功结果可跨包、跨版本、跨供应商复用，仍检查原件及正文对象摘要和结构。 */
 export async function readReusableExtraction(db:Db,file:{source_sha256:string;size_bytes:number|string}):Promise<ReusedExtraction|undefined>{
- const rows=(await db.query(`SELECT d.source_sha256,b.sha256,b.text_content,d.extraction_job_id
-  FROM ai_distill.library_documents d JOIN ai_distill.library_jobs j ON j.id=d.extraction_job_id AND j.status='succeeded'
-  JOIN ai_distill.library_files f ON f.id=d.file_id JOIN ai_distill.library_blobs original ON original.id=f.blob_id
-  JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id AND b.storage_kind='database_text'
-  WHERE d.source_sha256=$1 AND original.sha256=$1 AND original.size_bytes=$2 ORDER BY j.finished_at DESC,d.id`,[file.source_sha256,Number(file.size_bytes)])).rows;
- for(const row of rows){
+ const candidates=(await db.query(`SELECT d.document_blob_id,d.source_sha256,d.extraction_job_id
+  FROM ai_distill.library_blobs original
+  JOIN ai_distill.library_files f ON f.blob_id=original.id
+  JOIN ai_distill.library_documents d ON d.file_id=f.id AND d.revision_id=f.revision_id AND d.source_sha256=$1
+  JOIN ai_distill.library_jobs j ON j.id=d.extraction_job_id AND j.status='succeeded'
+  WHERE original.storage_kind='file' AND original.sha256=$1 AND original.size_bytes=$2
+  ORDER BY j.finished_at DESC,d.id LIMIT 5`,[file.source_sha256,Number(file.size_bytes)])).rows;
+ for(const candidate of candidates){
   try{
-   if(typeof row.text_content!=='string'||hash(row.text_content)!==row.sha256)continue;
-   const parsed=JSON.parse(row.text_content);
+   const blob=(await db.query("SELECT sha256,text_content FROM ai_distill.library_blobs WHERE id=$1 AND storage_kind='database_text'",[candidate.document_blob_id])).rows[0];
+   if(!blob||typeof blob.text_content!=='string'||hash(blob.text_content)!==blob.sha256)continue;
+   const parsed=JSON.parse(blob.text_content);
    if(parsed.version!==1||parsed.source_sha256!==file.source_sha256)continue;
    const document=ensurePages(parsed.pages,file.source_sha256);
    if(document.pages.every(page=>!page.text.trim()))continue;
-   return{document,provider:'reused',source_job_id:String(row.extraction_job_id),image_candidates:Array.isArray(parsed.image_candidates)?parsed.image_candidates as ReusedImageCandidate[]:undefined};
+   return{document,provider:'reused',source_job_id:String(candidate.extraction_job_id),image_candidates:Array.isArray(parsed.image_candidates)?parsed.image_candidates as ReusedImageCandidate[]:undefined};
   }catch(error){logEvent('library_result.reuse_unusable',{level:'warn',kind:'extract',...classifyLogError(error)});}
  }
 }

@@ -65,6 +65,8 @@ export function sanitizeLogRecord(raw:unknown):LogFields|undefined{
 }
 export function withLogContext<T>(fields:LogContext,run:()=>T):T{return context.run({...context.getStore(),...projectFields(fields)},run);}
 export function withIsolatedLogContext<T>(fields:LogContext,run:()=>T):T{return context.run(projectFields(fields),run);}
+/** 异步驱动回调可能由另一请求释放的连接触发；在发起操作时冻结安全关联字段。 */
+export function currentLogContext():LogContext{return {...context.getStore()};}
 export function enterLogContext(fields:LogContext){const previous=context.getStore();context.enterWith({...previous,...projectFields(fields)});return()=>context.enterWith(previous??{});}
 
 export interface StructuredLoggerOptions {root:string;service:'api'|'worker'|'migration'|'script'|string;instance_id?:string;build_id?:string;max_file_bytes?:number;retention_days?:number;max_total_bytes?:number;max_queue?:number;now?:()=>Date}

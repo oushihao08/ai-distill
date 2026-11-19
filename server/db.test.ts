@@ -11,7 +11,8 @@ import{configureLogger,withLogContext}from'./logging';
 test('database URL is required',()=>{expect(()=>createPool({})).toThrow('DATABASE_URL');});
 test('database configuration verifies TLS and retains channel binding',async()=>{
  const pool=createPool({DATABASE_URL:'postgresql://test:test@example.invalid/test?sslmode=require&channel_binding=require'});
- try{expect(pool.options.ssl).toEqual({rejectUnauthorized:true});expect(pool.options.enableChannelBinding).toBe(true);expect(pool.options.max).toBe(4);expect(pool.options.idleTimeoutMillis).toBe(10000);expect(pool.options.connectionString).not.toContain('sslmode');expect(pool.options.connectionString).not.toContain('channel_binding');}finally{await pool.end();}
+ const workerPool=createPool({DATABASE_URL:'postgresql://test:test@example.invalid/test'},{max:10});
+ try{expect(pool.options.ssl).toEqual({rejectUnauthorized:true});expect(pool.options.enableChannelBinding).toBe(true);expect(pool.options.max).toBe(4);expect(workerPool.options.max).toBe(10);expect(pool.options.idleTimeoutMillis).toBe(60000);expect(pool.options.connectionString).not.toContain('sslmode');expect(pool.options.connectionString).not.toContain('channel_binding');}finally{await pool.end();await workerPool.end();}
 });
 
 test('status reads preserve rows, bound every transaction message and discard failed connections',async()=>{
@@ -115,10 +116,29 @@ test('slow diagnostics distinguish SQL shapes and connection holds without recor
  const pool=createPool({DATABASE_URL:'postgresql://fixture:fixture@example.invalid/fixture'}),client={query:async(_sql:string)=>{await Bun.sleep(1050);return{rows:[]};}};
  try{
   await withLogContext({route:'/api/projects/:id',method:'GET'},async()=>{
-   pool.emit('acquire',client as any);await client.query('SELECT private_value FROM secret_fixture');pool.emit('release',undefined,client as any);
+   pool.emit('acquire',client as any);await client.query('SELECT private_value FROM secret_fixture');
   });
+  withLogContext({route:'/api/other',method:'POST'},()=>pool.emit('release',undefined,client as any));
   await logger.flush();const files=await readdir(join(root,'logs',new Date().toISOString().slice(0,10)));const rows=(await Promise.all(files.filter(f=>f.endsWith('.jsonl')).map(f=>readFile(join(root,'logs',new Date().toISOString().slice(0,10),f),'utf8')))).join('').trim().split('\n').map(l=>JSON.parse(l));
   expect(rows).toContainEqual(expect.objectContaining({event:'db.connection.held',route:'/api/projects/:id',duration_ms:expect.any(Number),query_count:1,db_elapsed_ms:expect.any(Number),non_db_elapsed_ms:expect.any(Number),max_query_ms:expect.any(Number)}));
   const query=rows.find(r=>r.event==='db.query.slow');expect(query.query_id).toMatch(/^[a-f0-9]{16}$/);expect(query.route).toBe('/api/projects/:id');expect(JSON.stringify(rows)).not.toContain('private_value');
+ }finally{await logger.close();await pool.end();await rm(root,{recursive:true,force:true});}
+});
+
+test('database callback logs retain the initiating request when completed under another request',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'db-context-')),logger=configureLogger({root,service:'api'});
+ const pool=createPool({DATABASE_URL:'postgresql://fixture:fixture@example.invalid/fixture'});
+ let complete!: (error:Error)=>void;
+ const client={query:(_sql:string,callback:(error:Error)=>void)=>{complete=callback;}};
+ try{
+  pool.emit('acquire',client as any);
+  withLogContext({request_id:'request-a',route:'/api/material-library/packages'},()=>client.query('SELECT private_value FROM ai_distill.library_packages',()=>{}));
+  withLogContext({request_id:'request-b',route:'/api/material-library/jobs/:id'},()=>complete(new Error('private database failure')));
+  await logger.flush();
+  const files=await readdir(join(root,'logs',new Date().toISOString().slice(0,10)));
+  const records=(await readFile(join(root,'logs',new Date().toISOString().slice(0,10),files[0]!),'utf8')).trim().split('\n').map((line:string)=>JSON.parse(line));
+  expect(records).toContainEqual(expect.objectContaining({event:'db.query.failed',request_id:'request-a',route:'/api/material-library/packages'}));
+  expect(records.some((record:any)=>record.event==='db.query.failed'&&record.request_id==='request-b')).toBe(false);
+  expect(JSON.stringify(records)).not.toContain('private database failure');
  }finally{await logger.close();await pool.end();await rm(root,{recursive:true,force:true});}
 });

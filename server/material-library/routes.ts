@@ -97,10 +97,14 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
  });
  app.post(`${prefix}/packages`,async()=>{throw new HTTPException(410,{message:'不再先建立空材料包，请使用 /api/material-library/imports 上传并提取，成功后自动入库'});});
  app.get(`${prefix}/imports`,async c=>{
-  const jobs=(await pool.query(`SELECT id,status,package_id,revision_id,progress,error_code,error_message,created_at,finished_at,
+  const rawPage=c.req.query('page'),rawSize=c.req.query('page_size'),paged=rawPage!==undefined||rawSize!==undefined;
+  const page=rawPage===undefined?1:Number(rawPage),pageSize=rawSize===undefined?50:Number(rawSize);
+  if(paged&&(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>500||!Number.isSafeInteger((page-1)*pageSize)))throw new HTTPException(400,{message:'导入任务分页参数无效'});
+  const rows=(await pool.query(`SELECT id,status,package_id,revision_id,progress,error_code,error_message,created_at,finished_at,
    input_snapshot#>>'{atomic_import,package_input,name}' AS name FROM ai_distill.library_jobs
-   WHERE input_snapshot ? 'atomic_import' ORDER BY created_at DESC,id DESC LIMIT 50`)).rows;
-  return c.json({items:await projectLibraryJobExecutions(pool,jobs)});
+   WHERE input_snapshot ? 'atomic_import' ORDER BY created_at DESC,id DESC LIMIT $1 OFFSET $2`,[pageSize+1,(page-1)*pageSize])).rows;
+  const jobs=rows.slice(0,pageSize);
+  return c.json({items:await projectLibraryJobExecutions(pool,jobs),...(paged?{page,page_size:pageSize,has_more:rows.length>pageSize}:{})});
  });
  app.post(`${prefix}/imports`,async c=>{
   let form:FormData;try{form=await c.req.formData();}catch{throw new HTTPException(400,{message:'导入须为multipart/form-data'});}
@@ -120,9 +124,13 @@ export function registerMaterialLibraryRoutes(app:Hono,pool:Pool,storageRoot:str
  app.delete(`${prefix}/packages/:id`,async c=>c.json(await archiveLibraryPackage(pool,uuid(c.req.param('id')),versionHeader(c.req.header('If-Match')))));
  app.post(`${prefix}/packages/:id/restore`,async c=>c.json(await restoreLibraryPackage(pool,uuid(c.req.param('id')),versionHeader(c.req.header('If-Match')))));
  app.get(`${prefix}/packages/:id/revisions`,async c=>{
-  const items=await readLibraryRevisions(pool,uuid(c.req.param('id'))),jobs=items.flatMap(item=>item.jobs??[]);
+  const rawPage=c.req.query('page'),rawSize=c.req.query('page_size'),paged=rawPage!==undefined||rawSize!==undefined;
+  const page=rawPage===undefined?1:Number(rawPage),pageSize=rawSize===undefined?50:Number(rawSize);
+  const all=await readLibraryRevisions(pool,uuid(c.req.param('id')),paged?{page,page_size:pageSize}:{});
+  const items=paged?all.slice(0,pageSize):all;
+  const jobs=items.flatMap(item=>item.jobs??[]);
   const projected=await projectLibraryJobExecutions(pool,jobs),byId=new Map(projected.map(job=>[job.id,job]));
-  return c.json({items:items.map(item=>({...item,jobs:(item.jobs??[]).map((job:any)=>byId.get(job.id)??job)}))});
+  return c.json({items:items.map(item=>({...item,jobs:(item.jobs??[]).map((job:any)=>byId.get(job.id)??job)})),...(paged?{page,page_size:pageSize,has_more:all.length>pageSize}:{})});
  });
  app.post(`${prefix}/revisions/:id/jobs`,async c=>{
   const revisionId=uuid(c.req.param('id')),body=await jsonBody(c);

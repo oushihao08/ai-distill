@@ -7,7 +7,7 @@ import {localQueueEnabled,localQueue} from './execution-queue/runtime';
 import {storageDirectory} from './paths';
 import { Pool,type QueryConfig } from 'pg';
 import {createHash} from 'node:crypto';
-import {classifyLogError,logEvent} from './logging';
+import {classifyLogError,currentLogContext,logEvent,withIsolatedLogContext} from './logging';
 function queryName(value:unknown){
  const sql=typeof value==='string'?value:value&&typeof value==='object'&&'text'in value&&typeof value.text==='string'?value.text:'';
  const verb=sql.trim().match(/^(select|insert|update|delete|with|begin|commit|rollback|savepoint|release)\b/i)?.[1]?.toLowerCase()??'unknown';
@@ -88,52 +88,65 @@ export async function readStatusRows(pool:Pool,text:string,values:unknown[]=[]){
   throw error;
  }finally{client.release(discard);}
 }
-export function createPool(env = process.env) {
+export function createPool(env = process.env, options?: { max?: number }) {
   const raw = env.DATABASE_URL;
   if (!raw) throw new Error('缺少 DATABASE_URL，请配置本地 .env');
   const url = new URL(raw);
   // Explicit TLS verification; avoid sslmode=require replacing the verified SSL options.
   const requireBinding = url.searchParams.get('channel_binding') === 'require';
   for (const key of ['sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'channel_binding']) url.searchParams.delete(key);
-  const pool = new Pool({ ...(localQueueEnabled()?{application_name:`ai-distill-executor:${localQueue(storageDirectory(env)).executorId}`}:{application_name:'ai-distill-legacy'}), connectionString: url.toString(), ssl: { rejectUnauthorized: true }, enableChannelBinding: requireBinding, max: 4, idleTimeoutMillis: 10000, connectionTimeoutMillis: 15000 });
-  const clients=new WeakSet<object>(),freshClients=new WeakSet<object>(),acquiredAt=new WeakMap<object,number>(),queryStats=new WeakMap<object,{count:number;elapsed:number;max:number}>();let connectionUnavailable=false;
+  const configuredMax = options?.max ?? (env.DB_POOL_MAX ? Number.parseInt(env.DB_POOL_MAX, 10) : NaN);
+  const max = Number.isSafeInteger(configuredMax) && configuredMax >= 1 && configuredMax <= 32 ? configuredMax : 4;
+  const pool = new Pool({ ...(localQueueEnabled()?{application_name:`ai-distill-executor:${localQueue(storageDirectory(env)).executorId}`}:{application_name:'ai-distill-legacy'}), connectionString: url.toString(), ssl: { rejectUnauthorized: true }, enableChannelBinding: requireBinding, max, idleTimeoutMillis: 60000, connectionTimeoutMillis: 15000 });
+  const clients=new WeakSet<object>(),freshClients=new WeakSet<object>(),acquiredAt=new WeakMap<object,number>(),acquiredContext=new WeakMap<object,ReturnType<typeof currentLogContext>>(),queryStats=new WeakMap<object,{count:number;elapsed:number;max:number}>();let connectionUnavailable=false;
   pool.on('connect',(client:object)=>{freshClients.add(client);});
   const installClient=(client:any)=>{
     if(!client||typeof client!=='object'||clients.has(client))return;clients.add(client);
+    // 已借出的连接没有Pool的空闲error监听；数据库主动断连仍应交还业务错误，而非杀死整个API。
+    client.on?.('error',(error:unknown)=>{
+      if(!acquiredAt.has(client))return; // 空闲连接由pool.on('error')负责。
+      connectionUnavailable=true;
+      withIsolatedLogContext(acquiredContext.get(client)??currentLogContext(),()=>{
+        const code=safeDbCode(error);
+        logEvent('db.client.error',{level:'error',...classifyLogError(error),...(code?{error_code:code}:{})});
+      });
+    });
     const original=client.query.bind(client);
     client.query=(...args:any[])=>{
+      const queryContext=currentLogContext();
       const sql=typeof args[0]==='string'?args[0]:args[0]?.text??'';
       const query_id=createHash('sha256').update(sql).digest('hex').slice(0,16);
       const name=queryName(args[0]),started=performance.now(),callbackIndex=args.findIndex(arg=>typeof arg==='function');
-      const finish=(error?:unknown)=>{
+      const finish=(error?:unknown)=>withIsolatedLogContext(queryContext,()=>{
         const duration_ms=Math.round(performance.now()-started);
         const stats=queryStats.get(client);if(stats){stats.count++;stats.elapsed+=duration_ms;stats.max=Math.max(stats.max,duration_ms);}
         if(error){const code=safeDbCode(error),constraint=safeDbConstraint(error);logEvent('db.query.failed',{level:'error',query_name:name,query_id,duration_ms,...classifyLogError(error),...(code?{error_code:code}:{}),...(constraint?{error_constraint:constraint}:{})});}
         else if(duration_ms>=1000)logEvent('db.query.slow',{level:'warn',query_name:name,query_id,duration_ms});
         const event=transactionEvent(name);
         if(event){const outcomeUnknown=Boolean(error&&(event==='transaction.committed'||event==='transaction.rolled_back'));logEvent(outcomeUnknown?'transaction.outcome_unknown':error?'transaction.failed':event,{level:error?'error':event==='transaction.rolled_back'?'warn':'info',transaction_name:name,duration_ms,...(outcomeUnknown?{state:'unknown'}:{}),...(error?classifyLogError(error):{})});}
-      };
-      if(callbackIndex>=0){const callback=args[callbackIndex];args[callbackIndex]=(...values:any[])=>{finish(values[0]);callback(...values);};return original(...args);}
+      });
+      if(callbackIndex>=0){const callback=args[callbackIndex];args[callbackIndex]=(...values:any[])=>withIsolatedLogContext(queryContext,()=>{finish(values[0]);callback(...values);});return original(...args);}
       try{const result=original(...args);if(result&&typeof result.then==='function')return result.then((value:any)=>{finish();return value;},(error:unknown)=>{finish(error);throw error;});finish();return result;}
       catch(error){finish(error);throw error;}
     };
   };
   const originalConnect=(pool as any).connect.bind(pool);
   (pool as any).connect=(...args:any[])=>{
+    const connectContext=currentLogContext();
     const started=performance.now(),callbackIndex=args.findIndex(arg=>typeof arg==='function');
     const before={pool_total_before:pool.totalCount,pool_idle_before:pool.idleCount,pool_waiting_before:pool.waitingCount};
     const acquired=(error:unknown,client?:any,release?:unknown)=>{
       const duration_ms=Math.round(performance.now()-started);
       const metrics={...before,pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:Boolean(client&&freshClients.delete(client))};
       if(error){connectionUnavailable=true;const code=safeDbCode(error);logEvent('db.connection.failed',{level:'error',duration_ms,...metrics,...classifyLogError(error),...(code?{error_code:code}:{})});}
-      else{installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',duration_ms,...metrics});connectionUnavailable=false;}if(duration_ms>=250)logEvent('db.connection.waited',{level:'warn',duration_ms,...metrics});}
+      else{acquiredContext.set(client,connectContext);installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',duration_ms,...metrics});connectionUnavailable=false;}if(duration_ms>=250)logEvent('db.connection.waited',{level:'warn',duration_ms,...metrics});}
     };
-    if(callbackIndex>=0){const callback=args[callbackIndex];args[callbackIndex]=(...values:any[])=>{acquired(values[0],values[1],values[2]);callback(...values);};return originalConnect(...args);}
-    try{return originalConnect(...args).then((client:any)=>{acquired(undefined,client);return client;},(error:unknown)=>{acquired(error);throw error;});}
+    if(callbackIndex>=0){const callback=args[callbackIndex];args[callbackIndex]=(...values:any[])=>withIsolatedLogContext(connectContext,()=>{acquired(values[0],values[1],values[2]);callback(...values);});return originalConnect(...args);}
+    try{return originalConnect(...args).then((client:any)=>withIsolatedLogContext(connectContext,()=>{acquired(undefined,client);return client;}),(error:unknown)=>withIsolatedLogContext(connectContext,()=>{acquired(error);throw error;}));}
     catch(error){acquired(error);throw error;}
   };
-  pool.on('release',(_error:unknown,client:object)=>{const started=acquiredAt.get(client),stats=queryStats.get(client);acquiredAt.delete(client);queryStats.delete(client);if(started!==undefined){const duration_ms=Math.round(performance.now()-started);if(duration_ms>=1000)logEvent('db.connection.held',{level:'warn',duration_ms,query_count:stats?.count??0,db_elapsed_ms:stats?.elapsed??0,non_db_elapsed_ms:Math.max(0,duration_ms-(stats?.elapsed??0)),max_query_ms:stats?.max??0,pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount});}});
-  pool.on('acquire',(client:any)=>{acquiredAt.set(client,performance.now());queryStats.set(client,{count:0,elapsed:0,max:0});installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:freshClients.has(client)});connectionUnavailable=false;}});
+  pool.on('release',(_error:unknown,client:object)=>{const started=acquiredAt.get(client),stats=queryStats.get(client),releaseContext=acquiredContext.get(client)??currentLogContext();acquiredAt.delete(client);acquiredContext.delete(client);queryStats.delete(client);if(started!==undefined){const duration_ms=Math.round(performance.now()-started);if(duration_ms>=1000)withIsolatedLogContext(releaseContext,()=>logEvent('db.connection.held',{level:'warn',duration_ms,query_count:stats?.count??0,db_elapsed_ms:stats?.elapsed??0,non_db_elapsed_ms:Math.max(0,duration_ms-(stats?.elapsed??0)),max_query_ms:stats?.max??0,pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount}));}});
+  pool.on('acquire',(client:any)=>{acquiredAt.set(client,performance.now());acquiredContext.set(client,currentLogContext());queryStats.set(client,{count:0,elapsed:0,max:0});installClient(client);if(connectionUnavailable){logEvent('db.connection.recovered',{level:'info',pool_total:pool.totalCount,pool_idle:pool.idleCount,pool_waiting:pool.waitingCount,new_connection:freshClients.has(client)});connectionUnavailable=false;}});
   pool.on('error',(error:unknown)=>{connectionUnavailable=true;const code=safeDbCode(error);logEvent('db.pool.error',{level:'error',...classifyLogError(error),...(code?{error_code:code}:{})});console.error('数据库连接异常，请检查连接配置或网络；连接信息未输出。');});
   return pool;
 }

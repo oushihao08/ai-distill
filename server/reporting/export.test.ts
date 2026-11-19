@@ -33,7 +33,7 @@ async function exportFixture(options:{workflowId?:string;materialCount?:number;a
   if(sql.startsWith('SELECT material_root,local_skill_path'))return{rows:[{material_root:join(root,'questions'),local_skill_path:skill}]};
   if(sql.includes('FROM ai_distill.projects'))return{rows:[{id:'project',name:'项目',material_root:join(root,'questions'),local_skill_path:skill}]};
   if(sql.startsWith('SELECT DISTINCT ON (workflow_id)'))return{rows:[{workflow_id:workflowId,id:questionId,status:'succeeded',input:{project_prompt:options.withoutPrompt?undefined:projectPrompt}}]};
-  if(sql.includes('FROM ai_distill.workflows w LEFT JOIN'))return{rows:[{id:workflowId,source_key:'题目1',title:'项目名-题目1',acceptance_status:options.accepted===false?'waiting':'succeeded'}]};
+  if(sql.includes('FROM ai_distill.workflows w LEFT JOIN'))return{rows:[{id:workflowId,source_key:'题目1',title:'项目名-题目1',authoring_status:options.accepted===false?'waiting':'succeeded',acceptance_status:options.accepted===false?'waiting':'succeeded'}]};
   if(sql.includes('ordinal IN (4,7)'))return{rows:[{...question,id:questionId,workflow_id:workflowId,input:{redaction_attempt_id:'redaction',...(!options.withoutPrompt?{project_prompt:projectPrompt}:{})}},{...accepted,workflow_id:workflowId,result:{...accepted.result}}]};
   if(sql.includes("COALESCE(result->>'model_name',input->>'model_name')"))return{rows:[{id:'answer-id',model_name:'Qwen 3.8'}]};
   if(sql.includes("docx.kind IN ('redacted_docx','original_docx')"))return{rows:rows.map((row:any)=>({...row,kind:'redacted_docx'}))};
@@ -54,6 +54,8 @@ test('collects current question package and acceptance-linked model scores witho
  expect(result.records[0]).toMatchObject({title:'项目名-题目1',accepted:true,task_name:'付款核对',task_type:'合同审查',question:'核对合同付款节点',rubric:question.result.rubric,model_scores:[{model_id:'model-id',name:'Qwen 3.8',score:8,max_score:10,percentage:80}],answer_approach:'按合同条款核对',reference_answer:'合同约定分三期付款',reference_answer_attachment:''});
  const attemptsQuery=statements.find(sql=>sql.includes('ordinal IN (4,7)'))??'';
  expect(attemptsQuery).not.toContain('ordinal IN (4,5,6');
+ expect(attemptsQuery).toContain('SELECT DISTINCT ON (workflow_id,ordinal)');
+ expect(attemptsQuery).toContain("jsonb_build_object('material_origin',input->'material_origin','redaction_attempt_id',input->'redaction_attempt_id') AS input");
  expect(statements.some(sql=>sql.includes("COALESCE(result->>'model_name',input->>'model_name')"))).toBe(true);
  expect(result.records[0]?.input_attachments[0]).toContain('project-export-');
 });

@@ -35,7 +35,7 @@ export async function prepareAgentLibraryMaterials(options:Options){
 - 原页、标题层级、表格行列及合并关系由宿主持有并按id回填。保持输入阅读顺序；同文不同id是不同位置，不能合并或遗漏；原空字段保持空字符串。
 - 文本id为“块ID#字段路径”，#前是分册所用block_id。块ID带文件/页作用域并沿用原块标识；缺失或重复标识时由宿主补位置，不自行改ID。documents.ranges以first_block_id和last_block_id指定完整文书范围，全部块恰好归属一次；unresolved按具体字段id记录疑点。
 - 若有resume，先读取已有计划，沿用已确认化名并核对全包；可按需保存进度，不要求另写分项文件。
-${options.api?'- API执行接口：上述文件由宿主以内联JSON完整提供，不访问本地路径、不调用shell。直接返回符合plan_schema的完整JSON计划，不返回plan_file。宿主运行同一校验器，valid:false时修正实际条目后返回完整计划，valid:true时由宿主保存文件并结束。':`- 在本次执行预算内运行${validatorCommand}。它直接接受上述计划，内部坐标转换无需你处理。返回valid:false就修正实际条目后再校验；valid:true后最终只返回{"plan_file":"output/material-plan.json"}。超时保留计划，不自行重试。`}`,
+${options.api?'- API执行接口：上述文件由宿主以内联JSON完整提供，不访问本地路径、不调用shell。直接返回符合plan_schema的完整JSON计划，不返回plan_file。宿主运行同一校验器，valid:false时修正实际条目后返回完整计划，valid:true时由宿主保存文件并结束。':`- 防断流与免转义落盘：严禁在单次工具调用中手写内联整包 texts 大 JSON。完整阅读全部 source.json 条目后，可将需要化名、号码遮盖或扫描垃圾清理的条目变更及分册信息分批写入本地辅助文件（如 output/progress.json 或纯文本分片），通过简短本地脚本读取 source.json 原顺序列表无损生成完整 output/material-plan.json（未变更 id 直接沿用 source.json 原文，切勿遗漏任何输入 id）。\n- 在本次执行预算内运行${validatorCommand}。它直接接受上述计划，内部坐标转换无需你处理。返回valid:false就修正实际条目后再校验；valid:true后最终只返回{"plan_file":"output/material-plan.json"}。超时保留计划，不自行重试。`}`,
    validate:validateAgentPlanFileDeclaration,
   });
   const plan=output.result?.parsed_plan??await readAgentRedactionPlan(options.directory);

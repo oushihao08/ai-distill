@@ -23,14 +23,15 @@ test('批次计划完整翻页并以且关系冻结命中，不产生写请求',
   const url=new URL(String(input)),method=init?.method??'GET';calls.push({url,method});
   if(url.pathname==='/api/projects')return Response.json({items:[{id:project,name:'豆包高经济价值新第七期'}]});
   const page=Number(url.searchParams.get('page'));
-  if(page===1)return Response.json({items:[{id:packageA,name:'豆包高经济价值新第七期 民间借贷',current_revision_id:revisionA,extraction_status:'failed'}],total_count:101});
-  return Response.json({items:[{id:packageB,name:'豆包高经济价值新第七期 劳务合同',current_revision_id:revisionB,extraction_status:'succeeded'}],total_count:101});
+  if(page===1)return Response.json({items:[{id:packageA,name:'豆包高经济价值新第七期 民间借贷',current_revision_id:revisionA,extraction_status:'failed'}],total_count:501});
+  return Response.json({items:[{id:packageB,name:'豆包高经济价值新第七期 劳务合同',current_revision_id:revisionB,extraction_status:'succeeded'}],total_count:501});
  });
  try{
   const flags=new Map<string,string|boolean>([['kind','extract'],['project-query','新第七期'],['q','民间 借贷'],['extraction-state','failed']]);
   const result=await planLibraryBatch(client,flags,out);
   expect(result.count).toBe(1);expect(result.items[0]!.package_id).toBe(packageA);
   expect(calls.every(call=>call.method==='GET')).toBe(true);expect(calls.filter(call=>call.url.pathname==='/api/material-library/packages')).toHaveLength(2);
+  expect(calls.filter(call=>call.url.pathname==='/api/material-library/packages').every(call=>call.url.searchParams.get('page_size')==='500')).toBe(true);
   const saved=JSON.parse(await readFile(out,'utf8'));expect(saved.items[0].request_key).toMatch(/^[0-9a-f-]{36}$/);expect(saved.items[0].state).toBe('planned');
  }finally{await rm(root,{recursive:true,force:true});}
 });
@@ -69,5 +70,26 @@ test('损坏或重复运行中的清单在任何HTTP前失败',async()=>{
   await expect(runLibraryBatch(client,file)).rejects.toBeInstanceOf(CliError);expect(calls).toBe(0);
   await writeFile(file+'.lock','occupied');
   await expect(runLibraryBatch(client,file)).rejects.toThrow();expect(calls).toBe(0);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('prepare批次检查已有整理结果时仅请求summary_only单条投影',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'library-batch-prepare-')),file=join(root,'plan.json');
+ const requestA='66666666-6666-4666-8666-666666666666',redactionA='99999999-9999-4999-8999-999999999999';
+ await writeFile(file,JSON.stringify({version:1,kind:'prepare',filters:{},created_at:new Date().toISOString(),items:[{package_id:packageA,name:'A',revision_id:revisionA,request_key:requestA,state:'planned'}]}));
+ const urls:URL[]=[];
+ const client=new ApiClient(undefined,async input=>{
+  const url=new URL(String(input));urls.push(url);
+  if(url.pathname===`/api/material-library/packages/${packageA}`)return Response.json({current_revision_id:revisionA});
+  if(url.pathname.endsWith('/revisions'))return Response.json({items:[{id:revisionA,state:'ready',jobs:[{id:'ext',kind:'extract',status:'succeeded'}],redactions:[{id:redactionA,usable_for_question:true}]}]});
+  if(url.pathname.endsWith('/preparations'))return Response.json({available:true,items:[{id:'prep-1'}]});
+  return Response.json({});
+ });
+ try{
+  const result=await runLibraryBatch(client,file);
+  expect(result.counts).toEqual({skipped:1});
+  const prepCall=urls.find(u=>u.pathname.endsWith('/preparations'))!;
+  expect(prepCall.searchParams.get('summary_only')).toBe('true');
+  expect(prepCall.searchParams.get('page_size')).toBe('1');
  }finally{await rm(root,{recursive:true,force:true});}
 });

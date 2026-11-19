@@ -38,7 +38,7 @@ export interface MaterialLibraryPackageSummary {
   available_extraction_count?: number;
   /** 当前 revision 完整提取正文合并后的 DOCX 估算页数；null 表示未评估或算法版本变化。 */
   load_estimated_docx_pages?: number | null;
-  /** false 禁止加载任何期次；null 须在加载前先快速评估，不能视为合格。 */
+  /** false 表示估算 10 页及以下（允许加载，页面需标识提醒）；null 表示尚未评估。 */
   load_eligible?: boolean | null;
   loaded_project_count: number;
   /** 列表当前页的永久占用摘要；详情接口仍通过 /packages/:id/usage 读取完整事件。 */
@@ -151,6 +151,8 @@ export type QuestionMaterialOrigin =
       revision_id: string;
       redaction_id: string | null;
       snapshot_digest: string;
+      load_estimated_docx_pages?: number | null;
+      load_eligible?: boolean | null;
     };
 
 export interface QuestionLibrarySource {

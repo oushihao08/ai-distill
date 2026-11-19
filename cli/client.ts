@@ -26,7 +26,8 @@ export class ApiClient {
 
   private async response(path: string, method: string, body?: BodyInit, signal?: AbortSignal, headers:Record<string,string>={},timeoutMs=35000) {
     if (!path.startsWith('/api/') || path.includes('\\') || path.includes('#')) throw new CliError('API 路径无效');
-    if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>180000)throw new CliError('请求超时须为1至180000毫秒');
+    const maxTimeoutMs=/^\/api\/workflows\/[0-9a-f-]+\/feishu-(?:draft-sync|sync)$/.test(path)?900000:180000;
+    if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>maxTimeoutMs)throw new CliError(`请求超时须为1至${maxTimeoutMs}毫秒`);
     const url=new URL(path,this.base);
     if (url.origin!==this.base) throw new CliError('API 路径越界');
     try {

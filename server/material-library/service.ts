@@ -85,7 +85,7 @@ export async function createLibraryPackage(pool:Pool,value:unknown){
 
 export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:number;page_size?:number;ready_only?:boolean;project_ids?:string[];redaction_state?:string;preparation_state?:string;archived_only?:boolean;usage_project_id?:string;source_mode?:'any'|'redacted'|'original'}={}){
  const page=options.page??1,pageSize=options.page_size??30;
- if(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)throw new HTTPException(400,{message:'材料包分页参数无效'});
+ if(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>500)throw new HTTPException(400,{message:'材料包分页参数无效'});
  const q=options.q?.trim()??'';
  if(q.length>180)throw new HTTPException(400,{message:'搜索词最多180字'});
  const projectIds=[...new Set(options.project_ids??[])];
@@ -107,67 +107,74 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
  }
 
  const sourceMode=options.source_mode??'any';if(!['any','redacted','original'].includes(sourceMode))throw new HTTPException(400,{message:'材料来源模式无效'});
+ const needsAvailableFilter=options.ready_only===true||state!=='all'||sourceMode==='redacted';
+ const needsExtractedFilter=sourceMode==='original';
+ const availableLateral=(pkgExpr:string)=>`CROSS JOIN LATERAL (SELECT count(*)::int FROM ai_distill.library_redactions x
+   JOIN ai_distill.library_revisions v ON v.id=x.revision_id AND v.package_id=x.package_id AND v.state='ready'
+   JOIN ai_distill.library_jobs e ON e.id=x.extraction_job_id AND e.package_id=${pkgExpr} AND e.revision_id=x.revision_id AND e.kind='extract' AND e.status='succeeded'
+   JOIN ai_distill.library_jobs j ON j.id=x.redaction_job_id AND j.package_id=${pkgExpr} AND j.revision_id=x.revision_id AND j.kind='redact' AND j.status='succeeded'
+   WHERE x.package_id=${pkgExpr} AND x.validation_report->>'usable_for_question'='true' AND ${redactionJobCurrentValidationSql('j')}) available`;
+ const extractedLateral=(pkgExpr:string)=>`CROSS JOIN LATERAL (SELECT count(DISTINCT v.id)::int FROM ai_distill.library_revisions v
+   JOIN ai_distill.library_jobs e ON e.package_id=${pkgExpr} AND e.revision_id=v.id AND e.kind='extract' AND e.status='succeeded'
+   WHERE v.package_id=${pkgExpr} AND v.state='ready'
+    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=v.id AND d.extraction_job_id=e.id) = v.file_count) extracted`;
  const usageJoin=usageProjectId?`LEFT JOIN ai_distill.projects requested_phase ON requested_phase.id=$8::uuid AND requested_phase.deleted_at IS NULL
-  LEFT JOIN ai_distill.project_material_uses material_use ON material_use.project_group_id=requested_phase.project_group_id AND material_use.package_id=p.id
+  LEFT JOIN ai_distill.project_material_uses material_use ON material_use.project_group_id=requested_phase.project_group_id AND material_use.package_id=page.id
   LEFT JOIN ai_distill.projects owner_phase ON owner_phase.id=material_use.owner_phase_id`:'';
  const usageProjection=usageProjectId?'material_use.status AS usage_status,owner_phase.phase_name AS used_phase_name,':'NULL::text AS usage_status,NULL::text AS used_phase_name,';
  const sourceModeParam=usageProjectId?'$9::text':'$8::text';
  const params:unknown[]=[q,pageSize,(page-1)*pageSize,options.ready_only===true,state,projectIds,options.archived_only===true];
  if(usageProjectId)params.push(usageProjectId);
  params.push(sourceMode,LIBRARY_LOAD_ASSESSMENT_VERSION);
- const result=await pool.query(`SELECT p.id,p.name,p.description,p.tags,p.current_revision_id,p.lock_version,p.deleted_at,p.created_at,p.updated_at,
+ const result=await pool.query(`WITH page AS MATERIALIZED (SELECT p.id,p.name,p.description,p.tags,p.current_revision_id,p.lock_version,p.deleted_at,p.created_at,p.updated_at,
   COALESCE(r.file_count,0)::int AS file_count,r.state AS revision_state,
-  COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='intake' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),CASE WHEN r.state='ready' THEN 'succeeded' ELSE 'not_started' END) AS intake_status,
-  COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='extract' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS extraction_status,
-  COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.revision_id=r.id AND j.kind='redact' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS redaction_status,
-  available.count AS available_redaction_count,
-  extracted.count AS available_extraction_count,
-  load_check.estimated_page_count AS load_estimated_docx_pages,load_check.load_eligible,
-  ${usageProjection}
-  (SELECT count(*)::int FROM ai_distill.project_library_packages l JOIN ai_distill.projects project ON project.id=l.project_id AND project.deleted_at IS NULL WHERE l.package_id=p.id AND l.removed_at IS NULL) AS loaded_project_count,
+  ${needsAvailableFilter?'available.count AS pre_available_count,':''}
+  ${needsExtractedFilter?'extracted.count AS pre_extracted_count,':''}
   count(*) OVER()::int AS total_count
   FROM ai_distill.library_packages p LEFT JOIN ai_distill.library_revisions r ON r.package_id=p.id AND r.id=p.current_revision_id
-  CROSS JOIN LATERAL (SELECT count(*)::int FROM ai_distill.library_redactions x
-   JOIN ai_distill.library_revisions v ON v.id=x.revision_id AND v.package_id=x.package_id AND v.state='ready'
-   JOIN ai_distill.library_jobs e ON e.id=x.extraction_job_id AND e.revision_id=x.revision_id AND e.kind='extract' AND e.status='succeeded'
-   JOIN ai_distill.library_jobs j ON j.id=x.redaction_job_id AND j.revision_id=x.revision_id AND j.kind='redact' AND j.status='succeeded'
-   WHERE x.package_id=p.id AND x.validation_report->>'usable_for_question'='true' AND ${redactionJobCurrentValidationSql('j')}) available
-  CROSS JOIN LATERAL (SELECT count(DISTINCT v.id)::int FROM ai_distill.library_revisions v
-   JOIN ai_distill.library_jobs e ON e.revision_id=v.id AND e.kind='extract' AND e.status='succeeded'
-   WHERE v.package_id=p.id AND v.state='ready'
-    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=v.id AND d.extraction_job_id=e.id) = v.file_count) extracted
-  LEFT JOIN LATERAL (SELECT eligibility.estimated_page_count,eligibility.load_eligible FROM ai_distill.library_jobs extraction_job
-   LEFT JOIN ai_distill.library_load_eligibility eligibility ON eligibility.extraction_job_id=extraction_job.id
-    AND eligibility.revision_id=r.id AND eligibility.assessment_version=$${params.length}
-   WHERE extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
-    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=extraction_job.id)=r.file_count
-   ORDER BY extraction_job.finished_at DESC,extraction_job.id DESC LIMIT 1) load_check ON true
-  ${usageJoin}
+  ${needsAvailableFilter?availableLateral('p.id'):''}
+  ${needsExtractedFilter?extractedLateral('p.id'):''}
   WHERE (($7::boolean=false AND p.deleted_at IS NULL) OR ($7::boolean=true AND p.deleted_at IS NOT NULL))
   ${preparationFilter}
-  AND ($4::boolean=false OR available.count>0)
-  AND ($5::text='all' OR ($5::text='ready' AND available.count>0) OR ($5::text='not_ready' AND available.count=0))
-  AND (${sourceModeParam}='any' OR (${sourceModeParam}='redacted' AND available.count>0) OR (${sourceModeParam}='original' AND extracted.count>0))
+  AND ($4::boolean=false OR ${needsAvailableFilter?'available.count>0':'true'})
+  AND ($5::text='all' OR ($5::text='ready' AND ${needsAvailableFilter?'available.count>0':'false'}) OR ($5::text='not_ready' AND ${needsAvailableFilter?'available.count=0':'false'}))
+  AND (${sourceModeParam}='any' OR (${sourceModeParam}='redacted' AND ${needsAvailableFilter?'available.count>0':'false'}) OR (${sourceModeParam}='original' AND ${needsExtractedFilter?'extracted.count>0':'false'}))
   AND (cardinality($6::uuid[])=0 OR EXISTS(SELECT 1 FROM ai_distill.project_library_packages l JOIN ai_distill.projects project ON project.id=l.project_id AND project.deleted_at IS NULL WHERE l.package_id=p.id AND l.removed_at IS NULL AND l.project_id=ANY($6::uuid[])))
   AND ($1::text='' OR p.name ILIKE '%'||$1::text||'%' OR p.description ILIKE '%'||$1::text||'%' OR $1::text=ANY(p.tags))
-  ORDER BY p.updated_at DESC,p.id LIMIT $2 OFFSET $3`,params);
- const total=result.rows[0]?.total_count??0;
- const rows=result.rows.map(({total_count:_total_count,...row})=>row);
- const packageIds=rows.map(row=>row.id);
- const usesByPackage=new Map<string,unknown[]>();
- if(packageIds.length){
-  // Only fetch use summaries for this page; the full event timeline remains in the detail endpoint.
-  const uses=await pool.query(`SELECT u.package_id,jsonb_agg(jsonb_build_object(
+  ORDER BY p.updated_at DESC,p.id LIMIT $2 OFFSET $3)
+  SELECT page.id,page.name,page.description,page.tags,page.current_revision_id,page.lock_version,page.deleted_at,page.created_at,page.updated_at,
+   page.file_count,page.revision_state,
+   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.package_id=page.id AND j.revision_id=page.current_revision_id AND j.kind='intake' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),CASE WHEN page.revision_state='ready' THEN 'succeeded' ELSE 'not_started' END) AS intake_status,
+   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.package_id=page.id AND j.revision_id=page.current_revision_id AND j.kind='extract' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS extraction_status,
+   COALESCE((SELECT j.status FROM ai_distill.library_jobs j WHERE j.package_id=page.id AND j.revision_id=page.current_revision_id AND j.kind='redact' ORDER BY j.created_at DESC,j.id DESC LIMIT 1),'not_started') AS redaction_status,
+   ${needsAvailableFilter?'page.pre_available_count':'available.count'} AS available_redaction_count,
+   ${needsExtractedFilter?'page.pre_extracted_count':'extracted.count'} AS available_extraction_count,
+   load_check.estimated_page_count AS load_estimated_docx_pages,load_check.load_eligible,
+   ${usageProjection}
+   (SELECT count(*)::int FROM ai_distill.project_library_packages l JOIN ai_distill.projects project ON project.id=l.project_id AND project.deleted_at IS NULL WHERE l.package_id=page.id AND l.removed_at IS NULL) AS loaded_project_count,
+   page.total_count,
+   COALESCE(uses.material_uses,'[]'::jsonb) AS material_uses
+  FROM page
+  ${needsAvailableFilter?'':availableLateral('page.id')}
+  ${needsExtractedFilter?'':extractedLateral('page.id')}
+  LEFT JOIN LATERAL (SELECT eligibility.estimated_page_count,eligibility.load_eligible FROM ai_distill.library_jobs extraction_job
+   LEFT JOIN ai_distill.library_load_eligibility eligibility ON eligibility.extraction_job_id=extraction_job.id
+    AND eligibility.revision_id=page.current_revision_id AND eligibility.assessment_version=$${params.length}
+   WHERE extraction_job.package_id=page.id AND extraction_job.revision_id=page.current_revision_id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
+    AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=page.current_revision_id AND d.extraction_job_id=extraction_job.id)=page.file_count
+   ORDER BY extraction_job.finished_at DESC,extraction_job.id DESC LIMIT 1) load_check ON true
+  ${usageJoin}
+  LEFT JOIN (SELECT u.package_id,jsonb_agg(jsonb_build_object(
     'id',u.id,'project_group_id',u.project_group_id,'project_name',g.name,'owner_phase_id',u.owner_phase_id,
     'phase_name',phase.phase_name,'phase_no',phase.phase_no,'status',u.status,'first_used_at',u.first_used_at
    ) ORDER BY g.name,phase.phase_no NULLS LAST,phase.phase_name,u.first_used_at) AS material_uses
    FROM ai_distill.project_material_uses u
    JOIN ai_distill.project_groups g ON g.id=u.project_group_id
    JOIN ai_distill.projects phase ON phase.id=u.owner_phase_id
-   WHERE u.package_id=ANY($1::uuid[]) GROUP BY u.package_id`,[packageIds]);
-  for(const row of uses.rows)usesByPackage.set(row.package_id,row.material_uses);
- }
- const items=rows.map(row=>({...row,material_uses:usesByPackage.get(row.id)??[]}));
+   WHERE u.package_id IN (SELECT id FROM page) GROUP BY u.package_id) uses ON uses.package_id=page.id
+  ORDER BY page.updated_at DESC,page.id`,params);
+ const total=result.rows[0]?.total_count??0;
+ const items=result.rows.map(({total_count:_total_count,...row})=>row);
  return{items,page,page_size:pageSize,total_count:total};
 }
 
@@ -183,33 +190,37 @@ export async function readLibraryPackage(pool:Pool,id:string){
   LEFT JOIN LATERAL (SELECT eligibility.estimated_page_count,eligibility.load_eligible FROM ai_distill.library_jobs extraction_job
    LEFT JOIN ai_distill.library_load_eligibility eligibility ON eligibility.extraction_job_id=extraction_job.id
     AND eligibility.revision_id=r.id AND eligibility.assessment_version=$2
-   WHERE extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
+   WHERE extraction_job.package_id=$1 AND extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
     AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=extraction_job.id)=r.file_count
    ORDER BY extraction_job.finished_at DESC,extraction_job.id DESC LIMIT 1) load_check ON true
   WHERE r.package_id=$1 GROUP BY r.id,load_check.estimated_page_count,load_check.load_eligible ORDER BY r.created_at DESC,r.id`,[id,LIBRARY_LOAD_ASSESSMENT_VERSION]);
  return{...result.rows[0],revisions:revisions.rows};
 }
 
-export async function readLibraryRevisions(pool:Pool,id:string){
+export async function readLibraryRevisions(pool:Pool,id:string,options:{page?:number;page_size?:number}={}){
+ const paged=options.page!==undefined||options.page_size!==undefined;
+ const page=options.page??1,pageSize=options.page_size??50;
+ if(paged&&(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>200||!Number.isSafeInteger((page-1)*pageSize)))throw new HTTPException(400,{message:'材料版本分页参数无效'});
+ const params:unknown[]=paged?[id,LIBRARY_LOAD_ASSESSMENT_VERSION,pageSize+1,(page-1)*pageSize]:[id,LIBRARY_LOAD_ASSESSMENT_VERSION];
  const rows=(await pool.query(`SELECT r.id,r.package_id,r.parent_revision_id,r.state,r.manifest_sha256,r.file_count,r.created_at,r.sealed_at,
   load_check.estimated_page_count AS load_estimated_docx_pages,load_check.load_eligible,
   COALESCE(jsonb_agg(jsonb_build_object('id',f.id,'original_name',f.original_name,'position',f.position,'sha256',b.sha256,'size_bytes',b.size_bytes,'content_type',b.content_type,'redaction_mode',f.redaction_mode,'image_review_required',f.image_review_required) ORDER BY f.position) FILTER(WHERE f.id IS NOT NULL),'[]'::jsonb) AS files,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id',red.id,'extraction_job_id',red.extraction_job_id,'redaction_job_id',red.redaction_job_id,'output_digest',red.output_digest,'redaction_template_id',red.validation_report->>'redaction_template_id','redaction_template_workflow',COALESCE(red.validation_report->>'redaction_template_workflow',(SELECT j.config_snapshot->'redaction_template'->>'workflow' FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id)),'redaction_template_name',red.validation_report->>'redaction_template_name','load_estimated_docx_pages',red_check.estimated_page_count,'load_eligible',red_check.load_eligible,'usable_for_question',(red.validation_report->>'usable_for_question'='true' AND r.state='ready'
-     AND EXISTS(SELECT 1 FROM ai_distill.library_jobs e WHERE e.id=red.extraction_job_id AND e.revision_id=r.id AND e.kind='extract' AND e.status='succeeded')
-     AND EXISTS(SELECT 1 FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id AND j.revision_id=r.id AND j.kind='redact' AND j.status='succeeded' AND ${redactionJobCurrentValidationSql('j')})),'created_at',red.created_at) ORDER BY red.created_at DESC,red.id)
+     AND EXISTS(SELECT 1 FROM ai_distill.library_jobs e WHERE e.id=red.extraction_job_id AND e.package_id=r.package_id AND e.revision_id=r.id AND e.kind='extract' AND e.status='succeeded')
+     AND EXISTS(SELECT 1 FROM ai_distill.library_jobs j WHERE j.id=red.redaction_job_id AND j.package_id=r.package_id AND j.revision_id=r.id AND j.kind='redact' AND j.status='succeeded' AND ${redactionJobCurrentValidationSql('j')})),'created_at',red.created_at) ORDER BY red.created_at DESC,red.id)
     FROM ai_distill.library_redactions red LEFT JOIN ai_distill.library_load_eligibility red_check
      ON red_check.revision_id=red.revision_id AND red_check.extraction_job_id=red.extraction_job_id AND red_check.assessment_version=$2
     WHERE red.revision_id=r.id),'[]'::jsonb) AS redactions,
-  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',j.id,'kind',j.kind,'status',j.status,'origin',j.origin,'created_at',j.created_at,'finished_at',j.finished_at) ORDER BY j.created_at DESC) FROM ai_distill.library_jobs j WHERE j.revision_id=r.id),'[]'::jsonb) AS jobs
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',j.id,'kind',j.kind,'status',j.status,'origin',j.origin,'created_at',j.created_at,'finished_at',j.finished_at) ORDER BY j.created_at DESC) FROM ai_distill.library_jobs j WHERE j.package_id=r.package_id AND j.revision_id=r.id),'[]'::jsonb) AS jobs
   FROM ai_distill.library_revisions r LEFT JOIN ai_distill.library_files f ON f.revision_id=r.id LEFT JOIN ai_distill.library_blobs b ON b.id=f.blob_id
   LEFT JOIN LATERAL (SELECT eligibility.estimated_page_count,eligibility.load_eligible FROM ai_distill.library_jobs extraction_job
    LEFT JOIN ai_distill.library_load_eligibility eligibility ON eligibility.extraction_job_id=extraction_job.id
     AND eligibility.revision_id=r.id AND eligibility.assessment_version=$2
-   WHERE extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
+   WHERE extraction_job.package_id=$1 AND extraction_job.revision_id=r.id AND extraction_job.kind='extract' AND extraction_job.status='succeeded'
     AND (SELECT count(*) FROM ai_distill.library_documents d WHERE d.revision_id=r.id AND d.extraction_job_id=extraction_job.id)=r.file_count
    ORDER BY extraction_job.finished_at DESC,extraction_job.id DESC LIMIT 1) load_check ON true
   WHERE r.package_id=$1 AND EXISTS(SELECT 1 FROM ai_distill.library_packages p WHERE p.id=r.package_id AND p.deleted_at IS NULL)
-  GROUP BY r.id,load_check.estimated_page_count,load_check.load_eligible ORDER BY r.created_at DESC,r.id`,[id,LIBRARY_LOAD_ASSESSMENT_VERSION])).rows;
+  GROUP BY r.id,load_check.estimated_page_count,load_check.load_eligible ORDER BY r.created_at DESC,r.id${paged?' LIMIT $3 OFFSET $4':''}`,params)).rows;
  if(rows.length)return rows;
  const visible=await pool.query('SELECT id FROM ai_distill.library_packages WHERE id=$1 AND deleted_at IS NULL',[id]);
  if(!visible.rowCount)throw new HTTPException(404,{message:'材料包不存在'});

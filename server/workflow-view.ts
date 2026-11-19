@@ -1,13 +1,27 @@
 /**
  * 职责：工作台的轻量工作流投影；状态读取不传正文，内容读取只提供当前题目、作答与评分。
- * 入口：readProjectWorkflowViews() 批量读取列表状态；readWorkflowStepHistory() 分页读取安全执行记录；stepResultProjection() 构造服务端字段白名单；readWorkflowAttempts() 返回有限历史摘要与当前引用结果。
+ * 入口：readProjectWorkflowList() 紧凑传输项目题目列表；readProjectWorkflowViews() 批量读取列表状态；readWorkflowStepHistory() 分页读取安全执行记录；stepResultProjection() 构造服务端字段白名单；readWorkflowAttempts() 返回有限历史摘要与当前引用结果。
  * 调用方：app.ts 的工作流详情和项目状态接口；不修改执行器、数据库原始记录或版本绑定。
  */
 import type {Pool} from 'pg';
 import {readProjectWorkflowStepRows,workflowStepReadiness,type WorkflowStepState} from './project-folders';
-import {STEP_REGISTRY} from '../shared/step-registry';
+import {STEP_REGISTRY,isStepSealed} from '../shared/step-registry';
 
 type ProjectWorkflowView={steps:(WorkflowStepState&Record<string,any>)[];attempt_summary:{has_authored:boolean}};
+const projectWorkflowColumns=['id','project_id','title','created_at','status','source_key','workflow_kind','source_workflow_id','source_redaction_attempt_id','source_redaction_sha256','scenario','role_perspective','target_level','question_tags','authoring_direction','library_package_id','library_package_name','material_count','material_redaction_status','current_ordinal','current_status','current_decision','acceptance_result','current_task_name','current_question_version','current_rubric_version','answer_models','publication_status','has_authored','exported'] as const;
+/** 项目列表以单行紧凑载荷跨远端连接传输；还原字段及pg的Date语义，保持HTTP响应不变。 */
+export async function readProjectWorkflowList(pool:Pool,sql:string,projectId:string,pageSize?:number,offset=0){
+ const projection=projectWorkflowColumns.map(column=>`workflow_items.${column}`).join(',');
+ const hasInnerLimit=sql.includes('LIMIT $2 OFFSET $3');
+ const result=await pool.query(`SELECT COALESCE(jsonb_agg(jsonb_build_array(${projection})),'[]'::jsonb) AS items FROM (${sql}${pageSize===undefined||hasInnerLimit?'':' LIMIT $2 OFFSET $3'}) workflow_items`,pageSize===undefined?[projectId]:[projectId,pageSize+1,offset]);
+ const rows=(result.rows[0]?.items??result.rows).map((item:any)=>{
+  if(!Array.isArray(item))return item;
+  const row=Object.fromEntries(projectWorkflowColumns.map((column,index)=>[column,item[index]]));
+  if(typeof row.created_at==='string')row.created_at=new Date(row.created_at);
+  return row;
+ });
+ return{...result,rows,rowCount:rows.length};
+}
 
 /** 列表只取步骤状态与活动/已出题标记；完整执行记录在用户打开详情时再读取。 */
 export async function readProjectWorkflowViews(pool:Pool,projectId:string,ids:string[],snapshot?:{states:Awaited<ReturnType<typeof readProjectWorkflowStepRows>>;hasAuthored:Map<string,boolean>}):Promise<Record<string,ProjectWorkflowView>>{
@@ -34,7 +48,8 @@ export function projectWorkflowViewsFromSnapshot(snapshot:{states:Awaited<Return
   const rows=rowsByWorkflow.get(id)??[];
   if(!rows.length)continue;
   const map=new Map<number,WorkflowStepState>(rows.map(row=>[row.ordinal,row]));
-  views[id]={steps:rows.map(row=>{
+  const visibleRows=rows.filter(row=>!isStepSealed(row.ordinal));
+  views[id]={steps:visibleRows.map(row=>{
    const eligibility=workflowStepReadiness(row.ordinal,map),stage=STEP_REGISTRY.find(item=>item.ordinal===row.ordinal)!;
    const extraction=row.ordinal===1&&row.has_pdf&&row.extraction_status!=='skipped';
    return{...row,status:extraction?row.extraction_status??row.status:row.status,error:extraction?row.extraction_error??row.error:row.error,started_at:extraction?row.extraction_started_at??row.started_at:row.started_at,finished_at:extraction?row.extraction_finished_at??row.finished_at:row.finished_at,name:stage.name,display_position:stage.position,ready:eligibility.ready,ready_reason:eligibility.ready?null:eligibility.reason};

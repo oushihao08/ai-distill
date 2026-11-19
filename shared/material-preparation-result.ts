@@ -24,7 +24,7 @@ export interface QuestionSupport {score:number;status:QuestionSupportStatus;dime
 export interface MaterialPreparationResult {summary_scope?:'visible';format:'material-preparation-v2';package_summary:string;documents:PreparationDocument[];combinations:PreparationCombination[];question_support?:QuestionSupport;warnings:string[];document_count?:number;unassigned_group_count?:number;unassigned_block_count?:number;image_decisions?:Array<{file_id:string;image_id:string;page:number;sha256:string;keep:boolean;reason:string}>}
 export interface MaterialScopeSelection {business_goal?:string;core_work?:string;deliverable_use?:string;direction:string;party:string;scenes:string[];deliverables:string[];additional_combinations?:Omit<MaterialScopeSelection,'additional_combinations'>[]}
 /** 同期当前成功题目的设计参考，不包含历史题面、答案或评分；缺失元数据不推断。 */
-export interface AuthoringBatchContext {captured_at:string;total:number;included:number;missing:number;truncated:boolean;selections:MaterialScopeSelection[]}
+export interface AuthoringBatchContext {captured_at:string;total:number;included:number;missing:number;truncated:boolean;selections:MaterialScopeSelection[];used_combinations?:{direction:string;scene:string}[]}
 export interface MaterialScopeContext {preparation_id:string;result:MaterialPreparationResult;used_combinations:{direction:string;scene:string}[]}
 export interface PreparedSelectionDocument {id:string;title:string;text:string;document:RedactedDocumentStructure;source_refs:unknown;unit_kind?:PreparationDocumentKind;visibility?:PreparationVisibility;visibility_reason?:string}
 const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -223,3 +223,5 @@ export function validateSelectedMaterialIndex(index:any,markdown:string,checkPro
 
 /** 单次整理只返回描述，不让Agent重新判定上游文书类别或边界。 */
 export const MATERIAL_PREPARATION_SINGLE_SCHEMA=obj({package_summary:str,documents:MATERIAL_PREPARATION_SUMMARY_SCHEMA.properties.documents,combinations:MATERIAL_PREPARATION_SCHEMA.properties.combinations,question_support:QUESTION_SUPPORT_SCHEMA});
+/** 超百份文书分段汇总Schema：在全包视角下统一给出需要标为hidden的文书ID及理由，避免分段阶段丢失防泄题可见性。 */
+export const MATERIAL_PREPARATION_CHUNKED_OVERVIEW_SCHEMA=obj({package_summary:str,hidden_documents:arr(obj({id:str,visibility_reason:str})),combinations:MATERIAL_PREPARATION_SCHEMA.properties.combinations,question_support:QUESTION_SUPPORT_SCHEMA});

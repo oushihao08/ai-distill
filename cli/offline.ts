@@ -61,19 +61,26 @@ async function candidates(http:OfflineHttp,stage:OfflineStage,options:{project?:
       // 指定题目时逐题读取轻量详情，避免读取整期项目清单。
       const rows:Candidate[]=[];
       for(const id of options.ids){
-        const detail=await http.get(`/api/workflows/${id}`);
+        const detail=await http.get(`/api/workflows/${id}?view=status`);
         const workflow=detail?.workflow??detail;
         if(workflow?.project_id&&workflow.project_id!==options.project)throw new CliError(`题目 ${id} 不属于该期次`);
         rows.push({task:`author-${id}`,title:String(workflow?.title??id),workflow_id:id,project_id:options.project});
       }
       return rows;
     }
-    const data=await http.get(`/api/projects/${options.project}`);
-    const steps:any[]=Array.isArray(data?.steps)?data.steps:[];
-    const workflows:any[]=(Array.isArray(data?.workflows)?data.workflows:[]).filter((w:any)=>w.workflow_kind!=='material_package');
-    const picked=options.ids?workflows.filter(w=>options.ids!.includes(w.id)):workflows.filter(w=>{const step=steps.find(s=>s.workflow_id===w.id&&s.ordinal===4);return !step||!['succeeded','running'].includes(step.status);});
-    if(options.ids&&picked.length!==options.ids.length)throw new CliError('部分 --ids 不属于该期次的题目');
-    return picked.map(w=>({task:`author-${w.id}`,title:String(w.title??w.id),workflow_id:w.id,project_id:options.project}));
+    const picked:Candidate[]=[];
+    for(let page=1;;page++){
+      const result=await http.get(`/api/projects/${options.project}/questions?page=${page}&limit=500`);
+      const workflows:any[]=Array.isArray(result?.workflows)?result.workflows:[];
+      for(const w of workflows){
+        if(!['succeeded','running'].includes(w.authoring_status)){
+          picked.push({task:`author-${w.id}`,title:String(w.title??w.id),workflow_id:w.id,project_id:options.project});
+          if(options.limit!==undefined&&picked.length>=options.limit)break;
+        }
+      }
+      if(!result?.has_more||(options.limit!==undefined&&picked.length>=options.limit))break;
+    }
+    return picked;
   }
   if(stage==='prepare'){
     if(options.ids){
@@ -90,7 +97,7 @@ async function candidates(http:OfflineHttp,stage:OfflineStage,options:{project?:
     const rows:Candidate[]=[];
     for(const item of loaded){
       if(!item.selected_redaction_id)continue;
-      const existing=await http.get(`/api/material-library/packages/${item.package_id}/preparations?redaction_id=${item.selected_redaction_id}&project_id=${options.project}`);
+      const existing=await http.get(`/api/material-library/packages/${item.package_id}/preparations?redaction_id=${item.selected_redaction_id}&project_id=${options.project}&summary_only=true&page_size=1`);
       if(Array.isArray(existing?.items)&&existing.items.length)continue;
       rows.push({task:`prepare-${item.selected_redaction_id}`,title:String(item.package_name),package_id:item.package_id,revision_id:item.selected_revision_id,redaction_id:item.selected_redaction_id,project_id:options.project});
     }
@@ -101,10 +108,10 @@ async function candidates(http:OfflineHttp,stage:OfflineStage,options:{project?:
   if(options.ids)packages=await Promise.all(options.ids.map(id=>http.get(`/api/material-library/packages/${id}`)));
   else{
     const items:any[]=[];
-    for(let page=1;page<=50;page++){
-      const list=await http.get(`/api/material-library/packages?page=${page}&page_size=100`);
+    for(let page=1;;page++){
+      const list=await http.get(`/api/material-library/packages?page=${page}&page_size=200&redaction_state=not_ready`);
       const rows:any[]=Array.isArray(list?.items)?list.items:[];items.push(...rows);
-      if(!rows.length||items.length>=Number(list?.total_count??0))break;
+      if(!rows.length||page*200>=Number(list?.total_count??0))break;
     }
     packages=items.filter(p=>p.extraction_status==='succeeded'&&Number(p.available_redaction_count)===0&&!['queued','running'].includes(p.redaction_status));
   }

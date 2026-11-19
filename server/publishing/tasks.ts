@@ -9,6 +9,8 @@ import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {fileURLToPath} from 'node:url';
 import {canonicalJson} from '../../shared/workflow-config';
+import {isEvaluationPipelineSealed} from '../../shared/step-registry';
+import {createHash} from 'node:crypto';
 import {exportCurrentMaterialDocx} from '../materials/redacted-docx-export';
 import {writeArchivedWorkflowWorkbook} from '../reporting/archive-workbook';
 import {publishWorkflow,type PublicationBinding} from './jobs';
@@ -20,15 +22,37 @@ import {logEvent,classifyLogError,withLogContext} from '../logging';
 
 type Identity={task_id:string;org:string};
 const assetRoot=fileURLToPath(new URL('../../assets/out/',import.meta.url));
+export function authorOnlySourceDigest(questionAttempt:{id:string;input?:unknown;result?:any}){
+ const q=questionAttempt.result;
+ return createHash('sha256').update(canonicalJson({
+  mode:'author_only_sealed',
+  question_attempt_id:questionAttempt.id,
+  source:questionAttempt.input??null,
+  question:q?.question??'',
+  question_version:q?.question_version??'',
+  rubric:q?.rubric??[],
+  rubric_version:q?.rubric_version??'',
+  attachment_ids:q?.attachment_ids??[],
+  ...(q?.scoring_policy?{scoring_policy:q.scoring_policy}:{}),
+  answer_requirements:q?.answer_requirements??null,
+ })).digest('hex');
+}
 async function publicationBinding(db:Pick<Pool,'query'>,workflowId:string):Promise<PublicationBinding>{
  const workflow=(await db.query(`SELECT w.project_id,w.title,w.source_key,p.parent_name,p.phase_name
   FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL
   WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w`,[workflowId])).rows[0];
  if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
+ const delivery=await resolveProjectDelivery(workflow.parent_name);
+ if(isEvaluationPipelineSealed()){
+  const author=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
+  const current=(await db.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=4',[workflowId])).rows[0];
+  const q=author?.result;
+  if(!author||current?.status!=='succeeded'||author.status!=='succeeded'||!q?.question?.trim()||!q.question_version||!q.rubric_version||!Array.isArray(q.rubric)||!q.rubric.length)throw new HTTPException(409,{message:'当前版本尚未完成有效出题'});
+  return{project_id:workflow.project_id,title:workflow.title,parent_name:workflow.parent_name??null,phase_name:workflow.phase_name??null,source_key:workflow.source_key??null,acceptance_attempt_id:author.id,source_digest:authorOnlySourceDigest(author),delivery_digest:delivery.digest};
+ }
  const accepted=(await db.query("SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 AND status='succeeded' ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
  const current=(await db.query('SELECT status,result FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=7',[workflowId])).rows[0];
  if(!accepted||current?.status!=='succeeded'||current.result?.decision!=='accepted'||accepted.result?.decision!=='accepted'||typeof accepted.input?.source_digest!=='string')throw new HTTPException(409,{message:'当前版本尚未达标'});
- const delivery=await resolveProjectDelivery(workflow.parent_name);
  return{project_id:workflow.project_id,title:workflow.title,parent_name:workflow.parent_name??null,phase_name:workflow.phase_name??null,source_key:workflow.source_key??null,acceptance_attempt_id:accepted.id,source_digest:accepted.input.source_digest,delivery_digest:delivery.digest};
 }
 

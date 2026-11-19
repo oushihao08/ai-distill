@@ -1,182 +1,82 @@
 ---
 name: ai-distill-workflow
-description: Use when the user asks to inspect, execute, or improve ai-distill workflow throughput, worker/API scheduling, long waits, batch processing, authoring, answering, scoring, acceptance, archiving, or Siriser five-piece preparation. Use browser-skill for actual external webpage operations.
+description: Use when the user asks to inspect, execute, or improve ai-distill workflow throughput, worker/API scheduling, long waits, batch processing, authoring, answering, scoring, acceptance, archiving, Feishu delivery, or Siriser five-piece preparation. Use browser-skill for actual external webpage operations.
 ---
 
-# 工作流操作
+# ai-distill 工作流操作规则
 
-本机工作流默认直接调用 `http://127.0.0.1:3700` 的现有 HTTP API；只有用户明确要求命令行时才使用 [CLI 指南](../cli/README.md)。任何路径都不得直连数据库。旧目录/旧项目内材料包的服务器组合处理使用 `remote material`，服务器作答使用 `remote answer`：仅在用户要求命令行并且远程前置条件已满足时，CLI 才从本机 `.env` 读取固定凭证，经 SSH 隧道请求服务器 API；不要把令牌放进命令参数、对话或输出。远程执行的状态和结果仍以服务端 API/共享数据库为准。
+## 1. 入口与硬边界
 
-CLI 是工作流客户端，不是新的业务执行器：本机命令覆盖项目期次、全局材料库、加载/使用记录、题目状态、步骤派发、等待、达标、归档、导出和下载；远程专用命令覆盖旧材料工作流的服务器入库／脱敏及题目作答；全局库使用独立 library job，并按实际 blob 存储位置校验执行端。命令的权威语法是 `bun run ai-distill --help` 和 [CLI 命令参考](../cli/README.md)，不在多个地图重复维护参数表。远程模式不提供 Agent 出题、评分、达标判定或归档；这些需要由支持相应 worker 的本机工作流执行。本 Skill 规定工作流决策；`projects/<项目>/skill/` 规定项目出题内容，交由现有作者执行器读取。
+- **决策优先级**：`用户当前要求 > 本次任务约定 > 项目配置与项目 Skill > 本文件默认流程`。
+- **调用入口**：本机工作流默认直接调用 `http://127.0.0.1:3700` HTTP API；用户明确要求命令行时使用 CLI（按前缀查精确旗标：`bun run ai-distill <前缀> --help`，如 `library --help`、`feishu --help`；详情见 [CLI 指南](../cli/README.md)）。
+- **禁令**：严禁直连 PostgreSQL 或 SQLite 读写业务数据；未获明确授权不重启服务、不跑迁移、不改模型/阈值/提示词/规则文件、不删除项目或题目。写请求超时或断连**绝不换键盲重发**，先按原 ID / `request-key` 核实状态。
+- **职责分离**：本目录规定工作流调度；`projects/<项目>/skill/` 规定项目出题内容（仅出题作者读取，不注入被测作答或独立评分）。定位代码与路由读 [MAP.md](MAP.md)，分层边界读 [ARCHITECTURE.md](ARCHITECTURE.md)，远程隧道读 [REMOTE.md](REMOTE.md)。
 
-## 材料上传与提取前检查
+## 2. 执行通道选择
 
-- 上传本机PDF或对已有库版本派发提取前，检查每份文件大小和`pdfinfo`页数，并核对当前`server/validation.ts`与MinerU适配器的限制；包已入库不代表原件满足当前提取限制。
-- 超限时复用`server/materials/prepare-library-files.ts`的`prepareLibraryFiles()`，它调用`splitLargePdf()`生成受管分片，校验页数、原件摘要并输出`manifest.json`和`provenance.json`。先处理完整包清单，再通过API创建同包新版本，依次入库、提取、Agent脱敏、加载；不要对同一超限原件反复派发提取。
-- 此处本地文件预处理是入库/提取请求的前置步骤，可直接调用上述现有函数；不写数据库、不调用模型。业务写入仍经HTTP API。用户指定CLI时使用`library files prepare`，参数见[CLI预处理说明](../cli/README.md#ofd与超限pdf上传前准备)。
-- 区分调用链：旧目录同步自动切割；全局材料库上传和提取不自动切割。不要用旧项目sync代替新库预处理，也不要在任务执行中改变已冻结的文件集合。原件保留，失败检查点和新版本分别记录。
-
-## 材料处理模式
-
-先读`GET /api/projects/:id/material-processing`或步骤4配置的`material_processing_mode`：`aliases`默认Agent化名、`original`使用提取原文；`mask`仅历史兼容，新请求禁止。由程序状态选流程，不能用提示词/Skill覆盖。项目材料任务带`project_id`；CLI仅用户要求时使用`library job start --project <期次UUID>`。原文无需脱敏，直接选择成功提取版本；化名选匹配的成功结果后建题，不能把历史遮挡结果冒充化名版本。待脱敏材料可以先加载本期，再打开带期次上下文的材料页处理。旧题按冻结快照继续作答、评分和交付，不按当前期次设置切换正文。
-
-Agent主体表为私有辅助记录；成功标准是程序校验完成并发布`library_redactions`，不是写出计划、消息称完成或临时文件存在。Agent内置本地校验工具只修正本次产物，不调用其他模型；单次使用任务冻结执行预算及领取后的deadline，超时停止并保留进度，不自动重试。不要在当前聊天手工脱敏后冒称程序验证成功。具体模块与恢复见[材料库](../server/material-library/README.md)。
-
-## 材料包与题目身份
-
-材料包与题目的数量关系由当前项目规则决定；系统支持多种关系不代表本次项目允许多题。Work法律全场景固定为 **一个材料包只对应一个题目身份**：同包全部附件共同作为一道题的来源，返修、重出和重评沿用原题身份；发现历史重复关联时先核对并报告，不擅自删除。执行该项目的出题任务前读取[项目规则](../projects/Work法律全场景/AGENTS.md)与[出题 Skill](../projects/Work法律全场景/skill/SKILL.md)；其他项目不得套用这项 Work 专属数量约束。
-
-先识别主项目、期次的 `project_group_id`/`phase_no`、`material_backend` 和工作流身份。新 `library_v1` 期次从全局材料库选择 package revision；默认来源模式为 `redacted`，用户可将本期设置为 `original`，但所选版本必须有完整成功提取。全局新材料通过原子提取入库接口提交：先取得独立任务ID，全部提取成功后才出现正式材料包/版本；失败或回执未知时按原任务ID/request-key对账，不先建空包、不换键重提。对已有包更新版本也先作为任务处理，成功后读取正式版本ID。部署与接口细节见[材料库模块说明](../server/material-library/README.md)。默认通过本机 API 的现有材料候选、加载、题目创建路由操作；只有用户明确要求命令行时才使用对应 CLI 命令。题目快照冻结来源模式、材料与版本，不因后续包更新或设置变更而切换。主项目 `project_material_uses` 记录独立于题目的永久占用与提交/返修历史；同一主项目跨期不得重复加载相同原件集合，提交状态退回使用中用于原期返修，不释放跨期占用。旧 `question_folders` 与旧材料包仍沿各自兼容入口操作。批量派发前按 workflow 身份筛选，不能把旧材料包当题或把 library 派生题送去重复入库/脱敏。目标等级是出题设计输入，不代表自动验收通过。
-
-## 结构与阅读地图
-
-- 本文件是操作入口，执行任务按下文规则进行。
-- 理解分层、数据流、状态和扩展边界时，读 [架构设计](ARCHITECTURE.md)。
-- 定位步骤、命令、接口或修改文件时，读 [文件与流程地图](MAP.md)。
-- 需要从本机项目调用远程 CLI 时，按 [远程 CLI 操作流程](REMOTE.md) 建立隧道、确认前置并执行/恢复命令；CLI 参数见 [CLI说明](../cli/README.md)。
-- Codex 默认直接调用本机 API；只有用户明确要求命令行时使用 [CLI说明](../cli/README.md)。API 路径、请求和响应以当前服务端路由及响应为准。地图不替代当前实现，也不要求每次执行通读后端。
-- 本机/远程入口选择及 CLI 命令到实现文件的关系见 [CLI 工具地图](MAP.md#cli-工具地图)；远程命令需按部署前置检查，不得把源码支持描述为线上已启用。
-
-需要按用户指定间隔持续通过CLI执行并维护逐题对账台时，使用[定时执行 Skill](../toolSkills/ai-distill-scheduled-runner/SKILL.md)。它负责外层调度，业务派发和输入边界仍沿用本文件。
-
-## 本次任务
-
-按“用户当前要求 → 当前任务约定 → 适用配置与文档 → 默认流程”确定范围、操作和输出。API能力、实际状态及授权边界是执行约束，不能靠修改提示词绕过；无法满足时报告具体缺口，不擅自改目标。
-
-确定项目、题目范围、起点、终点和操作类型。已有明确ID时直接查询对应对象；只有名称需要定位时才用 `project list/show` 或主项目/期次 API 定位。下面的API路径是操作依据；用户明确要求命令行时再改用对应 CLI 命令。名称歧义时只询问缺失的选择。执行前简要说明选中的题目与终点；已有授权不重复确认，也不在每一步之间等待确认。只读查询不套用派发流程。
-
-| 用户意图 | 处理方式 |
-| --- | --- |
-| 查询 | 读取所需对象并返回结果，不创建任务 |
-| 项目管理 | 使用现有项目 API 创建、修改或删除；创建后读取项目、设置和模型接口检查配置。删除必须来自用户对该项目的明确要求，并遵守CLI目标名称确认契约 |
-| 配置项目 | 先调用 `GET /api/answer-models` 确认已登记模型，再使用项目设置 API 写入用户要求的配置；不替用户猜模型或阈值 |
-| 续跑 | 跟踪已有活动任务；已完成步骤不重做，只派发授权范围内的就绪步骤 |
-| 重新生成 | 先核对服务端 API 是否支持重做；普通批量接口拒绝已完成步骤时报告能力缺口，不冒充已重做 |
-| 导出未达标题包 | 目前只有本机 CLI 文件导出实现，没有对应 HTTP 导出路由。只有用户明确要求使用命令行时才运行 `export failed`；否则说明该能力缺少 API 入口，不暗中切换 CLI。输出路径和文件格式由 `cli/failed-export.ts` 定义，首次导出时创建目录 |
-| 复核指定低分作答 | 目前只有本机 CLI 文件导出实现，没有对应 HTTP 导出路由。只有用户明确要求使用命令行时才运行 `export review`；否则说明该能力缺少 API 入口。清单保留系统真实判定，低分不等于作答调用失败；输出路径和文件格式由 `cli/failed-export.ts` 定义 |
-| 旧材料工作流远程入库／脱敏 | 用户要求服务器执行旧材料工作流时，用 `remote material start|run`；响应不确定时用同一题目与 request-key 执行 `status`／`sync`。只做入库或只做脱敏可选择 `--mode intake`／`redact`；后者仅支持全部附件均声明已脱敏，不执行模型脱敏 |
-| 远程服务器作答 | 用户要求服务器执行模型作答时，用 `remote answer start|run`，以 `status` 按同一题目与 request-key 恢复查询；不得通过本机步骤派发冒充服务器执行 |
-
-“全部等待出题的题做到评分”：只在指定项目读取状态，筛出服务端显示出题就绪的题目 ID；固定这组 ID，后续不会把新加入题目或其他题目带入。只对用户明确授权的整个项目操作读取全部题目。示例不是默认范围。
-
-项目删除必须来自用户对该项目的明确要求；按 CLI 的当前项目全名确认契约执行；底层 API 只接收项目 ID，不能据此跳过用户对目标项目的明确授权。不能把“清理题目”“重置流程”或批量工作流操作解释成删除项目。项目创建后可按用户配置调用项目设置 API 初始化 Codex、模型集合、步骤配置和作答策略；随后仍须检查就绪状态。缺少模型阈值或项目 `SKILL.md` 时，报告具体缺项，不把项目说成已可完整出题、作答和评分。
-
-### 远程服务器执行
-
-按 [远程 CLI 操作流程](REMOTE.md) 建立隧道并核对服务器前置。远程 CLI 只负责提交、查询和本机文件同步，真正的旧工作流入库、人工声明处理及作答仍由服务器 API/worker 执行。执行前确认部署版本、共享数据库、服务器项目来源目录、所需迁移、`WORKER_MODE=server`、`MATERIAL_EXECUTION_TARGET=server`、至少32字符的 `REMOTE_MATERIAL_TOKEN`，以及本机 `.env` 中指向 SSH 本地端口的 `REMOTE_MATERIAL_API_URL` 和同一令牌。服务器部署状态未知时，先只读核对；不能因 CLI 命令存在就断言远程已就绪。
-
-材料操作生成 request-key 后必须保存并复用：网络失败或中断时，用同一 `workflow` 和 `request-key` 查状态/同步，不生成新标识重发。`run` 会等待任务并取回本机所需文件；`start` 只提交，`status` 只读服务器任务，`sync` 只处理已成功操作的文件收尾。远程作答同样复用 request-key 恢复状态；`status` 不含答案正文，答案通过常规工作流结果接口查看。作答请求可能为每个模型创建 attempt，必须确认整个作答集合的结果。失败后的显式新尝试使用新 request-key，并在用户授权范围内进行。
-
-远程 worker 仅执行服务器归属的入库、PDF 提取、人工声明已脱敏的兼容处理和无步骤钩子的作答；它不运行 Agent 出题、评分、判定或归档。远程材料的附件取回是本机管理副本；`ready_for_local_authoring` 只在同步非 intake 模式的材料后报告，仍需由工作流状态确认脱敏就绪。实际能力以部署版本和 API 响应为准。
-
-## 执行
-
-1. 派发前调用 `GET /api/projects/:id/workflow-status?ids=...` 查看 `ready`、`ready_reason`、活动尝试。涉及作答、评分或达标时按需读取 `GET /api/projects/:id/answer-models`。需要题目或结果正文时读取 `GET /api/workflows/:id`；需要附件时读取该题冻结来源对应的材料接口，不要默认把共享材料库原文改成脱敏或反过来。就绪与绑定由服务端决定，不自行从 `waiting` 猜测。
-2. 有活动尝试则跟踪其 ID，不重复派发。每次写请求只派发一个步骤：`POST /api/projects/:id/steps/:ordinal/run-batch`，JSON为 `{ "workflow_ids": ["..."] }`；ordinal 从 `shared/step-registry.ts` 读取，不能用页面序号。若用户授权了连续多个步骤，在核对当前结果后继续下一步，直到指定终点或遇到阻断。逐题读取响应中的全部派发结果和 attempt ID，不能只保存第一个模型。
-3. 通过 `GET /api/attempts/:id?wait_ms=30000&view=status` 等待任务；只返回状态和关联，不含正文。单步等待默认持续跟踪至终态，最长1小时；多题连续处理可使用短等待，每轮后刷新本组全部题目状态。用户指定的等待规则优先。到期、读取失败或中断后核对相同任务，不取消或重派。
-4. 每轮调用工作流状态 API 读取本组全部题目的当前状态、活动尝试及下一步就绪条件，按下文逐题推进。只在需要成果正文或具体失败原因时读取完整工作流或 attempt 结果。入库结束后仍须跟踪 PDF 内部提取；多模型任务分别核对，不从一个任务成功推定整题完成。未就绪时读原因，不改配置绕过。
-5. 评分完成后读取系统自动生成的达标结果；未生成时重读状态，确实就绪且用户目标包含判定时才显式派发判定。执行成功、评分有效、题目达标是三个不同结论。按服务端当前 `decision`、`model_scores` 汇报；逐模型或聚合口径、指标、模型数量与门槛以项目当前配置及冻结评分契约为准；无效或缺失的必要评分不能算通过。
-6. 到达用户终点就停止。做到评分时可报告系统自动产生的判定，不继续归档或导出。对第七步判定为`repair`的题目，步骤4–6只有在完整评分依据仍与建议来源一致、返修建议任务成功且建议正文有效后才会就绪；先检查工作流状态，不按旧文档或上次结果自行放行。生成建议是独立手动任务，不自动触发重出题；建议排队、运行、失败或过期时按服务端就绪原因处理。未达标题目如需重做，按用户授权走普通步骤；归档使用 `publish_export`，保存返回任务ID并等待终态，再核对当前归档结果和下载；交付内容按对应项目脚本，不将Work五件套要求套用其他项目。Excel 使用独立 `export create`。
-
-用户要求导出未达标题目时，只按当前第七步 `repair` 判定选择，不把模型调用失败误认为有效未达标评分。固定导出工具通过 API 核对题目版本、rubric、作答哈希、评分绑定和判定后，将出题、逐模型作答、逐模型评分写入 `assets/未达标题目/<项目UUID>/<题目>-<工作流UUID>/<判定尝试UUID>/`；不写 `assets/out/`，不把这些文件带回出题 Agent。重跑同一判定只核对、不覆盖；缺项逐题报告，不猜测旧记录。此本机文件导出没有 HTTP 路由；未获明确命令行要求时，不调用 CLI 并说明接口缺口。
-
-## 任务关联与恢复
-
-先核对原workflow／attempt ID、当前输入及错误，再选择恢复操作；不因存在恢复接口自动重做。入口地图见[恢复说明](../cli/README.md#显式恢复与交付确认)。
-
-- 出题结果已写检查点但未保存：在授权范围调用`POST /api/workflows/:id/authoring-results/:attemptId/restore`，不重新调用模型；服务端拒绝失效结果时停止覆盖。
-- 已发布Agent脱敏需程序复核：调用材料库`POST /redactions/:id/revalidate`；它追加校验历史，不改原件或旧题快照。返回valid与usable_for_question，不能把HTTP成功当复核通过。
-- 钩子失败：先读`GET /api/workflows/:id/hooks`。新后置增强用`POST /api/hooks/:id/retry`；旧主尝试明确为project_hook_failed才考虑`POST /api/attempts/:id/resume-hooks`。非幂等副作用先核实，acknowledge_side_effects仅在确认可重复执行时显式true；运行或回执未知不自动重放。
-- 修改已归档题目前，按用户返修范围显式调用`POST /api/workflows/:id/withdraw-archive`，保留归档/提交历史和材料占用；设计修改使用authoring-direction接口，不直接改数据库。
-- 归档attempt终态只代表本地归档；豆包仍须读取准确目标的飞书回执及verification，succeeded且核对passed才报告该次同步成功。逐目标回执来自工作流详情，缺失或旧回执保持未知；服务端记录不等于实时查询远端。只补失败同步，不为补传重做模型或归档。
-
-
-
-### 分批执行
-
-- 批次大小是本次任务参数，按用户指示确定；缺省时根据任务规模选择并说明，20只是示例，不是固定值。批次大小不改变服务端并发。
-- 执行前筛选服务端就绪题目，固定本轮总范围和分组，在 `.storage/` 的运行记录中保存清单；本地清单只记录本轮范围，不替代 API 状态，也不派发任务。
-- 同批逐题推进，除非用户明确要求整批按阶段等待：每轮批量读取本组全部状态，按各题下一授权且 `ready` 的步骤分组调用 API。某题出题完成即可作答、作答终结且评分就绪即可评分；不等其他题完成同一步。
-- 同题同一步有活动尝试则只跟踪；上游失败或绑定无效时不继续下游，部分多模型结果能否评分仍按服务端 `ready` 决定。派发前核对该题当前关联，保存全部模型任务 ID；写结果未知时先核实，不重发。仅本组全部题已到终点或记录跳过后进入下一组，不扩充范围。
-- 本轮没有可派发步骤且仍有活动任务时，短等待后刷新全组；不要连续空查询或因某几个任务未结束而长时间阻塞其他题。到用户终点的题停止派发，正常的未达标判定不是执行失败，不自动重出或返修。
-- 执行失败或确实无法继续的题，在运行记录中标记本轮跳过并说明原因；读取失败或请求结果未知时先核对原任务，不能直接标成执行失败。记录跳过不取消后台任务，不修改数据库状态。
-- 下次用户要求处理失败题时，重新核对服务端状态并创建新的本轮记录，不删除旧记录。本轮不自动重试；同题同一步的同一输入长任务若已明确失败两次，记录并报告，未经新的明确指示不继续重跑。
-- 中断恢复先读原运行记录，再通过 API 读取服务端状态；从首个仍未到终点且未跳过的分组继续，成功步骤不重做。记录不保存数据库状态、分数或重建任务历史；状态变化以服务端当前绑定为准。已完成分组全部跳过，不扩充固定总范围。
-
-### 效率调度
-
-- 每轮把 `GET /api/monitor` 与目标项目的 `workflow-status` 一起读取；前者看 `active_workflow_tasks`、内存派发状态和材料库队列，后者判定每题当前步骤、活动 attempt 和 `ready`。只用活动 attempt 数估计 Agent/API 占用；不要拿全局 waiting 数、页面进度或理论上限代替可执行性。
-- 读取 `GET /api/system/concurrency-settings` 的 `active`、`settings`、`limits`，并以本轮队列返回的lane `limit`、`running`、`queued`、`reserved`、`waiting`、`available`为实际补位依据；禁止沿用Agent 4/API 8或其他历史数字作为当前上限。Agent 与模型 API 是独立消费池。若一池没有ready任务、另一池仍有积压，先核对当前配置、对应worker和系统资源；只有活动并发低于该池`limits`且确认有可消费任务时，才考虑通过设置API提高该池`settings`，并说明重启影响、取得授权后再执行。空闲API槽位不能直接转成Agent槽位，也不能越过当前运行时上限；加开同模式worker仅用于修复消费者缺位或模式错配，不会提高共享槽位上限。不得为填满并发而造任务、重复派发、改模型/阈值或跳过步骤依赖。设置API返回`restart_required=true`时，需有相应授权再重启服务并复核`active`，不要只改环境值或盲目多开进程。
-- 按用户优先级和业务顺序给就绪任务排队；一题完成即推进该题的下一 `ready` 步骤。同一轮可把多个已就绪工作流按步骤合并为一次 `run-batch`，但每个 workflow 同一步只派发一次。只在无可派发任务时等待；每次短等（默认 30 秒）后刷新目标组，等待期间继续检查其他独立题目的 ready 步骤，或完成只读核验、ZIP 预检、提交清单等不会与运行任务争用输入的工作。不得修改正在运行 attempt 的输入或复用其旧版本结果。
-- 等待不等于卡住：保留每个 attempt ID 和当前池；若相同 attempt 仍运行就继续等，不重派。若运行数低于池上限但 ready 任务排队，先核 worker 模式、健康状态和并发槽位；若池已满，只做其他独立 ready 工作，不反复轮询同一状态或启动超额消费者。
-- 等待超过本次配置时限或明显失去心跳时，不把`running`当作仍有进展：读同一 attempt 状态、`/api/monitor` 和窄时间窗诊断日志（`attempt_id`）；区分仍在模型执行、Codex超时、worker/数据库连接中断。响应未知时不重派；等原attempt终态后，若为可重试的基础设施失败且仍在授权范围内，再派一次并记下原因。不要把数据库/worker故障误记成题目不合格，也不要无限等状态页。
-- 出题步骤`succeeded`不保证题目可作答：先看当前题`content_status`与`ready_reason`。若为`draft`，把缺口分成“现有材料无法支撑题目核心任务”与“可作为任务内待核事项”的两类；前者报告具体缺失输入并停止盲目重出，后者可在用户授权的修订中把题目边界收窄到可由现有材料完成，并把待核事项、影响和核实路径本身作为交付要求。不能仅为推进流程把`draft`强改为`complete`。
-- Siriser 提交采用“批量预检、逐题提交、单次回读”：先批量核对所有候选题当前版 `accepted`、归档成功、正确等级/场景/外部任务身份；逐包检查 ZIP 五件套结构、DOCX 输入和 SHA-256，并一次性形成“工作流ID—ZIP路径/哈希—平台任务ID/subtask”清单。只有清单完整的题才进入平台操作；逐题打开准确任务页、上传对应 ZIP、正式提交，然后回“我的项目”核对平台题目 ID、提交时间和状态，再写台账与单题回执。不要每题重新扫描全项目、反复下载同一 ZIP、反复查看市场或复用含混的旧标签页。若 Agent 配置报错或无有效输出，不无限等待/重复运行，按页面是否阻断提交与本地 ZIP 核验结果处理并如实记警告。CLI 的 `siriser download` 只下载本地 ZIP，不会上传或提交；平台提交仍须通过 Siriser 页面完成。已存在的提交回执直接复用，不重复领取、上传或登记。
-- 可提速的工作与不能提速的部分分开：批量状态读取、合并就绪派发、预生成 ZIP 校验摘要和提交登记内容可减少重复操作；它们不会缩短单个模型生成时间，也不能替代平台验收。不要把模型等待时间用于不相关且会改变同批输入的操作。
-
-在当前对话的任务进度记录中保留：项目ID、固定题目ID集合、操作类型、目标步骤、逐题当前步骤、全部attempt ID及可取得的模型/答案关联、已完成项与阻断。派发后更新；长任务交接或上下文压缩前将这些字段写入交接摘要，不只留下“运行中”或总体成功数。
-
-恢复时先按记录ID调用服务端 API 核对当前状态。关联缺失时重新查询确认，不猜测最新任务、不重复派发。本机运行记录只保存本轮范围、分组参数、终点和跳过原因，不能替代服务端状态与任务关联。
-
-## 步骤卡
-
-以 `shared/step-registry.ts` 的稳定 ordinal 为 API 身份来源，不使用页面序号。
-
-| key | 输入 → 结果 | 阻断时检查 |
+| 通道 | 适用阶段与场景 | 容量与调用方式 |
 | --- | --- | --- |
-| receive_materials | 来源清单 → 入库与内部提取 | 目录、材料、PDF提取尝试 |
-| redact_materials | 入库正文 → 脱敏正文 | 入库完成、脱敏配置和错误 |
-| author_question | 题目快照的脱敏或提取原文附件、当前项目skill、步骤设置 → 题目包 | 附件、skill和任务错误 |
-| model_answer | 题面、允许附件 → 逐模型答案 | 当前题目绑定、模型集合、凭证错误 |
-| independent_score | 同版题面、rubric、题目快照来源模式对应附件、答案 → 逐答案评分 | 作答终态、有效答案、评分错误 |
-| accept_or_revise | 有效评分、各模型阈值 → 系统判定 | 当前绑定、评分有效性、所需模型齐备 |
-| publish_export | 当前达标题目 → 归档产物 | 当前判定为accepted；Excel另行导出 |
+| `agent` | 本地 Codex/AGY 执行 `redact`（`aliases`）、`prepare`、步骤4出题、步骤6 Agent评分、手动返修建议、项目Skill生成 | 读 `/api/system/concurrency-settings` 与 `/api/system/execution-queue` `capacity.agent`；单次出题可传 `authoring_settings:{provider,model,reasoning_effort}` |
+| `api` | PDF/DOCX 提取、步骤5模型作答、步骤6 API评分、API脱敏/整理 | 读 `capacity.api`；与 `agent` 独立消费池，槽位不可互转 |
+| `web` | 经已登录浏览器自动跑 `prepare`（deepseek）或步骤4出题（deepseek/gemini） | 独立 6 槽位 `capacity.web`（需 064 迁移）；HTTP 传 `web_settings`，CLI 用 `--web` 及 `web status/doctor/login/close`；不支持自动 `redact` |
+| `offline` | 人工网页交互作业台（`redact` / `prepare` / `author` 导出每任务 zip + 对账台，贴回 `reply/reply-N.md` 校验入库） | 仅 CLI 本地工具 `offline export/import/status`（需用户指定命令行且共用 `STORAGE_DIR`） |
+| `remote` | SSH 隧道交服务器跑**旧工作流**入库/`declared_redacted` 兼容处理或**无钩子题目**模型作答 | 仅用户要求命令行且满足 [REMOTE.md](REMOTE.md) 前置时用 `remote material|answer`；不跑全局库本地 blob、出题、评分或归档 |
 
-## 异常与边界
+> 仅限 CLI 的本地文件工具（无对应 HTTP 导出路由）：`export failed`、`export review`、`offline`、`feishu local-sync`、`library documents export`。未获命令行要求时说明接口边界，不暗自切 CLI。
 
-- 写请求网络失败或响应异常可能已经入队。保留返回批次、题目和任务 ID，先查状态；不得盲重发。只读查询可有限重试；业务失败不自动重跑。
-- 退出码2意味着部分失败/未就绪，3意味着等待到期；退出码0也不表示达标。具体状态看 JSON，不能将整体成功覆盖单项失败。
-- 继续流程不隐含授权同步来源目录、改附件、改模型/阈值/提示词、重置、删除、生成或采用项目skill。用户明确要求时才单独调用相应 API；API 不提供的操作先报告，不能直接写数据库。
-- 流程执行授权不隐含启动/重启服务、迁移、安装依赖或修改代码；这些是单独任务，按用户明确授权及项目规则处理。API/worker不可用时报告实际阻断；监控心跳不能证明供应商仍在生成。
+## 3. 材料库与期次不变量
 
-## 按任务汇报
+1. **上传前检查与预处理**：上传或派发提取前检查单文件大小与 `pdfinfo` 页数（核对 `server/validation.ts` 与 OCR 限制）。DOC/WPS/OFD 转换及超限 PDF 切割复用 `prepareLibraryFiles()`（CLI：`library files prepare`，见 [预处理说明](../cli/README.md#ofd与超限pdf上传前准备)），生成新清单后再入库；全局材料库上传**不自动切割**，禁止用旧 `sync-folder` 替代。
+2. **原子提取入库**：新材料经 `POST /api/material-library/imports`（CLI：`library import`）提交，全部提取通过才发布正式 `package_id`/`revision_id`（旧 `POST /packages` 已停用返回 410）；已有包新版本用 `POST /packages/:id/revisions`。
+3. **处理模式与来源冻结**：先读 `GET /api/projects/:id/material-processing`（`aliases` 默认 Agent 整包化名，`original` 使用成功提取原文，`mask` 仅历史只读）。项目材料任务必传 `project_id`。建题快照永久冻结来源与可见文书，后续改期次设置不影响旧题。主项目 `project_material_uses` 跨期防重；退回 `in_use` 仅用于原期返修，不释放跨期占用。
+4. **单包题量规则**：由具体项目规则决定。**Work法律全场景固定一包一题**（出题前必读 [Work规则](../projects/Work法律全场景/AGENTS.md) 与 [Work Skill](../projects/Work法律全场景/skill/SKILL.md)）；不推广至其他主项目。
+5. **可选材料整理（`prepare`）**：基于成功脱敏或提取生成总摘要、逐份可见性与候选组合（[CLI整理说明](../cli/README.md#材料整理)）。重跑传 `force:true` + 新 `request_key`；单次默认预算 30 分钟，到期停止不自动重试；缺失或失败不阻断建题。CLI 自然语言批量筛选派发用 `library batch plan/run`（多条件为 **AND** 关系）。
 
-- 查询：返回用户所查内容及必要的不确定项，不附加无关模型评测。
-- 执行：逐题列出已完成步骤、失败/未就绪原因、仍活动的attempt ID及是否到达目标。
-- 评分/达标：在执行结果上补充逐模型得分、满分、百分制、阈值、评分有效性和系统判定；缺失项明确标出。普通评分不要求思路或标答，显式calibration评分要求标答；不能据此删除项目交付必需内容。达标返回reused=true表示复用同依据的当前记录，不代表新执行了模型。
-- 下载/导出：报告生成记录、文件路径及实际结果，不以命令成功代替文件已交付。
+## 4. 分页与轻量读取契约（严禁全表拉取充当目录）
 
-按用户要求控制详细程度，只披露任务必要内容，不把部分成功汇总成全部完成。
+| 场景 | 推荐轻量接口 / 参数 | 默认与上限 / 翻页依据 |
+| --- | --- | --- |
+| 取全期工作流 ID（如 `--all`） | `GET /api/projects/:id/workflow-ids?kind=question&page=1&page_size=500` | 最大 1000/页，按 `has_more` 翻页 |
+| 最近 N 题或指定 ID 交付预检 | `GET /api/projects/:id/questions?page=1&limit=100` 或 `?ids=UUID,...` | `limit` 1–1000（按创建时间倒序，非完成时间）；`ids` 最多 1000 |
+| 项目详情工作流分页 | `GET /api/projects/:id?workflow_page=1&workflow_page_size=100` | 单页最大 500，看 `workflow_has_more`；步骤4全期未出题就绪数看 `steps[].unauthored_ready` |
+| 单题/批量步骤状态与归档回执 | `GET /api/workflows/:id?view=status`（CLI：`question show --status`）；批量 `GET /api/projects/:id/workflow-status?ids=...` | `workflow-status` 每批 <=100；**注意工作流详情仅 `?view=status` 省略大字段**（需要题面/答案全文才不传 `view`） |
+| 轮询 attempt 状态 | `GET /api/attempts/:id?wait_ms=30000&view=status`（CLI `attempt wait` 默认轻量） | 单次 `wait_ms` <=30s；看正文用 `attempt show` 或 `wait --full` |
+| 材料库包/导入/版本/整理列表 | `/packages?page=1&page_size=50`（看 `total_count`）；`/imports`、`/revisions`、`/loaded-materials`、`/material-uses`、`/events` 均支持 `page` & `page_size` | 仅判断是否有整理成果必加 `preparations?summary_only=true&page_size=1`（CLI `--summary-only`）；脱敏仅看校验报告用 `redactions/:id/preview?metadata_only=true`（CLI `--metadata-only`） |
+| 成果列表与导出历史 | `GET /api/results?page=1&page_size=100&q=&publication=all|archived|pending`；`/exports?page=1&page_size=100` | 单页最大 500，看 `has_more` |
+| 本机执行队列 | `GET /api/system/execution-queue`（CLI：`queue show`） | 默认仅返回活动与待核实项；查终态历史加 `?include_history=true`（CLI `--history`） |
 
-## 本机状态、容量与手动建议
+## 5. 步骤派发、滚动调度与等待
 
-- 先读本机`GET /api/system/execution-queue`及`steps[].executions`，以SQLite状态判断本机排队/运行；其他执行端明确标注，缺记录、代次不符或needs_review保持待核实。共享steps/attempts的running不能直接当作本机占用，不能因本机无记录就给云端记成功/失败或接管他机任务。
-- 新派发按实际模型attempt预留容量；每通道运行<=N、待领取<=N分别计算，N来自当前生效配置。429/local_queue_full/dispatched=false和批量capacity_exceeded明确未派发；等待空位后仍须用户原范围内显式操作，不制造空任务或自动收费重试。批量出题/作答/评分的already_accepted表示保留当前达标成果并跳过。
-- 仅用户明确要求时，通过`POST /api/workflows/:id/revision-advice`生成手动返修建议；读取当前出题/作答/评分、冻结来源，独立Agent任务不会自动出题。`GET`同一路径查看历史和有效标记。下一次出题会冻结并拼接同版成功建议文本，历史全文不重新注入作者。旧建议不跟随新题，不能降低评分要求制造达标。
-- 建议、容量、CLI和恢复细节分别以[建议模块](../server/revision-advice/README.md)、[执行队列](../server/execution-queue/README.md)、[CLI](../cli/README.md)为准；050存在或隔离验收通过不等于业务环境已启用。写请求超时后先查原任务/状态，不直接重复派发；未知模型调用不自动重放。
+稳定步骤身份以 `shared/step-registry.ts` 的 `ordinal` 为准（严禁用页面序号）：
 
-手动建议任务用建议GET接口或CLI的advice show跟踪，不将advice_attempt_ids送入原步骤attempt wait。他机状态来自共享尝试标记，本机不能确认其实际进度；它不占本机容量。
+| ordinal | key | 核心输入 → 产物 | 关键就绪与阻断规则 |
+| --- | --- | --- | --- |
+| `1` (内含`2`) | `receive_materials` | 旧目录清单 → 入库与 PDF 提取 | 仅旧流程使用；PDF 内部提取 `ordinal=2` 须一并确认终态 |
+| `9` | `redact_materials` | 旧流程入库正文 → 脱敏正文 | 仅旧流程使用；`library_v1` 走材料库 `redact` 任务 |
+| `4` | `author_question` | 冻结来源附件 + 项目 Skill + 同版有效建议 → 题包 | 若 `content_status=draft`，区分“材料不足以支撑核心任务（停止报告）”与“任务内待核事项”；已 `accepted` 题批量跳过 |
+| `5` | `model_answer` | 题面 + 允许附件 → 逐模型答案 | 须配置作答模型集合与阈值；多模型返回多个 `attempt_ids`，**必须全部跟踪** |
+| `6` | `independent_score` | 同版题面 + rubric + 附件 + 匿名答案 → 评分 | 默认不传标答（仅显式 `calibration` 契约传标答参考） |
+| `7` | `accept_or_revise` | 有效评分 + 模型阈值/聚合规则 → `accepted` / `repair` | 评分全部完成后通常自动生成；若为 `repair`，步骤 4–6 须先生成有效手动返修建议（`POST /workflows/:id/revision-advice`）才重新就绪 |
+| `8` | `publish_export` | 当前 `accepted` 题 → 本地归档产物 | 与项目 Excel 导出（`POST /projects/:id/export`）相互独立 |
 
-## 豆包飞书交付
+**高效滚动调度**：
+1. 固定本轮候选 ID（保存在 `.storage/` 运行记录，不替代服务端状态）→ 每轮并发读 `GET /api/monitor`、`/api/system/execution-queue` 与本批 `workflow-status`。
+2. 同批**逐题推进**（不等整批齐步）：将当前 `ready` 且在授权终点内的题目按步骤合并调用 `POST /api/projects/:id/steps/:ordinal/run-batch`（每请求单一步骤）。`429 local_queue_full` 表示未派发，按空槽补位，不盲目重试。
+3. 无可派发项且有活动任务时，用 `wait_ms<=30000&view=status` 短等后刷新整组；超过预期时限或心跳停滞时用 `bun scripts/diagnostics/read-logs.ts --attempt-id <ID>` 排查，不凭 `running` 宣称远端仍在生成。到达授权终点立即停止。
 
-- 仅豆包项目使用本模块。先读取当前期次飞书配置和用户指定目标；HTTP契约见[归档模块](../server/publishing/README.md#豆包飞书交付)，用户明确要求CLI时使用[CLI飞书命令](../cli/README.md#豆包飞书交付)。不擅自重载服务。
-- 默认追加到已配置表。用户要求N条进入新表时，先固定恰好N个已达标且归档成功的workflow ID，再创建一张同字段新表，保存target后逐题同步；不扩大清单、不改默认目标、不手工重写题面或附件。
-- CLI新表命令返回target后，sync-batch必须显式携带该target及新进度文件；不要每题建表。单题sync使用同一服务端生成/同步方法。旧API未加载新能力时停止，不忽略指定目标而写默认表。
-- 只把succeeded回执计为提交成功。同步失败与本地归档分开；unknown/dispatching先核对远端，不自动重发。pending尚未上传。补传只包含明确需要的ID，保留原进度和每个目标表回执。
+## 6. 交付、导出与显式恢复
 
-## 可选材料整理与使用范围
+### 豆包飞书交付（详见 [发布模块](../server/publishing/README.md#豆包飞书交付) 与 [CLI飞书说明](../cli/README.md#豆包飞书交付)）
+- **模式选择**：出题成功未归档走 `POST /workflows/:id/feishu-draft-sync`（表内标“未完成”）；已达标归档走 `POST /workflows/:id/feishu-sync`。合册传 `attachment_format:"pdf"|"docx", combined_material:true`（超 18MB 自动按连续页无损分册）；精确替换旧记录传 `replace_record_id`（CLI：`--replace-record-id`）。脱离业务 API 的本地快照草稿仅在用户明确要求时用 CLI `feishu local-sync`。
+- **防重与验收**：交付前分页查清全部互补表 UUID 防重；新表交付先建 1 张表再串行写入；**仅本次返回 `status=succeeded` 且 `verification.status=passed` 才计交付成功**（本地第8步归档成功 ≠ 飞书同步成功，查回执用 `GET /workflows/:id?view=status` 或 CLI `workflow delivery show`）。
 
-用户要求优先CLI时，先按CLI HELP查询、派发、等待及核对数据；CLI缺少必要能力时才使用对应HTTP接口。提取/脱敏后可通过材料库prepare接口整理材料包总摘要、逐份材料摘要/标签及多组材料支持范围；操作见[材料库](../server/material-library/README.md#材料整理与使用范围)和[CLI](../cli/README.md#可选材料整理)。建题自动匹配同来源整理结果。出题Agent读取摘要和范围时仍须完整阅读所有题目附件；摘要不是事实来源，支持组合不是预选题，最终方向、场景及交付由作者按材料与项目Skill决定。作答、评分不接收整理上下文。整理缺失或失败可跳过，不因此过滤材料或阻断建题。
+### Work Siriser 五件套与未达标复核包
+- **Siriser**：先批量预检 `accepted` + 第8步归档成功 + ZIP 五件套哈希与外部任务身份齐全，再逐题页面上传提交并回读平台状态；CLI `siriser download` 仅下载本地 ZIP，不执行平台提交。
+- **未达标/复核导出**：仅在用户要求 CLI 时运行 `export failed`（当前 `repair` 题）或 `export review --ids`（指定已评分题），固定输出至 `assets/未达标题目/`，不改数据库状态。
 
-### 材料整理执行约定
-
-1. 明确package、revision、成功redaction或extraction来源及project。默认读取系统Agent配置，本次指定模型时显式传agent_settings；不改全局或其他步骤来实现单次覆盖。
-2. 程序查询数据库正文，以共用结构转文本方法内联提供固定指令及材料JSON；一次Agent调用返回总摘要、逐项描述、可见性和候选组合，不要求source.json、scene-rules.md，不拆合正文或自动补调。
-3. 明确重新整理时POST prepare携带force:true和新request_key，保留旧结果ID；CLI对应start --force。未知派发回执先按原请求核对，不盲目新派。查询列表可带revision_id、redaction_id、project_id；CLI对应list --revision/--redaction/--project。
-4. 以任务status、progress、error_code和结果入库为依据；超过观察时长不自动取消或续派。默认执行预算30分钟，wait超时只结束观察；不据心跳或agent_analyzing宣称远端仍在生成。
-5. 内容验收检查摘要忠实、组合主体及信息时点相容、交付有实际依据、隐藏文书已完成同类目标成果。已有判决、裁定和程序事实正常可见；不按标题、组合数量或隐藏数量机械判定。作答、评分不接收整理建议，但使用题目冻结的可见正文；材料DOCX同样排除hidden。
-6. 模型比较保留两轮完整结果及来源身份，分别判断结构完整性、内容质量和耗时。usage为执行累计计数，缓存输入单列，不当作账单；不同包的每字符用量仅是估算，不能推出模型固定消耗倍率。CLI尚无usage专用查询命令，不臆造参数。
-
-### 材料库自然语言批量操作
-
-用户明确要求CLI批量完成某期材料或按条件筛选时，使用`library batch plan/run`，参数以cli/README.md为准。“豆包高经七期”作为`--project-query`模糊定位；“已脱敏材料做整理”映射`--kind prepare --redaction-state ready --preparation-state not_ready`。不同搜索条件为且，不能扩大成任意条件命中。先查看plan返回的实际期次和包ID范围，再在已有用户授权内执行run，无需重复确认；多匹配时仅询问具体期次。用户要求完成材料处理全流程时，在同一明确范围逐阶段核对并推进intake→extract→redact（original跳过）→prepare，不将“全部完成”解释为出题、评分或交付。容量不足按同一清单补位，结果未知保留原request_key；不要为补位擅自创建定时任务。
+### 显式恢复入口（先核实原对象状态，不自动重放；详见 [CLI恢复说明](../cli/README.md#显式恢复与交付确认)）
+- **出题检查点恢复**：`POST /api/workflows/:id/authoring-results/:attemptId/restore`（CLI：`workflow authoring restore`）
+- **Agent 脱敏程序复核**：`POST /api/material-library/redactions/:id/revalidate`（CLI：`library redaction revalidate`，须同时核对 `valid` 与 `usable_for_question`）
+- **钩子补执行/续跑**：先读 `GET /workflows/:id/hooks`；后置增强用 `POST /api/hooks/:id/retry`，旧失败主尝试用 `POST /api/attempts/:id/resume-hooks`（非幂等须确认后显式 `acknowledge_side_effects:true`）
+- **归档撤回 / 题设修订 / 软删恢复**：`POST /workflows/:id/withdraw-archive`、`PATCH /workflows/:id/authoring-direction`、`POST /workflows/:id/opening-revisions`、`POST /projects/:id/workflows/restore-soft-deleted`
+- **本机队列异常对账**：旧任务认领 `POST /api/system/execution-queue/adopt`；放弃过租无活动执行器的材料任务 `POST /api/system/execution-queue/:id/abandon-library-job`（原子入库专用兼容 `/abandon-library-import`）；凭明确失败日志结算 `needs_review` 步骤 `POST /api/system/execution-queue/:id/reconcile-failed`（CLI：`queue adopt / abandon-job / abandon-import / reconcile-failed`）。

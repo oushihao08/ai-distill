@@ -50,11 +50,26 @@ export function registerProjectLibraryRoutes(app:Hono,pool:Pool,storageRoot:stri
    return{...candidate,used_in_project:!!usage_status,...(usage_status?{usage_status}:{}),...(used_phase_name?{used_phase_name}:{})};
   })});
  });
- app.get('/api/projects/:id/material-uses',async c=>c.json({items:await readPhaseMaterialUses(pool,uuid(c.req.param('id')))}));
- app.get('/api/projects/:id/material-uses/:useId/events',async c=>c.json({items:await readPhaseMaterialUseEvents(pool,uuid(c.req.param('id')),uuid(c.req.param('useId')))}));
+ app.get('/api/projects/:id/material-uses',async c=>{
+  const rawPage=c.req.query('page'),rawSize=c.req.query('page_size'),paged=rawPage!==undefined||rawSize!==undefined;
+  const page=rawPage===undefined?1:Number(rawPage),pageSize=rawSize===undefined?100:Number(rawSize);
+  const rows=await readPhaseMaterialUses(pool,uuid(c.req.param('id')),paged?{page,page_size:pageSize}:{});
+  return c.json({items:paged?rows.slice(0,pageSize):rows,...(paged?{page,page_size:pageSize,has_more:rows.length>pageSize}:{})});
+ });
+ app.get('/api/projects/:id/material-uses/:useId/events',async c=>{
+  const rawPage=c.req.query('page'),rawSize=c.req.query('page_size'),paged=rawPage!==undefined||rawSize!==undefined;
+  const page=rawPage===undefined?1:Number(rawPage),pageSize=rawSize===undefined?100:Number(rawSize);
+  const rows=await readPhaseMaterialUseEvents(pool,uuid(c.req.param('id')),uuid(c.req.param('useId')),paged?{page,page_size:pageSize}:{});
+  return c.json({items:paged?rows.slice(0,pageSize):rows,...(paged?{page,page_size:pageSize,has_more:rows.length>pageSize}:{})});
+ });
  app.patch('/api/projects/:id/material-uses/:useId',async c=>c.json(await updateMaterialUse(pool,
   uuid(c.req.param('id')),uuid(c.req.param('useId')),versionHeader(c.req.header('If-Match')),await jsonBody(c))));
- app.get('/api/projects/:id/loaded-materials',async c=>c.json({items:await readLoadedLibraryPackages(pool,uuid(c.req.param('id')),{includeRemoved:c.req.query('include_removed')==='true'})}));
+ app.get('/api/projects/:id/loaded-materials',async c=>{
+  const rawPage=c.req.query('page'),rawSize=c.req.query('page_size'),paged=rawPage!==undefined||rawSize!==undefined;
+  const page=rawPage===undefined?1:Number(rawPage),pageSize=rawSize===undefined?100:Number(rawSize);
+  const rows=await readLoadedLibraryPackages(pool,uuid(c.req.param('id')),{includeRemoved:c.req.query('include_removed')==='true',...(paged?{page,page_size:pageSize}:{})});
+  return c.json({items:paged?rows.slice(0,pageSize):rows,...(paged?{page,page_size:pageSize,has_more:rows.length>pageSize}:{})});
+ });
  app.post('/api/projects/:id/loaded-materials',async c=>{
   const projectId=uuid(c.req.param('id')),body=await jsonBody(c);
   if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['package_id','redaction_id','revision_id','reuse_source_workflow_id','reuse_direction'].includes(key))||typeof body.package_id!=='string'||('redaction_id'in body&&'revision_id'in body))throw new HTTPException(400,{message:'加载材料包参数无效'});

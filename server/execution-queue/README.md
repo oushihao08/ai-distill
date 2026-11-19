@@ -30,9 +30,11 @@ SQLite使用WAL/FULL同步及短事务，目录0700、文件0600；不能放在�
 
 ## HTTP契约
 
-- `GET /api/system/execution-queue`：本机模式、executor_id和轻量队列状态；不返回结果BLOB、租约令牌或正文。
+- `GET /api/system/execution-queue`：本机模式、executor_id和轻量队列状态；默认仅返回活动与待人工核实/待补交项（`monitorJobs`），显式传 `include_history=true` 才包含已提交/失败/取消历史；不返回结果BLOB、租约令牌或正文。
 - `POST /api/system/execution-queue/adopt`：`{jobs:[{id,kind}]}`，kind为step/skill/library/hook/remote；1–100个明确的旧waiting/queued任务。已属于其他执行器、正在运行或同步钩子拒绝。route/lane由业务记录解析，不接受客户端伪造。
 - `POST /api/system/execution-queue/:id/cancel`：只取消本机记录；返回cancel_requested与cloud_synced。其他机请求应通过明确业务取消入口通知，不能冒充本机已停止。
+- `POST /api/system/execution-queue/:id/abandon-library-import`：用户明确接受旧外部调用结果未知时，提交 `{acknowledge_unknown_result:true}`。仅处理本机已停止、租约过期且处于`needs_review`的原子提取入库任务；事务内将旧正式job记为`user_abandoned_unknown`失败并清除租约，保留原任务历史，然后才允许用新请求键重新提交。原供应商调用是否已收费仍是未知，不将其记为OCR失败。
+- `POST /api/system/execution-queue/:id/abandon-library-job`：提交 `{acknowledge_unknown_result:true}`，用于解锁已过租且无活动执行器的材料库任务（含`redact`、已有包`extract`、`prepare`、`intake`）：本机`needs_review`任务立即结算为`user_abandoned_unknown`并更新本机队列为`failed`；非本机/无主过租任务须在租约过期满5分钟后才允许结算为`user_abandoned_expired_lease`。正在本机排队、运行或已提交的任务拒绝放弃。
 - `POST /api/system/execution-queue/:id/reconcile-failed`：仅供本机故障对账，提交 `{failure_event_id,failure_instance_id}`。要求本机队列任务已停止且处于`needs_review`、存在未决调用、指定worker实例的结构化日志含匹配的`attempt.failed`且没有后续成功事件，同时PG中的归属、代次、最新attempt和step仍匹配并处于`running`；全部通过后在一个事务内将attempt和step结算为`failed`，不重放调用。保留供应商的可重试标记，但设置本次`retryable=false`以阻止隐式重试；日志扫描受50文件/20 MiB限制，超限或证据不完整即拒绝。
 - `GET /api/monitor`：local_execution_queue提供本机实际状态；活动任务限定本机归属，排队/运行/待登记/同步/核实均按本机状态展示；全局业务列表仍共享，不按本机队列隐藏其他机成果。
 

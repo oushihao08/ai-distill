@@ -49,3 +49,9 @@ description: 创建和管理飞书多维表格、字段、记录和附件；执�
 用户要求“提交达标题目到表格”“每人领n题”“按上限分配并填写账号/ID”时，读取并执行[按上限顺序分配](projects/doubao-high-value/README.md#按上限顺序分配与身份回填)。按本次指定上限、人员和题目顺序依次填满后换下一人，计入范围内已有领取量；不随机或平均分配。先保存稳定ID分配清单，再通过现有record更新命令回填身份并回读。`project sync`本身不分题，没有专用自动分配命令。
 
 使用系统已有归档/飞书补传入口，由服务端调用此CLI。系统负责达标归档资格、单目标防重、字段映射、版本核对与回执；Agent仍须按上述规则确认本次多表唯一性范围并维护ledger。不要用裸record create代替系统交付，否则不保存业务回执。管理其他飞书表可直接用本通用CLI，不需要豆包项目。
+
+### 项目交付入口与模式
+
+用户要求“拼接材料PDF＋填写出题信息”时，优先复用项目业务入口而非自己拼字段/附件：当前业务题目用草稿/归档HTTP同步，显式 `attachment_format:"pdf",combined_material:true`；用户要求CLI时用项目 `feishu draft-sync[-batch]` / `sync[-batch]` 加 `--attachment-format pdf --combined-material`。已核验的冻结材料先合册再转换；超限按页分册。模式、CLI示例与恢复的唯一说明见[项目CLI](../../cli/README.md#豆包飞书交付)，HTTP契约见[发布模块](../../server/publishing/README.md#豆包飞书交付)。这些是源码能力，需运行服务加载对应能力标记。
+
+本工具的 file upload / record update 只负责通用传输，不能替代题目版本、材料包身份和完整回执。`feishu local-sync`只适用于用户明确要求本地快照交付，不读取数据库当前版本，也不自动合并多DOCX。批次前后做范围内全表对账；逐题交付按稳定ID搜索后回读命中行，避免重复拉取整表正文。

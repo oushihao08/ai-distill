@@ -145,10 +145,10 @@ test('unsaved Codex project steps inherit the system model and reasoning default
  }} as unknown as Pool;
  const steps=await projectStepSummary(pool,'project');
  expect(steps.find(step=>step.ordinal===4)).toMatchObject({config:{provider:'codex',model:'gpt-system',reasoning_effort:'high'},config_source:'system'});
- expect(steps.find(step=>step.ordinal===6)).toMatchObject({config:{provider:'codex',model:'gpt-system',reasoning_effort:'high'},config_source:'system'});
+ expect(steps.find(step=>step.ordinal===6)).toBeUndefined();
  expect(steps.find(step=>step.ordinal===9)?.config).toMatchObject({provider:'api',api:{model:expect.any(String)},prompt:expect.any(String)});
 });
-test('project Codex defaults feed steps while an explicit step config remains highest priority',async()=>{
+test('project Codex defaults feed authoring step while an explicit step config remains highest priority',async()=>{
  const pool={query:async(sql:string)=>{
   if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[{ordinal:4,config:{provider:'codex',model:'gpt-6-astra',reasoning_effort:'ultra'}}],rowCount:1};
@@ -158,17 +158,12 @@ test('project Codex defaults feed steps while an explicit step config remains hi
  }} as unknown as Pool;
  const steps=await projectStepSummary(pool,'project');
  expect(steps.find(step=>step.ordinal===4)).toMatchObject({config:{model:'gpt-6-astra',reasoning_effort:'ultra'},config_source:'step'});
- expect(steps.find(step=>step.ordinal===6)).toMatchObject({config:{model:'gpt-6-astra',reasoning_effort:'ultra'},config_source:'project'});
  expect(steps.find(step=>step.ordinal===9)).toMatchObject({config:{provider:'api',api:{model:expect.any(String)}},config_source:'system'});
 });
-test('answer step summary excludes stale single-model settings and preserves workflow policy',async()=>{
+test('sealed evaluation steps (5,6,7) are omitted from active project summary',async()=>{
  const stored={provider:'qwen',model:'qwen/qwen-plus',base_url:'https://old.invalid',max_tokens:1000,prompt:'本期作答提示',preserve_answer_model_snapshots:true,previous_answer_models:[{model_id:'old'}],workflow:{version:1}};
- const before=JSON.stringify(stored);
  const steps=await projectStepSummary({query:async()=>{throw new Error('只使用预读数据');}} as unknown as Pool,'project','library_v1',Promise.resolve({rows:[]} as any),Promise.resolve({model:'gpt-6-luna',reasoning_effort:'high',source:'system'} as any),{rows:[{ordinal:5,config:stored}]});
- const config=steps.find(step=>step.ordinal===5)!.config;
- expect(config).toMatchObject({prompt:'本期作答提示',preserve_answer_model_snapshots:true,previous_answer_models:[{model_id:'old'}],workflow:{version:1}});
- for(const key of ['provider','model','base_url','max_tokens'])expect(config).not.toHaveProperty(key);
- expect(JSON.stringify(stored)).toBe(before);
+ expect(steps.map(step=>step.ordinal)).toEqual([4,8]);
 });
 test('PDF model settings reject unverified model protocols',()=>{
  expect(()=>validateStepConfig(2,{model:'unknown-vision-model',reasoning_effort:'low'})).toThrow('模型');
@@ -179,68 +174,52 @@ test('step 5 accepts native providers without accepting arbitrary keys',()=>{
  expect(()=>validateStepConfig(5,{provider:'kimi',model:'explicit-model',api_key:'secret'})).toThrow();
 });
 
-test('batch eligibility uses visible workflow order and ignores historical review ordinal 10',()=>{
+test('batch eligibility skips sealed steps (5,6,7) and routes step 4 directly to publishing (8)',()=>{
  const steps=new Map<number,any>([
   [1,{ordinal:1,status:'succeeded',enabled:true,active:false,has_pdf:false}],
   [9,{ordinal:9,status:'succeeded',enabled:true,active:false}],
-  [4,{ordinal:4,status:'succeeded',enabled:true,active:false}],
+  [4,{ordinal:4,status:'waiting',enabled:true,active:false}],
   [10,{ordinal:10,status:'waiting',enabled:true,active:false}],
   [5,{ordinal:5,status:'waiting',enabled:true,active:false}],
- ]);
- expect(isWorkflowStepReady(5,steps)).toBe(true);
-});
-
-test('batch eligibility and page summaries allow scoring after all model answers settle with at least one success',()=>{
- const steps=new Map<number,any>([
-  [4,{ordinal:4,status:'succeeded',enabled:true,active:false}],
-  [5,{ordinal:5,status:'failed',enabled:true,active:false,result:{models:[{status:'succeeded',attempt_id:'a'},{status:'failed'}]}}],
   [6,{ordinal:6,status:'waiting',enabled:true,active:false}],
- ]);
- expect(isWorkflowStepReady(6,steps)).toBe(true);
- steps.set(5,{...steps.get(5),result:{models:[{status:'succeeded',attempt_id:'a'},{status:'running'}]}});
- expect(isWorkflowStepReady(6,steps)).toBe(false);
-});
-
-test('publishing is ready only after the acceptance step has an accepted decision',()=>{
- const steps=new Map<number,any>([
-  [7,{ordinal:7,status:'succeeded',enabled:true,active:false,result:{decision:'repair'}}],
+  [7,{ordinal:7,status:'waiting',enabled:true,active:false}],
   [8,{ordinal:8,status:'waiting',enabled:true,active:false}],
  ]);
+ for(const sealed of [5,6,7])expect(workflowStepReadiness(sealed,steps)).toMatchObject({ready:false,reason:'该步骤已暂时封存'});
  expect(isWorkflowStepReady(8,steps)).toBe(false);
- steps.set(7,{...steps.get(7),result:{decision:'accepted'}});
+ steps.get(4)!.status='succeeded';
  expect(isWorkflowStepReady(8,steps)).toBe(true);
 });
 
-test('repair advice only unlocks authoring, including failed and waiting downstream states',()=>{
- const steps=new Map<number,any>([4,5,6,7].map(ordinal=>[ordinal,{ordinal,status:'succeeded',enabled:true,active:false,result:ordinal===7?{decision:'repair'}:undefined}]));
- expect(workflowStepReadiness(4,steps)).toMatchObject({ready:false,reason:'未达标题目须先生成并完成返修建议，且建议文本有效'});
- for(const advice of [false,true]){
-  steps.get(4)!.revision_advice_ready=advice;
-  expect(isWorkflowStepReady(4,steps)).toBe(advice);
-  for(const status of ['succeeded','waiting','failed','running']){
-   for(const ordinal of [5,6]){
-    steps.get(ordinal)!.status=status;
-    expect(workflowStepReadiness(ordinal,steps)).toMatchObject({ready:false,reason:'当前题目未达标，须先根据返修建议重新出题'});
-   }
-  }
- }
+test('library project summary exposes only authoring through publishing even before its first question',async()=>{
+ const pool={query:async(sql:string)=>{
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array(')||sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
+  if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-6-luna',reasoning_effort:'medium'}],rowCount:1};
+  throw new Error(`Unexpected query: ${sql}`);
+ }} as unknown as Pool;
+ expect((await projectStepSummary(pool,'project','library_v1')).map(step=>step.ordinal)).toEqual([4,8]);
 });
 
-test('new authoring resets repair and downstream eligibility follows new upstream completion',()=>{
- const steps=new Map<number,any>([4,5,6,7].map(ordinal=>[ordinal,{ordinal,status:'waiting',enabled:true,active:false,result:null}]));
- for(const state of ['waiting','running','failed']){
-  steps.get(4)!.status=state;
-  expect(isWorkflowStepReady(5,steps)).toBe(false);
-  expect(isWorkflowStepReady(6,steps)).toBe(false);
- }
- steps.get(4)!.status='succeeded';
- expect(isWorkflowStepReady(5,steps)).toBe(true);
- expect(isWorkflowStepReady(6,steps)).toBe(false);
- steps.get(5)!.status='succeeded';
- expect(isWorkflowStepReady(6,steps)).toBe(true);
- steps.get(5)!.active=true;steps.get(5)!.status='running';
- expect(isWorkflowStepReady(6,steps)).toBe(false);
+test('project summary counts database running state from another executor without double-counting local running',async()=>{
+ const base={workflow_id:'foreign-running',ordinal:4,status:'running',enabled:true,active:false,library_source:true,workflow_kind:'question'};
+ const foreign={...base,executions:[{source:'shared_attempt',scope:'other_executor',state:'running',active:false}]};
+ const local={...base,workflow_id:'local-running',active:true,executions:[{source:'local_queue',scope:'local',state:'running',active:true}]};
+ const steps=await projectStepSummary({query:async()=>{throw new Error('只使用预读数据');}} as unknown as Pool,'project','library_v1',Promise.resolve({rows:[foreign,local]} as any),Promise.resolve({model:'gpt-6.1-sol',reasoning_effort:'high',source:'system'} as any),{rows:[]});
+ expect(steps.find(step=>step.ordinal===4)).toMatchObject({total:2,running:2,queued:0,succeeded:0,failed:0,ready:0});
 });
+
+
+test('步骤状态聚合传输后还原原rows结构并保留筛选参数',async()=>{
+ const rows=[['fixture','project','question',null,false,5,'succeeded',null,null,null,{models:[{status:'succeeded',attempt_id:'answer'}]},true,true,false,null,null,null,null,false,null]];
+ let received:any[]=[];
+ const pool={query:async(sql:string,args:unknown[])=>{expect(sql).toContain('jsonb_agg(jsonb_build_array(');received=args;return{rows:[{items:[[...rows[0]!.slice(0,5),[rows[0]!.slice(5),[8,'waiting',null,null,null,null,true,true,false,null,null,null,null,false,null]]]]}],rowCount:1};}} as unknown as Pool;
+ const result=await readProjectWorkflowStepRows(pool,'phase',['fixture']);
+ expect(result.rows[0]).toMatchObject({workflow_id:'fixture',project_key:'project',ordinal:5,status:'succeeded',result:rows[0]![10],enabled:true,active:false,revision_advice_ready:false});expect(result.rows[1]).toMatchObject({workflow_id:'fixture',ordinal:8,status:'waiting'});expect(result.rowCount).toBe(2);expect(received).toEqual(['phase',['fixture']]);
+ const empty=await readProjectWorkflowStepRows({query:async()=>({rows:[{items:[]}],rowCount:1})} as unknown as Pool,'empty');
+ expect(empty.rows).toEqual([]);expect(empty.rowCount).toBe(0);
+});
+
 
 test('project batch work is split into the configured chunk size without dropping workflows',()=>{
  expect(splitIntoBatches([1,2,3,4,5],2)).toEqual([[1,2],[3,4],[5]]);
@@ -257,42 +236,11 @@ test('项目根目录的材料不被忽略，损坏PDF不能作为可解析材�
  await writeFile(join(root,'题目 1','bad.pdf'),'broken');await expect(scanProjectFolder(root)).rejects.toThrow();
 });
 
-test('library project summary exposes only authoring through publishing even before its first question',async()=>{
- const pool={query:async(sql:string)=>{
-  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array(')||sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
-  if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
-  if(sql.startsWith('SELECT credential_home,model,reasoning_effort'))return{rows:[{credential_home:null,model:'gpt-6-luna',reasoning_effort:'medium'}],rowCount:1};
-  throw new Error(`Unexpected query: ${sql}`);
- }} as unknown as Pool;
- expect((await projectStepSummary(pool,'project','library_v1')).map(step=>step.ordinal)).toEqual([4,5,6,7,8]);
-});
-
-test('project summary counts database running state from another executor without double-counting local running',async()=>{
- const base={workflow_id:'foreign-running',ordinal:4,status:'running',enabled:true,active:false,library_source:true,workflow_kind:'question'};
- const foreign={...base,executions:[{source:'shared_attempt',scope:'other_executor',state:'running',active:false}]};
- const local={...base,workflow_id:'local-running',active:true,executions:[{source:'local_queue',scope:'local',state:'running',active:true}]};
- const steps=await projectStepSummary({query:async()=>{throw new Error('只使用预读数据');}} as unknown as Pool,'project','library_v1',Promise.resolve({rows:[foreign,local]} as any),Promise.resolve({model:'gpt-6.1-sol',reasoning_effort:'high',source:'system'} as any),{rows:[]});
- expect(steps.find(step=>step.ordinal===4)).toMatchObject({total:2,running:2,queued:0,succeeded:0,failed:0,ready:0});
-});
-
-
-test('步骤状态聚合传输后还原原rows结构并保留筛选参数',async()=>{
- const rows=[['fixture','project','question',null,false,5,'succeeded',null,null,null,{models:[{status:'succeeded',attempt_id:'answer'}]},true,true,false,null,null,null,null,false,null]];
- let received:any[]=[];
- const pool={query:async(sql:string,args:unknown[])=>{expect(sql).toContain('jsonb_agg(jsonb_build_array(');received=args;return{rows:[{items:rows}],rowCount:1};}} as unknown as Pool;
- const result=await readProjectWorkflowStepRows(pool,'phase',['fixture']);
- expect(result.rows[0]).toMatchObject({workflow_id:'fixture',project_key:'project',ordinal:5,status:'succeeded',result:rows[0]![10],enabled:true,active:false,revision_advice_ready:false});expect(result.rowCount).toBe(1);expect(received).toEqual(['phase',['fixture']]);
- const empty=await readProjectWorkflowStepRows({query:async()=>({rows:[{items:[]}],rowCount:1})} as unknown as Pool,'empty');
- expect(empty.rows).toEqual([]);expect(empty.rowCount).toBe(0);
-});
-
-
-test('无可比较分数的成功评分可显式重评，但有效评分、活动任务和已达标成果仍受保护',()=>{
+test('封存期间步骤5/6/7始终不可派发，步骤4完成即可归档',()=>{
  const row=(ordinal:number,status:string,result?:any)=>({ordinal,status,result,enabled:true,active:false,library_source:true});
- const steps=new Map([row(4,'succeeded'),row(5,'succeeded'),row(6,'succeeded',{models:[{answer_status:'succeeded',score_status:'succeeded',score:null,max_score:20,valid:false}]}),row(7,'waiting',{decision:'waiting'})].map(step=>[step.ordinal,step]));
- expect(isWorkflowStepReady(6,steps)).toBe(true);expect(isWorkflowStepReady(7,steps)).toBe(false);
- steps.get(6)!.active=true;expect(isWorkflowStepReady(6,steps)).toBe(false);steps.get(6)!.active=false;
- steps.get(6)!.result.models[0].score=10;expect(isWorkflowStepReady(6,steps)).toBe(false);expect(isWorkflowStepReady(7,steps)).toBe(true);
- steps.get(6)!.result.models[0]={answer_status:'succeeded',score_contract:'model_report_v1',evaluation_percent:null};expect(isWorkflowStepReady(6,steps)).toBe(true);
- steps.set(7,row(7,'succeeded',{decision:'accepted'}));expect(isWorkflowStepReady(6,steps)).toBe(false);
+ const steps=new Map([row(4,'succeeded'),row(5,'succeeded'),row(6,'waiting'),row(7,'waiting'),row(8,'waiting')].map(step=>[step.ordinal,step]));
+ expect(isWorkflowStepReady(5,steps)).toBe(false);
+ expect(isWorkflowStepReady(6,steps)).toBe(false);
+ expect(isWorkflowStepReady(7,steps)).toBe(false);
+ expect(isWorkflowStepReady(8,steps)).toBe(true);
 });

@@ -28,6 +28,42 @@ import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,prep
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
 import {hookAdditionText} from '../workflow-hooks';
 import {AUTHORING_FIXED_PROMPT,DEFAULT_STEP_PROMPTS} from '../../shared/step-prompts';
+
+function isTransientDbError(err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err ?? '');
+    return /connection|terminated|timeout|ECONNRESET|ETIMEDOUT|EPIPE|not queryable|pool/i.test(msg);
+}
+
+/** 对瞬时连接断开/超时做最多 3 次事务重试并销毁坏连接，避免已出好的题丢弃或状态卡死在 running。 */
+async function withRetryableTx(pool: Pool, action: (tx: PoolClient) => Promise<void>) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        const tx = await pool.connect();
+        let txErr: Error | undefined;
+        try {
+            await tx.query('BEGIN');
+            await action(tx);
+            await tx.query('COMMIT');
+            forgetLocalRegistrations(tx);
+            return;
+        }
+        catch (err) {
+            txErr = err instanceof Error ? err : new Error(String(err));
+            try {
+                await tx.query('ROLLBACK');
+            }
+            catch { /* 连接已断开时忽略回滚异常，交由 release(txErr) 销毁坏连接 */ }
+            await releaseRolledBackRegistrations(tx);
+            if (attempt < 3 && isTransientDbError(err)) {
+                await new Promise(r => setTimeout(r, 1000 * attempt));
+                continue;
+            }
+            throw err;
+        }
+        finally {
+            tx.release(txErr);
+        }
+    }
+}
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 import {readQuestionMaterials,type QuestionMaterials} from '../question-materials';
 import {syncWorkflowMaterialScope} from '../material-library/preparation';
@@ -128,9 +164,11 @@ export async function saveMaterialScopeSelection(db:PoolClient,projectId:string,
    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,scope_key) DO NOTHING`,[projectId,workflowId,attemptId,choice.direction.trim(),scene,hash(key)]);
  }
 }
-/** 只读取当前步骤成功投影，历史重出结果不混入；白名单字段限制参考内容。 */
-export async function freezeAuthoringBatch(db:PoolClient,projectId:string,workflowId:string):Promise<AuthoringBatchContext>{
- const rows=(await db.query(`SELECT s.result->'material_scope_selection' AS selection
+export const MAX_BATCH_CONTEXT_SELECTIONS=80;
+export const MAX_USED_COMBINATIONS=300;
+/** 只读取当前步骤成功投影，历史重出结果不混入；白名单字段限制参考内容，超阈值时优先保留同标签及近期记录以防step_attempts.input呈O(N^2)膨胀。 */
+export async function freezeAuthoringBatch(db:PoolClient,projectId:string,workflowId:string,questionTags?:string[]):Promise<AuthoringBatchContext>{
+ const rows=(await db.query(`SELECT w.id,w.question_tags,s.finished_at,s.result->'material_scope_selection' AS selection
  FROM ai_distill.steps s JOIN ai_distill.workflows w ON w.id=s.workflow_id
  WHERE w.project_id=$1 AND w.id<>$2 AND w.deleted_at IS NULL
  AND s.ordinal=4 AND s.status='succeeded' ORDER BY w.id`,[projectId,workflowId])).rows;
@@ -143,16 +181,28 @@ export async function freezeAuthoringBatch(db:PoolClient,projectId:string,workfl
   if(!item.direction&&!item.party&&!item.scenes.length&&!item.deliverables.length&&!item.core_work&&!item.business_goal&&!item.deliverable_use)return;
   return item;
  };
- const selections:MaterialScopeSelection[]=[];let missing=0;
- for(const row of rows){const item=clean(row.selection);if(!item){missing++;continue;}
+ const entries:{item:MaterialScopeSelection;tags:string[];finishedAt:number;index:number}[]=[];let missing=0;
+ for(const [index,row] of rows.entries()){const item=clean(row.selection);if(!item){missing++;continue;}
   const extra=Array.isArray(row.selection.additional_combinations)?row.selection.additional_combinations.map(clean).filter(Boolean):[];
-  if(extra.length)item.additional_combinations=extra;selections.push(item);
+  if(extra.length)item.additional_combinations=extra;
+  const tags=Array.isArray(row.question_tags)?row.question_tags.filter((t:unknown):t is string=>typeof t==='string').map((t:string)=>t.trim()).filter(Boolean):[];
+  const finishedAt=row.finished_at?Date.parse(String(row.finished_at))||0:0;
+  entries.push({item,tags,finishedAt,index});
  }
- return{captured_at:new Date().toISOString(),total:rows.length,included:selections.length,missing,truncated:false,selections};
+ if(entries.length<=MAX_BATCH_CONTEXT_SELECTIONS){
+  return{captured_at:new Date().toISOString(),total:rows.length,included:entries.length,missing,truncated:false,selections:entries.map(e=>e.item)};
+ }
+ const allUsed=new Map<string,{direction:string;scene:string}>();
+ for(const {item} of entries)for(const choice of [item,...(item.additional_combinations??[])])for(const scene of choice.scenes)if(choice.direction)allUsed.set(scopeKey(choice.direction,scene),{direction:choice.direction,scene});
+ const targetTags=new Set((questionTags??[]).filter((t):t is string=>typeof t==='string').map(t=>t.trim()).filter(Boolean));
+ const overlap=(tags:string[])=>targetTags.size?tags.reduce((n,tag)=>n+(targetTags.has(tag)?1:0),0):0;
+ const top=[...entries].sort((a,b)=>overlap(b.tags)-overlap(a.tags)||b.finishedAt-a.finishedAt||b.index-a.index).slice(0,MAX_BATCH_CONTEXT_SELECTIONS);
+ return{captured_at:new Date().toISOString(),total:rows.length,included:top.length,missing,truncated:true,selections:top.map(e=>e.item),used_combinations:[...allUsed.values()].slice(0,MAX_USED_COMBINATIONS)};
 }
 function freezeMaterialScope(prepared:any,batch:AuthoringBatchContext):MaterialScopeContext|undefined{
  if(!prepared||prepared.result?.format!=='material-preparation-v2')return undefined;
  const used=new Map<string,{direction:string;scene:string}>();
+ for(const pair of batch.used_combinations??[])if(pair?.direction&&pair?.scene)used.set(scopeKey(pair.direction,pair.scene),{direction:pair.direction,scene:pair.scene});
  for(const primary of batch.selections)for(const item of [primary,...(primary.additional_combinations??[])])for(const scene of item.scenes)if(item.direction)used.set(scopeKey(item.direction,scene),{direction:item.direction,scene});
  return{preparation_id:String(prepared.preparation_id),result:prepared.result,used_combinations:[...used.values()]};
 }
@@ -183,7 +233,9 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDis
   const optProvider=options?.provider?(options.provider.trim().toLowerCase()==='antigravity'?'agy':options.provider.trim().toLowerCase()):undefined;
   const hasExplicitAgent=Boolean(optProvider||options?.model||options?.reasoning_effort);
   const skipDbStepConfig=Boolean(hasExplicitAgent&&options?.prompt);
-  const raw=skipDbStepConfig?undefined:(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=4',[source.workflow.project_id])).rows[0]?.config;
+  const stepConfigRows=(await db.query(`SELECT ordinal,config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal IN (${skipDbStepConfig?'5,6':'4,5,6'})`,[source.workflow.project_id])).rows;
+  const stepConfigByOrdinal=new Map<number,any>(stepConfigRows.map((row:any)=>[Number(row.ordinal),row.config]));
+  const raw=skipDbStepConfig?undefined:stepConfigByOrdinal.get(4);
   let mergedConfig:Record<string,unknown>;
   if(options?.web){
    mergedConfig=webStepConfig(raw,options.web);
@@ -210,8 +262,8 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDis
    if(options?.timeout_ms!==undefined)mergedConfig.timeout_ms=options.timeout_ms;
   }
   const config=validateStepConfigForExecution(4,mergedConfig);
-  const scoreConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=6',[source.workflow.project_id])).rows[0]?.config;
-  const answerConfig=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=5',[source.workflow.project_id])).rows[0]?.config;
+  const scoreConfig=stepConfigByOrdinal.get(6);
+  const answerConfig=stepConfigByOrdinal.get(5);
   const answerCapabilities=readAnswerToolPolicyFromStepConfig(answerConfig)??{server_tools:[],local_tools:[]};
   const scoreWorkflow=validateWorkflowConfig(scoreConfig?.workflow);
   const scoringPolicy:ScoringPolicy|undefined=scoreWorkflow?.contract==='model_report_v1'?{contract:scoreWorkflow.contract,rules_text:scoreWorkflow.rules_text,reference_answer:scoreWorkflow.reference_answer}:undefined;
@@ -219,7 +271,7 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDis
   const hooks=await freezeStageHooks(dirname(source.skill_path),config.workflow);
   const loggingConfig=(config.provider==='web'?{model:`web:${config.web.provider}`,provider:'web'}:{model:config.model,reasoning_effort:config.reasoning_effort,provider:config.provider}) as {model?:string;reasoning_effort?:string;provider?:string};
   const advice=await frozenRevisionAdvice(db,id);
-  const batchContext=await freezeAuthoringBatch(db,source.workflow.project_id,id);
+  const batchContext=await freezeAuthoringBatch(db,source.workflow.project_id,id,Array.isArray(source.workflow.question_tags)?source.workflow.question_tags:undefined);
   const materialScope=freezeMaterialScope('loaded_materials' in source?source.loaded_materials?.material_scope:undefined,batchContext);
   const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,answer_capabilities:answerCapabilities,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),batch_context:batchContext,question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};
@@ -455,7 +507,8 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     reasoning_effort: job.config.provider === 'web' ? 'none' : job.config.reasoning_effort,
                     provider: job.config.provider,
                     // 使用派发时冻结的墙钟时限；到线后由现有失败结算释放本机容量。
-                    timeout_ms: job.config.timeout_ms ?? 1_800_000,
+                    // 高推理出题实测约20–36分钟；卡死由Antigravity静默看门狗处理，总预算默认2小时。
+                    timeout_ms: job.config.timeout_ms ?? 7_200_000,
                     signal,
                     execute: options => runExternalCall({
                         attempt_id: job.id, operation: 'author'
@@ -472,6 +525,8 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         const draft = result.draft;
         const storedResult = { ...draft, ...(job.input.scoring_policy ? { scoring_policy: job.input.scoring_policy } : {}), question_id: result.question_id, question_version: result.question_version, rubric_version: result.rubric_version, codex: { author: result.codex } };
         failurePhase = 'result_persistence';
+        // 落库事务会锁同一行step_attempts；先停心跳，避免10秒心跳与提交争抢行锁和连接池。
+        stopHeartbeat();
         if (signal?.aborted)
             throw new Error('cancelled');
         const publicPackage = Buffer.from(renderPublicQuestionPackage({ project_name:job.input.project_name, question: job.input.title, question_id: job.input.question_id, source_files: job.input.source_files ?? [], materials }, draft));
@@ -480,9 +535,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         output = packagePath;
         await mkdir(directory, { recursive: true, mode: 0o700 });
         await writeFile(packagePath, publicPackage, { mode: 0o600, flag: 'w' });
-        const tx = await pool.connect();
-        try {
-            await tx.query('BEGIN');
+        await withRetryableTx(pool, async tx => {
             if (signal?.aborted || !(await tx.query("SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND status='running' AND id=(SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$2 AND ordinal=4 ORDER BY attempt DESC LIMIT 1) FOR UPDATE", [job.id, job.workflow_id])).rowCount)
                 throw new Error('inactive');
             if(job.input.material_scope)await saveMaterialScopeSelection(tx,job.project_id,job.workflow_id,job.id,draft.material_scope_selection);
@@ -490,20 +543,13 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
             await tx.query("UPDATE ai_distill.steps SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE workflow_id=$1 AND ordinal=4", [job.workflow_id, JSON.stringify(storedResult)]);
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'authored_question', relative(resolve(root), packagePath), hash(publicPackage), publicPackage.length, publicPackage.toString('utf8')]);
             await prepareCommittedStageHooks({...hookContext,pool:tx}, { draft: result.draft });
-            await tx.query('COMMIT');forgetLocalRegistrations(tx);
-            logEvent('attempt.completed', { level: 'info', state: 'succeeded' });
-        }
-        catch (error) {
-            await tx.query('ROLLBACK');await releaseRolledBackRegistrations(tx);
-            throw error;
-        }
-        finally {
-            tx.release();
-        }
+        });
+        logEvent('attempt.completed', { level: 'info', state: 'succeeded' });
         await runCommittedStageHooks(hookContext, { draft: result.draft });
         await emitLifecycle(pool,'committed', {stage:'authoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal,data:{result:storedResult}});
     }
     catch (error) {
+        stopHeartbeat();
         deferLocalPublication(error);
         await emitLifecycle(pool,signal?.aborted?'cancelled':'failed', {stage:'authoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal});
         logEvent('attempt.failed', { level: 'error', state: 'failed', ...classifyLogError(error), failure_phase: failurePhase });
@@ -519,22 +565,12 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
             catch (cleanupError) {
                 logEvent('file.cleanup_or_commit_check_failed', { level: 'error', file_kind: 'authored_question', ...classifyLogError(cleanupError) });
             }
-        const tx = await pool.connect();
-        try {
-            await tx.query('BEGIN');
+        await withRetryableTx(pool, async tx => {
             const current = (await tx.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1", [job.workflow_id])).rows[0]?.id === job.id;
             const failed = await tx.query("UPDATE ai_distill.step_attempts SET status='failed',result=$2,error=$3,finished_at=now() WHERE id=$1 AND status='running'", [job.id, JSON.stringify(failureResult), failureMessage]);
             if (current && failed.rowCount)
                 await tx.query("UPDATE ai_distill.steps SET status='failed',result=$2,error=$3,finished_at=now() WHERE workflow_id=$1 AND ordinal=4 AND status='running' AND EXISTS(SELECT 1 FROM ai_distill.workflows w WHERE w.id=$1 AND w.deleted_at IS NULL) AND (SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1)=$4", [job.workflow_id, JSON.stringify(failureResult), failureMessage, job.id]);
-            await tx.query('COMMIT');forgetLocalRegistrations(tx);
-        }
-        catch (failure) {
-            await tx.query('ROLLBACK');await releaseRolledBackRegistrations(tx);
-            throw failure;
-        }
-        finally {
-            tx.release();
-        }
+        });
     }
     finally {
         cancellation.dispose();

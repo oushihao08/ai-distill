@@ -1,7 +1,7 @@
 /**
- * 职责：用完整提取结构快速估算合并材料 DOCX 的正文页数，并记录全局加载资格。
- * 入口：ensureLibraryLoadEligibility() 在期次加载、选版和恢复前调用；assertLibraryLoadEligible() 在写事务内复核同一提取任务。
- * 这里只做评估，不生成 DOCX/PDF 或调用 LibreOffice；10 页及以下禁载，未知结果不放行。
+ * 职责：用完整提取结构快速估算合并材料 DOCX 的正文页数，并记录全局加载资格评估结果。
+ * 入口：ensureLibraryLoadEligibility() 在期次加载、选版和恢复前调用；assertLibraryLoadEligible() 在写事务内复核同一提取任务；libraryLoadEligibilityLateralSql() 供列表与题目查询复用。
+ * 这里只做评估，不生成 DOCX/PDF 或调用 LibreOffice；10 页及以下允许加载，但在材料包与派生题目上保留低页数标识。
  */
 import type {Pool,PoolClient} from 'pg';
 import {HTTPException} from 'hono/http-exception';
@@ -65,10 +65,29 @@ export async function ensureLibraryLoadEligibility(pool:Pool,revisionId:string,e
   WHERE revision_id=$1 AND extraction_job_id=$2 AND assessment_version=$3`,[revisionId,extractionJobId,LIBRARY_LOAD_ASSESSMENT_VERSION])).rows[0] as {estimated_page_count:number;load_eligible:boolean};
 }
 
-/** 事务内只读已评估的同版结果；没有判定、估算十页及以下均禁止新增或恢复期次引用。 */
+/** 复用于已加载材料与题目查询：按 revision + redaction（或最新完整提取）关联同版估算页数与合格标记。 */
+export function libraryLoadEligibilityLateralSql(alias:string,revisionExpr:string,redactionExpr:string){
+ return `LEFT JOIN LATERAL (
+  SELECT eligibility.estimated_page_count,eligibility.load_eligible
+  FROM ai_distill.library_load_eligibility eligibility
+  LEFT JOIN ai_distill.library_redactions elig_red ON elig_red.id=${redactionExpr}
+  LEFT JOIN LATERAL (
+   SELECT j.id FROM ai_distill.library_jobs j
+   WHERE ${redactionExpr} IS NULL AND j.revision_id=${revisionExpr} AND j.kind='extract' AND j.status='succeeded'
+   ORDER BY j.finished_at DESC,j.id DESC LIMIT 1
+  ) elig_ext ON true
+  WHERE ${revisionExpr} IS NOT NULL
+   AND eligibility.revision_id=${revisionExpr}
+   AND eligibility.extraction_job_id=COALESCE(elig_red.extraction_job_id,elig_ext.id)
+   AND eligibility.assessment_version='${LIBRARY_LOAD_ASSESSMENT_VERSION}'
+  LIMIT 1
+ ) ${alias} ON true`;
+}
+
+/** 事务内复核同版评估记录存在；10 页及以下不再阻断加载，保留 load_eligible=false 供材料包与题目标识。 */
 export async function assertLibraryLoadEligible(db:Db,revisionId:string,extractionJobId:string){
  const row=(await db.query(`SELECT estimated_page_count,load_eligible FROM ai_distill.library_load_eligibility
   WHERE revision_id=$1 AND extraction_job_id=$2 AND assessment_version=$3`,[revisionId,extractionJobId,LIBRARY_LOAD_ASSESSMENT_VERSION])).rows[0];
  if(!row)throw unavailable();
- if(row.load_eligible!==true)throw new HTTPException(409,{message:`拼接材料 DOCX 估算约 ${row.estimated_page_count} 页，${MAX_BLOCKED_LIBRARY_LOAD_DOCX_PAGES} 页及以下不得加载到任何项目期次`});
+ return{estimated_page_count:Number(row.estimated_page_count),load_eligible:row.load_eligible===true};
 }

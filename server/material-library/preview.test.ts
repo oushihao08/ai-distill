@@ -17,6 +17,14 @@ test('redaction preview rejects changed content and hides storage identity',asyn
  expect(await readLibraryRedactionPreview(pool,'r')).toEqual({id:'r',markdown:'合成正文'});
  content='改变后的正文';await expect(readLibraryRedactionPreview(pool,'r')).rejects.toThrow('摘要校验失败');
 });
+test('single-file redaction preview skips whole-package markdown blob while verifying index digest',async()=>{
+ const queries:string[]=[];
+ const index=JSON.stringify({format:'redacted-index-v2',materials:[{material_id:'file-1',markdown:'单份脱敏正文',document:{pages:[{page:1,blocks:[{id:'b1',kind:'paragraph',text:'单份脱敏正文'}],issues:[]}]}}]});
+ const pool={query:async(sql:string)=>{queries.push(sql);return{rows:[{id:'r',text_content:null,sha256:null,index_content:index,index_sha256:hash(index)}]};}} as any;
+ const preview=await readLibraryRedactionPreview(pool,'r','file-1');
+ expect(preview).toEqual({id:'r',file_id:'file-1',pages:[{page:1,text:'单份脱敏正文',issues:[]}]});
+ expect(queries[0]).toContain('NULL AS text_content,NULL AS sha256');
+});
 test('wrong or absent object identity cannot expose arbitrary blobs',async()=>{
  const pool={query:async()=>({rows:[]})} as any;
  await expect(readLibraryOriginal(pool,'/tmp/unused','unknown')).rejects.toThrow('不存在');

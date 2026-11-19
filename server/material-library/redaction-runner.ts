@@ -20,29 +20,34 @@ import {logEvent,classifyLogError} from '../logging';
 /** 成功整包化名只在原件集合完全相同时复用；仍为当前包发布独立结果和来源绑定。 */
 async function reuseRedaction(pool:Pool,job:RedactionJob){
  if(job.previous_job_id)return false;
- const candidates=(await pool.query(`SELECT r.*,m.text_content AS markdown,m.sha256 AS markdown_sha256,
-  i.text_content AS index_content,i.sha256 AS index_sha256 FROM ai_distill.library_redactions r
-  JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id AND j.status='succeeded'
-  JOIN ai_distill.library_blobs m ON m.id=r.markdown_blob_id JOIN ai_distill.library_blobs i ON i.id=r.index_blob_id
+ const candidates=(await pool.query(`SELECT r.id,r.revision_id,r.redaction_job_id,r.markdown_blob_id,r.index_blob_id,r.validation_report
+  FROM ai_distill.library_redactions r
+  JOIN ai_distill.library_jobs j ON j.id=r.redaction_job_id AND j.package_id=r.package_id AND j.status='succeeded'
   WHERE r.validation_report->>'usable_for_question'='true' AND ${redactionJobCurrentValidationSql('j')}
    AND r.validation_report->>'material_processing_mode'='aliases' AND ${sameOriginalSetSql('r.revision_id')}
-  ORDER BY r.created_at DESC`,[job.revision_id])).rows;
+  ORDER BY r.created_at DESC LIMIT 10`,[job.revision_id])).rows;
+ if(!candidates.length)return false;
  const target=await revisionFileIdentities(pool,job.revision_id);
  for(const candidate of candidates){
-  let index:any,report:any;
+  let index:any,report:any,markdownText='';
   try{
-   if(hash(candidate.markdown)!==candidate.markdown_sha256||hash(candidate.index_content)!==candidate.index_sha256)continue;
    const mapping=fileIdentityMapping(await revisionFileIdentities(pool,candidate.revision_id),target);
    if(!mapping)continue;
-   index=remapResultIds(JSON.parse(candidate.index_content),mapping);
+   const blobs=(await pool.query(`SELECT m.text_content AS markdown,m.sha256 AS markdown_sha256,
+    i.text_content AS index_content,i.sha256 AS index_sha256
+    FROM ai_distill.library_blobs m,ai_distill.library_blobs i
+    WHERE m.id=$1 AND i.id=$2`,[candidate.markdown_blob_id,candidate.index_blob_id])).rows[0];
+   if(!blobs||hash(blobs.markdown)!==blobs.markdown_sha256||hash(blobs.index_content)!==blobs.index_sha256)continue;
+   markdownText=blobs.markdown;
+   index=remapResultIds(JSON.parse(blobs.index_content),mapping);
    if(index.text_protocol!==AGENT_TEXT_REDACTION_PROTOCOL||index.format!=='redacted-index-v2'||!Array.isArray(index.materials)||index.materials.length!==target.length)continue;
    const ids=new Set(index.materials.map((item:any)=>item.material_id));
    if(target.some(file=>!ids.has(file.id)))continue;
    report=remapResultIds(candidate.validation_report,mapping);
   }catch(error){logEvent('library_result.reuse_unusable',{level:'warn',kind:'redact',...classifyLogError(error)});continue;}
-  const indexText=JSON.stringify(index),outputDigest=hash({source:job.input_digest,markdown:hash(candidate.markdown),index:hash(indexText)});
+  const indexText=JSON.stringify(index),outputDigest=hash({source:job.input_digest,markdown:hash(markdownText),index:hash(indexText)});
   await finishLibraryJob(pool,job.id,job.lease_token,{...report,output_digest:outputDigest,reused_from_job_id:candidate.redaction_job_id},async db=>{
-   const markdown=await insertLibraryTextBlob(db,candidate.markdown,'text/markdown; charset=utf-8'),indexBlob=await insertLibraryTextBlob(db,indexText,'application/vnd.ai-distill.redacted-index+json');
+   const markdown=await insertLibraryTextBlob(db,markdownText,'text/markdown; charset=utf-8'),indexBlob=await insertLibraryTextBlob(db,indexText,'application/vnd.ai-distill.redacted-index+json');
    await db.query(`INSERT INTO ai_distill.library_redactions(id,package_id,revision_id,extraction_job_id,redaction_job_id,markdown_blob_id,index_blob_id,input_digest,output_digest,validation_report)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,[crypto.randomUUID(),job.package_id,job.revision_id,job.input_snapshot.extraction_job_id,job.id,markdown.id,indexBlob.id,job.input_digest,outputDigest,JSON.stringify(report)]);
   });

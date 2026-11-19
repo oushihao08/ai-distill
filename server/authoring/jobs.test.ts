@@ -69,6 +69,12 @@ async function projectFixture(){
   if(sql.startsWith('SELECT id FROM ai_distill.step_attempts')&&sql.includes('ordinal=9'))return{rows:[{id:'redaction'}],rowCount:1};
   if(sql.startsWith('SELECT ar.id'))return{rows:[{id:'attachment',sha256:hash(state.text)}],rowCount:1};
   if(sql.startsWith('SELECT sha256,content'))return{rows:[{sha256:hash(state.text),content:state.text,sources:state.originalNames?.map((original_name:string)=>({original_name}))}],rowCount:1};
+  if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs')){
+   const rows:{ordinal:number;config:unknown}[]=[];
+   if(sql.includes('4')&&state.projectConfig)rows.push({ordinal:4,config:state.projectConfig});
+   if(state.scoreWorkflow)rows.push({ordinal:6,config:{workflow:state.scoreWorkflow}});
+   return{rows,rowCount:rows.length};
+  }
   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs')&&sql.includes('ordinal=6'))return {rows:state.scoreWorkflow?[{config:{workflow:state.scoreWorkflow}}]:[]};
   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:state.projectConfig?[{config:state.projectConfig}]:[]};
   if(sql.startsWith('SELECT codex_model'))return{rows:[{codex_model:state.projectDefault?.model??null,codex_reasoning_effort:state.projectDefault?.reasoning_effort??null}]};
@@ -125,6 +131,7 @@ test.each([
   expect(f.calls.some(c=>c.sql.includes('SELECT id,result')&&c.sql.includes('ordinal=4'))).toBe(false);
   const decisionReads=f.calls.filter(c=>c.sql.includes('ordinal=7')&&c.sql.startsWith('SELECT'));
   expect(decisionReads).toHaveLength(1);expect(decisionReads[0]!.sql).toContain("jsonb_build_object('decision',result->>'decision') AS result");
+  expect(f.calls.filter(c=>c.sql.includes('FROM ai_distill.project_step_configs'))).toHaveLength(1);
   const {digest,...input}=f.saved.input;expect(inputDigest(input)).toBe(digest);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
@@ -427,6 +434,25 @@ test('批次参考只查询同期当前成功投影并白名单复制设计字�
  const batch=await freezeAuthoringBatch(db as any,'phase','self');
  expect(params).toEqual(['phase','self']);expect(sql).toContain('w.project_id=$1 AND w.id<>$2 AND w.deleted_at IS NULL');expect(sql).toContain("s.status='succeeded'");expect(sql).not.toContain('step_attempts');
  expect(batch).toMatchObject({total:3,included:1,missing:2,truncated:false});expect(JSON.stringify(batch)).not.toContain('禁止泄漏');expect(batch.selections[0]?.additional_combinations?.[0]?.business_goal).toBe('解决争议');
+});
+test('大批次参考超过80题时按同标签与近期优先裁剪selections，且全期used_combinations不丢失',async()=>{
+ const {freezeAuthoringBatch,MAX_BATCH_CONTEXT_SELECTIONS}=await import('./jobs');
+ const rows=Array.from({length:120},(_,i)=>({
+  id:`wf-${i+1}`,
+  question_tags:i===5||i===10?['建设工程','结算']:['民间借贷'],
+  finished_at:new Date(Date.UTC(2026,10,1,0,0,i)).toISOString(),
+  selection:{direction:`方向${i+1}`,party:'原告',scenes:[`场景${i+1}`],deliverables:['意见书'],core_work:`核心工作${i+1}`},
+ }));
+ const db={query:async()=>({rows})};
+ const batch=await freezeAuthoringBatch(db as any,'phase','self',['建设工程']);
+ expect(batch.total).toBe(120);
+ expect(batch.included).toBe(MAX_BATCH_CONTEXT_SELECTIONS);
+ expect(batch.truncated).toBe(true);
+ expect(batch.selections).toHaveLength(MAX_BATCH_CONTEXT_SELECTIONS);
+ expect(batch.selections[0]?.direction).toBe('方向11');
+ expect(batch.selections[1]?.direction).toBe('方向6');
+ expect(batch.selections[2]?.direction).toBe('方向120');
+ expect(batch.used_combinations).toHaveLength(120);
 });
 test('批次观察时间不破坏任务复用，设计变化参与摘要且无整理也传入作者',async()=>{
  const f=await projectFixture();try{

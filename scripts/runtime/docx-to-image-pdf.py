@@ -77,7 +77,7 @@ def convert(source, destination, dpi, soffice):
             page = document[index]
             image = page.render(scale=dpi / 72).to_pil().convert("RGB")
             path = work / f"{index:05d}.pdf"
-            image.save(path, "PDF", resolution=dpi, quality=90)
+            image.save(path, "PDF", resolution=dpi, quality=90, title="")
             image.close()
             page.close()
             pages.append(str(path))

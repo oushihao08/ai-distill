@@ -10,10 +10,15 @@ const safeName=(value:string)=>value.replace(/[^\p{L}\p{N}._-]/gu,'_').slice(0,8
 const sha256=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 
 export async function exportFailedQuestions(api:ApiClient,projectId:string,selectedIds?:string[],signal?:AbortSignal,mode:'failed'|'review'='failed') {
-  const project=await api.json(`/api/projects/${projectId}`,'GET',undefined,signal) as {workflows?:{id:string}[]}|null;
-  if(!Array.isArray(project?.workflows))throw new CliError('项目题目列表无效',{kind:'invalid_response'});
-  const known=new Set<string>(project.workflows.map((item:any)=>item.id));
-  const ids=selectedIds??project.workflows.map((item:any)=>item.id);
+  const known=new Set<string>();
+  const allIds:string[]=[];
+  for(let page=1;;page++){
+    const listing=await api.json(`/api/projects/${projectId}/workflow-ids?kind=question&page=${page}&page_size=500`,'GET',undefined,signal) as {items?:{id:string}[];has_more?:boolean}|null;
+    if(!Array.isArray(listing?.items)||typeof listing.has_more!=='boolean')throw new CliError('项目题目列表无效',{kind:'invalid_response'});
+    for(const item of listing.items){known.add(item.id);allIds.push(item.id);}
+    if(!listing.has_more)break;
+  }
+  const ids=selectedIds??allIds;
   if(ids.some(id=>!uuid.test(id)||!known.has(id)))throw new CliError('所选题目不属于该项目');
   const results:any[]=[];
   for(const workflowId of ids) {

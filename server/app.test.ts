@@ -51,8 +51,8 @@ test('project detail batches step configs into the existing project query',async
  const pool={query:async(sql:string)=>{
   calls.push(sql);
   if(sql.startsWith('SELECT p.*,system_config.model'))return{rows:[{id:projectId,name:'项目',material_backend:'legacy',local_skill_path:dir,__system_codex_model:'gpt-test',__system_codex_reasoning_effort:'medium',__step_configs:[{ordinal:4,config:{prompt:'project-authored prompt'}}]}],rowCount:1};
-  if(sql.startsWith('SELECT w.id,w.project_id,w.title'))return{rows:[],rowCount:0};
-  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[{items:[]}],rowCount:1};
+  if(sql.includes('FROM (SELECT w.id,w.project_id,w.title'))return{rows:[],rowCount:0};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))return{rows:[{items:[]}],rowCount:1};
   if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
   throw new Error(`Unexpected query: ${sql}`);
  }} as unknown as Pool;
@@ -257,8 +257,8 @@ test('project list returns shared-library question source without private source
  const pool={query:async(sql:string,values?:unknown[])=>{
   statements.push(sql);
   if(sql.startsWith('SELECT p.*,system_config.model AS __system_codex_model'))return{rows:[{id:projectId,name:'本期',material_backend:'library_v1',material_mode:'material_packages',project_group_id:'99999999-9999-4999-8999-999999999999',local_skill_path:null,codex_model:null,codex_reasoning_effort:null,__system_codex_model:'model',__system_codex_reasoning_effort:'low',question_tags:[]}],rowCount:1};
-  if(sql.startsWith('SELECT w.id,w.project_id,w.title')&&sql.includes('FROM ai_distill.workflows w'))return{rows:[{id:workflowId,project_id:projectId,title:'共享库题目',workflow_kind:'question',library_package_id:packageId,library_package_name:'来源材料包'}],rowCount:1};
-  if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))'))return{rows:[{items:[]}],rowCount:1};
+  if(sql.includes('FROM (SELECT w.id,w.project_id,w.title')&&sql.includes('FROM ai_distill.workflows w'))return{rows:[{id:workflowId,project_id:projectId,title:'共享库题目',workflow_kind:'question',library_package_id:packageId,library_package_name:'来源材料包'}],rowCount:1};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))return{rows:[{items:[]}],rowCount:1};
   if(sql.startsWith('SELECT ordinal,config FROM ai_distill.project_step_configs'))return{rows:[],rowCount:0};
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
   if(sql.startsWith('SELECT credential_home,model,reasoning_effort FROM ai_distill.system_codex_config'))return{rows:[{credential_home:null,model:'model',reasoning_effort:'low'}],rowCount:1};
@@ -438,7 +438,7 @@ test('project batch dispatch accepts the decision step and chunks all project wo
   const pool={query:async(sql:string,values?:unknown[])=>{
    if(sql.startsWith('SELECT id FROM ai_distill.projects'))return{rows:[{id:projectId}],rowCount:1};
    if(sql.startsWith('SELECT id,project_id FROM ai_distill.workflows WHERE project_id=$1'))return{rows:workflowIds.map(id=>({id,project_id:projectId})),rowCount:workflowIds.length};
-   if(sql.startsWith('SELECT COALESCE(jsonb_agg(to_jsonb(state_rows))')){stateBatches.push(values?.[1] as string[]);return{rows:[],rowCount:0};}
+   if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array(')){stateBatches.push(values?.[1] as string[]);return{rows:[],rowCount:0};}
    throw new Error(`Unexpected query: ${sql}`);
   },connect:async()=>{throw new Error('unexpected connection')}} as unknown as Pool;
   const app=createApp(pool,root);
@@ -553,4 +553,54 @@ test('custom local ports allow only their own loopback origin while retaining kn
   expect(response.status).toBe(status);
  }
  expect(calls).toHaveLength(0);
+});
+
+test('execution queue endpoint omits terminal history by default and exposes it with include_history=true',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'exec-queue-route-'));directories.push(dir);
+ const {localQueue}=await import('./execution-queue/runtime');
+ process.env.EXECUTION_QUEUE_MODE='local';
+ const q=localQueue(dir);
+ try{
+  const activeId='11111111-1111-4111-8111-111111111112',doneId='11111111-1111-4111-8111-111111111113';
+  q.intent(activeId,'step','agent','authoring');q.confirm(activeId);
+  q.intent(doneId,'step','agent','authoring');q.confirm(doneId);q.resolve(doneId,'committed');
+  const pool={query:async()=>({rows:[],rowCount:0})} as unknown as Pool;
+  const app=createApp(pool,dir);
+  const compact=await app.request('/api/system/execution-queue');
+  expect(compact.status).toBe(200);
+  const compactBody=await compact.json() as {items:{id:string;state:string}[]};
+  expect(compactBody.items.every(item=>item.state!=='committed')).toBe(true);
+  const full=await app.request('/api/system/execution-queue?include_history=true');
+  expect(full.status).toBe(200);
+  const fullBody=await full.json() as {items:{id:string;state:string}[]};
+  expect(fullBody.items.some(item=>item.state==='committed')).toBe(true);
+ }finally{q.close();}
+});
+
+test('project detail pushes pagination into inner workflows query and results slices matched rows before step joins',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'paged-routes-'));directories.push(dir);
+ const calls:{sql:string;values?:unknown[]}[]=[];
+ const pool={query:async(sql:string,values?:unknown[])=>{
+  calls.push({sql,values});
+  if(sql.startsWith('SELECT p.*,system_config.model'))return{rows:[{id:projectId,name:'项目',material_backend:'library_v1',local_skill_path:dir,__system_codex_model:'gpt-test',__system_codex_reasoning_effort:'medium',__step_configs:[]}],rowCount:1};
+  if(sql.includes('FROM (SELECT w.id,w.project_id,w.title'))return{rows:[{id:'w-1',project_id:projectId,title:'题1',created_at:'2026-11-18T00:00:00Z',status:'waiting',workflow_kind:'question'},{id:'w-2',project_id:projectId,title:'题2',created_at:'2026-11-18T00:00:00Z',status:'waiting',workflow_kind:'question'}],rowCount:2};
+  if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))return{rows:[{items:[['w-1','项目','question',null,true,[[4,'waiting',null,null,null,null,true,true,false,null,null,null,null,false,[]]]]]}],rowCount:1};
+  if(sql.startsWith('SELECT matched.workflow_id'))return{rows:[{workflow_id:'w-1',project_id:projectId,project_name:'项目',title:'题1',source_key:'题目1',created_at:'2026-11-18T00:00:00Z',acceptance_result:{decision:'accepted'},answer_models:[],publication_status:'succeeded',exported:false},{workflow_id:'w-2',project_id:projectId,project_name:'项目',title:'题2',source_key:'题目2',created_at:'2026-11-18T00:00:00Z',acceptance_result:{decision:'accepted'},answer_models:[],publication_status:'succeeded',exported:false}],rowCount:2};
+  return{rows:[],rowCount:0};
+ }} as unknown as Pool;
+ const app=createApp(pool,dir);
+ const proj=await app.request(`/api/projects/${projectId}?workflow_page=2&workflow_page_size=1`);
+ expect(proj.status).toBe(200);
+ const projBody=await proj.json() as any;
+ expect(projBody).toMatchObject({workflow_page:2,workflow_has_more:true});
+ expect(projBody.steps.find((s:any)=>s.ordinal===4)?.unauthored_ready).toBe(1);
+ const workflowSql=calls.find(c=>c.sql.includes('FROM (SELECT w.id,w.project_id,w.title'))!;
+ expect(workflowSql.sql).toContain('LIMIT $2 OFFSET $3) w');
+ expect(workflowSql.values).toEqual([projectId,2,1]);
+ const res=await app.request('/api/results?page=2&page_size=1&q=题&publication=archived');
+ expect(res.status).toBe(200);
+ expect(await res.json()).toMatchObject({page:2,page_size:1,has_more:true});
+ const resultsSql=calls.find(c=>c.sql.startsWith('SELECT matched.workflow_id'))!;
+ expect(resultsSql.sql).toContain('LIMIT $3 OFFSET $4\n   ) matched');
+ expect(resultsSql.values).toEqual(['题','archived',2,1]);
 });

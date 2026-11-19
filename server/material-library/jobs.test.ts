@@ -1,7 +1,17 @@
 /** 验证材料库任务参数、消费 lane、租约领取、取消和终态写入边界。 */
 import {test,expect} from 'bun:test';
-import {assertLibraryExtractionUsable,validateLibraryJobRequest,chooseLibraryExecutor,hasLibraryQueueWork,claimLibraryJob,enqueueLibraryJob,failLibraryJob,finishLibraryJob,validateAtomicPublicationConstraints,libraryExternalExtractionTimeoutMs} from './jobs';
+import {assertLibraryExtractionUsable,validateLibraryJobRequest,chooseLibraryExecutor,hasLibraryQueueWork,claimLibraryJob,enqueueLibraryJob,failLibraryJob,finishLibraryJob,heartbeatLibraryJob,validateAtomicPublicationConstraints,libraryExternalExtractionTimeoutMs} from './jobs';
 import {withTaskSignal} from '../task-signal';
+
+test('材料心跳为单条更新设置驱动超时，未确认写入不得延长租约',async()=>{
+ let query:any;
+ const pool={query:async(input:any)=>{query=input;return{rowCount:1};}};
+ expect(await heartbeatLibraryJob(pool as any,'job','lease',{phase:'extract'})).toBe(true);
+ expect(query.query_timeout).toBe(10_000);
+ expect(query.values).toEqual(['job','lease',120_000,JSON.stringify({phase:'extract'})]);
+ expect(query.text).toContain("status='running'");
+ await expect(heartbeatLibraryJob({query:async()=>{throw new Error('Query read timeout');}} as any,'job','lease')).rejects.toThrow('Query read timeout');
+});
 
 test('worker stop during publication rolls back without COMMIT or a successful terminal update',async()=>{
  const c=new AbortController(),queries:string[]=[];

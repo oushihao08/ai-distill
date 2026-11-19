@@ -9,7 +9,7 @@ import {join} from 'node:path';
 import {agyLoginStatus,assembleAgyChunkedOutput,createAgyStreamSessionState,ingestAgyStreamLine,runAgy,type AgyOptions} from './client';
 import {readAgyModelCatalog,resolveAgyModelAndEffort} from './models';
 
-async function createAgyFixture(mode:'normal'|'fresh'|'recovered_fresh'|'recovered_structured_file'|'unrecovered_error'|'slow'|'error'|'missing_result'='normal'){
+async function createAgyFixture(mode:'normal'|'fresh'|'recovered_fresh'|'recovered_structured_file'|'transient_disconnect_resume'|'unrecovered_error'|'slow'|'error'|'missing_result'='normal'){
  const root=await mkdtemp(join(tmpdir(),'agy-client-test-'));
  const directory=join(root,'role');
  await mkdir(join(directory,'input'),{recursive:true});
@@ -17,7 +17,7 @@ async function createAgyFixture(mode:'normal'|'fresh'|'recovered_fresh'|'recover
  await writeFile(join(root,'AGENTS.md'),'host workspace instructions');
  const binary=join(root,'fake-agy');
  const script=`#!${process.execPath}
-import {existsSync,mkdirSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 const args=process.argv.slice(2);
 if(args.includes('--help')){
@@ -35,7 +35,10 @@ const modelIdx=args.indexOf('--model');
 const model=modelIdx>=0?args[modelIdx+1]:'unknown';
 const effortIdx=args.indexOf('--effort');
 const effort=effortIdx>=0?args[effortIdx+1]:'unknown';
+const convIdx=args.indexOf('--conversation');
+const resumedConv=convIdx>=0?args[convIdx+1]:null;
 const ancestorAgents=existsSync(join(process.cwd(),'..','AGENTS.md'))||existsSync(join(process.cwd(),'AGENTS.md'));
+const hasSkillsExclude=existsSync(join(process.cwd(),'.agents','skills.json'));
 mkdirSync(join(process.cwd(),'output'),{recursive:true});
 writeFileSync(join(process.cwd(),'output','probe.json'),JSON.stringify({
  args,
@@ -43,12 +46,37 @@ writeFileSync(join(process.cwd(),'output','probe.json'),JSON.stringify({
  cwd:process.cwd(),
  model,
  effort,
+ resumedConv,
  ancestorAgents,
+ hasSkillsExclude,
  leakedSecrets:['DATABASE_URL','OPENAI_API_KEY','ZHIPU_API_KEY'].filter(k=>process.env[k]),
 }));
 if(mode==='error'){
  console.error('fatal error from fake-agy');
  process.exit(2);
+}
+if(mode==='transient_disconnect_resume'){
+ if(!resumedConv){
+  writeFileSync(join(process.cwd(),'output','partial.marker'),'step1-saved');
+  console.log(JSON.stringify({event:'init',conversation_id:'agy-resume-conv-1',init:{model}}));
+  console.log(JSON.stringify({event:'step_update',step_update:{conversation_id:'agy-resume-conv-1',step_index:4,state:'DONE',step_type:'tool',tool_name:'write_file'}}));
+  process.stdout.write('{\"event\":\"step_update\",\"truncated\":');
+  process.exit(3);
+ }
+ const preserved=existsSync(join(process.cwd(),'output','partial.marker'))&&readFileSync(join(process.cwd(),'output','partial.marker'),'utf8')==='step1-saved';
+ console.log(JSON.stringify({event:'init',conversation_id:resumedConv,init:{model}}));
+ console.log(JSON.stringify({event:'step_update',step_update:{conversation_id:resumedConv,step_index:5,state:'DONE',step_type:'agent_response',text_delta:'{\"ok\":true}'}}));
+ console.log(JSON.stringify({
+  event:'result',
+  result:{
+   conversation_id:resumedConv,
+   status:'SUCCESS',
+   response:JSON.stringify({ok:preserved}),
+   structured_output:{ok:preserved},
+   usage:{input_tokens:80,output_tokens:20,total_tokens:100},
+  },
+ }));
+ process.exit(0);
 }
 if(mode==='fresh'||mode==='recovered_fresh'){
  writeFileSync(join(${JSON.stringify(directory)},'output','result.json'),JSON.stringify({ok:true,mode}));
@@ -147,6 +175,7 @@ describe('Antigravity models & client',()=>{
    expect(probe.effort).toBe('medium');
    expect(probe.args).toContain('--sandbox');
    expect(probe.args).toContain('--disable-slash-commands');
+   expect(probe.hasSkillsExclude).toBe(true);
    expect(probe.ancestorAgents).toBe(false);
    expect(probe.leakedSecrets).toEqual([]);
    expect(probe.stdinText).toContain('严格遵守任务边界');
@@ -173,6 +202,7 @@ describe('Antigravity models & client',()=>{
    expect(res.returned_model).toBe('gemini-4-argon-low');
    const probe=JSON.parse(await readFile(join(f.root,'output','probe.json'),'utf8'));
    expect(probe.args).not.toContain('--sandbox');
+   expect(probe.args).toContain('--disable-slash-commands');
    expect(probe.ancestorAgents).toBe(true);
   }finally{
    await rm(f.root,{recursive:true,force:true});
@@ -292,6 +322,46 @@ describe('Antigravity models & client',()=>{
    expect(await assembleAgyChunkedOutput(output,resultPath,true)).toBe(false);
   }finally{
    await rm(root,{recursive:true,force:true});
+  }
+ });
+
+ it('assembles plain-text _part_*.txt fragments without JSON escaping and resumes transient disconnects via --conversation',async()=>{
+  const root=await realpath(await mkdtemp(join(tmpdir(),'agy-txt-chunk-test-')));
+  const output=join(root,'output');
+  await mkdir(output,{recursive:true});
+  try{
+   await writeFile(join(output,'_part_rubric.json'),JSON.stringify({
+    task_name:'纯文本分片题',
+    rubric:[{id:'R1',criterion:'考点1'}],
+   }));
+   await writeFile(join(output,'_part_question.txt'),'题面含未转义引号"测试"与反斜杠\\n原样保留');
+   await writeFile(join(output,'_part_approach.txt'),'第一段作答思路');
+   await writeFile(join(output,'_part_ref_1.txt'),'## 一、意见书正文');
+   await writeFile(join(output,'_part_ref_2.txt'),'## 二、起诉状正文');
+   await writeFile(join(output,'result.json'),'{"corrupted_half_json":');
+   const resultPath=join(output,'result.json');
+   expect(await assembleAgyChunkedOutput(output,resultPath,true)).toBe(true);
+   const merged=JSON.parse(await readFile(resultPath,'utf8'));
+   expect(merged).toEqual({
+    task_name:'纯文本分片题',
+    question:'题面含未转义引号"测试"与反斜杠\\n原样保留',
+    rubric:[{id:'R1',criterion:'考点1'}],
+    answer_approach:'第一段作答思路',
+    reference_answer:'## 一、意见书正文\n## 二、起诉状正文',
+   });
+  }finally{
+   await rm(root,{recursive:true,force:true});
+  }
+
+  const resumed=await createAgyFixture('transient_disconnect_resume');
+  try{
+   const res=await runAgy(resumed.options);
+   expect(res.result).toEqual({ok:true});
+   expect(res.session_id).toBe('agy-resume-conv-1');
+   const probe=JSON.parse(await readFile(join(resumed.directory,'output','probe.json'),'utf8'));
+   expect(probe.resumedConv).toBe('agy-resume-conv-1');
+  }finally{
+   await rm(resumed.root,{recursive:true,force:true});
   }
  });
 });

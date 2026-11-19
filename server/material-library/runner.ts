@@ -4,7 +4,7 @@
  * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
-import {deferLocalPublication,readLibraryFailure,saveLibraryFailure} from '../execution-queue/runtime';
+import {deferLocalPublication,hasActiveLocalExecution,readLibraryFailure,saveLibraryFailure} from '../execution-queue/runtime';
 import {mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {Pool} from 'pg';
@@ -172,10 +172,11 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
  const deadline=agentPlan?new Date(job.deadline_at).getTime():Math.min(new Date(job.deadline_at).getTime(),Date.now()+(externalExtraction?libraryExternalExtractionTimeoutMs(externalFileCount):1800000));
  const deadlineTimer=setTimeout(()=>local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded')),Math.max(0,deadline-Date.now()));
  if(deadline<=Date.now())local.abort(stopReason(agentPlan?'agent_redaction_timeout':'deadline_exceeded'));
- // 仅在最后已确认的租约内容忍瞬时数据库故障；独立计时器也覆盖查询悬挂。
+ // 本机队列唯一持有任务归属，不因瞬时远端数据库抖动误杀本机存活子进程；legacy共享队列保留租约到期自停。
+ const localOwned=hasActiveLocalExecution();
  let heartbeatRunning=false,settled=false,heartbeatFailed=false,publicationLocked=false;
- let leaseTimer:ReturnType<typeof setTimeout>;
- const armLease=(expires:number)=>{clearTimeout(leaseTimer);leaseTimer=setTimeout(()=>local.abort(stopReason('heartbeat_unavailable')),Math.max(0,expires-Date.now()));};
+ let leaseTimer:ReturnType<typeof setTimeout>|undefined;
+ const armLease=(expires:number)=>{if(localOwned)return;clearTimeout(leaseTimer);leaseTimer=setTimeout(()=>local.abort(stopReason('heartbeat_unavailable')),Math.max(0,expires-Date.now()));};
  armLease(Number.isFinite(Date.parse(job.lease_expires_at))?Date.parse(job.lease_expires_at):Date.now()+LIBRARY_JOB_LEASE_MS);
  const heartbeat=setInterval(()=>{
   if(heartbeatRunning||settled||publicationLocked)return;
@@ -240,7 +241,7 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
    }catch(cleanupError){logEvent('library_import.cleanup_failed',{level:'warn',...classifyLogError(cleanupError)});}
   }
   if(cancelled)console.info('材料库任务已取消或 worker 已停止');else console.error('材料库任务失败；未输出原文、提示词或凭证');
- }finally{settled=true;clearInterval(heartbeat);clearTimeout(leaseTimer!);clearTimeout(deadlineTimer);signal.removeEventListener('abort',abort);restore();}
+ }finally{settled=true;clearInterval(heartbeat);clearTimeout(leaseTimer);clearTimeout(deadlineTimer);signal.removeEventListener('abort',abort);restore();}
 }
 
 /** runWorkerPool 的并发循环先取得槽位，再调用本函数领取任务。 */

@@ -37,9 +37,9 @@
 
 ### 拼接DOCX页数加载门槛
 
-本门槛适用于新建加载关系、已加载关系切换版本，以及移除后恢复，覆盖所有项目期次。以所选revision的**完整成功提取任务**为来源，在内存中复用材料DOCX的文书合并和包装清理；按当前11磅正文、约42个中文全宽字/行和46行/页估算连续排版，表格按最宽单元格及行高计入。**估算1–10页标记`load_eligible=false`，禁止加载；11页及以上标记`true`。**评估不生成DOCX/PDF、不启动LibreOffice，避免加载请求长时间等待。它不等于真实Word分页，不用原件PDF页数、OCR页码或文件数替代。脱敏与整理可跳过，且不改变这个包版本的基础页数门槛；整理的可见性筛选也不用于评估。
+本门槛适用于新建加载关系、已加载关系切换版本，以及移除后恢复，覆盖所有项目期次。以所选revision的**完整成功提取任务**为来源，在内存中复用材料DOCX的文书合并和包装清理；按当前11磅正文、约42个中文全宽字/行和46行/页估算连续排版，表格按最宽单元格及行高计入。**估算1–10页标记`load_eligible=false`，11页及以上标记`true`；当前允许加载10页及以下材料包，但在材料包（全局库、本期已加载列表）与由其创建的题目（项目题目列表、达标列表、题目详情、成果库）上返回`load_estimated_docx_pages`和`load_eligible=false`以作醒目标识。**评估不生成DOCX/PDF、不启动LibreOffice，避免加载请求长时间等待。它不等于真实Word分页，不用原件PDF页数、OCR页码或文件数替代。脱敏与整理可跳过，且不改变这个包版本的基础页数门槛；整理的可见性筛选也不用于评估。
 
-结果按`revision_id + extraction_job_id + 评估算法版本`记录于`library_load_eligibility`，保存`source_digest`、`estimated_page_count`、`load_eligible`和评估时间。列表及版本接口返回`load_estimated_docx_pages`和`load_eligible`；`null`表示尚未评估或算法版本变化，并不代表合格。首次加载前快速计算并持久化，写事务再次核对确切提取任务；来源结构缺失或评估失败时保持未知并拒绝加载。新revision和新成功提取任务须分别判定。页数靠近10页时可能受字体、表格和Word实际换行影响，结果仅为快速规则评估，**不是OCR准确度、材料实质质量或题目可用性的验收**；已加载的历史关系及题目不自动移除。
+结果按`revision_id + extraction_job_id + 评估算法版本`记录于`library_load_eligibility`，保存`source_digest`、`estimated_page_count`、`load_eligible`和评估时间。列表、已加载材料及题目接口返回`load_estimated_docx_pages`和`load_eligible`；`null`表示尚未评估或算法版本变化。首次加载前快速计算并持久化，写事务复核评估记录存在；来源结构缺失或评估失败时保持未知并拒绝加载。新revision和新成功提取任务须分别判定。页数靠近10页时可能受字体、表格和Word实际换行影响，结果仅为快速规则评估，**不是OCR准确度、材料实质质量或题目可用性的验收**；已加载的历史关系及题目保留原状态。
 
 提取发布（含MinerU桌面结果和GLM-OCR结构结果导入）通过`storeExtractedDocument()`显式启用共用英文整段过滤：完整纯英文句及至少八词、含小写字母的纯英文OCR截断段清空；全大写标题、数字、网址、邮箱、编号、单位及中英混排保留，不按任意无中文字段删除；表格逐单元格、列表逐项处理，ID、页序及合并关系保留。删除沿用原始OCR副本和精确坐标审计；结构与正文投影同步发布。历史结果不回写，已有成功任务不自动重跑。Agent计划编译的默认扫描噪声规则不因此扩大。
 
@@ -65,19 +65,19 @@ HTTP入口为`GET /api/material-library/redactions/:id/name-revision-source?proj
 | `service.ts` | 包资料、不可变文件集合、上传幂等、逻辑归档/恢复、历史与使用查询；复用原件时核验字节摘要与大小，只修复不可变文件对象的受管存储路径 |
 | `settings.ts` | 共用SQLite配置数据库；首次读取初始化并持久化默认模板，每次派发重新读取；乐观版本控制、事务保存，不保存密钥 |
 | `jobs.ts` | 入队时读取共用设置并冻结；请求重放、执行lane、租约、取消、失租和终态事务 |
-| `runner.ts` | 领取后的调度、心跳、取消与截止；入库和提取执行；`executeExtraction`/`runClaimedJob`支持隔离行为验证 |
+| `runner.ts` | 领取后的调度、心跳、取消与截止；local队列模式下不因瞬时远端数据库抖动误杀本机存活子进程，提交前续期有效租约；入库和提取执行；`executeExtraction`/`runClaimedJob`支持隔离行为验证 |
 | `extraction-checkpoint.ts` | 私有单文件检查点读写；按原件与正文摘要及结构复用，不以provider/格式指纹拦截；异常降级继续，不发布或派发任务 |
 | `result-reuse.ts` | 成功提取正文、整包原件集合及整理正文的复用查询和ID映射；跨包复制结果前核对完整集合，不把部分重合当完全重复 |
 | `redaction-runner.ts` | 仅按冻结Agent模板执行整包化名并事务发布；旧字段映射快照在读取正文前拒绝 |
 | `execution-shared.ts` | 执行器共用摘要、私有目录、提取结构校验及正文发布前保守清理；有改动时同时保留原始OCR对象与精确编辑审计 |
 | `processing-policy.ts` | 从期次配置读取当前两模式及历史mask身份并约束派发模板；不调用模型 |
-| `agent-redaction.ts` | 单次限时Agent/API调用及最终程序编译；API模式优先复用内存已解析计划`parsed_plan`避免重复磁盘解析，仍保留私有产物落盘；不入队、不自动重试 |
+| `agent-redaction.ts` | 单次限时Agent/API调用及最终程序编译；CLI Agent执行接口约束按`source.json`原顺序脚本合并变更落盘以防单次大JSON断流或转义报错，API模式优先复用内存已解析计划`parsed_plan`避免重复磁盘解析，仍保留私有产物落盘；不入队、不自动重试 |
 | `api-redaction.ts` | 将同源私有文件内联至`llm-api`，宿主运行同一编译器反馈修正，落盘`output/material-plan.json`并向调用方透传`parsed_plan` |
 | `agent-redaction-artifacts.ts` | 私有输入、同源检查点、固定结果文件及本地校验工具准备 |
 | `agent-redaction-validator.ts` | 打包到任务内的只读校验CLI，供Agent在同次调用内修正错误；不写库 |
 | `redaction-review.ts` | 显式复核Agent已发布产物，将当前结论及历史追加到job.result_summary，不改不可变产物或任务成功历史 |
-| `preparation.ts` | 可跳过的材料整理任务：按冻结的提取/脱敏来源单次生成总摘要、逐份摘要、文书可见性和支持范围；不自动补调 |
-| `preparation-support.ts` | 材料整理共用系统提示词`PREPARATION_PROMPT`、响应检查点`runPreparationCheckpoint`与逐图审核检查点`imageDecisionCheckpoint` |
+| `preparation.ts` | 可跳过的材料整理任务：Agent写`output/preparation.json`并运行本地`validate-preparation.mjs`自检，超100份文书分段后经`hidden_documents`汇总统一判定隐藏文书，API通道带2轮校验修正；不自动补调 |
+| `preparation-support.ts` | 材料整理共用系统提示词`PREPARATION_PROMPT`、文件输入与`validate-preparation.mjs`生成（文书较多时约束先写纯文本/JSONL分片再由本地脚本合并落盘）、响应检查点`runPreparationCheckpoint`与逐图审核检查点`imageDecisionCheckpoint` |
 | `worker-once.ts` | 验收入口，只消费HTTP已创建的指定本机Agent材料job UUID，复用共享Agent槽位与正式事务，不领取其他任务 |
 | `prepared-import.ts` | 导入Codex已审阅的原文编辑/分册计划：校验完整提取来源、精确编辑、范围覆盖与请求幂等，在同一事务保存新任务及脱敏结果；不OCR、不调用模型、不改旧结果 |
 | `mineru-import.ts` | 导入MinerU桌面端content_list：核对完整版本原件摘要与PDF页数，复用结构转换，事务保存提取文档与来源摘要；不重跑OCR、不脱敏 |
@@ -140,7 +140,7 @@ PDF/DOCX/图片外部提取按需逐文件执行，每份冻结30分钟预算，
 - `GET /files/:id/content`：下载原件；`GET /files/:id/preview`：原文件内嵌预览。先核对file→revision→package、执行端、路径、摘要和大小。DOCX预览依赖已安装的LibreOffice（可通过LIBREOFFICE_PATH指定）；不上传第三方，不调用模型。生成副本的分页可能受可用字体和渲染器影响，原件始终保留。
 - `GET /revisions/:id/documents?extraction_job_id=...`：成功同集合提取任务的文件摘要/识别问题；加file_id按需读取单文件正文。
 - `GET /redactions/:id/preview`：成功脱敏全文；加file_id返回该文件页文本，并返回实际extraction_job_id，前端对照读取这个提取来源。
-- `GET /packages?ready_only=true`：在分页前按全部历史可用脱敏结果过滤；`archived_only=true` 列出已逻辑归档包，默认仅返回使用中的包。每页还返回材料使用轻量摘要（主项目、所属期、使用中/已提交），不带事件详情；新文件版本失败不隐藏旧成功版；POST加载/PATCH选版在包/项目事务锁内再次验证非空且有效的选择。
+- `GET /packages?ready_only=true`：在分页前按全部历史可用脱敏结果过滤；`archived_only=true` 列出已逻辑归档包，默认仅返回使用中的包。`page_size`上限500，普通页面仍按需读取30条；每页的包资料、总数和材料使用轻量摘要（主项目、所属期、使用中/已提交）由同一条SQL返回，不带事件详情；新文件版本失败不隐藏旧成功版；POST加载/PATCH选版在包/项目事务锁内再次验证非空且有效的选择。
 - `DELETE /packages/:id`：按 `If-Match` 版本逻辑归档；若仍有运行中或排队的材料处理任务则拒绝。不会删除原件、历史、项目加载关系、题目私有快照或归档事件。`POST /packages/:id/restore` 可恢复已归档包。
 - `GET /packages/:id/usage`：加载项目与归档/撤回事件。界面按题目汇总当前状态，事件历史保留；移除引用和删除项目不改变全局库包。
 - `GET /projects/:id/material-candidates?q=...&page=...&page_size=...`：本期材料加载弹窗的搜索和分页候选；项目占用状态在同一候选查询中投影，避免目录结果后再发一轮使用记录查询；页面只在打开弹窗或改变查询时请求当前页。
@@ -293,7 +293,7 @@ Agent自检、宿主发布及显式复核共用同一编译器。成功表示原
 
 `preparation.ts`复用`library_jobs(kind=prepare)`读取成功提取或脱敏结构，一次返回逐份描述、可见性、总摘要、组合及整包出题支持度。逐份描述可附 `hidden_texts`：Agent 指出完整独立段落的广告、水印、无关页眉页脚及仅用于原件分页的页码行，编译器要求原文精确命中并附理由；未命中则保留。病例编号、检查编号和正文引用页码仍作为材料内容保留。整理投影和图文导出只在显示副本隐藏，原始提取和旧题快照不变。默认走本机Agent；单次请求显式传`api_settings`时改走API槽位，`api_settings`与`agent_settings`互斥，来源绑定、输出schema、编译和发布共用原路径。API配置不保存密钥，执行时从服务进程环境读取；失败不自动切回Agent或重复调用。整理不作默认选择、不裁剪材料，也不增加步骤编号或前置审批；原文整理绑定成功提取任务，脱敏整理绑定成功脱敏结果；缺失、失败或摘要不完整时，建题仍可使用完整材料。prepare不参与提取/脱敏的revision互斥，默认不自动派发。
 
-HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`redaction_id`或`extraction_job_id`，可选`project_id`、`agent_settings`或`api_settings`；`GET /api/material-library/packages/:id/preparations`列出最近结果，`GET /api/material-library/preparations/:id?include_content=true`读取完整文书。状态和取消沿用jobs接口。同请求键恢复原ID；同来源/项目/模型及规则的成功结果或本机在途整理复用；成功结果可只读复用，不认领他机在途任务。新任务按来源目录固定材料ID、标题、顺序及全部结构块，模型只返回描述信息，不接收重分册的块ID或标题。已有脱敏分册直接沿用；未分册原文按原文件保留，不在整理阶段拆合。摘要缺失不自动补调或新增材料，保持空值并生成技术提示；边界疑点记入notes，交回上游处理。未知或重复描述不替换来源正文，不阻断建题；模型结果未知不自动重调。
+HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`redaction_id`或`extraction_job_id`，可选`project_id`、`agent_settings`或`api_settings`；`GET /api/material-library/packages/:id/preparations`列出最近结果，表存在时直接查询一次，缺表返回`available:false`，其他数据库错误继续报错；`GET /api/material-library/preparations/:id?include_content=true`读取完整文书。状态和取消沿用jobs接口。同请求键恢复原ID；同来源/项目/模型及规则的成功结果或本机在途整理复用；成功结果可只读复用，不认领他机在途任务。新任务按来源目录固定材料ID、标题、顺序及全部结构块，模型只返回描述信息，不接收重分册的块ID或标题。已有脱敏分册直接沿用；未分册原文按原文件保留，不在整理阶段拆合。摘要缺失不自动补调或新增材料，保持空值并生成技术提示；边界疑点记入notes，交回上游处理。未知或重复描述不替换来源正文，不阻断建题；模型结果未知不自动重调。
 
 总摘要由Agent根据最终目录、逐份描述及原文概括法律关系、材料构成、主要事实和程序状态，不写整理数量或处理进度；数量由程序计算。单次调用使用本次deadline及完整响应检查点。组合须明确主体、工作、信息时点、交付用途及可见依据；分别处理事件、凭证申请、取得及送达时间，时间不明时注明阶段或适用条件，不猜精确时点。多组选用须同一服务主体、案件与工作关联、场景相容；程序只核验字段和可见引用，不将结构校验冒充语义审查或增加整包准入门槛。
 
@@ -317,9 +317,9 @@ CLI的start/resume/diagnose使用同一HTTP契约；diagnose只返回状态、�
 
 ### 心跳瞬时故障边界
 
-库任务每15秒更新心跳。数据库写入异常时仅在最后确认的租约有效期内继续等待下一轮心跳；成功后按请求发起时刻加120秒保守更新本地租约期限。独立租约计时器覆盖数据库查询悬挂；到期停止并记录`heartbeat_unavailable`。明确取消、失租和任务总期限继续立即生效；发布事务仍检查数据库租约。该机制不重新派发任务、不延长任务总预算。
+库任务每15秒更新心跳。单次心跳SQL使用驱动10秒读取时限；查询超时按写入未确认处理，连接退出连接池，避免一条悬挂心跳长期占槽。数据库写入异常时仅在最后确认的租约有效期内继续等待下一轮心跳；成功后按请求发起时刻加120秒保守更新本地租约期限。独立租约计时器覆盖数据库查询悬挂；到期停止并记录`heartbeat_unavailable`。明确取消、失租和任务总期限继续立即生效；发布事务仍检查数据库租约。该机制不重新派发任务、不延长任务总预算。连接池获取等待另受数据库连接配置约束，驱动超时不证明服务端写入未发生。
 
-当前整理输入由`readPreparationSource()`查库，并通过与出题/作答共用的`documentPagesToModelText()`转换后内联到单次Agent请求；仅发送材料ID、标题和保留页码/表格关系的正文，不传完整结构坐标对象。程序保留原结构并绑定返回元数据，不生成`source.json`，也不要求Agent自行读取材料输入文件。页面重新整理以`force`显式跳过成功结果复用（在途仍复用）；列表按稳定来源和项目过滤，建题按同包、同revision、同提取/脱敏来源且项目专属优先匹配，不校验整理引擎指纹。旧任务检查点和题目快照不改写。
+当前整理输入由`readPreparationSource()`查库，并通过与出题/作答共用的`documentPagesToModelText()`转换为保留页码/表格关系的完整正文。Agent通道将每份正文写入私有任务目录的`material-NNNNNN.txt`，`materials.json`保存固定ID、标题、文件名及字符数；现有执行沙箱完整复制这些文件，请求只包含固定任务指令，不内联材料正文。要求按清单逐份读完，长文分段读至末尾，保持化名、数字、日期及未知信息边界；不截断或预摘要来源。API仍内联正文，网页通道仍按原材料JSON标记上传，不假定其支持本地文件读取。新Agent响应及显式续作检查点在发布前检查ID集合一一对应、逐份及总摘要非空，失败保留诊断且不自动补调；轻微警告沿用原编译规则。超过100份记录的整包改为按最多40份及约9万字符分段阅读，保存逐段完整响应检查点，再用全部逐份描述生成全包总摘要、组合和支持度；执行预算仍从同一个job截止时间扣减，不自动延长或无限重试。分段无法可靠确定隐藏时保守保持可见。明确返回“未完成核验”的占位摘要或全部标签为空时拒绝发布。历史成功结果读取不追溯拦截，结构覆盖通过不代表事实忠实度已验收。程序继续持有原结构并绑定返回元数据。页面重新整理以`force`显式跳过成功结果复用（在途仍复用）；列表按稳定来源和项目过滤，建题按同包、同revision、同提取/脱敏来源且项目专属优先匹配，不校验整理引擎指纹。旧任务检查点和题目快照不改写。
 
 默认执行预算为30分钟；耗时观察不作为主动停止门槛。已领取任务使用冻结预算，终态后只能通过显式`prepare-resume`指定新预算续作，不自动重发未知调用。
 

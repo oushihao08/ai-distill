@@ -34,7 +34,6 @@ declare module 'vue' {
     LibraryUsageSummary: typeof import('./components/LibraryUsageSummary.vue')['default']
     MaterialBatchProcessDialog: typeof import('./components/MaterialBatchProcessDialog.vue')['default']
     MaterialEditor: typeof import('./components/MaterialEditor.vue')['default']
-    MaterialImportTaskPanel: typeof import('./components/MaterialImportTaskPanel.vue')['default']
     MaterialPackageQuestionForm: typeof import('./components/MaterialPackageQuestionForm.vue')['default']
     MaterialPackageQuestions: typeof import('./components/MaterialPackageQuestions.vue')['default']
     MaterialRecordsTable: typeof import('./components/MaterialRecordsTable.vue')['default']

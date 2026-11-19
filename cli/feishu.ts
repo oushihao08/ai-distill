@@ -5,11 +5,13 @@
 import {writeFile,rename,rm} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {reconcileFeishuDraft} from './feishu-reconcile';
 import {ApiClient,CliError} from './client';
+import {isEvaluationPipelineSealed} from '../shared/step-registry';
 
 export interface FeishuCliTarget {base_token:string;table_id:string}
 export type FeishuCliAttachmentFormat='docx'|'pdf';
-export const FEISHU_REQUEST_TIMEOUT_MS=180000;
+export const FEISHU_REQUEST_TIMEOUT_MS=900000;
 export function feishuTarget(base:unknown,table:unknown):FeishuCliTarget|undefined{
  if(base===undefined&&table===undefined)return;
  if(typeof base!=='string'||!/^[A-Za-z0-9]{10,100}$/.test(base)||typeof table!=='string'||!/^tbl[A-Za-z0-9]{6,80}$/.test(table))throw new CliError('--base-token和--table须同时提供有效ID');
@@ -22,26 +24,35 @@ export function feishuAttachmentFormat(value:unknown):FeishuCliAttachmentFormat|
 }
 
 /** 旧API可能忽略目标body；先读能力标记，未加载新接口就停止，绝不降级上传。 */
-export async function readFeishuConfig(api:ApiClient,projectId:string,signal?:AbortSignal,requireDraftSync=false,requireAttachmentFormat=false){
+export async function readFeishuConfig(api:ApiClient,projectId:string,signal?:AbortSignal,requireDraftSync=false,requireAttachmentFormat=false,requireCombinedMaterial=false){
  let config:any;
  try{config=await api.json(`/api/projects/${projectId}/feishu-delivery`,'GET',undefined,signal);}
  catch(error){if(error instanceof CliError&&error.detail.http_status===404)throw new CliError('API尚未加载飞书配置接口，未执行上传；请按授权重载服务后使用',{kind:'feature_unavailable',outcome_unknown:false});throw error;}
  if(config?.capabilities?.target_override!==true)throw new CliError('API未声明支持指定目标表，未执行上传',{kind:'feature_unavailable',outcome_unknown:false});
  if(requireDraftSync&&config?.capabilities?.draft_sync!==true)throw new CliError('API尚未声明支持出题后草稿上传，未执行上传；请按授权重载服务后使用',{kind:'feature_unavailable',outcome_unknown:false});
  if(requireAttachmentFormat&&config?.capabilities?.attachment_format!==true)throw new CliError('API尚未声明支持交付附件格式（docx/pdf），未执行上传；请按授权重载服务后使用',{kind:'feature_unavailable',outcome_unknown:false});
+ if(requireCombinedMaterial&&config?.capabilities?.combined_material!==true)throw new CliError('API尚未加载合册交付能力，未执行上传',{kind:'feature_unavailable',outcome_unknown:false});
  return config;
 }
 
 /** 首先只读核对全部题目归属/达标/归档；每题发送前落盘dispatching，未知响应立即停止。 */
-export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[],output:string,target:FeishuCliTarget|undefined,signal?:AbortSignal,stage:'draft'|'archived'='archived',attachmentFormat?:FeishuCliAttachmentFormat){
+export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[],output:string,target:FeishuCliTarget|undefined,signal?:AbortSignal,stage:'draft'|'archived'='archived',attachmentFormat?:FeishuCliAttachmentFormat,combinedMaterial=false){
+ if(combinedMaterial&&!attachmentFormat)throw new CliError('--combined-material须显式指定--attachment-format docx或pdf');
  if(!ids.length||ids.length>1000)throw new CliError('飞书批次须明确指定1至1000道题');
- const settings=await readFeishuConfig(api,projectId,signal,stage==='draft',attachmentFormat!==undefined);
- const project=await api.json(`/api/projects/${projectId}`,'GET',undefined,signal);
+ const settings=await readFeishuConfig(api,projectId,signal,stage==='draft',attachmentFormat!==undefined,combinedMaterial);
+ let project:any;
+ try{project=await api.json(`/api/projects/${projectId}/questions?ids=${encodeURIComponent(ids.join(','))}`,'GET',undefined,signal);}
+ catch(error){
+  // 旧运行服务仅在明确404时回退；超时/500不追加一次全项目昂贵查询。
+  if(!(error instanceof CliError)||error.detail.http_status!==404)throw error;
+  project=await api.json(`/api/projects/${projectId}`,'GET',undefined,signal);
+ }
  if(!Array.isArray(project.workflows)||!project.workflow_status)throw new CliError('项目响应缺少题目状态',{kind:'invalid_response'});
+ const sealed=isEvaluationPipelineSealed();
  for(const id of ids){
   const workflow=project.workflows.find((w:any)=>w.id===id),steps=project.workflow_status[id]?.steps;
   const eligible=stage==='archived'
-   ?workflow?.current_decision==='accepted'&&Array.isArray(steps)&&steps.some((s:any)=>s.ordinal===8&&s.status==='succeeded')
+   ?(sealed||workflow?.current_decision==='accepted')&&Array.isArray(steps)&&steps.some((s:any)=>s.ordinal===8&&s.status==='succeeded')
    :Array.isArray(steps)&&steps.some((s:any)=>s.ordinal===4&&s.status==='succeeded')&&!steps.some((s:any)=>s.ordinal===8&&s.status==='succeeded');
   if(!workflow||workflow.workflow_kind!=='question'||!eligible)throw new CliError(`题目${id}不属于该期或未满足${stage==='draft'?'出题完成且未归档':'达标归档'}条件，未上传本批题目`);
  }
@@ -51,7 +62,7 @@ export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[
   else throw new CliError('本期尚无固定表ID；请先创建或指定目标表，再执行批次，避免批次中途改向');
  }
  const effectiveAttachmentFormat:FeishuCliAttachmentFormat=attachmentFormat??(settings.attachment_format==='pdf'?'pdf':'docx');
- const path=resolve(output),state:any={version:1,stage,project_id:projectId,workflow_ids:ids,target,attachment_format:effectiveAttachmentFormat,created_at:new Date().toISOString(),items:ids.map(workflow_id=>({workflow_id,status:'pending'}))};
+ const path=resolve(output),state:any={version:1,stage,project_id:projectId,workflow_ids:ids,target,attachment_format:effectiveAttachmentFormat,combined_material:combinedMaterial,created_at:new Date().toISOString(),items:ids.map(workflow_id=>({workflow_id,status:'pending'}))};
  try{await writeFile(path,JSON.stringify(state,null,2),{flag:'wx',mode:0o600});}
  catch{throw new CliError('进度文件必须不存在且父目录可写；未上传本批题目',{kind:'file_error'});}
  const persist=async()=>{
@@ -59,14 +70,26 @@ export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[
   try{await writeFile(temporary,JSON.stringify(state,null,2),{flag:'wx',mode:0o600});await rename(temporary,path);}
   finally{await rm(temporary,{force:true});}
  };
+ const reconcile=async(item:any)=>{
+  if(stage!=='draft'||!combinedMaterial||signal?.aborted)return false;
+  item.original_receipt??=item.receipt;await persist();
+  try{
+   const receipt=await reconcileFeishuDraft(api,item.workflow_id,projectId,target!,effectiveAttachmentFormat,signal);
+   if(!receipt)return false;
+   item.receipt=receipt;item.status='succeeded';item.reconciled_at=new Date().toISOString();await persist();return true;
+  }catch{item.reconciliation_failed=true;await persist();return false;}
+ };
  for(const item of state.items){
   if(signal?.aborted)break;
   item.status='dispatching';item.dispatched_at=new Date().toISOString();await persist();
   try{
    const route=stage==='draft'?'feishu-draft-sync':'feishu-sync';
-   const receipt=await api.json(`/api/workflows/${item.workflow_id}/${route}`,'POST',{target,...(attachmentFormat?{attachment_format:attachmentFormat}:{})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
-   item.receipt=receipt;item.status=receipt.status==='succeeded'?'succeeded':receipt.status==='in_progress'?'in_progress':'failed';await persist();
-   if(item.status!=='succeeded')break;
+   const receipt=await api.json(`/api/workflows/${item.workflow_id}/${route}`,'POST',{target,attachment_format:effectiveAttachmentFormat,...(combinedMaterial?{combined_material:true}:{})},signal,{},FEISHU_REQUEST_TIMEOUT_MS);
+   item.receipt=receipt;item.status=receipt.status==='succeeded'&&receipt.verification?.status==='passed'?'succeeded':receipt.status==='in_progress'?'in_progress':'failed';await persist();
+   if(item.status!=='succeeded'){
+    if(await reconcile(item))continue;
+    break;
+   }
   }catch(error){
    const detail=error instanceof CliError?error.detail:{};
    // 飞书核对失败按HTTP502返回；从同题安全回执恢复具体差异，不把旧回执当作本次响应。
@@ -84,6 +107,7 @@ export async function syncFeishuBatch(api:ApiClient,projectId:string,ids:string[
    }
    item.status=confirmedFailure?'failed':detail.outcome_unknown===true?'unknown':'failed';item.error=error instanceof CliError?{message:error.message,...detail,...(confirmedFailure?{outcome_unknown:false}:{})}:{kind:'client_error'};
    await persist();
+   if(await reconcile(item))continue;
    // 失败后保留尚未派发清单；尤其不能因超时或空响应换key重放远端写请求。
    break;
   }

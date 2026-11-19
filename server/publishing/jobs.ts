@@ -7,6 +7,8 @@ import {readWorkflowModelSet} from '../answer-models/workflow-models';
 import type {Pool} from 'pg';
 import {cachedExternalCall} from '../execution-queue/runtime';
 import {canonicalJson} from '../../shared/workflow-config';
+import {isEvaluationPipelineSealed} from '../../shared/step-registry';
+import {authorOnlySourceDigest} from './tasks';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
 import {readFile,realpath,stat} from 'node:fs/promises';
@@ -103,32 +105,44 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
   restoreLogContext=enterLogContext({component:'publishing',operation:'publish',workflow_id:workflowId,project_id:workflow.project_id,ordinal:8});
   logEvent('publication.started',{level:'info'});
-  const steps=await db.query('SELECT ordinal,status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 7',[workflowId]);
-  if(steps.rows.length!==4||steps.rows.some(row=>row.status!=='succeeded'))throw publicationConflict('publication_steps_incomplete','当前出题、作答、评分及达标尚未全部成功');
-  const modelSet=await readWorkflowModelSet(db,workflow.project_id,workflowId);
-  if(!modelSet.length)throw publicationConflict('publication_model_set_missing','项目尚未配置作答模型');
-  const acceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
-  const config=buildConfiguredAcceptanceConfig(modelSet,acceptancePolicy);
-  const accepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
-  if(accepted?.status!=='succeeded'||accepted.result?.decision!=='accepted')throw publicationConflict('publication_acceptance_missing','当前版本尚未达标');
-  const snapshot=await readAcceptanceSnapshot(db,workflowId,config,answerModelSetDigest(modelSet));
-  const digest=acceptanceSourceDigest(snapshot),q=snapshot.question?.result;
-  if(decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw publicationConflict('publication_acceptance_snapshot_changed','达标依据已变化，请重新执行第七步');
-  if(!q||!q.question?.trim()||!q.question_version||!q.rubric_version||!Array.isArray(q.rubric)||!q.rubric.length)throw publicationConflict('publication_question_incomplete','题目包不完整');
-  for(const model of config.required_models){
-   const answer=snapshot.answers.find(item=>item.model===model)!;
-   const score=snapshot.scores.find(item=>item.answer_attempt_id===answer.id)!;
-   const binding=score.result?.binding;
-   const modelReport=q.scoring_policy?.contract==='model_report_v1';
-   if(typeof answer.result?.text!=='string'||binding?.answer_attempt_id!==answer.id||score.status!=='succeeded'||(!modelReport&&score.result?.validation?.valid!==true)||!score.id)throw publicationConflict('publication_answer_score_binding_mismatch','答案或评分版本指纹不一致');
+  const sealed=isEvaluationPipelineSealed();
+  let digest:string,q:any,frozen:any,acceptanceAttemptId:string,acceptancePayload:unknown;
+  if(sealed){
+   const step4=(await db.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=4',[workflowId])).rows[0];
+   const author=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
+   if(step4?.status!=='succeeded'||author?.status!=='succeeded')throw publicationConflict('publication_steps_incomplete','当前出题尚未成功');
+   q=author.result;
+   if(!q||!q.question?.trim()||!q.question_version||!q.rubric_version||!Array.isArray(q.rubric)||!q.rubric.length)throw publicationConflict('publication_question_incomplete','题目包不完整');
+   digest=authorOnlySourceDigest(author);frozen=author.input;acceptanceAttemptId=author.id;
+   acceptancePayload={decision:'accepted',mode:'author_only_sealed',skipped_steps:[5,6,7]};
+  }else{
+   const steps=await db.query('SELECT ordinal,status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal BETWEEN 4 AND 7',[workflowId]);
+   if(steps.rows.length!==4||steps.rows.some(row=>row.status!=='succeeded'))throw publicationConflict('publication_steps_incomplete','当前出题、作答、评分及达标尚未全部成功');
+   const modelSet=await readWorkflowModelSet(db,workflow.project_id,workflowId);
+   if(!modelSet.length)throw publicationConflict('publication_model_set_missing','项目尚未配置作答模型');
+   const acceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
+   const config=buildConfiguredAcceptanceConfig(modelSet,acceptancePolicy);
+   const accepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
+   if(accepted?.status!=='succeeded'||accepted.result?.decision!=='accepted')throw publicationConflict('publication_acceptance_missing','当前版本尚未达标');
+   const snapshot=await readAcceptanceSnapshot(db,workflowId,config,answerModelSetDigest(modelSet));
+   digest=acceptanceSourceDigest(snapshot);q=snapshot.question?.result;
+   if(decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw publicationConflict('publication_acceptance_snapshot_changed','达标依据已变化，请重新执行第七步');
+   if(!q||!q.question?.trim()||!q.question_version||!q.rubric_version||!Array.isArray(q.rubric)||!q.rubric.length)throw publicationConflict('publication_question_incomplete','题目包不完整');
+   for(const model of config.required_models){
+    const answer=snapshot.answers.find(item=>item.model===model)!;
+    const score=snapshot.scores.find(item=>item.answer_attempt_id===answer.id)!;
+    const binding=score.result?.binding;
+    const modelReport=q.scoring_policy?.contract==='model_report_v1';
+    if(typeof answer.result?.text!=='string'||binding?.answer_attempt_id!==answer.id||score.status!=='succeeded'||(!modelReport&&score.result?.validation?.valid!==true)||!score.id)throw publicationConflict('publication_answer_score_binding_mismatch','答案或评分版本指纹不一致');
+   }
+   frozen=snapshot.question!.input;acceptanceAttemptId=accepted.id;acceptancePayload=accepted.result;
   }
-  const frozen=snapshot.question!.input;
   const delivery=await resolveDelivery(workflow.parent_name);
   const deliveryDir=delivery.mode==='noop'?root:await questionResultDirectory(dependencies.exportsRoot??fileURLToPath(new URL('../../assets/out/',import.meta.url)),workflow.parent_name||workflow.project_name,workflow.phase_name??'',workflow.phase_name?(workflow.source_key||workflow.title):workflow.title);
-  const binding:PublicationBinding={project_id:workflow.project_id,title:workflow.title,parent_name:workflow.parent_name??null,phase_name:workflow.phase_name??null,source_key:workflow.source_key??null,acceptance_attempt_id:accepted.id,source_digest:digest,delivery_digest:delivery.digest};
+  const binding:PublicationBinding={project_id:workflow.project_id,title:workflow.title,parent_name:workflow.parent_name??null,phase_name:workflow.phase_name??null,source_key:workflow.source_key??null,acceptance_attempt_id:acceptanceAttemptId,source_digest:digest,delivery_digest:delivery.digest};
   if(dependencies.expected&&canonicalJson(binding)!==canonicalJson(dependencies.expected))throw new HTTPException(409,{message:'交付排队后来源、项目身份或脚本已变化，请核对后重新派发'});
   const deliveryIdentityDigest=hash(JSON.stringify(deliveryIdentity??null));
-  const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...projectStepPolicies.publicationFields.execute(resolveStepProjectKey({content_contract:q.content_contract}),q),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:accepted.result,attachments:[]};
+  const deliveryInput:DeliveryInput={version:1,project_id:workflow.project_id,workflow_id:workflowId,title:workflow.title,source_digest:digest,delivery_digest:delivery.digest,question_version:q.question_version,rubric_version:q.rubric_version,question:{...projectStepPolicies.publicationFields.execute(resolveStepProjectKey({content_contract:q.content_contract}),q),task_name:q.task_name,task_type:q.task_type,header:q.header,question:q.question,attachment_ids:q.attachment_ids,rubric:q.rubric,answer_approach:q.answer_approach,reference_answer:q.reference_answer,...(q.scoring_policy?{scoring_policy:q.scoring_policy}:{}),...(deliveryIdentity?{delivery_identity:deliveryIdentity}:{})},acceptance:acceptancePayload,attachments:[]};
   await db.query('COMMIT');inTransaction=false;
   db.release();connectionHeld=false;
   failurePhase='delivery';
@@ -153,12 +167,20 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
    db=await pool.connect();connectionHeld=true;
    await db.query('BEGIN');inTransaction=true;
    const currentWorkflow=(await db.query("SELECT w.project_id,w.title,w.source_key,p.name AS project_name,p.parent_name,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w",[workflowId])).rows[0];
-   const currentModelSet=await readWorkflowModelSet(db,workflow.project_id,workflowId);
-   const currentAcceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
-   const currentAccepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
-   const currentSnapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(currentModelSet,currentAcceptancePolicy),answerModelSetDigest(currentModelSet));
-   if(!currentWorkflow||currentWorkflow.title!==workflow.title||currentWorkflow.project_id!==workflow.project_id||currentWorkflow.parent_name!==workflow.parent_name||currentWorkflow.phase_name!==workflow.phase_name||currentWorkflow.source_key!==workflow.source_key||currentAccepted?.id!==accepted.id||currentAccepted.status!=='succeeded'||currentAccepted.result?.decision!=='accepted'||decideAcceptance(buildAcceptanceInput(currentSnapshot)).decision!=='accepted')throw new HTTPException(409,{message:'生成期间题目、模型或达标依据发生变化，请重新归档'});
-  const previous=(await db.query("SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded' AND input->>'source_digest'=$2 AND input->>'acceptance_attempt_id'=$3 AND input->>'delivery_digest'=$4 AND input->>'delivery_identity_digest'=$5 ORDER BY attempt DESC LIMIT 1",[workflowId,digest,accepted.id,delivery.digest,deliveryIdentityDigest])).rows[0];
+   let currentValid=Boolean(currentWorkflow&&currentWorkflow.title===workflow.title&&currentWorkflow.project_id===workflow.project_id&&currentWorkflow.parent_name===workflow.parent_name&&currentWorkflow.phase_name===workflow.phase_name&&currentWorkflow.source_key===workflow.source_key);
+   if(currentValid&&sealed){
+    const step4=(await db.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=4',[workflowId])).rows[0];
+    const currentAuthor=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
+    currentValid=Boolean(step4?.status==='succeeded'&&currentAuthor?.id===acceptanceAttemptId&&currentAuthor.status==='succeeded'&&authorOnlySourceDigest(currentAuthor)===digest);
+   }else if(currentValid){
+    const currentModelSet=await readWorkflowModelSet(db,workflow.project_id,workflowId);
+    const currentAcceptancePolicy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[workflow.project_id])).rows[0]?.config;
+    const currentAccepted=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=7 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
+    const currentSnapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(currentModelSet,currentAcceptancePolicy),answerModelSetDigest(currentModelSet));
+    currentValid=Boolean(currentAccepted?.id===acceptanceAttemptId&&currentAccepted.status==='succeeded'&&currentAccepted.result?.decision==='accepted'&&decideAcceptance(buildAcceptanceInput(currentSnapshot)).decision==='accepted');
+   }
+   if(!currentValid)throw new HTTPException(409,{message:'生成期间题目、模型或交付依据发生变化，请重新归档'});
+  const previous=(await db.query("SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8 AND status='succeeded' AND input->>'source_digest'=$2 AND input->>'acceptance_attempt_id'=$3 AND input->>'delivery_digest'=$4 AND input->>'delivery_identity_digest'=$5 ORDER BY attempt DESC LIMIT 1",[workflowId,digest,acceptanceAttemptId,delivery.digest,deliveryIdentityDigest])).rows[0];
   if(previous&&!dependencies.attemptId){
    const latestEvent=(await db.query('SELECT event_type FROM ai_distill.workflow_publication_events WHERE workflow_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1',[workflowId])).rows[0];
    if(latestEvent?.event_type!=='archived'){
@@ -171,12 +193,12 @@ export async function publishWorkflow(pool:Pool,workflowId:string,root:string,de
   }
   attemptId=dependencies.attemptId??crypto.randomUUID();
   const provenance=await readArchiveProvenance(db,workflow.project_id,workflowId,frozen,workflow.project_name,workflow.title);
-  const result={source_digest:digest,acceptance_attempt_id:accepted.id,question_version:q.question_version,rubric_version:q.rubric_version,delivery:{mode:delivery.mode,digest:delivery.digest,status:'succeeded',...(delivery.mode==='script'?{output_path:relative(dependencies.exportsRoot??fileURLToPath(new URL('../../assets/out/',import.meta.url)),deliveryDir).split(sep).join('/')}:{})},material_provenance:provenance,...supplemental,archived_at:new Date().toISOString()};
+  const result={source_digest:digest,acceptance_attempt_id:acceptanceAttemptId,question_version:q.question_version,rubric_version:q.rubric_version,delivery:{mode:delivery.mode,digest:delivery.digest,status:'succeeded',...(delivery.mode==='script'?{output_path:relative(dependencies.exportsRoot??fileURLToPath(new URL('../../assets/out/',import.meta.url)),deliveryDir).split(sep).join('/')}:{})},material_provenance:provenance,...supplemental,archived_at:new Date().toISOString()};
   if(dependencies.attemptId){
    const saved=await db.query("UPDATE ai_distill.step_attempts SET status='succeeded',result=$2,error=NULL,finished_at=now() WHERE id=$1 AND workflow_id=$3 AND ordinal=8 AND status='running' AND id=(SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$3 AND ordinal=8 ORDER BY attempt DESC LIMIT 1) RETURNING id",[attemptId,JSON.stringify(result),workflowId]);
    if(saved.rowCount!==1)throw new HTTPException(409,{message:'交付任务已取消或被新版本替代，结果未发布'});
   }else{
-  await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,finished_at) SELECT $2,$1::uuid,8,COALESCE(max(attempt),0)+1,'succeeded',$3,$4,now() FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=8",[workflowId,attemptId,JSON.stringify({source_digest:digest,acceptance_attempt_id:accepted.id,delivery_digest:delivery.digest,delivery_identity_digest:deliveryIdentityDigest,material_provenance:provenance}),JSON.stringify(result)]);
+  await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,result,finished_at) SELECT $2,$1::uuid,8,COALESCE(max(attempt),0)+1,'succeeded',$3,$4,now() FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=8",[workflowId,attemptId,JSON.stringify({source_digest:digest,acceptance_attempt_id:acceptanceAttemptId,delivery_digest:delivery.digest,delivery_identity_digest:deliveryIdentityDigest,material_provenance:provenance}),JSON.stringify(result)]);
   }
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='succeeded',result=$2,error=NULL,started_at=now(),finished_at=now() WHERE workflow_id=$1 AND ordinal=8",[workflowId,JSON.stringify(result)]);
   await insertPublicationEvent(db,workflowId,workflow.project_id,attemptId,'archived',provenance);

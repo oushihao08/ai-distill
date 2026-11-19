@@ -205,7 +205,7 @@ test('project detail shares one step-state read with the question table projecti
  const app=setup(sql=>{
   calls.push(sql);
   if(sql.includes('FROM ai_distill.projects p LEFT JOIN ai_distill.system_codex_config'))return{rows:[{id,name:'project',local_skill_path:'/nonexistent',material_backend:'legacy',codex_model:null,codex_reasoning_effort:null,__system_codex_model:'gpt-6-luna',__system_codex_reasoning_effort:'medium'}],rowCount:1};
-  if(sql.startsWith('SELECT w.id,w.project_id,w.title'))return{rows:[{id:workflowId,has_authored:true}],rowCount:1};
+  if(sql.includes('FROM (SELECT w.id,w.project_id,w.title'))return{rows:[{id:workflowId,has_authored:true}],rowCount:1};
   if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))return{rows:[{items:[
    {workflow_id:workflowId,workflow_kind:'question',source_workflow_id:null,library_source:false,ordinal:4,status:'succeeded',error:null,started_at:null,finished_at:null,result:null,implemented:true,enabled:true,has_pdf:false,extraction_status:null,active:false},
    {workflow_id:workflowId,workflow_kind:'question',source_workflow_id:null,library_source:false,ordinal:5,status:'waiting',error:null,started_at:null,finished_at:null,result:null,implemented:true,enabled:true,has_pdf:false,extraction_status:null,active:false},
@@ -217,7 +217,7 @@ test('project detail shares one step-state read with the question table projecti
  expect(response.status).toBe(200);
  expect(body.workflow_status[workflowId].attempt_summary).toEqual({has_authored:true});
  expect(body.workflow_status[workflowId].steps.map((step:any)=>step.ordinal)).toEqual([4,5]);
- expect(calls.filter(sql=>sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array('))).toHaveLength(1);
+ expect(calls.filter(sql=>sql.includes('grouped.states'))).toHaveLength(1);
  expect(calls.filter(sql=>sql.includes('LEFT JOIN ai_distill.system_codex_config'))).toHaveLength(1);
  expect(calls.some(sql=>sql.startsWith('SELECT credential_home,model,reasoning_effort'))).toBe(false);
  expect(body.project).not.toHaveProperty('__system_codex_model');
@@ -228,7 +228,7 @@ test('project detail starts independent workflow and step reads before project l
  const app=setup(sql=>{
   if(sql.includes('FROM ai_distill.projects p LEFT JOIN ai_distill.system_codex_config'))return projectPending;
   if(sql.startsWith('SELECT codex_model,codex_reasoning_effort FROM ai_distill.projects'))return{rows:[{codex_model:null,codex_reasoning_effort:null}],rowCount:1};
-  if(sql.startsWith('SELECT w.id,w.project_id,w.title')){workflowStarted=true;return{rows:[],rowCount:0};}
+  if(sql.includes('FROM (SELECT w.id,w.project_id,w.title')){workflowStarted=true;return{rows:[],rowCount:0};}
   if(sql.startsWith('SELECT COALESCE(jsonb_agg(jsonb_build_array(')){stepSummaryStarted=true;return{rows:[{items:[]}],rowCount:1};}
   return empty;
  });

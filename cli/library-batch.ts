@@ -12,13 +12,14 @@ export async function planLibraryBatch(api:ApiClient,flags:Map<string,string|boo
  const get=(p:string)=>api.json(p,'GET',undefined,signal);
  let project:any;
  if(flags.has('project-query')){const query=String(flags.get('project-query'));const projects=items(await get('/api/projects'));const exact=projects.filter(p=>normalize(p.name)===normalize(query));const matches=exact.length?exact:projects.filter(p=>fuzzy(p.name,query));if(matches.length!==1)throw new CliError(matches.length?'期次匹配不唯一，请用完整名称或--project':'未找到匹配期次',{kind:'usage_error',candidates:matches.map(p=>({id:p.id,name:p.name}))});project=matches[0];}
- if(flags.has('project')){if(project&&project.id!==flags.get('project'))throw new CliError('期次筛选冲突');project=await get(`/api/projects/${String(flags.get('project'))}`);}
+ if(flags.has('project')){if(project&&project.id!==flags.get('project'))throw new CliError('期次筛选冲突');const preview=await get(`/api/projects/${String(flags.get('project'))}/preview`);project=preview.project;}
  const filters:Record<string,string>={q:String(flags.get('q')??''),redaction_state:String(flags.get('redaction-state')??'all'),preparation_state:String(flags.get('preparation-state')??'all'),extraction_state:String(flags.get('extraction-state')??'all')};
  for(const k of ['redaction_state','preparation_state'])if(!['all','ready','not_ready'].includes(filters[k]!))throw new CliError(`${k}无效`);
  if(!['all','succeeded','not_started','failed','cancelled','running','queued'].includes(filters.extraction_state!))throw new CliError('extraction-state无效');
  if(!project&&!filters.q)throw new CliError('须指定--project-query、--project或--q，避免无范围批量操作');
  const found=new Map<string,any>();
- for(let page=1;;page++){const q=new URLSearchParams({page:String(page),page_size:'100',redaction_state:filters.redaction_state!,preparation_state:filters.preparation_state!});const result=await get(`/api/material-library/packages?${q}`);for(const p of result.items){if(p.deleted_at||!p.current_revision_id)continue;if(project&&!fuzzy(p.name,project.name))continue;if(filters.q&&!filters.q.split(/\s+/).every(term=>fuzzy(p.name,term)))continue;if(filters.extraction_state!=='all'&&p.extraction_status!==filters.extraction_state)continue;found.set(p.id,p);}if(page*100>=result.total_count)break;if(!result.items.length)throw new CliError('搜索分页变化，请重新生成清单');}
+ const pageSize=500;
+ for(let page=1;;page++){const q=new URLSearchParams({page:String(page),page_size:String(pageSize),redaction_state:filters.redaction_state!,preparation_state:filters.preparation_state!});const result=await get(`/api/material-library/packages?${q}`);for(const p of result.items){if(p.deleted_at||!p.current_revision_id)continue;if(project&&!fuzzy(p.name,project.name))continue;if(filters.q&&!filters.q.split(/\s+/).every(term=>fuzzy(p.name,term)))continue;if(filters.extraction_state!=='all'&&p.extraction_status!==filters.extraction_state)continue;found.set(p.id,p);}if(page*pageSize>=result.total_count)break;if(!result.items.length)throw new CliError('搜索分页变化，请重新生成清单');}
  const plan:Plan={version:1,kind,...(project?{project_id:project.id,project_name:project.name}:{}),filters,created_at:new Date().toISOString(),items:[...found.values()].map(p=>({package_id:p.id,name:p.name,revision_id:p.current_revision_id,request_key:crypto.randomUUID(),state:'planned'}))};
  await writeFile(out,JSON.stringify(plan,null,2)+'\n',{flag:'wx',mode:0o600});return {...plan,file:out,count:plan.items.length,note:'仅固定搜索命中范围，未派发；不同筛选条件同时满足。'};
 }
@@ -36,9 +37,9 @@ export async function runLibraryBatch(api:ApiClient,file:string,signal?:AbortSig
   if(['submitted','skipped'].includes(row.state))continue;
   // 未知写入只按原request_key恢复；复用已保存body，不在恢复时改输入。
   if(row.state!=='unknown'){
-   const pkg=await get(`/api/material-library/packages/${row.package_id}`);
+   const [pkg,revisions]=await Promise.all([get(`/api/material-library/packages/${row.package_id}`),get(`/api/material-library/packages/${row.package_id}/revisions`)]);
    if(pkg.current_revision_id!==row.revision_id){row.state='skipped';row.reason='当前revision ID已变化';await save();continue;}
-   const rev=items(await get(`/api/material-library/packages/${row.package_id}/revisions`)).find(r=>r.id===row.revision_id);
+   const rev=items(revisions).find(r=>r.id===row.revision_id);
    const skip=async(reason:string)=>{row.state='skipped';row.reason=reason;await save();};
    if(!rev){await skip('版本不存在');continue;}
    if(rev.jobs.some((j:any)=>['running','queued'].includes(j.status))){await skip('已有活动任务');continue;}
@@ -51,7 +52,7 @@ export async function runLibraryBatch(api:ApiClient,file:string,signal?:AbortSig
    row.body={request_key:row.request_key,...(plan.project_id?{project_id:plan.project_id}:{})};
    if(plan.kind==='prepare'){
     if(mode!=='original'&&!red){await skip('尚无可用脱敏结果');continue;}
-    const q=new URLSearchParams({revision_id:rev.id,redaction_id:mode==='original'?'':red.id,...(plan.project_id?{project_id:plan.project_id}:{})});const prepared=await get(`/api/material-library/packages/${row.package_id}/preparations?${q}`);
+    const q=new URLSearchParams({revision_id:rev.id,redaction_id:mode==='original'?'':red.id,summary_only:'true',page_size:'1',...(plan.project_id?{project_id:plan.project_id}:{})});const prepared=await get(`/api/material-library/packages/${row.package_id}/preparations?${q}`);
     if(!prepared.available||prepared.items.length){await skip(prepared.available?'已有整理成果':'整理未启用');continue;}
     Object.assign(row.body,mode==='original'?{extraction_job_id:ext.id}:{redaction_id:red.id});
    }else Object.assign(row.body,{kind:plan.kind,execution_target:'local',...(plan.kind==='redact'?{extraction_job_id:ext.id,template_id:'aliases'}:{})});

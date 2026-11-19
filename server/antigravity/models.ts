@@ -12,6 +12,8 @@ export const AGY_DRIVER_ID='agy';
 export const AGY_MODEL_PREFIX='agy:';
 
 const TIERED_FAMILIES:Record<string,readonly string[]>={
+ 'gemini-4-hydrogen':['low','medium','high','xhigh'],
+ 'gemini-4-neon':['low','medium','high','xhigh'],
  'gemini-4-carbon':['low','medium','high'],
  'gemini-4-argon':['low','medium','high'],
  'gemini-3.8-flash':['low','medium','high'],
@@ -20,6 +22,8 @@ const TIERED_FAMILIES:Record<string,readonly string[]>={
 };
 
 const DEFAULT_AGY_MODELS:AdvertisedModel[]=[
+ {slug:'agy:gemini-4-hydrogen',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'},{effort:'xhigh'}]},
+ {slug:'agy:gemini-4-neon',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'},{effort:'xhigh'}]},
  {slug:'agy:gemini-4-carbon',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]},
  {slug:'agy:gemini-4-argon',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]},
  {slug:'agy:gemini-3.8-flash',supported_reasoning_levels:[{effort:'low'},{effort:'medium'},{effort:'high'}]},
@@ -31,7 +35,7 @@ const DEFAULT_AGY_MODELS:AdvertisedModel[]=[
 ];
 
 const NATIVE_AGY_PATTERNS=[
- /^gemini-(?:4-carbon|4-argon|3\.8-flash)(?:-(?:low|medium|high))?$/i,
+ /^gemini-(?:4-carbon|4-argon|4-hydrogen|4-neon|3\.8-flash)(?:-(?:low|medium|high|xhigh))?$/i,
  /^claude-(?:sonnet-5-5|opus-5-5)(?:-(?:low|medium|high))?$/i,
  /^claude-(?:sonnet-4-6|opus-4-6-thinking)$/i,
  /^gpt-oss-120b(?:-medium)?$/i,
@@ -67,10 +71,10 @@ export function resolveAgyModelAndEffort(model:string,effort:string):{model:stri
  if(!raw)throw new Error('Antigravity模型名称不能为空');
  const familyTiers=TIERED_FAMILIES[raw.toLowerCase()];
  if(familyTiers){
-  const tierSuffix=normalizedEffort==='low'?'low':normalizedEffort==='medium'?'medium':'high';
+  const tierSuffix=normalizedEffort==='low'?'low':normalizedEffort==='medium'?'medium':(normalizedEffort==='xhigh'&&familyTiers.includes('xhigh'))?'xhigh':'high';
   return{model:`${raw.toLowerCase()}-${tierSuffix}`,effort:normalizedEffort};
  }
- const tierMatch=raw.match(/^((?:gemini-(?:4-carbon|4-argon|3\.8-flash)|claude-(?:sonnet-5-5|opus-5-5)))-(low|medium|high)$/i);
+ const tierMatch=raw.match(/^((?:gemini-(?:4-carbon|4-argon|4-hydrogen|4-neon|3\.8-flash)|claude-(?:sonnet-5-5|opus-5-5)))-(low|medium|high|xhigh)$/i);
  if(tierMatch){
   return{model:`${tierMatch[1]!.toLowerCase()}-${tierMatch[2]!.toLowerCase()}`,effort:normalizedEffort};
  }

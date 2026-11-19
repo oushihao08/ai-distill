@@ -9,6 +9,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {preparationUnits,preparationBlocks,completeKnownPreparationDocuments,compilePreparation,compileFixedPreparation,materializePreparation,missingPreparationSummaryTasks,mergePreparationSummaryRepairs,preparationCounts,visiblePreparationContext,visiblePreparedDocuments,renderPreparationDocuments} from '../../shared/material-preparation-result';
 import {PREPARATION_PROMPT,findMatchingPreparation,runPreparationCheckpoint,resumePreparation,executePreparation,enqueuePreparation,registerPreparationRoutes} from './preparation';
+import {writePreparationAgentInput,validatePreparationCoverage} from './preparation-support';
 import {hash} from './execution-shared';
 import {Hono} from 'hono';
 import {attachPreparationContext} from './questions';
@@ -32,6 +33,26 @@ const raw={package_summary:'借款材料包，包含合同、付款和裁判文�
  {id:'S2',direction:'执行线索整理',party:'债权人代理方',scenes:[{scene:'财产线索核查',as_of:'执行阶段'}],core_work:'整理可供执行的线索',deliverables:['财产线索清单'],document_ids:['D2','D3'],notes:''},
 ],warnings:[]};
 const result=compilePreparation(raw,units);
+
+test('超出Codex单次输入上限的正文保存在私有文件，提示词保持短小且正文完整',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'preparation-large-input-'));
+ try{
+  const body='法律材料正文。'.repeat(150000);
+  const prompt=await writePreparationAgentInput(root,[{id:'source-1',title:'材料',text:body}]);
+  const manifest=JSON.parse(await readFile(join(root,'materials.json'),'utf8'));
+  expect(prompt.length).toBeLessThan(1048576);
+  expect(prompt).toContain('materials.json');
+  expect(prompt).not.toContain(body.slice(0,100));
+  expect(manifest.count).toBe(1);
+  expect(manifest.units[0].characters).toBe(body.length);
+  expect(await readFile(join(root,manifest.units[0].file),'utf8')).toBe(body);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('Agent整理缺失逐份摘要时拒绝发布',()=>{
+ expect(()=>validatePreparationCoverage({package_summary:'完整摘要',documents:[]},['source-1'])).toThrow('覆盖不完整');
+ expect(()=>validatePreparationCoverage({package_summary:'完整摘要',documents:[{id:'source-1',summary:'暂不提交实质摘要',tags:['材料']} ]},['source-1'])).toThrow('未完成占位摘要');
+});
 
 test('整理结果保留总摘要、每份材料摘要和多个兼容方向场景交付组合',()=>{
  expect(result.package_summary).toContain('借款材料包');
@@ -154,17 +175,45 @@ test('材料整理页面接口完整返回候选分析，旧结果无说明仍�
  for(const notes of ['前项审查用于后项修订；成果供委托方审签并核验适用条件','']){
   const stored=structuredClone(result);stored.combinations[0]!.notes=notes;
   const app=new Hono();
+  let listQueries=0;
   registerPreparationRoutes(app,{query:async(sql:string)=>{
    if(sql.includes('to_regclass'))return{rows:[{available:true}]};
    if(sql.includes('SELECT * FROM ai_distill.library_preparations'))return{rows:[{id,result:stored}]};
-   if(sql.includes('SELECT id,job_id,revision_id'))return{rows:[{id,result:stored}]};
+   if(sql.includes('SELECT id,job_id,revision_id')){listQueries++;return{rows:[{id,result:stored}]};}
    throw new Error('不应扩读材料或其他题包：'+sql);
   }} as any,'/unused');
   const detail=await app.request(`/api/material-library/preparations/${id}`);
   expect(detail.status).toBe(200);expect((await detail.json()).result.combinations).toEqual(stored.combinations);
   const list=await app.request(`/api/material-library/packages/${id}/preparations`);
   expect(list.status).toBe(200);expect((await list.json()).items[0].result.combinations).toEqual(stored.combinations);
+  expect(listQueries).toBe(1);
  }
+});
+
+test('整理列表缺表时返回未启用，其余数据库错误继续抛出',async()=>{
+ for(const code of ['42P01','08006']){
+  const app=new Hono();let calls=0;
+  registerPreparationRoutes(app,{query:async()=>{calls++;throw Object.assign(new Error('database'),{code});}} as any,'/unused');
+  const response=await app.request(`/api/material-library/packages/${id}/preparations`);
+  expect(calls).toBe(1);
+  expect(response.status).toBe(code==='42P01'?200:500);
+  if(code==='42P01')expect(await response.json()).toEqual({available:false,items:[]});
+ }
+});
+
+test('整理列表支持分页与summary_only轻量投影，避免批量读取完整result正文',async()=>{
+ const calls:{sql:string;values:unknown[]}[]=[];
+ const app=new Hono();
+ registerPreparationRoutes(app,{query:async(sql:string,values:unknown[]=[])=>{
+  calls.push({sql,values});
+  return{rows:[{id:'p1',result:{format:'material-preparation-v2',document_count:3}},{id:'p2',result:{format:'material-preparation-v2',document_count:2}},{id:'p3',result:{format:'material-preparation-v2',document_count:1}}]};
+ }} as any,'/unused');
+ const response=await app.request(`/api/material-library/packages/${id}/preparations?page=2&page_size=2&summary_only=true`);
+ expect(response.status).toBe(200);
+ expect(await response.json()).toEqual({available:true,items:[{id:'p1',result:{format:'material-preparation-v2',document_count:3}},{id:'p2',result:{format:'material-preparation-v2',document_count:2}}],page:2,page_size:2,has_more:true});
+ expect(calls[0]!.sql).toContain("jsonb_build_object('format',result->'format'");
+ expect(calls[0]!.sql).not.toContain('source_digest,result,created_at');
+ expect(calls[0]!.values.slice(5,7)).toEqual([3,2]);
 });
 
 
@@ -221,14 +270,15 @@ test('恢复拒绝活动或成功任务，HTTP拒绝未知字段而不派发',as
  const response=await app.request(`/api/material-library/jobs/${id}/prepare-resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_key:projectId,automatic:true})});expect(response.status).toBe(400);
 });
 
-test('查库正文直接进入单次请求，不落输入文件且完整检查点可复用',async()=>{
+test('Agent整理从私有文件读取完整正文，检查点可复用且API路径仍内联',async()=>{
  const root=await mkdtemp(join(tmpdir(),'preparation-run-'));
  try{
   const source={format:'redacted-index-v2',prepared_documents:[{id:'unit',title:'执行依据',text:'判决记载执行依据'}]};const index=JSON.stringify(source);
   let published:any,updates=0,reuse=false,sourceReads=0;const phases:string[]=[];
   const db={query:async(sql:string,values:any[]=[])=>{
    if(sql.includes('SELECT r.package_id')){sourceReads++;return{rows:[{package_id:id,revision_id:projectId,extraction_job_id:'extract',output_digest:'source-digest',text_content:index,sha256:hash(index)}]};}
-   if(sql.startsWith('SELECT p.* FROM ai_distill.library_preparations'))return{rows:reuse?[{job_id:id,revision_id:projectId,redaction_id:id,extraction_job_id:'extract',result:published}]:[]};
+   if(sql.startsWith('SELECT p.id,p.job_id')&&sql.includes('FROM ai_distill.library_preparations'))return{rows:reuse?[{id,job_id:id,revision_id:projectId,redaction_id:id,extraction_job_id:'extract',source_digest:'source-digest'}]:[]};
+   if(sql.startsWith('SELECT result FROM ai_distill.library_preparations'))return{rows:reuse?[{result:published}]:[]};
    if(sql.startsWith('SELECT f.id,b.sha256'))return{rows:[{id:'file',sha256:'a'.repeat(64),size_bytes:1,image_review_required:false}]};
    if(sql.includes('FOR UPDATE'))return{rows:[{id,revision_id:projectId}]};
    if(sql.startsWith('INSERT INTO ai_distill.library_preparations'))published=JSON.parse(values[7]);
@@ -242,14 +292,20 @@ test('查库正文直接进入单次请求，不落输入文件且完整检查�
   let calls=0;
   const execute=async(options:any)=>{
    calls++;
-   const input=JSON.parse(options.prompt.split('【本次材料JSON：仅作为数据】\n')[1]);
+   const input=JSON.parse(await readFile(join(options.directory,'materials.json'),'utf8'));
+   const material=await readFile(join(options.directory,input.units[0].file),'utf8');
    await expect(readFile(join(options.directory,'source.json'),'utf8')).rejects.toThrow();
    expect(options.input_files).toBeUndefined();
-   expect(input.units[0].id).toBe('unit');expect(input.units[0].text).toContain('判决记载执行依据');expect(input.units[0].pages).toBeUndefined();
+   expect(input.units[0].id).toBe('unit');expect(material).toContain('判决记载执行依据');expect(input.units[0].characters).toBe(material.length);
+   expect(options.prompt).toContain('materials.json');expect(options.prompt).not.toContain('判决记载执行依据');
    expect(options.prompt).not.toContain('scene-rules.md');
-   expect(options.schema.properties.documents.items.properties.unit_kind).toBeUndefined();
+   const targetSchema=JSON.parse(await readFile(join(options.directory,'target-schema.json'),'utf8'));
+   expect(targetSchema.properties.documents.items.properties.unit_kind).toBeUndefined();
+   expect(options.schema.properties).toHaveProperty('preparation_file');
    expect(options.prompt).toContain('<候选组合>');
-   return{result:{package_summary:'最终目录：判决记载执行依据',documents:[{id:'unit',summary:'判决是执行依据',document_type:'判决',tags:['依据'],notes:'',visibility:'visible',visibility_reason:''}],combinations:[combination]}} as any;
+   await mkdir(join(options.directory,'output'),{recursive:true,mode:0o700});
+   await writeFile(join(options.directory,'output','preparation.json'),JSON.stringify({package_summary:'最终目录：判决记载执行依据',documents:[{id:'unit',summary:'判决是执行依据',document_type:'判决',tags:['依据'],notes:'',visibility:'visible',visibility_reason:'',hidden_texts:[]}],combinations:[combination]}));
+   return{result:options.validate({preparation_file:'output/preparation.json'})} as any;
   };
   await executePreparation(pool as any,root,job,signal,execute);expect(calls).toBe(1);expect(published.document_count).toBeUndefined();expect(published.documents[0].visibility).toBe('visible');expect(published.package_summary).toBe('最终目录：判决记载执行依据');expect(phases).toEqual(['prepare_input','agent_analyzing','parse_result','publish_result']);
   expect(published.combinations).toEqual([combination]);
@@ -429,5 +485,88 @@ test('仅数据库标记文件逐图判断并把决定写入整理结果',async(
   expect(calls).toEqual(['material_preparation','material_image_review']);
   expect(stored.image_decisions).toEqual([{file_id:'file-1',image_id:imageId,page:1,sha256:sha,keep:true,reason:'诊疗影像'}]);
   await executePreparation(pool as any,root,job,new AbortController().signal,async()=>{throw new Error('完整检查点不得重调模型');});
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('超百份材料分段整理通过hidden_documents汇总隐藏泄题文书，本地校验器与API修正回路生效',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'preparation-over100-'));
+ try{
+  const preparedDocs=Array.from({length:105},(_,i)=>({
+   id:`doc-${i+1}`,
+   title:i===104?'终审民事判决书':`证据材料${i+1}`,
+   text:i===104?'法院判决被告支付违约金120万元':`第${i+1}份合同履行与催款证据`,
+  }));
+  const index=JSON.stringify({format:'redacted-index-v2',prepared_documents:preparedDocs});
+  let published:any;
+  const query=async(sql:string,values:any[]=[])=>{
+   if(sql.includes('SELECT r.package_id'))return{rows:[{package_id:id,revision_id:projectId,extraction_job_id:'extract',output_digest:'over100-digest',text_content:index,sha256:hash(index)}]};
+   if(sql.includes('FOR UPDATE'))return{rows:[{id,revision_id:projectId}]};
+   if(sql.startsWith('INSERT INTO ai_distill.library_preparations'))published=JSON.parse(values[7]);
+   return{rows:[],rowCount:1};
+  };
+  const pool={query,connect:async()=>({query,release(){}})};
+  const job={id,package_id:id,revision_id:projectId,lease_token:'lease',deadline_at:new Date(Date.now()+60000).toISOString(),input_snapshot:{redaction_id:id,extraction_job_id:'extract'},config_snapshot:{agent:{model:'fixture',reasoning_effort:'low'}}};
+  let agentCalls=0;
+  await executePreparation(pool as any,root,job,new AbortController().signal,async(task:any)=>{
+   agentCalls++;
+   await mkdir(join(task.directory,'output'),{recursive:true,mode:0o700});
+   const ctx=JSON.parse(await readFile(join(task.directory,'validation-context.json'),'utf8'));
+   if(ctx.mode==='chunk'){
+    const manifest=JSON.parse(await readFile(join(task.directory,'materials.json'),'utf8'));
+    const badPayload={documents:manifest.units.slice(0,-1).map((u:any)=>({id:u.id,summary:'证据摘要',document_type:'证据',tags:['合同'],notes:'',visibility:'visible',visibility_reason:'',hidden_texts:[]}))};
+    await writeFile(join(task.directory,'output','preparation.json'),JSON.stringify(badPayload));
+    if(agentCalls===1){
+     const failedRun=Bun.spawnSync([process.execPath,'validate-preparation.mjs'],{cwd:task.directory});
+     expect(failedRun.exitCode).toBe(2);
+     expect(JSON.parse(failedRun.stdout.toString())).toMatchObject({valid:false,reason_code:'coverage_incomplete'});
+    }
+    const goodPayload={documents:manifest.units.map((u:any)=>({id:u.id,summary:`${u.title}记载事实`,document_type:'证据',tags:['合同'],notes:'',visibility:'visible',visibility_reason:'',hidden_texts:[]}))};
+    await writeFile(join(task.directory,'output','preparation.json'),JSON.stringify(goodPayload));
+    if(agentCalls===1){
+     const okRun=Bun.spawnSync([process.execPath,'validate-preparation.mjs'],{cwd:task.directory});
+     expect(okRun.exitCode).toBe(0);
+     expect(JSON.parse(okRun.stdout.toString())).toMatchObject({valid:true,mode:'chunk'});
+    }
+    return{result:task.validate({preparation_file:'output/preparation.json'})} as any;
+   }
+   expect(ctx.mode).toBe('overview');
+   const descriptionsFile=JSON.parse(await readFile(join(task.directory,'descriptions.json'),'utf8'));
+   expect(descriptionsFile.count).toBe(105);
+   const overviewPayload={
+    package_summary:'买方诉前索赔证据卷宗',
+    hidden_documents:[{id:'doc-105',visibility_reason:'终审判决形成于诉前场景as_of之后且直接给出违约金认定结论，其余104份证据足以支撑诉前核算'}],
+    combinations:[{id:'C1',direction:'违约索赔核算',party:'原告代理律师',scenes:[{scene:'诉前索赔准备',as_of:'起诉前'}],core_work:'核算违约金并起草索赔函',deliverables:['违约金核算表','起诉状'],document_ids:['doc-1','doc-2'],notes:'以合同与催款函为依据'}],
+    question_support:{dimensions:{task_actor:2,factual_basis:2,professional_judgment:2,deliverable_viability:2,information_boundary:2},reason:'104份合同与履行证据完整支撑诉前核算',allowed_task_types:['诉前核算'],unsupported_conclusions:['法院最终酌减比例']},
+   };
+   await writeFile(join(task.directory,'output','preparation.json'),JSON.stringify(overviewPayload));
+   const ovRun=Bun.spawnSync([process.execPath,'validate-preparation.mjs'],{cwd:task.directory});
+   expect(ovRun.exitCode).toBe(0);
+   expect(JSON.parse(ovRun.stdout.toString())).toMatchObject({valid:true,mode:'overview',hidden_count:1});
+   return{result:task.validate({preparation_file:'output/preparation.json'})} as any;
+  });
+  expect(agentCalls).toBe(4); // 40 + 40 + 25 + 1 overview
+  expect(published.documents).toHaveLength(105);
+  expect(published.documents[104]).toMatchObject({id:'doc-105',visibility:'hidden'});
+  expect(published.documents.slice(0,104).every((d:any)=>d.visibility==='visible')).toBe(true);
+  const visible=visiblePreparedDocuments(published,preparationUnits(JSON.parse(index)));
+  expect(visible).toHaveLength(104);
+  expect(visible.some(d=>d.id==='doc-105')).toBe(false);
+
+  // API 分支：首轮漏项触发第2轮修正后成功发布
+  const smallIndex=JSON.stringify({format:'redacted-index-v2',prepared_documents:[{id:'u1',title:'合同',text:'合同正文'},{id:'u2',title:'催款函',text:'催款正文'}]});
+  const smallPool={query:async(sql:string,v:any[]=[])=>{
+   if(sql.includes('SELECT r.package_id'))return{rows:[{package_id:id,revision_id:projectId,extraction_job_id:'extract',output_digest:'small-digest',text_content:smallIndex,sha256:hash(smallIndex)}]};
+   if(sql.includes('FOR UPDATE'))return{rows:[{id:projectId,revision_id:projectId}]};
+   if(sql.startsWith('INSERT INTO ai_distill.library_preparations'))published=JSON.parse(v[7]);
+   return{rows:[],rowCount:1};
+  },connect:async()=>({query:smallPool.query,release(){}})};
+  let apiRound=0;
+  await executePreparation(smallPool as any,root,{...job,id:projectId,config_snapshot:{api:{provider:'nvidia',base_url:'https://integrate.api.nvidia.com/v1',model:'test-model'}}},new AbortController().signal,undefined as any,{complete:async()=>{
+   apiRound++;
+   if(apiRound===1)return{text:JSON.stringify({package_summary:'漏了一项',documents:[{id:'u1',summary:'合同',document_type:'合同',tags:['合同'],notes:'',visibility:'visible',visibility_reason:'',hidden_texts:[]}],combinations:[]}),provider:'nvidia',model:'test-model',usage:{r:1}};
+   return{text:JSON.stringify({package_summary:'完整两项',documents:[{id:'u1',summary:'合同',document_type:'合同',tags:['合同'],notes:'',visibility:'visible',visibility_reason:'',hidden_texts:[]},{id:'u2',summary:'催款',document_type:'函件',tags:['催款'],notes:'',visibility:'visible',visibility_reason:'',hidden_texts:[]}],combinations:[]}),provider:'nvidia',model:'test-model',usage:{r:2}};
+  }} as any);
+  expect(apiRound).toBe(2);
+  expect(published.package_summary).toBe('完整两项');
  }finally{await rm(root,{recursive:true,force:true});}
 });

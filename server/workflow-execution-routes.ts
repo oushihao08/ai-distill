@@ -6,7 +6,7 @@
 import {Hono,type Context} from 'hono';
 import {HTTPException} from 'hono/http-exception';
 import type {Pool} from 'pg';
-import {STEP_REGISTRY} from '../shared/step-registry';
+import {STEP_REGISTRY,isStepSealed,isEvaluationPipelineSealed} from '../shared/step-registry';
 import {logEvent} from './logging';
 import {readBatchChunkSize,readProjectWorkflowStepRows,splitIntoBatches,workflowStepReadiness,type WorkflowStepState} from './project-folders';
 import {cancelStoppedExecutorAttempt,cancelWaitingScore,waitDuration,waitForAttempt} from './attempts';
@@ -90,6 +90,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
   },
  } satisfies WorkflowExecutionRepository;
  async function executeStep(c:Context,ordinal:WorkflowStepOrdinal){
+  if(isStepSealed(ordinal))throw new HTTPException(409,{message:'作答、评分与达标判断步骤已暂时封存，出题后可直接进入交付'});
   const waitMs=waitDuration(c.req.query('wait_ms'));
   const id=uuid(c.req.param('id')??'');
   let context:DispatchContext|undefined;
@@ -137,6 +138,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
  app.post('/api/workflows/:id/accept',c=>executeStep(c,7));
  app.post('/api/workflows/:id/publish',c=>executeStep(c,8));
  app.post('/api/workflows/:id/answers/:attemptId/validate-score',async c=>{
+  if(isEvaluationPipelineSealed())throw new HTTPException(409,{message:'作答、评分与达标判断步骤已暂时封存'});
   const report=await c.req.json().catch(()=>{throw new HTTPException(400,{message:'评分结果须为有效JSON'});});
   const result=await validateAnswerScore(pool,uuid(c.req.param('id')),uuid(c.req.param('attemptId')),report);
   return c.json(result);
@@ -196,7 +198,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
     if(!row||row.project_id!==projectId)return{workflow_id:workflowId,status:'not_found' as const};
     const states=statesByWorkflow.get(workflowId)??new Map<number,WorkflowStepState>(),acceptance=states.get(7);
     if([4,5,6,7,8].includes(ordinal)&&states.get(8)?.status==='succeeded')return{workflow_id:workflowId,status:'already_archived' as const,reason:'当前题目已归档，已跳过'};
-    if([4,5,6].includes(ordinal)&&acceptance?.status==='succeeded'&&acceptance.result?.decision==='accepted')return{workflow_id:workflowId,status:'already_accepted' as const,reason:'当前题目已达标，已跳过'};
+    if(!isEvaluationPipelineSealed()&&[4,5,6].includes(ordinal)&&acceptance?.status==='succeeded'&&acceptance.result?.decision==='accepted')return{workflow_id:workflowId,status:'already_accepted' as const,reason:'当前题目已达标，已跳过'};
     const eligibility=workflowStepReadiness(ordinal,states);
     if(!eligibility.ready)return{workflow_id:workflowId,status:'not_ready' as const,reason:eligibility.reason};
     try{

@@ -1,4 +1,4 @@
-/** Bun CLI 入口：解析调用结果、输出稳定 JSON 信封及退出码；由 bun run ai-distill 或直接运行本文件调用。 */
+/** 职责：CLI 进程入口，统一 JSON 信封、退出码与中断信号处理；不直连数据库或运行模型。 */
 import {CliError} from './client';
 import {runCommand} from './commands';
 import {runRemoteMaterialCommand} from './remote-materials';
@@ -10,12 +10,13 @@ if(import.meta.main) {
   process.once('SIGINT',interrupt);process.once('SIGTERM',interrupt);
   try {
     const args=process.argv.slice(2);
-    const result=args[0]==='remote'&&args[1]==='answer'?await runRemoteAnswerCommand(args,controller.signal):args[0]==='remote'?await runRemoteMaterialCommand(args,controller.signal):await runCommand(args,undefined,controller.signal);
+    const isRemote=args[0]==='remote'&&!args.includes('--help');
+    const result=isRemote&&args[1]==='answer'?await runRemoteAnswerCommand(args,controller.signal):isRemote?await runRemoteMaterialCommand(args,controller.signal):await runCommand(args,undefined,controller.signal);
     const cliResult=result as {help?:string;data?:unknown;outcome?:string};
     if(cliResult.help&&!process.argv.includes('--json'))process.stdout.write(cliResult.help);
     else {
       const apiPassthrough=args[0]==='library'&&args[1]==='job'&&args[2]==='start';
-      const output=apiPassthrough?cliResult.data:result;
+      const output=apiPassthrough&&cliResult.data&&typeof cliResult.data==='object'?{outcome:cliResult.outcome??'complete',data:cliResult.data,...(cliResult.data as Record<string,unknown>)}:result;
       process.stdout.write(`${JSON.stringify(output,null,2)}\n`);
     }
     process.exitCode=controller.signal.aborted?130:cliResult.outcome==='partial'?2:cliResult.outcome==='waiting'?3:0;

@@ -15,6 +15,7 @@ import {classifyLogError,logEvent,withLogContext} from '../logging';
 import {verifyFrozenProjectPrompt} from '../rule-files';
 import {readQuestionMaterials} from '../question-materials';
 import {canonicalJson} from '../../shared/workflow-config';
+import {isEvaluationPipelineSealed} from '../../shared/step-registry';
 
 const object=(value:unknown):Record<string,any>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,any>:undefined;
 const text=(value:unknown)=>typeof value==='string'?value:'';
@@ -30,7 +31,7 @@ export async function verifyProjectAuthoringRules(pool:Pool|PoolClient,projectId
  if(!workflowIds.length)return;
  const project=(await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL FOR SHARE',[projectId])).rows[0];
  if(!project)throw new HTTPException(409,{message:'项目不存在或已删除，不能导出当前成果'});
- const attempts=(await pool.query("SELECT DISTINCT ON (workflow_id) workflow_id,id,status,input FROM ai_distill.step_attempts WHERE workflow_id=ANY($1::uuid[]) AND ordinal=4 ORDER BY workflow_id,attempt DESC",[workflowIds])).rows;
+ const attempts=(await pool.query("SELECT DISTINCT ON (workflow_id) workflow_id,id,status,CASE WHEN input ? 'project_prompt' THEN jsonb_build_object('project_prompt',input->'project_prompt') ELSE '{}'::jsonb END AS input FROM ai_distill.step_attempts WHERE workflow_id=ANY($1::uuid[]) AND ordinal=4 ORDER BY workflow_id,attempt DESC",[workflowIds])).rows;
  const byWorkflow=new Map(attempts.map((row:any)=>[String(row.workflow_id),row]));
  for(const workflowId of workflowIds){
   const attempt=byWorkflow.get(workflowId);
@@ -49,11 +50,12 @@ function attachmentAddress(storageRoot:string|undefined,storagePath:string){
 export async function collectProjectResults(pool:Pool|PoolClient,projectId:string,batch?:string,attachmentRoot=fileURLToPath(new URL('../../assets/out/',import.meta.url)),workflowId?:string){
  const project=(await pool.query('SELECT id,name,material_root,local_skill_path FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[projectId])).rows[0];
  if(!project)throw new Error('project_not_found');
- const workflows=await pool.query("SELECT w.id,w.source_key,w.title,s.status AS acceptance_status FROM ai_distill.workflows w LEFT JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=7 WHERE w.project_id=$1 AND w.deleted_at IS NULL AND ($2::text IS NULL OR w.source_key=$2) AND ($3::uuid IS NULL OR w.id=$3) ORDER BY w.source_key,w.id",[projectId,batch??null,workflowId??null]);
+ const workflows=await pool.query("SELECT w.id,w.source_key,w.title,s4.status AS authoring_status,s.status AS acceptance_status FROM ai_distill.workflows w LEFT JOIN ai_distill.steps s4 ON s4.workflow_id=w.id AND s4.ordinal=4 LEFT JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=7 WHERE w.project_id=$1 AND w.deleted_at IS NULL AND ($2::text IS NULL OR w.source_key=$2) AND ($3::uuid IS NULL OR w.id=$3) ORDER BY w.source_key,w.id",[projectId,batch??null,workflowId??null]);
  const ids=workflows.rows.map((row:any)=>row.id);
  if(!ids.length)return {records:[] as ResultExportRecord[]};
 
- const attempts=await pool.query("SELECT id,workflow_id,ordinal,attempt,status,input,input->>'redaction_attempt_id' AS redaction_attempt_id,result FROM ai_distill.step_attempts WHERE workflow_id=ANY($1::uuid[]) AND ordinal IN (4,7) ORDER BY workflow_id,ordinal,attempt",[ids]);
+ const sealed=isEvaluationPipelineSealed();
+ const attempts=await pool.query("SELECT DISTINCT ON (workflow_id,ordinal) id,workflow_id,ordinal,attempt,status,jsonb_build_object('material_origin',input->'material_origin','redaction_attempt_id',input->'redaction_attempt_id') AS input,input->>'redaction_attempt_id' AS redaction_attempt_id,result FROM ai_distill.step_attempts WHERE workflow_id=ANY($1::uuid[]) AND ordinal IN (4,7) ORDER BY workflow_id,ordinal,attempt DESC",[ids]);
  const byWorkflow=new Map<string,any[]>();
  for(const row of attempts.rows){const values=byWorkflow.get(row.workflow_id)??[];values.push(row);byWorkflow.set(row.workflow_id,values);}
 
@@ -64,8 +66,9 @@ export async function collectProjectResults(pool:Pool|PoolClient,projectId:strin
   const questionAttempt=latest(4),question=object(questionAttempt?.result)??{},acceptance=latest(7),decision=object(acceptance?.result)??{};
   const aggregate=object(decision.aggregate);
   if(questionAttempt?.id)questionAttemptByWorkflow.set(workflow.id,questionAttempt);
+  const authoredReady=questionAttempt?.status==='succeeded'&&(workflow.authoring_status===undefined||workflow.authoring_status==='succeeded')&&typeof question.question_version==='string'&&typeof question.rubric_version==='string'&&Array.isArray(question.rubric)&&question.rubric.length>0;
   return {
-   workflow_id:String(workflow.id),title:text(workflow.title),accepted:workflow.acceptance_status==='succeeded'&&questionAttempt?.status==='succeeded'&&acceptance?.status==='succeeded'&&decision.decision==='accepted',
+   workflow_id:String(workflow.id),title:text(workflow.title),accepted:sealed?authoredReady:(workflow.acceptance_status==='succeeded'&&questionAttempt?.status==='succeeded'&&acceptance?.status==='succeeded'&&decision.decision==='accepted'),
    ...(aggregate?.mode==='mean_at_most'&&typeof aggregate.model_count==='number'&&typeof aggregate.mean_percentage==='number'&&typeof aggregate.threshold==='number'?{acceptance_aggregate:{mode:'mean_at_most' as const,model_count:aggregate.model_count,mean_percentage:aggregate.mean_percentage,threshold:aggregate.threshold}}:{}),
    task_name:text(question.task_name),task_type:text(question.task_type),question:text(question.question),input_attachments:[],
    model_scores:Object.entries(object(decision.model_scores)??{}).map(([modelId,value])=>{

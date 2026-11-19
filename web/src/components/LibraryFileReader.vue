@@ -3,10 +3,11 @@ props.file/revision固定文件与文件集合，v-model:mode由父级控制、r
 <script setup lang="ts">
 import {api} from '../api/client';
 import {dateLabel} from '../utils/format';
+import type {MaterialProcessingMode} from '@shared/material-library';
 import type {LibraryFile,LibraryRevision} from '../types/material-library';
-type Mode='source'|'redacted'|'compare';
-const props=defineProps<{file:LibraryFile;revision:LibraryRevision;mode:Mode;redactionId:string}>();
-const emit=defineEmits<{ 'update:mode':[value:Mode] }>();
+type Mode='source'|'redacted'|'compare'|'prepare';
+const props=defineProps<{file:LibraryFile;revision:LibraryRevision;mode:Mode;redactionId:string;projectId?:string;processingMode?:MaterialProcessingMode}>();
+const emit=defineEmits<{ 'update:mode':[value:Mode]; refresh:[] }>();
 const mode=computed({get:()=>props.mode,set:(value:Mode)=>emit('update:mode',value)});
 interface Page {page:number;text:string}
 const extractionId=shallowRef('');
@@ -19,13 +20,13 @@ const effectiveExtraction=computed(()=>mode.value==='compare'?selectedRedaction.
 const extractionItems=computed(()=>extractions.value.map((item,index)=>({title:`识别版本 ${extractions.value.length-index} · ${dateLabel(item.created_at)}`,value:item.id})));
 const extractionSelection=computed({get:()=>selectedExtraction.value??'',set:(id:string)=>{extractionId.value=id;}});
 const comparePages=computed(()=>source.value.map(page=>({source:page,redacted:redacted.value.find(item=>item.page===page.page)})));
-const emptyMessage=computed(()=>mode.value==='source'?(effectiveExtraction.value?'':'此文件尚未识别原文，请先执行“识别原文”。'):!selectedRedaction.value?'此文件尚无成功的脱敏版本，请先完成脱敏。':'');
+const emptyMessage=computed(()=>mode.value==='prepare'?'':mode.value==='source'?(effectiveExtraction.value?'':'此文件尚未识别原文，请先执行“识别原文”。'):!selectedRedaction.value?'此文件尚无成功的脱敏版本，请先完成脱敏。':'');
 let controller:AbortController|undefined;
 async function load(){
  controller?.abort();const current=new AbortController();controller=current;
  busy.value=true;error.value='';source.value=[];redacted.value=[];
  try{
-  if(emptyMessage.value)return;
+  if(mode.value==='prepare'||emptyMessage.value)return;
   const needsSource=mode.value==='source'||mode.value==='compare',needsRedacted=mode.value==='redacted'||mode.value==='compare';
   const [originalResult,redactedResult]=await Promise.all([
    needsSource?api<{items:{pages:Page[]}[]}>(`/material-library/revisions/${props.revision.id}/documents?extraction_job_id=${effectiveExtraction.value}&file_id=${props.file.id}`,{signal:current.signal}):Promise.resolve(undefined),
@@ -42,13 +43,14 @@ watch(()=>[props.file.id,props.revision.id,mode.value,selectedRedaction.value?.i
 onUnmounted(()=>{controller?.abort();});
 </script>
 <template><Column :gap="0" class="min-w-0">
- <Row x="between" wrap y="center" :gap="8" class="border-b border-line px-8"><v-tabs v-model="mode" color="primary" aria-label="文件查看方式" class="min-w-0 flex-1"><v-tab value="source">识别原文</v-tab><v-tab value="redacted">脱敏文本</v-tab><v-tab value="compare">原文与脱敏对照</v-tab></v-tabs><a :href="`/api/material-library/files/${file.id}/content`" class="link-text text-sm shrink-0 px-8 py-4">下载原文件</a></Row>
+ <Row x="between" wrap y="center" :gap="8" class="border-b border-line px-8"><v-tabs v-model="mode" color="primary" aria-label="文件查看方式" class="min-w-0 flex-1"><v-tab value="source">识别原文</v-tab><v-tab value="redacted">脱敏文本</v-tab><v-tab value="compare">原文与脱敏对照</v-tab><v-tab value="prepare">材料整理</v-tab></v-tabs><a :href="`/api/material-library/files/${file.id}/content`" class="link-text text-sm shrink-0 px-8 py-4">下载原文件</a></Row>
  <Row v-if="mode==='source'&&extractions.length" wrap y="center" :gap="12" class="px-16 py-8 border-b border-line">
   <v-select v-if="mode==='source'&&extractions.length" v-model="extractionSelection" :items="extractionItems" label="识别版本" hide-details class="max-w-380 w-full"/>
  </Row>
- <v-alert v-if="error" type="error" class="ma-16" role="alert">{{ error }}</v-alert>
+ <v-alert v-if="error&&mode!=='prepare'" type="error" class="ma-16" role="alert">{{ error }}</v-alert>
  <section :aria-busy="busy" aria-label="文件内容" class="min-w-0 min-h-320 bg-surface-soft">
-  <Column v-if="busy" x="center" y="center" :gap="12" class="h-full p-24"><v-progress-circular indeterminate color="primary" :size="28"/><p class="text-sm text-muted">正在读取文件内容…</p></Column>
+  <div v-if="mode==='prepare'" class="p-16 bg-surface"><LibraryPreparationPanel :package-id="revision.package_id" :revision-id="revision.id" :redaction-id="processingMode==='original'?null:selectedRedaction?.id??null" :project-id="projectId" @refresh="emit('refresh')"/></div>
+  <Column v-else-if="busy" x="center" y="center" :gap="12" class="h-full p-24"><v-progress-circular indeterminate color="primary" :size="28"/><p class="text-sm text-muted">正在读取文件内容…</p></Column>
   <Column v-else-if="!error&&emptyMessage" x="center" y="center" :gap="12" class="h-full p-24"><UiIcon name="file" class="text-muted"/><p class="text-sm text-muted text-center">{{ emptyMessage }}</p></Column>
   <Column v-else-if="mode==='compare'&&!error" :gap="16" class="p-12"><Row stack-on-mobile :gap="16" y="start"><strong class="text-sm flex-1">识别原文</strong><strong class="text-sm flex-1 text-success">脱敏文本</strong></Row><Row v-for="page in comparePages" :key="page.source.page" stack-on-mobile :gap="16" y="stretch"><article v-for="(side,index) in [page.source,page.redacted]" :key="index" class="min-w-0 flex-1 w-full bg-surface border border-line rounded-md p-12"><p class="text-xs text-muted mb-12">{{ index===0?'原文':'脱敏' }} · 第 {{ side?.page }} 页</p><pre class="text-sm leading-relaxed whitespace-pre-wrap break-words">{{ side?.text||'（本页无正文）' }}</pre></article></Row></Column>
   <Column v-else-if="!error" :gap="16" class="p-12"><article v-for="page in mode==='source'?source:redacted" :key="page.page" class="bg-surface border border-line rounded-md p-12"><p class="text-xs text-muted mb-12">第 {{ page.page }} 页</p><pre class="text-sm leading-relaxed whitespace-pre-wrap break-words">{{ page.text||'（本页无正文）' }}</pre></article></Column>

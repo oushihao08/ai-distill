@@ -7,16 +7,19 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import type {Pool} from 'pg';
-import {enqueuePublication,runNextPublication} from './tasks';
+import {enqueuePublication,runNextPublication,authorOnlySourceDigest} from './tasks';
 import {projectPublicationCompletions} from '../lifecycle/publication';
 import {lifecycle} from '../lifecycle';
 import {withLocalQueueRoot,localQueue} from '../execution-queue/runtime';
 const workflow=crypto.randomUUID(),project=crypto.randomUUID();
+const sampleAuthor={id:'11111111-1111-4111-8111-111111111111',status:'succeeded',input:{materials:[]},result:{question:'题面',question_version:'qv1',rubric_version:'rv1',rubric:[{id:'r1',criterion:'判据',max_score:10}]}};
 function fixture(parentName:string|null=null){
  let job:any,step='waiting';const writes:string[]=[];
  const query=async(sql:string,values:any[]=[])=>{
   if(sql.startsWith('SELECT w.project_id'))return{rows:[{project_id:project,title:'fixture',parent_name:parentName,phase_name:'一期',source_key:'fixture'}]};
+  if(sql.startsWith('SELECT id,status,input,result')&&sql.includes('ordinal=4'))return{rows:[sampleAuthor]};
   if(sql.startsWith('SELECT id,input,result')&&sql.includes('ordinal=7'))return{rows:[{id:'accepted',input:{source_digest:'a'.repeat(64)},result:{decision:'accepted'}}]};
+  if(sql.startsWith('SELECT status')&&sql.includes('ordinal=4'))return{rows:[{status:'succeeded'}]};
   if(sql.startsWith('SELECT status,result'))return{rows:[{status:'succeeded',result:{decision:'accepted'}}]};
   if(sql.startsWith('SELECT id,input')&&sql.includes('ordinal=8'))return{rows:job&&['waiting','running'].includes(job.status)?[job]:[]};
   if(sql.startsWith('INSERT INTO ai_distill.step_attempts')){job={id:values[1],workflow_id:values[0],input:JSON.parse(values[2]),status:'waiting'};}
@@ -42,7 +45,7 @@ test('enqueue is durable and idempotent while active; project code never runs in
   const two=await withLocalQueueRoot(root,()=>enqueuePublication(f.pool,workflow,root,undefined,root));
   expect(one.id).toBe(two.id);expect(two.reused).toBe(true);
   expect(localQueue(root).get(one.id)?.route).toBe('publish');
-  expect(f.job.input.binding.source_digest).toBe('a'.repeat(64));expect(f.job.status).toBe('waiting');
+  expect(f.job.input.binding.source_digest).toBe(authorOnlySourceDigest(sampleAuthor));expect(f.job.status).toBe('waiting');
   expect(f.writes.filter(s=>s.startsWith('INSERT INTO ai_distill.step_attempts'))).toHaveLength(1);
  }finally{localQueue(root).close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;await rm(root,{recursive:true,force:true});}
 });

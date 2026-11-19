@@ -126,3 +126,37 @@ test('batch drain during metadata lookup cannot claim the newly inspected task',
   expect(work.signal.aborted).toBe(false);expect(q.get(id)?.state).toBe('queued');
  }finally{work.abort();release?.();if(running)await running;q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;await rm(root,{recursive:true,force:true});}
 },5000);
+
+test('abandon-library-job unlocks expired redact and extract revisions while protecting active jobs and atomic-import boundaries',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'queue-abandon-job-')),q=localQueue(root),before=process.env.EXECUTION_QUEUE_MODE;
+ const localRedact=randomUUID(),foreignRedact=randomUUID(),activeRedact=randomUUID();
+ try{
+  process.env.EXECUTION_QUEUE_MODE='local';
+  q.intent(localRedact,'library','agent','library:redact');q.confirm(localRedact);
+  const claimed=q.claim('agent',[localRedact])!;q.finish(localRedact,claimed.lease!,'needs_review');
+  q.intent(activeRedact,'library','agent','library:redact');q.confirm(activeRedact);q.claim('agent',[activeRedact]);
+  const settled=new Map<string,string>();
+  const client={query:async(sql:string,values:any[]=[])=>{
+   if(sql.startsWith('SELECT executor_id'))return{rows:[{executor_id:values[0]===foreignRedact?randomUUID():q.executorId,generation:0,job_kind:'library'}]};
+   if(sql.startsWith('SELECT id,status,kind')){
+    const id=values[0];
+    return{rows:[{id,status:'running',kind:'redact',package_id:'pkg',revision_id:'rev',lease_expires_at:new Date(Date.now()-600_000).toISOString(),expired_beyond_grace:true}]};
+   }
+   if(sql.startsWith("UPDATE ai_distill.library_jobs SET status='failed'")){settled.set(values[0],values[1]);return{rows:[{id:values[0]}],rowCount:1};}
+   return{rows:[],rowCount:1};
+  },release(){}};
+  const pool={connect:async()=>client,query:client.query} as unknown as Pool;
+  const app=new Hono();registerExecutionQueueRoutes(app,pool,root);
+  const post=(path:string,body:unknown)=>app.request(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  expect((await post(`/api/system/execution-queue/${localRedact}/abandon-library-import`,{acknowledge_unknown_result:true})).status).toBe(409);
+  expect((await post(`/api/system/execution-queue/${activeRedact}/abandon-library-job`,{acknowledge_unknown_result:true})).status).toBe(409);
+  expect((await post(`/api/system/execution-queue/${localRedact}/abandon-library-job`,{})).status).toBe(400);
+  const r1=await post(`/api/system/execution-queue/${localRedact}/abandon-library-job`,{acknowledge_unknown_result:true});
+  expect(r1.status).toBe(200);expect(await r1.json()).toMatchObject({id:localRedact,kind:'redact',status:'failed',reason_code:'user_abandoned_unknown'});
+  expect(q.get(localRedact)?.state).toBe('failed');
+  const r2=await post(`/api/system/execution-queue/${foreignRedact}/abandon-library-job`,{acknowledge_unknown_result:true});
+  expect(r2.status).toBe(200);expect(await r2.json()).toMatchObject({id:foreignRedact,kind:'redact',status:'failed',reason_code:'user_abandoned_expired_lease'});
+  expect(settled.get(localRedact)).toBe('user_abandoned_unknown');
+  expect(settled.get(foreignRedact)).toBe('user_abandoned_expired_lease');
+ }finally{q.close();if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;await rm(root,{recursive:true,force:true});}
+});

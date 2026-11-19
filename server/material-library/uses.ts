@@ -101,17 +101,25 @@ export async function assertMaterialUse(db:PoolClient,phaseId:string,packageId:s
  return use;
 }
 
-export async function readPhaseMaterialUses(pool:Pool,phaseId:string){
+export async function readPhaseMaterialUses(pool:Pool,phaseId:string,options:{page?:number;page_size?:number}={}){
+ const paged=options.page!==undefined||options.page_size!==undefined;
+ const page=options.page??1,pageSize=options.page_size??100;
+ if(paged&&(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>500||!Number.isSafeInteger((page-1)*pageSize)))throw new HTTPException(400,{message:'材料使用记录分页参数无效'});
+ const params:unknown[]=paged?[phaseId,pageSize+1,(page-1)*pageSize]:[phaseId];
  const uses=await pool.query(`SELECT u.*,p.name AS package_name,phase.phase_name,phase.phase_no
   FROM ai_distill.project_material_uses u JOIN ai_distill.library_packages p ON p.id=u.package_id
-  JOIN ai_distill.projects phase ON phase.id=u.owner_phase_id WHERE u.owner_phase_id=$1 ORDER BY u.first_used_at,u.id`,[phaseId]);
+  JOIN ai_distill.projects phase ON phase.id=u.owner_phase_id WHERE u.owner_phase_id=$1 ORDER BY u.first_used_at,u.id${paged?' LIMIT $2 OFFSET $3':''}`,params);
  return uses.rows;
 }
 
-export async function readPhaseMaterialUseEvents(pool:Pool,phaseId:string,useId:string){
+export async function readPhaseMaterialUseEvents(pool:Pool,phaseId:string,useId:string,options:{page?:number;page_size?:number}={}){
+ const paged=options.page!==undefined||options.page_size!==undefined;
+ const page=options.page??1,pageSize=options.page_size??100;
+ if(paged&&(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>500||!Number.isSafeInteger((page-1)*pageSize)))throw new HTTPException(400,{message:'材料使用事件分页参数无效'});
  const use=await pool.query('SELECT id FROM ai_distill.project_material_uses WHERE id=$1 AND owner_phase_id=$2',[useId,phaseId]);
  if(!use.rowCount)throw new HTTPException(404,{message:'本期材料使用记录不存在'});
- return(await pool.query('SELECT * FROM ai_distill.project_material_use_events WHERE use_id=$1 ORDER BY created_at,id',[useId])).rows;
+ const params:unknown[]=paged?[useId,pageSize+1,(page-1)*pageSize]:[useId];
+ return(await pool.query(`SELECT * FROM ai_distill.project_material_use_events WHERE use_id=$1 ORDER BY created_at,id${paged?' LIMIT $2 OFFSET $3':''}`,params)).rows;
 }
 
 export function validateUseUpdate(value:unknown){

@@ -63,24 +63,42 @@ export async function convertMaterialDocxToImagePdf(files:Array<{bytes:Uint8Arra
 }
 
 
-/** 飞书输入附件上限按十进制18MB；交付文件名保留真实脱敏分件标题，不生成哈希值，超限仅按页无损分册。 */
-export const MATERIAL_PDF_MAX_BYTES=18_000_000;
+/** 飞书平台上限为18MB，本系统按十进制15MB留余量；交付文件名保留脱敏文书标题（去除001-序号前缀），不含哈希、页码范围等程序痕迹，超限按连续页无损分为“第一册、第二册”。 */
+export const MATERIAL_PDF_MAX_BYTES=15_000_000;
+/** 合册交付的固定业务文件名；不含“脱敏”“合并”等加工用语。 */
+export const COMBINED_MATERIAL_PDF_STEM='案卷材料';
+const CHINESE_DIGITS=['零','一','二','三','四','五','六','七','八','九'];
+/** 1–99 转中文册序（十一、二十三），用于分册文件名。 */
+export function chineseVolumeNumber(value:number):string{
+ if(!Number.isSafeInteger(value)||value<1||value>99)throw new Error('分册序号超出范围');
+ if(value<10)return CHINESE_DIGITS[value]!;
+ const tens=Math.floor(value/10),ones=value%10;
+ return `${tens===1?'':CHINESE_DIGITS[tens]}十${ones?CHINESE_DIGITS[ones]:''}`;
+}
+/** 分册文件名：<文书名>（第一册）.pdf；单册保持<文书名>.pdf。 */
+export function materialVolumeName(stem:string,index:number,total:number):string{
+ return total<=1?`${stem}.pdf`:`${stem}（第${chineseVolumeNumber(index+1)}册）.pdf`;
+}
 export function materialPdfBaseNames(files:ReadonlyArray<{filename?:string;name?:string}>):string[]{
  return materialDeliveryStems(files);
+}
+export function materialCleanPdfBaseNames(files:ReadonlyArray<{filename?:string;name?:string}>):string[]{
+ return materialDeliveryStems(files.map(file=>({filename:(file.filename?.trim()||file.name?.trim()||'').replace(/^\d{3}-(?=.+)/,'')})));
 }
 /** 仅用于识别远端历史哈希命名附件，以便同文本快照复传时原地替换为真实分件文书名。 */
 export function isLegacyHashAttachmentList(value:unknown):boolean{
  return Array.isArray(value)&&value.length>0&&value.every((file:any)=>typeof file?.name==='string'&&/^材料-[0-9a-f]{16}(?:-页\d{4,}-\d{4,})?\.(?:docx|pdf)$/.test(file.name));
 }
 export async function materialPdfAttachments(files:Array<{bytes:Uint8Array;filename?:string;name?:string}>,workflowId:string,storageRoot:string):Promise<Array<{name:string;bytes:Buffer}>>{
- const pdfs=await convertMaterialDocxToImagePdf(files,workflowId,storageRoot),stems=materialPdfBaseNames(files),result:Array<{name:string;bytes:Buffer}>=[];
+ const pdfs=await convertMaterialDocxToImagePdf(files,workflowId,storageRoot),stems=materialCleanPdfBaseNames(files),result:Array<{name:string;bytes:Buffer}>=[];
  for(const [index,bytes] of pdfs.entries()){
   const name=`${stems[index]!}.pdf`;
   if(bytes.length<=MATERIAL_PDF_MAX_BYTES){result.push({name,bytes});continue;}
   const directory=join(resolve(storageRoot),'feishu-material-pdfs',workflowId,'delivery-sources');
   await mkdir(directory,{recursive:true,mode:0o700});const source=join(directory,name);await writeFile(source,bytes,{mode:0o600});
   const parts=await splitLargePdf(source,bytes,{balanced:true,maxBytes:MATERIAL_PDF_MAX_BYTES,maxPages:Number.MAX_SAFE_INTEGER,cacheRoot:join(resolve(storageRoot),'feishu-pdf-parts')});
-  for(const part of parts)result.push({name:part.name,bytes:await readFile(part.path)});
+  // 分片缓存仍按页码命名以便校验；交付名改为册序，不暴露补零页码范围。
+  for(const [partIndex,part] of parts.entries())result.push({name:materialVolumeName(stems[index]!,partIndex,parts.length),bytes:await readFile(part.path)});
  }
  return result;
 }

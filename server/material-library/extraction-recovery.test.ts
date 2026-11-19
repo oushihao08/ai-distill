@@ -11,6 +11,7 @@ import {currentTaskSignal} from '../task-signal';
 const file={file_id:crypto.randomUUID(),source_sha256:hash('%PDF-fake'),format:'pdf'};
 const doc=ensurePages([{page:1,text:'正文',method:'text',structure:[{id:'b1',kind:'paragraph',text:'正文'}],issues:['image_without_text']}],file.source_sha256);
 function job(){return{id:crypto.randomUUID(),package_id:crypto.randomUUID(),revision_id:crypto.randomUUID(),config_digest:'config-v1',input_snapshot:{manifest_sha256:'manifest',files:[file]},lease_token:'lease',deadline_at:new Date(Date.now()+60000).toISOString(),config_snapshot:{pdf_provider:'mineru-api'},kind:'extract'};}
+function queryParts(input:string|{text:string;values?:any[]},values:any[]=[]){return{sql:typeof input==='string'?input:input.text,values:typeof input==='string'?values:input.values??[]};}
 
 test('checkpoint resumes by original SHA and content integrity across provider and format labels',async()=>{
  const root=await mkdtemp(join(tmpdir(),'library-checkpoint-')),first=job();
@@ -55,7 +56,8 @@ test('unsafe paths and unwritable checkpoint storage degrade without publishing'
 
 function fakePool(){
  const published:unknown[][]=[];let commits=0;
- const query=async(sql:string,values:any[]=[])=>{
+ const query=async(input:string|{text:string;values?:any[]},params:any[]=[])=>{
+  const {sql,values}=queryParts(input,params);
   if(sql.startsWith('SELECT id,revision_id'))return{rows:[{id:'job'}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.library_blobs'))return{rows:[{id:crypto.randomUUID()}],rowCount:1};
   if(sql.startsWith('INSERT INTO ai_distill.library_documents'))published.push(values);
@@ -130,7 +132,8 @@ test('stop racing with claim commit settles that lease without running the provi
 for(const reason of ['user_cancelled','lease_lost','deadline_exceeded','heartbeat_unavailable'])test(`heartbeat stop preserves ${reason} instead of generic cancellation`,async()=>{
  const root=await mkdtemp(join(tmpdir(),'library-heartbeat-')),bytes=Buffer.from('正文'),first=job();let saved:any[]=[];
  const item={...file,format:'txt',source_sha256:hash(bytes),size_bytes:bytes.length,storage_path:'input.txt',original_name:'input.txt'};
- const query=async(sql:string,values:any[]=[])=>{
+ const query=async(input:string|{text:string;values?:any[]},params:any[]=[])=>{
+  const {sql,values}=queryParts(input,params);
   if(sql.startsWith('SELECT f.id'))return new Promise(resolve=>{currentTaskSignal()!.addEventListener('abort',()=>resolve({rows:[{id:item.file_id,sha256:item.source_sha256,size_bytes:bytes.length,storage_path:item.storage_path}]}),{once:true});});
   if(sql.startsWith('UPDATE ai_distill.library_jobs SET heartbeat')){if(reason==='heartbeat_unavailable')throw new Error('injected DB failure');return{rows:[],rowCount:0};}
   if(sql.startsWith('SELECT status,'))return{rows:[{status:'running',lease_token:reason==='lease_lost'?'other':first.lease_token,cancel_requested_at:reason==='user_cancelled'?new Date():null,lease_expires_at:new Date(Date.now()+60000),deadline_at:new Date(Date.now()+(reason==='deadline_exceeded'?-1:60000))}]};
@@ -146,7 +149,8 @@ for(const reason of ['user_cancelled','lease_lost','deadline_exceeded','heartbea
 test('a late heartbeat response cannot query or stop a job after its completion',async()=>{
  const root=await mkdtemp(join(tmpdir(),'library-late-heartbeat-')),bytes=Buffer.from('正文'),first=job();let releaseHeartbeat:((value:any)=>void)|undefined,stateReads=0;
  const item={...file,format:'txt',source_sha256:hash(bytes),size_bytes:bytes.length,storage_path:'input.txt',original_name:'input.txt'};
- const query=async(sql:string,values:any[]=[])=>{
+ const query=async(input:string|{text:string;values?:any[]},params:any[]=[])=>{
+  const {sql,values}=queryParts(input,params);
   if(sql.startsWith('SELECT f.id')){await Bun.sleep(10);return{rows:[{id:item.file_id,sha256:item.source_sha256,size_bytes:bytes.length,storage_path:item.storage_path}]};}
   if(sql.startsWith('UPDATE ai_distill.library_jobs SET heartbeat')&&!values[3])return new Promise(resolve=>{releaseHeartbeat=resolve;});
   if(sql.startsWith('SELECT status,'))stateReads++;
@@ -185,7 +189,8 @@ test('known library failure survives settlement outage and resumes only original
  test('transient heartbeat failure recovers within confirmed lease without cancelling work',async()=>{
  const root=await mkdtemp(join(tmpdir(),'library-heartbeat-recover-')),bytes=Buffer.from('正文'),first=job();let beats=0,committed=false;
  const item={...file,format:'txt',source_sha256:hash(bytes),size_bytes:bytes.length,storage_path:'input.txt',original_name:'input.txt'};
- const query=async(sql:string,values:any[]=[])=>{
+ const query=async(input:string|{text:string;values?:any[]},params:any[]=[])=>{
+  const {sql,values}=queryParts(input,params);
   if(sql.startsWith('SELECT f.id')){await Bun.sleep(35);expect(currentTaskSignal()?.aborted).toBe(false);return{rows:[{id:item.file_id,sha256:item.source_sha256,size_bytes:bytes.length,storage_path:item.storage_path}]};}
   if(sql.startsWith('UPDATE ai_distill.library_jobs SET heartbeat')){beats++;if(beats===1)throw new Error('temporary DB failure');return{rows:[{id:first.id}],rowCount:1};}
   if(sql.startsWith('SELECT id,revision_id'))return{rows:[{id:first.id,revision_id:first.revision_id}],rowCount:1};
@@ -194,4 +199,36 @@ test('known library failure survives settlement outage and resumes only original
  };
  try{await writeFile(join(root,item.storage_path),bytes);await runClaimedJob({query,connect:async()=>({query,release(){}})} as any,root,{...first,lease_expires_at:new Date(Date.now()+25).toISOString(),kind:'intake',input_snapshot:{files:[item]}},new AbortController().signal,2);expect(beats).toBeGreaterThan(1);expect(committed).toBe(true);}
  finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('local queue execution survives extended DB outage past initial lease without killing local process and refreshes lease before commit',async()=>{
+ const {LocalQueue}=await import('../execution-queue/store');
+ const {withLocalExecution}=await import('../execution-queue/runtime');
+ const prev=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='local';
+ const root=await mkdtemp(join(tmpdir(),'library-local-outage-')),q=new LocalQueue(root),bytes=Buffer.from('正文'),first=job();
+ q.intent(first.id,'library','agent','library:redact');q.confirm(first.id);const localJob=q.claim('agent')!;
+ const item={...file,format:'txt',source_sha256:hash(bytes),size_bytes:bytes.length,storage_path:'input.txt',original_name:'input.txt'};
+ let dbOutage=true,refreshedBeforeCommit=false,committed=false;
+ const query=async(input:string|{text:string;values?:any[]},params:any[]=[])=>{
+  const {sql}=queryParts(input,params);
+  if(sql.startsWith('SELECT f.id')){
+   await Bun.sleep(45);
+   expect(currentTaskSignal()?.aborted).toBe(false);
+   dbOutage=false;
+   return{rows:[{id:item.file_id,sha256:item.source_sha256,size_bytes:bytes.length,storage_path:item.storage_path}]};
+  }
+  if(sql.startsWith('UPDATE ai_distill.library_jobs SET heartbeat')){
+   if(dbOutage)throw new Error('transient remote PG outage');
+   refreshedBeforeCommit=true;
+   return{rows:[{id:first.id}],rowCount:1};
+  }
+  if(sql.startsWith('SELECT id,revision_id')){expect(refreshedBeforeCommit).toBe(true);return{rows:[{id:first.id,revision_id:first.revision_id}],rowCount:1};}
+  if(sql.startsWith("UPDATE ai_distill.library_jobs SET status='succeeded'"))committed=true;
+  return{rows:[{id:first.id}],rowCount:1};
+ };
+ try{
+  await writeFile(join(root,item.storage_path),bytes);
+  await withLocalExecution(q,localJob,()=>runClaimedJob({query,connect:async()=>({query,release(){}})} as any,root,{...first,lease_expires_at:new Date(Date.now()+15).toISOString(),kind:'intake',input_snapshot:{files:[item]}},new AbortController().signal,5));
+  expect(committed).toBe(true);
+ }finally{q.close();if(prev===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=prev;await rm(root,{recursive:true,force:true});}
 });

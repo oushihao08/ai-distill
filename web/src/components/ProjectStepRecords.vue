@@ -5,7 +5,6 @@
 
 <script setup lang="ts">
 import {workflowStepDisplay} from '../utils/workflow-status';
-import RevisionAdvice from './RevisionAdvice.vue';
 import AcceptedQuestionDetail from './AcceptedQuestionDetail.vue';
 import { api } from '../api/client';
 import { dateLabel } from '../utils/format';
@@ -18,7 +17,7 @@ const failures = shallowRef<Record<string, string>>({});
 const loading = shallowRef(false);
 const search = shallowRef('');
 const filter = shallowRef('全部');
-const filters = ['全部', '未进入', '就绪', '排队中', '处理中', '完成', '达标', '未达标', '等待判定条件', '隔离', '失败', '跳过', '读取失败'];
+const filters = ['全部', '未进入', '就绪', '排队中', '处理中', '完成', '失败', '跳过', '读取失败'];
 const recordNoun=computed(()=>props.workflows.some(flow=>flow.workflow_kind==='material_package')?'材料包':'题目');
 const selectedQuestion=shallowRef<Workflow|null>(null);
 let controller: AbortController | undefined;
@@ -78,7 +77,7 @@ onUnmounted(() => { controller?.abort(); });
   <p v-if="loading" class="text-xs text-muted" role="status">正在读取{{ recordNoun }}状态…</p>
   <Column class="w-full overflow-x-auto max-h-640px overflow-y-auto">
    <v-table density="comfortable" class="min-w-900px w-full">
-    <thead><tr><th scope="col">{{ recordNoun }}</th><th scope="col">本步状态</th><th scope="col">处理结果</th><th scope="col">问题 / 未进入原因</th><th scope="col">完成时间</th><th v-if="step.ordinal===4" scope="col">返修建议</th><th scope="col">操作</th></tr></thead>
+    <thead><tr><th scope="col">{{ recordNoun }}</th><th scope="col">本步状态</th><th scope="col">处理结果</th><th scope="col">问题 / 未进入原因</th><th scope="col">完成时间</th><th scope="col">操作</th></tr></thead>
     <tbody>
      <template v-for="row in visibleRows" :key="row.flow.id">
       <tr>
@@ -89,10 +88,10 @@ onUnmounted(() => { controller?.abort(); });
        </td>
        <td class="min-w-220px max-w-320px text-sm break-words" :class="row.state==='失败'?'text-danger':'text-muted'">{{ row.issue }}</td>
        <td class="whitespace-nowrap text-xs">{{ row.step?.finished_at ? dateLabel(row.step.finished_at) : '—' }}</td>
-       <td v-if="step.ordinal===4"><RevisionAdvice :workflow-id="row.flow.id" :disabled="row.detail?.steps.find(item=>item.ordinal===7)?.result?.decision==='accepted'||row.detail?.steps.some(item=>[4,5,6].includes(item.ordinal)&&item.active)"/></td><td><v-btn v-if="recordNoun==='题目'" variant="text" color="primary" @click="selectedQuestion=row.flow">查看题目详情</v-btn><v-btn v-else variant="text" color="primary" :to="`/workflows/${row.flow.id}`">查看材料包详情</v-btn></td>
+       <td><v-btn v-if="recordNoun==='题目'" variant="text" color="primary" @click="selectedQuestion=row.flow">查看题目详情</v-btn><v-btn v-else variant="text" color="primary" :to="`/workflows/${row.flow.id}`">查看材料包详情</v-btn></td>
       </tr>
      </template>
-     <tr v-if="!visibleRows.length"><td :colspan="step.ordinal===4?7:6" class="text-muted py-16">{{ loading?'正在读取…':`没有符合条件的${recordNoun}` }}</td></tr>
+     <tr v-if="!visibleRows.length"><td :colspan="6" class="text-muted py-16">{{ loading?'正在读取…':`没有符合条件的${recordNoun}` }}</td></tr>
     </tbody>
    </v-table>
   </Column>

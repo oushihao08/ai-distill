@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
 import {publishWorkflow,readPublicationHistory,withdrawPublication,readSiriserArchive} from './jobs';
+import {authorOnlySourceDigest} from './tasks';
 import {acceptanceSourceDigest} from '../decisions/jobs';
 import {scanProjectPrompt} from '../rule-files';
 import {getAgentConcurrencyGate,closeAgentConcurrencyGate,saveWorkerConcurrencySettings} from '../concurrency';
@@ -24,7 +25,7 @@ async function fixture(options:{withoutPrompt?:boolean;work?:boolean}={}){
  const a={id:'a1',model:modelId,status:'succeeded',result:{text,answer_sha256:hash(text),question_attempt_id:'q1',question_version:'qv1',input_digest:'d'.repeat(64)}};
  const s={id:'s1',answer_attempt_id:'a1',status:'succeeded',result:{binding:{answer_attempt_id:'a1',answer_sha256:hash(text),question_version:'qv1',rubric_version:'rv1',input_digest:a.result.input_digest,rubric_digest:hash(JSON.stringify(q.result.rubric))},validation:{valid:true},report:{total:4,max_score:10,disputes:[],items:[{id:'r1',score:4,reason:'有证据'}]}}};
  const snapshot={config,question:q,answers:[a],scores:[s]};
- const accepted={id:'accepted',status:'succeeded',input:{source_digest:acceptanceSourceDigest(snapshot)},result:{decision:'accepted'}};
+ const accepted={id:'accepted',status:'succeeded',input:{source_digest:authorOnlySourceDigest(q)},result:{decision:'accepted'}};
  const artifacts:{id:string|undefined;attempt_id:string|undefined;kind:string|undefined;storage_path:string|undefined;sha256:string;content?:string}[]=[];for(const [id,attempt,kind,body] of [['artifact-q','q1','authored_question','public question'],['artifact-a','a1','model_answer',text],['artifact-s','s1','score_report','public score'],['material','extract','redacted_markdown','脱敏材料']]){
   await writeFile(join(root,id!),body!);artifacts.push({id,attempt_id:attempt,kind,storage_path:id,sha256:hash(body!)});
  }
@@ -44,6 +45,8 @@ async function fixture(options:{withoutPrompt?:boolean;work?:boolean}={}){
   if(sql.startsWith('SELECT w.project_id'))return {rows:[{project_id:'project',project_name:'项目',...(options.work?{parent_name:'Work法律全场景'}:{}),title:'标题',material_root:join(root,'questions'),local_skill_path:skill,status:'succeeded'}],rowCount:1};
   if(sql.startsWith('SELECT s.model_id'))return {rows:[{model_id:modelId,name:'Qwen',enabled:true,minimum_score:config.minimum_score_by_model[modelId],config:{provider:'qwen',base_url:'https://openrouter.ai/api/v1',model:'qwen/qwen-plus'}}],rowCount:1};
   if(sql.startsWith('SELECT config'))return {rows:[{config}],rowCount:1};
+  if(sql.startsWith('SELECT status FROM ai_distill.steps')&&sql.includes('ordinal=4'))return {rows:[{status:q.status}],rowCount:1};
+  if(sql.startsWith('SELECT id,status,input,result FROM ai_distill.step_attempts')&&sql.includes('ordinal=4'))return {rows:[q],rowCount:1};
   if(sql.startsWith('SELECT ordinal,status'))return {rows:[4,5,6,7].map(ordinal=>({ordinal,status:'succeeded'})),rowCount:4};
   if(sql.includes('ordinal=7')&&sql.startsWith('SELECT'))return {rows:[accepted],rowCount:1};
   if(sql.startsWith('SELECT id,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=8')&&sql.includes('FOR UPDATE'))return {rows:[{id:'published',input:{material_provenance:{project_id:'project',workflow_id:'workflow',material_origin:{kind:'legacy',redaction_attempt_id:'extract'},materials:[{artifact_id:'material',sha256:hash('脱敏材料')}]}},result:{}}],rowCount:1};
@@ -79,7 +82,7 @@ test('archive records the accepted version in the database without creating a pu
   const result=await publish(f.pool,'workflow',f.root);expect(result.completed).toBe(true);expect(result.reused).toBe(false);
   const attempt=f.writes.find(row=>row.sql.startsWith('INSERT INTO ai_distill.step_attempts'))!;
   const data=JSON.parse(String(attempt.values[3]));
-  expect(data).toMatchObject({question_version:'qv1',rubric_version:'rv1',acceptance_attempt_id:'accepted'});
+  expect(data).toMatchObject({question_version:'qv1',rubric_version:'rv1',acceptance_attempt_id:'q1'});
   expect(data).toHaveProperty('archived_at');expect(data).not.toHaveProperty('question');expect(data).not.toHaveProperty('reference_answer');
   expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.artifacts'))).toBe(false);
   expect(f.writes.some(row=>row.sql.includes("ordinal=8")&&row.sql.startsWith('UPDATE'))).toBe(true);
@@ -108,7 +111,7 @@ test('withdrawing archive clears only current publication and preserves the succ
 });
 test('re-archiving after withdrawal restores current state and appends a new archive event',async()=>{
  const f=await fixture();try{
-  f.setPrevious({id:'published',input:{material_provenance:{project_id:'project',workflow_id:'workflow',material_origin:{kind:'legacy',redaction_attempt_id:'extract'},materials:[]}},result:{source_digest:f.accepted.input.source_digest,acceptance_attempt_id:'accepted'}});
+  f.setPrevious({id:'published',input:{material_provenance:{project_id:'project',workflow_id:'workflow',material_origin:{kind:'legacy',redaction_attempt_id:'extract'},materials:[]}},result:{source_digest:authorOnlySourceDigest(f.snapshot.question),acceptance_attempt_id:'q1'}});
   f.setLatestEvent('withdrawn');
   const result=await publishWorkflow(f.pool,'workflow',f.root);
   expect(result).toMatchObject({id:'published',reused:true,completed:true});
@@ -122,12 +125,11 @@ test('publication history remains readable after its workflow has been removed',
  expect(history).toMatchObject([{workflow_id:'removed-workflow',workflow_exists:false,event_type:'archived'}]);
  expect(sql).toContain('LEFT JOIN ai_distill.workflows w');
 });
-test.each(['changed_answer','changed_threshold'])('archive blocks %s without marking success',async mode=>{
+test.each(['changed_question','missing_version'])('archive blocks %s without marking success',async mode=>{
  const publish=await publisher(),f=await fixture();try{
-  if(mode==='changed_answer')f.snapshot.answers[0]!.result.text='changed';
-  if(mode==='changed_threshold')f.snapshot.config.minimum_score_by_model['11111111-1111-4111-8111-111111111111']=30;
-  const expectedReason='publication_acceptance_snapshot_changed';
-  await expect(publish(f.pool,'workflow',f.root)).rejects.toMatchObject({reason_code:expectedReason});expect(f.writes).toHaveLength(0);
+  if(mode==='changed_question')f.snapshot.question.status='failed';
+  if(mode==='missing_version')f.snapshot.question.result.question_version='';
+  await expect(publish(f.pool,'workflow',f.root)).rejects.toThrow();expect(f.writes).toHaveLength(0);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });
 
@@ -156,12 +158,12 @@ test('historical Windows skill paths cannot block an otherwise valid accepted ve
  const f=await fixture();try{f.snapshot.question.input.project_prompt!.workspace_path='D:\\codes\\work';f.snapshot.question.input.project_prompt!.skill_path='D:\\codes\\work\\skill';f.accepted.input.source_digest=acceptanceSourceDigest(f.snapshot);expect((await publishWorkflow(f.pool,'workflow',f.root)).completed).toBe(true);}finally{await rm(f.root,{recursive:true,force:true});}
 });
 test('identical publication is reused instead of overwriting files or creating attempts',async()=>{
- const publish=await publisher(),f=await fixture();try{await writeFile(join(f.root,'published-file'),'published');f.artifacts.push({id:'published-file',attempt_id:'published',kind:'published_result',storage_path:'published-file',sha256:hash('published')});f.setPrevious({id:'published',result:{source_digest:f.accepted.input.source_digest,acceptance_attempt_id:'accepted'}});const result=await publish(f.pool,'workflow',f.root);expect(result).toMatchObject({id:'published',reused:true,completed:true});expect(f.writes).toHaveLength(0);}finally{await rm(f.root,{recursive:true,force:true});}
+ const publish=await publisher(),f=await fixture();try{await writeFile(join(f.root,'published-file'),'published');f.artifacts.push({id:'published-file',attempt_id:'published',kind:'published_result',storage_path:'published-file',sha256:hash('published')});f.setPrevious({id:'published',result:{source_digest:authorOnlySourceDigest(f.snapshot.question),acceptance_attempt_id:'q1'}});const result=await publish(f.pool,'workflow',f.root);expect(result).toMatchObject({id:'published',reused:true,completed:true});expect(f.writes).toHaveLength(0);}finally{await rm(f.root,{recursive:true,force:true});}
 });
 test('changed current skill does not invalidate an archive bound to its frozen snapshot',async()=>{
  const f=await fixture();
  try{
-  f.setPrevious({id:'published',result:{source_digest:f.accepted.input.source_digest,acceptance_attempt_id:'accepted'}});
+  f.setPrevious({id:'published',result:{source_digest:authorOnlySourceDigest(f.snapshot.question),acceptance_attempt_id:'q1'}});
   await writeFile(join(f.skill,'SKILL.md'),'---\nname: current-skill\ndescription: publication fixture\n---\n后续规则');
   expect((await publishWorkflow(f.pool,'workflow',f.root)).completed).toBe(true);
   expect(f.writes).toHaveLength(0);
@@ -251,7 +253,7 @@ test('archive success includes project supplemental artifacts only after they al
  try{
   const archive_workbook={archive_path:'附件库/题目归档数据.xlsx',sha256:'a'.repeat(64),filename:'题目归档数据.xlsx'};
   await publishWorkflow(f.pool,'workflow',f.root,undefined,{exportsRoot:f.root,resolveDelivery:async()=>({mode:'script',digest:'delivery'}),deliver:async()=>{},prepareArtifacts:async binding=>{
-   expect(f.connections.held).toBe(0);expect(binding.acceptance_attempt_id).toBe('accepted');
+   expect(f.connections.held).toBe(0);expect(binding.acceptance_attempt_id).toBe('q1');
    expect(f.writes.some(row=>row.sql.startsWith('INSERT INTO ai_distill.workflow_publication_events'))).toBe(false);
    return{archive_workbook};
   }});
@@ -277,7 +279,7 @@ test('queued publication refuses changed frozen identity before invoking a proje
  const f=await fixture();let delivered=false;
  try{
   await expect(publishWorkflow(f.pool,'workflow',f.root,undefined,{
-   expected:{project_id:'project',title:'old title',parent_name:null,phase_name:null,source_key:null,acceptance_attempt_id:'accepted',source_digest:f.accepted.input.source_digest,delivery_digest:'old-script'},
+   expected:{project_id:'project',title:'old title',parent_name:null,phase_name:null,source_key:null,acceptance_attempt_id:'q1',source_digest:authorOnlySourceDigest(f.snapshot.question),delivery_digest:'old-script'},
    deliver:async()=>{delivered=true;},
   })).rejects.toThrow('排队后来源');
   expect(delivered).toBe(false);expect(f.writes).toHaveLength(0);

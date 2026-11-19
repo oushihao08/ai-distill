@@ -1,11 +1,11 @@
-# 操作 Skill
+# 项目级操作 Skill 索引
 
-`ai-distill-workflow` 是指向根目录 `skill/` 的符号链接，用于通过现有本机 API 执行用户指定的工作流范围。新增操作规则应基于 CLI 帮助和共享步骤注册表，不复制服务端业务算法。
+本目录通过软链接暴露仓库内操作 Skill（不存放实体副本）：
 
-`ai-distill-scheduled-runner` 指向 `../../toolSkills/ai-distill-scheduled-runner`，负责按指定间隔建立定时任务、维护对账台并主动使用CLI推进授权批次。
-
-`ai-trace-review` 指向 `../../toolSkills/ai-trace-review`，审查题目/交付残留与命名雷同；仅在明确授权后使用改名工具，不自动修改业务状态。
-
-`phase8-materials-full-capacity` 指向 `../../toolSkills/phase8-materials-full-capacity`，仅用于第八期八个来源目录的三阶段材料处理与双 lane 满载补位。
-
-`materials-full-capacity-dispatch` 指向 `../../toolSkills/materials-full-capacity-dispatch`，用于已授权材料批次按实时容量和全量候选持续补位。
+| Skill | 目标路径 | 触发场景 |
+| --- | --- | --- |
+| `ai-distill-workflow` | `../../skill` | 工作流查询、派发、等待、容量调度、材料处理、评分达标、归档导出与交付 |
+| `materials-full-capacity-dispatch` | `../../toolSkills/materials-full-capacity-dispatch` | 已授权批量材料入库/脱敏/整理/加载/出题的实时容量补位 |
+| `phase8-materials-full-capacity` | `../../toolSkills/phase8-materials-full-capacity` | 高经第八期 132 个固定逻辑包的双通道满载推进 |
+| `feishu-operations` | `../../toolSkills/feishu-operations` | 飞书多维表格、字段、记录、附件操作与专家分配 |
+| `ai-trace-review` | `../../toolSkills/ai-trace-review` | 题面/交付残留与任务重名核查及授权改名 |

@@ -27,13 +27,14 @@ describe('命令范围和结果', () => {
   });
   test('材料包版本和建题走独立 API，并且普通题目清单排除材料包',async()=>{
     const {client,calls}=fixture((url,init)=>{
-      if(url.pathname===`/api/projects/${project}`)return{workflows:[{id:question,workflow_kind:'material_package'},{id:second,workflow_kind:'question',source_workflow_id:question}]};
+      if(url.pathname===`/api/projects/${project}/material-packages`)return{items:[{id:question,workflow_kind:'material_package'}],page:1,page_size:100,has_more:false};
+      if(url.pathname===`/api/projects/${project}/questions`)return{workflows:[{id:second,workflow_kind:'question',source_workflow_id:question}],page:1,has_more:false};
       if(url.pathname.endsWith('/versions'))return[{id:attempt}];
       if(init?.method==='POST')return{id:second};
       return{};
     });
-    expect((await runCommand(['material-package','list','--project',project],client)).data).toHaveLength(1);
-    expect((await runCommand(['question','list','--project',project],client)).data).toEqual([{id:second,workflow_kind:'question',source_workflow_id:question}]);
+    expect((await runCommand(['material-package','list','--project',project],client)).data.items).toHaveLength(1);
+    expect((await runCommand(['question','list','--project',project],client)).data).toEqual({items:[{id:second,workflow_kind:'question',source_workflow_id:question}],page:1,has_more:false});
     expect((await runCommand(['material-package','versions','--workflow',question],client)).data).toEqual([{id:attempt}]);
     await runCommand(['question','create','--material-package',question,'--title','题目二','--redaction-attempt',attempt,'--level','L4','--scenario','LS04'],client);
     const created=calls.at(-1)!;
@@ -66,7 +67,7 @@ describe('命令范围和结果', () => {
       if(url.pathname.includes('/attempts/'))return {id:url.pathname.split('/').at(-1),status:'succeeded',completed:true};
       return {workflow:{id:question,title:'题目1'},steps:[{ordinal:7,status:'succeeded',result:{decision:'accepted',model_scores:{m1:{status:'passed',score:7,max_score:20,percentage:35,threshold:50},m2:{status:'passed',score:8,max_score:20,percentage:40,threshold:50}}}}]};
     });
-    for(const key of ['receive_materials','redact_materials','author_question','model_answer','independent_score','accept_or_revise','publish_export']) {
+    for(const key of ['receive_materials','redact_materials','author_question','publish_export']) {
       const dispatched=await runCommand(['step','dispatch',key,'--project',project,'--ids',question],client);
       const done=await runCommand(['attempt','wait','--ids',dispatched.attempt_ids.join(',')],client);
       expect(done.attempts).toHaveLength(2);expect(done.outcome).toBe('complete');
@@ -75,7 +76,7 @@ describe('命令范围和结果', () => {
     expect(Object.keys(result.business.model_scores)).toEqual(['m1','m2']);
     expect(result.business.decision).toBe('accepted');
     await runCommand(['export','create','--project',project],client);
-    expect(posts).toHaveLength(8);
+    expect(posts).toHaveLength(5);
   });
   test('原样保留无效评分与等待判定，不替服务端推算通过', async () => {
     const {client}=fixture(()=>({steps:[{ordinal:6,status:'failed',result:{models:[{score_valid:false}]}},{ordinal:7,status:'waiting',result:{decision:'waiting',model_scores:{m1:{status:'invalid',threshold:50}}}}]}));
@@ -137,10 +138,14 @@ describe('命令范围和结果', () => {
     await expect(runCommand(['question','delete','--project',project,'--workflow',question,'--confirm-title','重复题目'],activeClient)).rejects.toThrow('活动尝试');
   });
   test('所有可见步骤使用稳定身份，不依赖显示顺序', async () => {
-    for(const [key,ordinal] of [['receive_materials',1],['redact_materials',9],['author_question',4],['model_answer',5],['independent_score',6],['accept_or_revise',7],['publish_export',8]] as const) {
+    for(const [key,ordinal] of [['receive_materials',1],['redact_materials',9],['author_question',4],['publish_export',8]] as const) {
       const {client,calls}=fixture(()=>({results:[{workflow_id:question,status:'queued',attempt_id:attempt}]}));
       await runCommand(['step','dispatch',key,'--project',project,'--ids',question],client);
       expect(calls[0].url.pathname).toBe(`/api/projects/${project}/steps/${ordinal}/run-batch`);
+    }
+    for(const sealedKey of ['model_answer','independent_score','accept_or_revise']){
+      const {client}=fixture(()=>({}));
+      await expect(runCommand(['step','dispatch',sealedKey,'--project',project,'--ids',question],client)).rejects.toThrow('隐藏步骤');
     }
   });
   test('101道题分组，不扩大范围；后组断开仍保留已提交任务', async () => {
@@ -171,31 +176,32 @@ describe('命令范围和结果', () => {
     expect(result.attempts.map((a:any)=>a.status)).toEqual(['succeeded','skipped']);
     expect(result.outcome).toBe('complete');
   });
-  test('模拟题目1从入库走到评分，目标处无额外派发', async () => {
+  test('模拟题目1从入库走到交付归档，目标处无额外派发', async () => {
     let current=0;
-    const order=[1,9,4,5,6];
+    const order=[1,9,4,8];
     const {client,calls}=fixture((url,init)=>{
       if(init?.method==='POST') {
         expect(url.pathname).toBe(`/api/projects/${project}/steps/${order[current++]}/run-batch`);
         return {results:[{workflow_id:question,status:'queued',attempt_id:attempt}]};
       }
       if(url.pathname.includes('/attempts/'))return {id:attempt,status:'succeeded',completed:true};
-      return {workflow:{id:question,title:'题目1'},steps:[{ordinal:7,status:'succeeded',result:{decision:'repair'}}]};
+      return {workflow:{id:question,title:'题目1'},steps:[{ordinal:8,status:'succeeded'}]};
     });
-    for(const step of ['receive_materials','redact_materials','author_question','model_answer','independent_score']) {
+    for(const step of ['receive_materials','redact_materials','author_question','publish_export']) {
       const submitted=await runCommand(['step','dispatch',step,'--project',project,'--ids',question],client);
       await runCommand(['attempt','wait','--ids',submitted.attempt_ids.join(',')],client);
       await runCommand(['result','show','--workflow',question],client);
     }
-    expect(current).toBe(5);
-    expect(calls.filter(c=>c.init?.method==='POST')).toHaveLength(5);
-    expect(calls.some(c=>/publish|export|revisions|\/steps\/(7|8)\//.test(c.url.pathname))).toBe(false);
+    expect(current).toBe(4);
+    expect(calls.filter(c=>c.init?.method==='POST')).toHaveLength(4);
+    expect(calls.some(c=>/export|revisions|\/steps\/(5|6|7)\//.test(c.url.pathname))).toBe(false);
   });
   test('只读命令和显式写入命令映射到现有 API', async () => {
     const matrix:[string[],string,string,unknown?][]=[
       [['project','list'],'/api/projects','GET'],
       [['project','show','--project',project],`/api/projects/${project}`,'GET'],
-      [['question','list','--project',project],`/api/projects/${project}`,'GET'],
+      [['question','list','--project',project],`/api/projects/${project}/questions`,'GET'],
+      [['material-package','list','--project',project],`/api/projects/${project}/material-packages`,'GET'],
       [['rules','list','--project',project],`/api/projects/${project}/rules`,'GET'],
       [['models','show','--project',project],`/api/projects/${project}/answer-models`,'GET'],
       [['attempt','show','--attempt',attempt],`/api/attempts/${attempt}`,'GET'],
@@ -249,9 +255,10 @@ describe('命令范围和结果', () => {
     expect(calls).toHaveLength(0);
   });
   test('all 先冻结项目题目 ID，再按明确数组派发', async () => {
-    const {client,calls} = fixture(url => url.pathname===`/api/projects/${project}`
-      ? {workflows:[{id:question,title:'题目1'}]} : {results:[]});
-    await runCommand(['step','dispatch','model_answer','--project',project,'--all'],client);
+    const {client,calls} = fixture(url => url.pathname===`/api/projects/${project}/workflow-ids`
+      ? {items:[{id:question,workflow_kind:'question'}],page:1,page_size:500,has_more:false} : {results:[]});
+    await runCommand(['step','dispatch','author_question','--project',project,'--all'],client);
+    expect(calls[0]!.url.pathname).toBe(`/api/projects/${project}/workflow-ids`);
     expect(JSON.parse(String(calls[1].init?.body))).toEqual({workflow_ids:[question]});
   });
   test('脱敏文本始终指定 redacted_only，不读原件', async () => {
@@ -512,7 +519,7 @@ test('CLI advice and local queue commands call the same HTTP operations without 
 
 test('CLI advice stops on capacity overflow and keeps known rejections distinct from unknown outcomes',async()=>{
  const calls:string[]=[];
- const client=new ApiClient(undefined,async(input,init)=>{const path=new URL(input).pathname;calls.push(`${init?.method} ${path}`);if(init?.method==='GET')return Response.json({workflows:[{id:question,workflow_kind:'question'},{id:second,workflow_kind:'question'}]});return Response.json({error:'本机待领取容量不足',code:'local_queue_full',dispatched:false,lane:'agent',limit:4,waiting:4,requested:1},{status:429});});
+ const client=new ApiClient(undefined,async(input,init)=>{const path=new URL(input).pathname;calls.push(`${init?.method} ${path}`);if(init?.method==='GET')return Response.json({items:[{id:question,workflow_kind:'question'},{id:second,workflow_kind:'question'}],page:1,page_size:500,has_more:false});return Response.json({error:'本机待领取容量不足',code:'local_queue_full',dispatched:false,lane:'agent',limit:4,waiting:4,requested:1},{status:429});});
  const result:any=await runCommand(['advice','generate','--project',project,'--all'],client);
  expect(result.outcome).toBe('partial');expect(result.results).toMatchObject([{status:'capacity_exceeded',outcome_unknown:false,dispatched:false},{status:'not_dispatched'}]);expect(result.advice_attempt_ids).toEqual([]);expect(calls.filter(call=>call.startsWith('POST'))).toHaveLength(1);
  const rejected=new ApiClient(undefined,async()=>Response.json({error:'当前题目已达标'},{status:409}));
@@ -587,19 +594,16 @@ describe('工作流配置与显式恢复入口',()=>{
   ])await expect(runCommand(args,client)).rejects.toThrow();
   expect(calls).toHaveLength(0);
  });
- test('达标聚合和API评分配置经设置文件原样转交，不在CLI计算或派发',async()=>{
+ test('已封存步骤的设置修改被拒绝，出题配置经设置文件原样转交，不在CLI计算或派发',async()=>{
   const root=await mkdtemp(join(tmpdir(),'cli-decision-config-'));
   const {client,calls}=fixture(()=>({saved:true}));
-  const score={provider:'api',api:{provider:'openrouter',model:'deepseek/deepseek-v4.1-flash'},prompt:'逐项评分'};
-  const acceptance={aggregation:{mode:'mean_at_most',model_count:2,threshold:50}};
+  const author={model:'gpt-6.1-sol',reasoning_effort:'high',prompt:'出题规则'};
   try{
-   const path=join(root,'settings.json');await writeFile(path,JSON.stringify({steps:{independent_score:score,accept_or_revise:acceptance}}));
+   const path=join(root,'settings.json');await writeFile(path,JSON.stringify({steps:{author_question:author}}));
    expect((await runCommand(['project','settings','apply','--project',project,'--file',path],client)).outcome).toBe('complete');
-   expect(calls.map(c=>c.url.pathname)).toEqual([`/api/projects/${project}/steps/6/config`,`/api/projects/${project}/steps/7/config`]);
-   expect(calls.map(c=>JSON.parse(String(c.init?.body)))).toEqual([score,acceptance]);
-   await writeFile(path,JSON.stringify({steps:{accept_or_revise:null}}));
-   await expect(runCommand(['project','settings','apply','--project',project,'--file',path],client)).rejects.toThrow('不支持恢复默认');
-   expect(calls).toHaveLength(2);
+   expect(calls.map(c=>c.url.pathname)).toEqual([`/api/projects/${project}/steps/4/config`]);
+   await writeFile(path,JSON.stringify({steps:{independent_score:{prompt:'禁止'}}}));
+   await expect(runCommand(['project','settings','apply','--project',project,'--file',path],client)).rejects.toThrow('不支持通过设置文件修改步骤');
   }finally{await rm(root,{recursive:true,force:true});}
  });
  test('等待仅确认attempt终态，不声称飞书尾段成功',async()=>{
@@ -769,7 +773,8 @@ describe('网页Agent派发参数', () => {
     await runCommand(['step','dispatch','author_question','--project',project,'--ids',question,'--web','gemini','--web-thinking','on','--web-model-label','Code'],client);
     const post=calls.find(call=>call.url.pathname.endsWith('/steps/4/run-batch'));
     expect(JSON.parse(String(post?.init?.body))).toEqual({workflow_ids:[question],web_settings:{provider:'gemini',thinking:true,model_label:'Code'}});
-    await expect(runCommand(['step','dispatch','model_answer','--project',project,'--ids',question,'--web','gemini'],client)).rejects.toThrow('author_question');
+    await expect(runCommand(['step','dispatch','publish_export','--project',project,'--ids',question,'--web','gemini'],client)).rejects.toThrow('author_question');
+    await expect(runCommand(['step','dispatch','model_answer','--project',project,'--ids',question,'--web','gemini'],client)).rejects.toThrow('隐藏步骤');
     await expect(runCommand(['step','dispatch','author_question','--project',project,'--ids',question,'--web','chatgpt'],client)).rejects.toThrow();
     await expect(runCommand(['step','dispatch','author_question','--project',project,'--ids',question,'--web-thinking','on'],client)).rejects.toThrow('--web');
   });
@@ -790,5 +795,104 @@ describe('网页Agent派发参数', () => {
     const {client}=fixture(()=>({capacity:{web:{limit:6}},items:[{id:'a',lane:'web'},{id:'b',lane:'agent'}]}));
     const result=await runCommand(['web','status'],client);
     expect(result.data.items).toEqual([{id:'a',lane:'web'}]);expect(result.data.capacity).toEqual({limit:6});
+  });
+  test('分页与轻量过滤参数按契约转发，batch create 不拉取未分页项目详情且校验工作流类型',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'cli-paged-batch-'));
+    try{
+      const {client,calls}=fixture(url=>{
+        if(url.pathname===`/api/projects/${project}/workflow-ids`)return{items:[{id:question,workflow_kind:'question'},{id:second,workflow_kind:'material_package'}],page:1,page_size:500,has_more:false};
+        return{items:[],available:true};
+      });
+      await runCommand(['project','show','--project',project,'--workflow-page','2','--workflow-page-size','50'],client);
+      expect(calls.at(-1)!.url.search).toBe('?workflow_page=2&workflow_page_size=50');
+      await runCommand(['result','list','--page','2','--page-size','20','--q','合同','--publication','archived'],client);
+      expect(calls.at(-1)!.url.search).toBe('?page=2&page_size=20&q=%E5%90%88%E5%90%8C&publication=archived');
+      await runCommand(['library','imports','list','--page','2','--page-size','20'],client);
+      expect(calls.at(-1)!.url.search).toBe('?page=2&page_size=20');
+      await runCommand(['library','package','revisions','--package',project,'--page','2','--page-size','10'],client);
+      expect(calls.at(-1)!.url.search).toBe('?page=2&page_size=10');
+      await runCommand(['library','prepare','list','--package',project,'--summary-only','--page','1','--page-size','5'],client);
+      expect(calls.at(-1)!.url.search).toBe('?page=1&page_size=5&summary_only=true');
+      await runCommand(['queue','show','--history'],client);
+      expect(calls.at(-1)!.url.search).toBe('?include_history=true');
+      const out=join(root,'batch.json'),beforeBatch=calls.length;
+      await runCommand(['batch','create','--project',project,'--ids',question,'--size','1','--to','author_question','--out',out],client);
+      expect(calls.slice(beforeBatch).some(c=>c.url.pathname===`/api/projects/${project}`)).toBe(false);
+      expect(calls.slice(beforeBatch).every(c=>c.url.pathname===`/api/projects/${project}/workflow-ids`)).toBe(true);
+      await expect(runCommand(['batch','create','--project',project,'--ids',second,'--size','1','--to','author_question','--out',join(root,'bad.json')],client)).rejects.toThrow('材料包不能直接加入题目步骤批次');
+    }finally{await rm(root,{recursive:true,force:true});}
+  });
+  test('前缀help、出题单次模型覆盖、轻量视图与运维恢复命令完整对齐HTTP契约',async()=>{
+    const root=await mkdtemp(join(tmpdir(),'cli-agent-ergonomics-'));
+    try{
+      const scoped=await runCommand(['queue','--help']);
+      expect(scoped.help).toContain('queue abandon-import');
+      expect(scoped.help).toContain('queue reconcile-failed');
+      expect(scoped.help).not.toContain('siriser download');
+      await expect(runCommand(['nonexistent-group','--help'])).rejects.toThrow('未知命令前缀');
+
+      const jsonFile=join(root,'payload.json'),ruleFile=join(root,'rule.md');
+      await writeFile(jsonFile,JSON.stringify({jobs:[{id:attempt,kind:'step'}]}));
+      await writeFile(ruleFile,'项目规则内容');
+      const settingsFile=join(root,'settings.json');
+      await writeFile(settingsFile,JSON.stringify({answer_tools:{server_tools:['web_search'],local_tools:[]}}));
+
+      const {client,calls}=fixture(url=>{
+        if(url.pathname===`/api/workflows/${question}`)return{workflow:{id:question,project_id:project},steps:[{ordinal:7,status:'succeeded',result:{decision:'accepted'}}]};
+        if(url.pathname===`/api/projects/${project}/feishu-delivery`)return{capabilities:{target_override:true,draft_sync:true,attachment_format:true,combined_material:true}};
+        if(url.pathname.endsWith('/feishu-draft-sync'))return{status:'succeeded',verification:{status:'passed'}};
+        if(url.pathname.endsWith('/run-batch'))return{results:[{workflow_id:question,status:'queued',attempt_id:attempt}]};
+        return{ok:true,project:{id:project,skill_exists:true}};
+      });
+
+      await runCommand(['step','dispatch','author_question','--project',project,'--ids',question,'--provider','agy','--model','gemini-4-carbon','--reasoning-effort','high'],client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({workflow_ids:[question],authoring_settings:{provider:'agy',model:'gemini-4-carbon',reasoning_effort:'high'}});
+
+      await runCommand(['question','show','--workflow',question,'--status'],client);
+      expect(calls.at(-1)!.url.search).toBe('?view=status');
+      await runCommand(['library','redaction','show','--redaction',attempt,'--metadata-only'],client);
+      expect(calls.at(-1)!.url.search).toBe('?metadata_only=true');
+
+      await runCommand(['feishu','draft-sync','--workflow',question,'--replace-record-id','recAbc123'],client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toMatchObject({replace_record_id:'recAbc123'});
+      await expect(runCommand(['feishu','draft-sync','--workflow',question,'--replace-record-id','recAbc123','--revision-attempt',attempt],client)).rejects.toThrow('--replace-record-id');
+
+      await runCommand(['project','settings','apply','--project',project,'--file',settingsFile],client);
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/projects/${project}/answer-tools`);
+      const shownSettings=await runCommand(['project','settings','show','--project',project],client);
+      expect(shownSettings.data).toHaveProperty('answer_tools');
+
+      await runCommand(['queue','adopt','--file',jsonFile],client);
+      expect(calls.at(-1)!.url.pathname).toBe('/api/system/execution-queue/adopt');
+      await expect(runCommand(['queue','abandon-import','--job',attempt],client)).rejects.toThrow('--acknowledge-unknown-result');
+      await runCommand(['queue','abandon-import','--job',attempt,'--acknowledge-unknown-result'],client);
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/system/execution-queue/${attempt}/abandon-library-import`);
+      await runCommand(['queue','abandon-job','--job',attempt,'--acknowledge-unknown-result'],client);
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/system/execution-queue/${attempt}/abandon-library-job`);
+      await runCommand(['queue','reconcile-failed','--job',attempt,'--event',question,'--instance',second],client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({failure_event_id:question,failure_instance_id:second});
+
+      await runCommand(['system','concurrency','show'],client);
+      expect(calls.at(-1)!.url.pathname).toBe('/api/system/concurrency-settings');
+      await runCommand(['agent','config','show'],client);
+      expect(calls.at(-1)!.url.pathname).toBe('/api/agent/config');
+      await runCommand(['agent','test'],client);
+      expect([calls.at(-1)!.url.pathname,calls.at(-1)!.init?.method]).toEqual(['/api/agent/test','POST']);
+
+      await runCommand(['workflow','attempts','--workflow',question,'--ordinal','4','--offset','20'],client);
+      expect(calls.at(-1)!.url.pathname+calls.at(-1)!.url.search).toBe(`/api/workflows/${question}/steps/4/attempts?offset=20`);
+      await runCommand(['workflow','restore-deleted','--project',project,'--deleted-after','2026-11-18T00:00:00Z','--expected-count','2'],client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({deleted_after:'2026-11-18T00:00:00Z',expected_count:2});
+
+      await runCommand(['rules','update','--project',project,'--path','materials/guide.md','--file',ruleFile,'--expected-sha256','null'],client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({path:'materials/guide.md',text:'项目规则内容',expected_sha256:null});
+      await runCommand(['rules','delete','--project',project,'--path','materials/guide.md','--expected-sha256','a'.repeat(64)],client);
+      expect([calls.at(-1)!.url.pathname,calls.at(-1)!.init?.method]).toEqual([`/api/projects/${project}/rules/file`,'DELETE']);
+
+      await runCommand(['project','skill','list','--project',project],client);
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/projects/${project}/skill/attempts`);
+      await runCommand(['project','skill','adopt','--project',project,'--attempt',attempt],client);
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/projects/${project}/skill/attempts/${attempt}/adopt`);
+    }finally{await rm(root,{recursive:true,force:true});}
   });
 });

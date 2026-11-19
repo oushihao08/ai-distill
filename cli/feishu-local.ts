@@ -11,6 +11,7 @@ import type {FeishuCliTarget} from './feishu';
 import {feishuClient,ensureFeishuSchema} from '../server/publishing/feishu-api';
 import {feishuTextFields,compareFeishuText} from '../server/publishing/feishu-verification';
 import {materialPdfAttachments,materialPdfBaseNames,isLegacyHashAttachmentList} from '../server/publishing/material-pdf';
+import {findFeishuWorkflowRecords} from '../server/publishing/feishu-records';
 import {canonicalJson} from '../shared/workflow-config';
 import {FeishuError} from '../toolSkills/feishu-operations/scripts/client';
 const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
@@ -42,19 +43,7 @@ export async function syncLocalFeishu(manifestPath:string,output:string,target:F
  const save=async()=>{const temp=path+'.'+randomUUID()+'.tmp';await writeFile(temp,JSON.stringify(state,null,2),{flag:'wx',mode:0o600});await rename(temp,path);};
  const tablePath=`/bitable/v1/apps/${target.base_token}/tables/${target.table_id}`;
  const listFields=(fields:string[])=>tablePath+'/records?field_names='+encodeURIComponent(JSON.stringify(fields));
- const findMatches=async(api:Awaited<ReturnType<typeof feishuClient>>,workflowId:string)=>{
-  const matches:any[]=[],seen=new Set<string>();let cursor='';
-  do{
-   const page=await api.call(tablePath+'/records/search?page_size=100'+(cursor?'&page_token='+encodeURIComponent(cursor):''),'POST',{field_names:['题目ID','系统同步ID'],filter:{conjunction:'or',conditions:['题目ID','系统同步ID'].map(field_name=>({field_name,operator:'is',value:[workflowId]}))}});
-   if(!Array.isArray(page.items)||page.items.some((r:any)=>r.fields?.['题目ID']!==workflowId&&r.fields?.['系统同步ID']!==workflowId))throw new CliError('飞书身份查询返回不匹配记录');
-   matches.push(...page.items);
-   if(page.has_more&&(!page.page_token||seen.has(page.page_token)))throw new CliError('飞书身份查询分页不完整');
-   cursor=page.has_more?page.page_token:'';if(cursor)seen.add(cursor);
-  }while(cursor);
-  const records=[];
-  for(const match of matches){const record=(await api.call(tablePath+'/records/'+match.record_id)).record;if(!record)throw new CliError('飞书查重记录无法回读');records.push(record);}
-  return records;
- };
+ const findMatches=(api:Awaited<ReturnType<typeof feishuClient>>,id:string)=>findFeishuWorkflowRecords(api,tablePath,id);
  // 本地回执独立保存，不把本地交付伪装为后端归档或同步事件。
  for(const [index,item] of items.entries()){
   if(signal?.aborted)break;
@@ -64,7 +53,7 @@ export async function syncLocalFeishu(manifestPath:string,output:string,target:F
   try{
    const pdfs=await materialPdfAttachments(item.files,item.workflow_id,join(dirname(path),'local-pdf-cache'));
    const names=pdfs.map(file=>file.name);
-   const docxNames=materialPdfBaseNames(item.files).map(stem=>`${stem}.docx`);
+   const legacyStems=materialPdfBaseNames(item.files),docxNames=legacyStems.map(stem=>`${stem}.docx`),legacyPdfNames=legacyStems.map(stem=>`${stem}.pdf`);
    api=await feishuClient();
    receipt.operation='schema';await save();
    await ensureFeishuSchema(api,target.base_token,target.table_id);
@@ -79,7 +68,7 @@ export async function syncLocalFeishu(manifestPath:string,output:string,target:F
    const hasNames=(value:any,extensions:string[])=>Array.isArray(value)&&value.length===extensions.length&&value.every((f:any,i:number)=>f.name===extensions[i]);
    if(existing){
     if(compareFeishuText(expected,existing.fields).length)throw new CliError('远端正文字段与清单快照不同，未覆盖');
-    if(!hasNames(existing.fields['输入附件'],names)&&!hasNames(existing.fields['输入附件'],docxNames)&&!isLegacyHashAttachmentList(existing.fields['输入附件']))throw new CliError('远端附件与本地材料不一致，未覆盖');
+    if(!hasNames(existing.fields['输入附件'],names)&&!hasNames(existing.fields['输入附件'],docxNames)&&!hasNames(existing.fields['输入附件'],legacyPdfNames)&&!hasNames(existing.fields['输入附件'],['材料.docx'])&&!isLegacyHashAttachmentList(existing.fields['输入附件']))throw new CliError('远端附件与本地材料不一致，未覆盖');
    }
    if(!existing||!hasNames(existing.fields['输入附件'],names)){
     // 转换在认证前完成；写入前重新建立同身份连接并核对原记录。

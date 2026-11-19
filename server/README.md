@@ -124,7 +124,7 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务意图、执行归属和
 
 ## 读取、日志与维护
 
-首屏列表/状态使用服务端白名单和批量快照；项目页先通过 `GET /api/projects/:id/preview` 读取轻量名称与期次，再通过项目详情接口读取全部状态。项目步骤状态在数据库端按固定列顺序聚合成紧凑数组，服务端还原原有响应字段；正文、历史及材料版本按需读取。`GET /api/attempts/:id?view=status`不读取结果正文，CLI等待默认使用该视图；完整内容由show/full显式读取。普通文件下载不证明内容质量或平台成功。
+首屏列表/状态使用服务端白名单和批量快照；项目页先通过 `GET /api/projects/:id/preview` 读取轻量名称与期次，再通过项目详情接口读取全部状态。项目步骤状态在数据库端按题目分组、共享题目身份并按固定列顺序聚合成紧凑数组，题目列表同样聚合为单行紧凑载荷，并还原原有字段与日期格式；服务端还原原有响应字段；正文、历史及材料版本按需读取。`GET /api/attempts/:id?view=status`不读取结果正文，CLI等待默认使用该视图；完整内容由show/full显式读取。普通文件下载不证明内容质量或平台成功。
 
 共用安全日志入口为 `logging.ts`，默认位于 `<STORAGE_DIR>/logs/<UTC日期>/`。请求通过 `X-Request-ID`、attempt/job/call ID关联。普通JSONL落盘错误、指定数据库慢查询/连接等待告警，以及精确白名单中的停止生命周期、材料取消和恢复降级事件；下述有限执行里程碑也持久化，其他成功/逐token等进度日志不落盘；不记录材料、题面、提示词、答案、SQL参数或凭证。MinerU结果下载失败可记录下载子阶段、HTTP状态或经过格式白名单过滤的网络错误码，不记录原始错误消息、响应正文或签名地址。Codex私有事件和业务报告不是普通日志。命令和限制见 [诊断脚本](../scripts/diagnostics/README.md)；健康和`/api/monitor`状态不能证明供应商仍在生成。
 
@@ -150,7 +150,7 @@ worker 对同类队列的并发可用性查询共用一个进行中的探测；�
 
 [手动返修建议](revision-advice/README.md)为独立的用户派发功能；050仅新增任务结构和归属约束，不恢复自动返修链。批量出题/作答/评分遇到当前accepted题目返回already_accepted，不创建尝试或清除结果；未归档、未达标题目的已完成出题步骤允许用户显式再派发，活动尝试仍拒绝重复派发，历史尝试保留。
 
-普通结构化日志除错误、服务生命周期和数据库慢/等待告警外，还持久化有限执行里程碑：attempt入队/复用/领取/输入校验/完成、外部调用开始/完成、心跳失败及恢复、连接恢复。MinerU另记录上传/轮询/下载阶段、供应商状态变化、提取完成和CLI回退，不逐次记录相同轮询状态；私有批次定位见[PDF提取模块](materials/pdf-extraction/README.md)。工具/token/页进度仍不持久化。连接诊断增加获取前后池总数/空闲数/等待数及新连接标记；流错误仅保留事件数/字节数/DONE与finish状态等安全标量，不保留正文或原始响应。没有结束事件不证明上游仍在生成。
+普通结构化日志除错误、服务生命周期和数据库慢/等待告警外，还持久化有限执行里程碑：attempt入队/复用/领取/输入校验/完成、外部调用开始/完成、心跳失败及恢复、连接恢复。MinerU另记录上传/轮询/下载阶段、供应商状态变化、提取完成和CLI回退，不逐次记录相同轮询状态；私有批次定位见[PDF提取模块](materials/pdf-extraction/README.md)。工具/token/页进度仍不持久化。数据库连接和查询回调在发起时冻结安全日志上下文，避免复用连接时把慢查询归到先前请求；连接诊断增加获取前后池总数/空闲数/等待数及新连接标记；流错误仅保留事件数/字节数/DONE与finish状态等安全标量，不保留正文或原始响应。没有结束事件不证明上游仍在生成。
 
 手动建议050与钩子033属于按功能启用的可选结构，缺少它们不使既有流程健康检查失败；建议GET的available与派发校验单独判断该功能是否可用。
 
@@ -211,3 +211,15 @@ readActiveConcurrencyLimit的只读SQLite连接沿用槽位写连接的5秒busy_
 `GET /api/projects/:id/deleted-question-sources?ids=UUID,...` 只读查询明确指定的1至100道已软删除共享库题目的ID、标题、删除时间及材料包/版本/脱敏来源ID，用于删除后的精确重建对账；不返回题面或材料正文，不恢复记录、不派发任务。
 
 显式题面前缀修订由 `authoring/revise.ts` 维护，HTTP契约与版本失效规则见[出题模块](authoring/README.md#显式开头修订)。
+
+数据库连接池最多4条连接，空闲60秒后回收，覆盖工作台10秒刷新间隔，避免每轮刷新重新建立远端TLS连接；关闭进程仍主动结束连接池。
+
+### 最近题目轻量接口
+
+`GET /api/projects/:id/questions?limit=N`在SQL中先按created_at DESC,id DESC限定未删除question集合，再关联ordinal4/7/8简要状态；默认100、范围1–1000。`?ids=UUID,...`精确限定最多1000题，与limit互斥。返回workflows及精简workflow_status，不计算全项目步骤汇总、不读材料/完整题面、不提供派发ready。用于近期列表与CLI交付批次预检；最近创建不等于最近出题成功。
+
+项目工作流批量身份查询使用`GET /api/projects/:id/workflow-ids?page=N&page_size=N`（每页最多1000）；题目列表使用`/api/projects/:id/questions?page=N&limit=N`。成果库`GET /api/results?page=N&page_size=N&q=...&publication=all|archived|pending`先在服务端筛选再分页，避免工作台一次接收全部成果。旧的无分页`/api/results`响应仍保留供既有客户端兼容，不建议批量调用。
+项目旧材料包列表`GET /api/projects/:id/material-packages?page=N&page_size=N`返回轻量分页结果，最多500条。
+期次详情`GET /api/projects/:id?workflow_page=N&workflow_page_size=N`先对工作流排序切片再投影该页关联字段，步骤汇总仍按全期计算（含步骤4 `unauthored_ready` 未出题就绪计数）；省略分页参数保持旧客户端响应。工作台首屏读取100条，轮询刷新保留已加载页，可继续加载后续页。材料库`GET /api/material-library/packages`先完成筛选分页再计算当前页任务状态、加载数与准入评估；`imports`、`revisions`、`preparations`（含`summary_only=true`轻量摘要）、`loaded-materials`、`material-uses`及`events`均支持可选`page`/`page_size`分页；`GET /api/system/execution-queue`默认仅返回活动与待核实任务（`?include_history=true`返回全部本地记录）。
+
+数据库连接工厂对已借出连接的error事件记录安全错误，避免数据库主动断连作为未捕获事件退出API；空闲连接仍由Pool错误处理器负责。不重试事务或未知写入，也不将连接错误转成业务成功。此分支源码支持不代表已做故障注入验收。

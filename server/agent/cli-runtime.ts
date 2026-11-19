@@ -90,17 +90,20 @@ export async function executeCliProcess(
   captureStdout?:boolean;
   call_id?:string;
   onProcess?:(pid:number|null)=>void;
+  /** 可选：stdout连续静默超过该毫秒数即判定卡死，结束子进程并以 stalled=true 正常返回，交由调用方续传或回收结果。 */
+  idleTimeout?:number;
  }
-):Promise<{stdout:string;stderr:string;code:number|null}>{
+):Promise<{stdout:string;stderr:string;code:number|null;stalled?:boolean}>{
  const timeoutMsg=`${spec.label}执行超时`;
  const cancelMsg=`${spec.label}执行已取消`;
+ const stallMsg=`${spec.label}输出静默卡死`;
  if(options.signal?.aborted){
   const isTimeout=options.signal.reason instanceof Error&&options.signal.reason.message.includes('超时');
   throw new Error(isTimeout?timeoutMsg:cancelMsg);
  }
  try{
   const call_id=options.call_id??randomUUID(),started=performance.now(),startedAt=Date.now(),deadline=started+options.timeout;
-  return await withLogContext({call_id,provider:spec.provider},()=>new Promise<{stdout:string;stderr:string;code:number|null}>((resolveResult,reject)=>{
+  return await withLogContext({call_id,provider:spec.provider},()=>new Promise<{stdout:string;stderr:string;code:number|null;stalled?:boolean}>((resolveResult,reject)=>{
    const child=spawn(binary,args,{cwd:options.directory,env:options.env,detached:process.platform!=='win32',stdio:['pipe','pipe','pipe']});
    let observed=false;
    const stdoutDecoder=new StringDecoder('utf8'),stderrDecoder=new StringDecoder('utf8');
@@ -128,6 +131,16 @@ export async function executeCliProcess(
     logEvent('timeout.fired',{level:'error',timeout_ms:options.timeout,elapsed_ms:Math.round(fired-started),timer_lateness_ms:Math.max(0,Math.round(fired-deadline))});
     stop(timeoutMsg);
    },options.timeout);
+   let idleTimer:ReturnType<typeof setTimeout>|undefined;
+   const armIdle=()=>{
+    if(!options.idleTimeout||stopped)return;
+    if(idleTimer)clearTimeout(idleTimer);
+    idleTimer=setTimeout(()=>{
+     logEvent('process.stalled',{level:'warn',operation:spec.cliOperation,idle_timeout_ms:options.idleTimeout,elapsed_ms:Math.round(performance.now()-started)});
+     stop(stallMsg);
+    },options.idleTimeout);
+   };
+   armIdle();
    const cancel=()=>{
     if(options.signal?.reason instanceof Error&&options.signal.reason.message.includes('超时')){stop(timeoutMsg);return;}
     logEvent('cancel.requested',{level:'warn',process_state:'cancelled',elapsed_ms:Math.round(performance.now()-started)});
@@ -136,6 +149,7 @@ export async function executeCliProcess(
    options.signal?.addEventListener('abort',cancel,{once:true});
    if(options.signal?.aborted)cancel();
    child.stdout.on('data',(chunk:Uint8Array)=>{
+    armIdle();
     child.stdout.pause();
     outputTask=outputTask.then(async()=>{
      const size=Buffer.byteLength(chunk);
@@ -158,6 +172,7 @@ export async function executeCliProcess(
    let exitRecorded=false;
    const cleanup=()=>{
     clearTimeout(timer);
+    if(idleTimer)clearTimeout(idleTimer);
     options.signal?.removeEventListener('abort',cancel);
     if(observed){
      observed=false;
@@ -185,7 +200,8 @@ export async function executeCliProcess(
     stderr+=stderrDecoder.end();
     cleanup();
     logEvent('process.closed',{level:stopped||code!==0?'warn':'info',exit_code:code??undefined,signal:signal??undefined,process_state:exitRecorded?'exited':'unknown',elapsed_ms:Math.round(performance.now()-started),wall_elapsed_ms:Date.now()-startedAt});
-    if(stopped)reject(new Error(stopped));
+    if(stopped===stallMsg)resolveResult({stdout,stderr:`${stderr}\n${stallMsg}`,code:null,stalled:true});
+    else if(stopped)reject(new Error(stopped));
     else resolveResult({stdout,stderr,code});
    });
   }));
@@ -259,7 +275,7 @@ export async function prepareCliWorkspace<T>(
   await rm(join(sourceOutput,'result.json'),{force:true});
   await rm(join(sourceOutput,'result.txt'),{force:true});
   for(const entry of await readdir(sourceOutput)){
-   if(/^_part_.*\.json$/i.test(entry))await rm(join(sourceOutput,entry),{force:true});
+   if(/^_part_.*\.(?:json|txt)$/i.test(entry))await rm(join(sourceOutput,entry),{force:true});
   }
   if(fresh){
     await rm(join(sourceOutput,'题目.md'),{force:true});

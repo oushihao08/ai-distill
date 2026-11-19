@@ -24,6 +24,35 @@ test('library package filters do not leave untyped gaps for the optional usage p
  expect(calls[1]?.sql).toContain('eligibility.assessment_version=$10');
 });
 
+test('library package page includes use summaries in one ordered query and bounds bulk size',async()=>{
+ const calls:string[]=[];
+ const row={id:'package-a',updated_at:'2026-11-16T00:00:00Z',total_count:1536,material_uses:[{id:'use-a'}]};
+ const pool={query:async(sql:string)=>{calls.push(sql);return{rows:[row]};}} as any;
+ const result=await readLibraryPackages(pool,{page_size:500});
+ expect(calls).toHaveLength(1);
+ expect(calls[0]).toContain('WITH page AS MATERIALIZED');
+ expect(calls[0]).toContain('WHERE u.package_id IN (SELECT id FROM page)');
+ expect(calls[0]).toContain('ORDER BY page.updated_at DESC,page.id');
+ expect(result).toEqual({items:[{id:row.id,updated_at:row.updated_at,material_uses:row.material_uses}],page:1,page_size:500,total_count:1536});
+ const [insidePage,afterPage]=calls[0]!.split('LIMIT $2 OFFSET $3)');
+ expect(insidePage).not.toContain('library_load_eligibility');
+ expect(insidePage).not.toContain('available_redaction_count');
+ expect(afterPage).toContain('available_redaction_count');
+ expect(afterPage).toContain('j.package_id=page.id');
+ await expect(readLibraryPackages(pool,{page_size:501})).rejects.toThrow('分页参数无效');
+});
+
+test('revision list supports optional bounded pagination with package_id index predicates',async()=>{
+ const calls:{sql:string;values:unknown[]}[]=[];
+ const pool={query:async(sql:string,values:unknown[])=>{calls.push({sql,values});return{rows:[{id:'rev-1'},{id:'rev-2'}],rowCount:2};}} as any;
+ const rows=await readLibraryRevisions(pool,'package-a',{page:2,page_size:1});
+ expect(rows).toHaveLength(2);
+ expect(calls[0]!.sql).toContain('LIMIT $3 OFFSET $4');
+ expect(calls[0]!.sql).toContain('j.package_id=r.package_id');
+ expect(calls[0]!.values.slice(2,4)).toEqual([2,1]);
+ await expect(readLibraryRevisions(pool,'package-a',{page:1,page_size:201})).rejects.toThrow('材料版本分页参数无效');
+});
+
 test('validates package metadata and preserves stable unique tags',()=>{
  expect(validateLibraryPackageInput({name:' 民事案件 ',description:'说明',tags:['合同','执行']})).toEqual({name:'民事案件',description:'说明',tags:['合同','执行']});
  expect(()=>validateLibraryPackageInput({name:' ',description:'',tags:[]})).toThrow();

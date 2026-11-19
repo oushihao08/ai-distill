@@ -15,6 +15,7 @@ const current=new AsyncLocalStorage<Execution>();
 const registrationRoot=new AsyncLocalStorage<string>();
 export function withLocalQueueRoot<T>(root:string,run:()=>T){return registrationRoot.run(root,run);}
 export function localExecutionQueue(){return current.getStore()?.queue??localQueue(registrationRoot.getStore());}
+export function hasActiveLocalExecution(){return localQueueEnabled()&&Boolean(current.getStore());}
 export function withLocalExecution<T>(queue:LocalQueue,job:QueueJob,execute:()=>Promise<T>){return current.run({queue,job},execute);}
 /** 仅用于领取/失租清理的SQL；UUID经过校验，alias仅允许代码内标识。 */
 export function localClaimSql(alias:string,stale=false){if(!localQueueEnabled())return '';if(!/^[a-z_]+$/.test(alias))throw new Error('执行表别名无效');const c=current.getStore();if(stale||!c)return ' AND FALSE ';assertJobId(c.job.id);return ` AND ${alias}.id='${c.job.id}'::uuid `;}
