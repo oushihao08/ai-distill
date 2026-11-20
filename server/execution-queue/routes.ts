@@ -98,7 +98,7 @@ export function registerExecutionQueueRoutes(app:Hono,pool:Pool,root:string){
    if(!verifiedLocalStop&&old.expired_beyond_grace!==true)throw new HTTPException(409,{message:'未归属本机待核实记录的材料任务须在租约过期满5分钟后才允许显式放弃'});
    const reasonCode=verifiedLocalStop?'user_abandoned_unknown':'user_abandoned_expired_lease';
    const message=atomicImportOnly?'用户明确放弃未核实的旧调用并要求重新提取':'用户明确放弃已过租且结果未知的材料任务';
-   const result=await db.query("UPDATE ai_distill.library_jobs SET status='failed',error_code=$2,error_message=$3,result_summary=COALESCE(result_summary,'{}'::jsonb)||jsonb_build_object('execution_stop',jsonb_build_object('reason_code',$2,'observed_at',now())),finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1 AND status='running' RETURNING id",[id,reasonCode,message]);
+   const result=await db.query("UPDATE ai_distill.library_jobs SET status='failed',error_code=$2::text,error_message=$3::text,result_summary=COALESCE(result_summary,'{}'::jsonb)||jsonb_build_object('execution_stop',jsonb_build_object('reason_code',$2::text,'observed_at',now())),finished_at=now(),lease_token=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=$1 AND status='running' RETURNING id",[id,reasonCode,message]);
    if(result.rowCount!==1)throw new HTTPException(409,{message:'材料任务状态并发变化'});
    await db.query('COMMIT');committed=true;forgetLocalRegistrations(db);
    if(job?.state==='needs_review')q.resolve(id,'failed');
