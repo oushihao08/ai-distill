@@ -1,4 +1,5 @@
 /** 完整迁移边界验收：固定输入对比迁移前快照，串联出题→作答输入→评分协议；材料/达标/交付使用隔离策略，不调用外部服务。 */
+import type {AuthoringOptions} from '../authoring/executor';
 import {test,expect} from 'bun:test';
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
@@ -43,6 +44,17 @@ test('项目身份解析兼容主项目名、期次、旧目录及冻结契约�
  for(const identity of [{parent_name:'Work法律全场景'},{project_name:'Work法律全场景 - 一期'},{workspace_path:'/tmp/Work法律全场景'},{content_contract:'work_legal_v1'}])expect(resolveStepProjectKey(identity)).toBe('Work法律全场景');
  expect(resolveStepProjectKey({project_key:'其他项目',content_contract:'work_legal_v1'})).toBe('其他项目');
  expect(resolveStepProjectKey({name:'豆包高经济价值 - 第六期'})).toBe('豆包高经济价值');expect(resolveStepProjectKey()).toBeNull();
+});
+test('法律返修期使用法律出题提示词和文件需求 schema，其他主项目保留默认策略',()=>{
+ const base={properties:{answer_requirements:{properties:{output_mode:{enum:['text']}}}}};
+ const input={options:{materials:[]} as AuthoringOptions,base};
+ const planFor=(name:string)=>projectStepPolicies.authoringPlan.execute(resolveStepProjectKey({project_name:name}),input);
+ const repair=planFor('豆包高经济价值-返修 - 第六期');
+ expect(repair).toEqual(planFor('豆包高经济价值 - 第六期'));
+ expect(repair.schema.properties.answer_requirements.properties.output_mode.enum).toContain('file');
+ expect(repair.runner_instruction).toContain('output_mode=file');
+ expect(repair.task_instruction).toContain('交办可实际使用的文件');
+ expect(planFor('其他项目 - 第六期').schema).toBe(base);
 });
 test('只有Work一包一题，其他项目及无上下文维持通用能力',()=>{
  expect(singleQuestionPerPackage({parent_name:'Work法律全场景'})).toBe(true);

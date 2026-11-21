@@ -147,6 +147,8 @@ test('fresh authoring uses the project cwd and writes a dedicated result without
   expect(request.args).not.toContain('--ignore-user-config');expect(request.args).not.toContain('--ignore-rules');
   expect(request.args).not.toContain('--output-schema');expect(request.args).not.toContain('permissions.distill_role.network.enabled=false');
   expect(request.args).toContain('--dangerously-bypass-approvals-and-sandbox');
+  expect(request.args).toContain('features.skip_host_skill_discovery=true');
+  expect(request.args).toContain('features.skill_search=false');
   expect(request.args).toContain('--ephemeral');expect(request.args).toContain('features.memories=false');
   expect(request.secrets).toEqual([]);
   const evidence=JSON.parse(await readFile(join(f.options.directory,'output','request.json'),'utf8'));

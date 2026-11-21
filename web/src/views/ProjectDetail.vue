@@ -20,7 +20,7 @@ import { useResource } from '../composables/useResource';
 import { type ProjectDetail,type ProjectStage } from '../types/api';
 const route=useRoute();const router=useRouter();
 const {data:preview, error:previewError, loading:previewLoading, refresh:refreshPreview}=useResource<{project:Pick<ProjectDetail['project'],'id'|'name'|'description'|'parent_name'|'phase_no'|'project_group_id'>}>(`/projects/${route.params.id}/preview`);
-const {data,error,loading,refresh:refreshFirstPage}=useResource<ProjectDetail>(`/projects/${route.params.id}?workflow_page=1&workflow_page_size=100`,{immediate:false});
+const {data,error,loading,refresh:refreshFirstPage}=useResource<ProjectDetail>(`/projects/${route.params.id}?workflow_page=1&workflow_page_size=100`);
 const loadingMore=shallowRef(false);
 let nextWorkflowPage=2;
 async function refresh(){
@@ -65,7 +65,6 @@ async function loadAllWorkflows(){
  }catch(cause){error.value=cause instanceof Error?cause.message:'读取全部题目失败';}
  finally{loadingMore.value=false;}
 }
-watch(preview,value=>{if(value)void refresh();});
 // 模型摘要由设置保存事件刷新，任务状态刷新不重复读取配置。
 usePageBreadcrumbs(()=>{const project=data.value?.project;return [{title:'出题项目',to:'/'},...(project?.project_group_id?[{title:project.parent_name||'主项目',to:`/project-groups/${project.project_group_id}`}]:[]),{title:project?.phase_name||project?.name||'期次工作区'}];});
 const editOpen=shallowRef(false);const tagsOpen=shallowRef(false);const deleteOpen=shallowRef(false);const materialsSettingsOpen=shallowRef(false);
@@ -193,11 +192,11 @@ async function savedTags(){tagsOpen.value=false;await refresh();}
 </script>
 <template><Column :gap="16">
  <RouterLink :to="(data?.project.project_group_id??preview?.project.project_group_id)?`/project-groups/${data?.project.project_group_id??preview?.project.project_group_id}`:'/'" class="link-text text-sm">← 所属主项目的期次</RouterLink>
- <v-alert v-if="previewError&&!preview" type="error" role="alert">{{ previewError }}</v-alert>
- <v-btn v-if="previewError&&!preview" color="primary" :loading="previewLoading" @click="refreshPreview">重新读取</v-btn>
+ <v-alert v-if="previewError&&!preview&&!data" type="error" role="alert">{{ previewError }}</v-alert>
+ <v-btn v-if="previewError&&!preview&&!data" color="primary" :loading="previewLoading" @click="refreshPreview">重新读取</v-btn>
  <v-alert v-if="error" type="error" role="alert">{{ error }}</v-alert>
  <v-btn v-if="error&&!data" color="primary" :loading="loading" :disabled="loading" @click="refresh">重新读取</v-btn>
- <p v-if="previewLoading&&!preview" class="text-muted">正在读取项目…</p>
+ <p v-if="previewLoading&&!preview&&!data" class="text-muted">正在读取项目…</p>
  <Column v-if="preview&&!data" :gap="8"><h1 class="text-2xl font-bold text-ink-heading break-words">{{ preview.project.name }}</h1><p class="text-xs text-muted">第 {{ preview.project.phase_no??'—' }} 期 · 正在读取题目和步骤状态…</p></Column>
  <template v-if="data">
   <Row x="between" wrap :gap="12"><Column :gap="6" class="min-w-0"><h1 class="text-2xl font-bold text-ink-heading break-words">{{ data.project.name }}</h1><p class="text-xs text-muted">第 {{ data.project.phase_no??'—' }} 期 · 出题后直接进入交付归档（作答、评分与达标判断已暂时封存）</p><p v-if="data.project.description" class="text-sm text-muted">{{ data.project.description }}</p></Column><Row wrap :gap="8"><v-btn @click="openMaterialsSettings">主项目资料与 skill</v-btn><v-btn :disabled="busy!==null" @click="editOpen=true">编辑本期配置</v-btn><v-btn :loading="loading" @click="refresh()">刷新</v-btn><v-btn color="error" :disabled="busy!==null" @click="deleteOpen=true">删除本期</v-btn></Row></Row>

@@ -4,6 +4,7 @@
 
 | Skill | 目标路径 | 触发场景 |
 | --- | --- | --- |
+| `question-design-simulator` | `../../toolSkills/question-design-simulator` | 比较出题点子、预判真实工作量与回合、对照实测校准 |
 | `ai-distill-workflow` | `../../skill` | 工作流查询、派发、等待、容量调度、材料处理、评分达标、归档导出与交付 |
 | `materials-full-capacity-dispatch` | `../../toolSkills/materials-full-capacity-dispatch` | 已授权批量材料入库/脱敏/整理/加载/出题的实时容量补位 |
 | `phase8-materials-full-capacity` | `../../toolSkills/phase8-materials-full-capacity` | 高经第八期 132 个固定逻辑包的双通道满载推进 |

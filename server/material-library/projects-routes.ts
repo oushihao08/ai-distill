@@ -7,7 +7,7 @@ import type {Hono} from 'hono';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {uuid} from '../validation';
-import {loadLibraryPackage,readLoadedLibraryPackages,removeLoadedLibraryPackage,restoreLoadedLibraryPackage,updateLoadedLibraryPackage} from './projects';
+import {loadLibraryPackage,readLoadedLibraryPackages,readLoadedLibrarySummary,removeLoadedLibraryPackage,restoreLoadedLibraryPackage,updateLoadedLibraryPackage} from './projects';
 import {readLibraryPackages} from './service';
 import {readLegacyMaterialInventory,importLegacyMaterial,activateLegacyImports} from './legacy-import';
 import {createLibraryQuestion} from './questions';
@@ -64,6 +64,11 @@ export function registerProjectLibraryRoutes(app:Hono,pool:Pool,storageRoot:stri
  });
  app.patch('/api/projects/:id/material-uses/:useId',async c=>c.json(await updateMaterialUse(pool,
   uuid(c.req.param('id')),uuid(c.req.param('useId')),versionHeader(c.req.header('If-Match')),await jsonBody(c))));
+ app.get('/api/projects/:id/loaded-materials/summary',async c=>{
+  const mode=c.req.query('processing_mode');
+  if(mode!=='original'&&mode!=='aliases'&&mode!=='mask')throw new HTTPException(400,{message:'材料处理模式无效'});
+  return c.json(await readLoadedLibrarySummary(pool,uuid(c.req.param('id')),mode));
+ });
  app.get('/api/projects/:id/loaded-materials',async c=>{
   const rawPage=c.req.query('page'),rawSize=c.req.query('page_size'),paged=rawPage!==undefined||rawSize!==undefined;
   const page=rawPage===undefined?1:Number(rawPage),pageSize=rawSize===undefined?100:Number(rawSize);

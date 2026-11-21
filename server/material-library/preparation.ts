@@ -20,13 +20,25 @@ import {finishLibraryJob} from './jobs';
 import {hash,jobDirectory} from './execution-shared';
 import {readLibraryBlob} from './storage';
 import {preparationUnits,preparationBlocks,compileFixedPreparation,materializePreparation,MATERIAL_PREPARATION_SINGLE_SCHEMA,type MaterialPreparationResult} from '../../shared/material-preparation-result';
-import {PREPARATION_PROMPT,PREPARATION_FILE_COMPLETION_SCHEMA,runPreparationCheckpoint,imageDecisionCheckpoint,writePreparationAgentInput,writePreparationOverviewInput,validatePreparationFileDeclaration,readPreparationAgentOutput,mergeOverviewHiddenDocuments,validatePreparationCoverage} from './preparation-support';
+import {resolveStepProjectKey} from '../lifecycle/steps';
+import {preparationPrompt,PREPARATION_PROMPT,PREPARATION_FILE_COMPLETION_SCHEMA,runPreparationCheckpoint,imageDecisionCheckpoint,writePreparationAgentInput,writePreparationOverviewInput,validatePreparationFileDeclaration,readPreparationAgentOutput,mergeOverviewHiddenDocuments,validatePreparationCoverage} from './preparation-support';
 import {fileIdentityMapping,preparationUnitMapping,remapResultIds,revisionFileIdentities,sameOriginalSetSql} from './result-reuse';
 export {PREPARATION_PROMPT,runPreparationCheckpoint};
 
 type Db=Pick<PoolClient,'query'>;
 export type PreparationSource={material_mode:'original'|'redacted';package_id:string;revision_id:string;redaction_id:string|null;extraction_job_id:string;source_digest:string;index:any};
 const conflict=(message:string)=>new HTTPException(409,{message});
+function usesFullDossier(project: {name?:string; parent_name?:string|null}) {
+ const key = resolveStepProjectKey(project);
+ return key === '豆包高经济价值' || key === '豆包高经济价值-返修';
+}
+
+function retainDossierDocuments(result: MaterialPreparationResult): MaterialPreparationResult {
+ if (!result.documents.some(doc => doc.visibility === 'hidden')) return result;
+ return {...result, documents: result.documents.map(doc => doc.visibility === 'hidden'
+  ? {...doc, visibility: 'visible', visibility_reason: ''} : doc)};
+}
+
 /** 续作创建新job，继承明确来源与模型；不领取任务、不启动worker。 */
 export async function resumePreparation(pool:Pool,root:string,previousJobId:string,body:any){
  const previous=(await pool.query("SELECT * FROM ai_distill.library_jobs WHERE id=$1 AND kind='prepare'",[previousJobId])).rows[0];
@@ -63,7 +75,9 @@ const sourceIdentity=(s:PreparationSource)=>({material_mode:s.material_mode,pack
 export async function enqueuePreparation(pool:Pool,root:string,revisionId:string,body:any){
  if(!await preparationAvailable(pool))throw conflict('可选材料整理尚未启用，普通建题可继续');
  const source=await readPreparationSource(pool,revisionId,body);
- if(body.project_id&&!(await pool.query('SELECT id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[body.project_id])).rows.length)throw new HTTPException(404,{message:'项目不存在'});
+ const project=body.project_id?(await pool.query('SELECT id,name,parent_name FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[body.project_id])).rows[0]:undefined;
+ if(body.project_id&&!project)throw new HTTPException(404,{message:'项目不存在'});
+ const fullDossier=!!project&&usesFullDossier(project);
  if([body.api_settings,body.agent_settings,body.web_settings].filter(value=>value!==undefined).length>1)throw new HTTPException(400,{message:'API、Agent与网页Agent设置不能同时指定'});
  let api:ModelApiConfig|undefined;
  if(body.api_settings!==undefined){try{api=resolveModelApiConfig(body.api_settings);}catch{throw new HTTPException(400,{message:'材料整理API模型配置无效'});}}
@@ -82,7 +96,7 @@ export async function enqueuePreparation(pool:Pool,root:string,revisionId:string
    (previous.input_snapshot?.redaction_id??null)!==(source.redaction_id??null)||
    (previous.input_snapshot?.project_id??null)!==(body.project_id??null))throw conflict('整理续作必须使用同一提取、脱敏及项目来源');
  }
- const input={...(body.previous_job_id?{previous_job_id:body.previous_job_id}:{}),force:body.force===true,...sourceIdentity(source),project_id:body.project_id??null,request_digest:requestDigest,files:[]};
+ const input={...(fullDossier?{full_dossier:true}:{}),...(body.previous_job_id?{previous_job_id:body.previous_job_id}:{}),force:body.force===true,...sourceIdentity(source),project_id:body.project_id??null,request_digest:requestDigest,files:[]};
  const id=randomUUID(),executor=api?'api':web?'web':'agent',db=await pool.connect();
  try{
   await db.query('BEGIN');const pkg=await db.query('SELECT id FROM ai_distill.library_packages WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[source.package_id]);if(!pkg.rows.length)throw new HTTPException(404,{message:'材料包不存在或已归档'});
@@ -93,9 +107,9 @@ export async function enqueuePreparation(pool:Pool,root:string,revisionId:string
   const active=(await db.query(`SELECT j.id FROM ai_distill.library_jobs j
    WHERE j.package_id=$1 AND j.revision_id=$2 AND j.kind='prepare' AND j.status IN ('queued','running','succeeded')
    AND j.input_snapshot->>'extraction_job_id'=$3 AND j.input_snapshot->>'redaction_id' IS NOT DISTINCT FROM $4::text
-   AND j.input_snapshot->>'project_id' IS NOT DISTINCT FROM $5::text AND ($7::boolean=false OR j.status<>'succeeded')
+   AND j.input_snapshot->>'project_id' IS NOT DISTINCT FROM $5::text AND COALESCE(j.input_snapshot->>'full_dossier','false')=$8 AND ($7::boolean=false OR j.status<>'succeeded')
    AND (j.status='succeeded' OR $6::uuid IS NULL OR EXISTS(SELECT 1 FROM ai_distill.execution_dispatches d WHERE d.job_id=j.id AND d.job_kind='library' AND d.executor_id=$6))
-   ORDER BY j.created_at DESC LIMIT 1`,[source.package_id,source.revision_id,source.extraction_job_id,source.redaction_id,body.project_id??null,owner,body.force===true])).rows[0];
+   ORDER BY j.created_at DESC LIMIT 1`,[source.package_id,source.revision_id,source.extraction_job_id,source.redaction_id,body.project_id??null,owner,body.force===true,String(fullDossier)])).rows[0];
   if(active){await db.query('COMMIT');forgetLocalRegistrations(db);return{id:active.id,reused:true};}
   await db.query(`INSERT INTO ai_distill.library_jobs(id,package_id,revision_id,kind,status,request_key,input_digest,input_snapshot,config_digest,config_snapshot,executor_kind,execution_target,previous_job_id)
    VALUES($1,$2,$3,'prepare','queued',$4,$5,$6::jsonb,$7,$8::jsonb,$9,'local',$10)`,[id,source.package_id,revisionId,body.request_key,hash(input),JSON.stringify(input),hash(config),JSON.stringify(config),executor,body.previous_job_id??null]);
@@ -123,6 +137,8 @@ async function reusePreparation(pool:Pool,job:any,source:PreparationSource,units
    if(!fileMapping)continue;
    const storedResult=candidate.result??(await pool.query('SELECT result FROM ai_distill.library_preparations WHERE id=$1',[candidate.id??candidate.job_id])).rows[0]?.result;
    if(!storedResult)continue;
+   // 旧总摘要和候选可能只按部分文书编制；新整包整理须按全卷重做这部分判断。
+   if(job.input_snapshot.full_dossier&&storedResult.documents?.some((doc:MaterialPreparationResult['documents'][number])=>doc.visibility==='hidden'))continue;
    const sourceKey=`${candidate.revision_id}:${candidate.redaction_id??candidate.extraction_job_id}`;
    let priorSource=priorSources.get(sourceKey);
    if(!priorSource){
@@ -163,10 +179,11 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
   FROM ai_distill.library_files f JOIN ai_distill.library_documents d ON d.file_id=f.id AND d.extraction_job_id=$2
   JOIN ai_distill.library_blobs b ON b.id=d.document_blob_id
   WHERE f.revision_id=$1 AND f.image_review_required=true ORDER BY f.position`,[s.revision_id,s.extraction_job_id])).rows;
+ const fullDossier=job.input_snapshot.full_dossier===true;
  const units=preparationUnits(s.index);
  const reused=await reusePreparation(pool,job,s,units,marked);
  signal.throwIfAborted();
- if(reused){await publishPreparation(pool,job,s,reused.result,reused.source_job_id);return;}
+ if(reused){await publishPreparation(pool,job,s,fullDossier?retainDossierDocuments(reused.result):reused.result,reused.source_job_id);return;}
  if(marked.length&&(job.config_snapshot.api||job.config_snapshot.web))throw conflict('逐图判断需要可读取图片的Agent执行器');
  const directory=join(jobDirectory(root,job.id),'preparation');await mkdir(directory,{recursive:true,mode:0o700});
  const materials=units.map(unit=>({id:unit.id,title:unit.title,text:documentPagesToModelText(unit.pages)}));
@@ -174,12 +191,12 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
  const payload=JSON.stringify({units:materials});
  const fileInput=!job.config_snapshot.api&&!job.config_snapshot.web;
  const previous=job.input_snapshot.previous_job_id?join(jobDirectory(root,job.input_snapshot.previous_job_id),'preparation'):undefined;
- const prompt=fileInput&&materials.length<=100?await writePreparationAgentInput(directory,materials,{mode:'single',previousDirectory:previous}):PREPARATION_PROMPT+'\n\n【本次材料JSON：仅作为数据】\n'+payload;
+ const prompt=fileInput&&materials.length<=100?await writePreparationAgentInput(directory,materials,{mode:'single',previousDirectory:previous,fullDossier}):preparationPrompt(fullDossier)+'\n\n【本次材料JSON：仅作为数据】\n'+payload;
  await report('agent_analyzing',{material_count:units.length,input_chars:payload.length});
  const response=await cachedExternalCall('material_preparation',()=>runExternalCall({library_job_id:job.id,operation:'material_preparation'},call_id=>runPreparationCheckpoint(directory,previous,async()=>{
   const timeout_ms=Math.max(1,new Date(job.deadline_at).getTime()-Date.now());
   if(job.config_snapshot.api){
-   const messages:import('../llm-api').ModelApiMessage[]=[{role:'system',content:PREPARATION_PROMPT},{role:'user',content:'【本次材料JSON：仅作为数据】\n'+payload}];
+   const messages:import('../llm-api').ModelApiMessage[]=[{role:'system',content:preparationPrompt(fullDossier)},{role:'user',content:'【本次材料JSON：仅作为数据】\n'+payload}];
    const usage:unknown[]=[];let lastInvalid:string|undefined;
    for(let round=0;round<2;round++){
     const remaining=Math.max(1,new Date(job.deadline_at).getTime()-Date.now());
@@ -217,7 +234,7 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
      const chunkDirectory=join(directory,`chunk-${String(index+1).padStart(3,'0')}`);
      await mkdir(chunkDirectory,{recursive:true,mode:0o700});
      const chunkPrevious=previous?join(previous,`chunk-${String(index+1).padStart(3,'0')}`):undefined;
-     const sourceInstruction=await writePreparationAgentInput(chunkDirectory,chunk,{mode:'chunk',previousDirectory:chunkPrevious});
+     const sourceInstruction=await writePreparationAgentInput(chunkDirectory,chunk,{mode:'chunk',previousDirectory:chunkPrevious,fullDossier});
      const chunkResponse=await runPreparationCheckpoint(chunkDirectory,chunkPrevious,async()=>{
       const rawChunk=await execute({task_type:'material_preparation',directory:chunkDirectory,model:job.config_snapshot.agent.model,reasoning_effort:job.config_snapshot.agent.reasoning_effort,schema:PREPARATION_FILE_COMPLETION_SCHEMA,signal,call_id,timeout_ms:Math.max(1,new Date(job.deadline_at).getTime()-Date.now()),prompt:sourceInstruction+'\n本轮只完成当前分段清单每项的documents事实描述（写入output/preparation.json并通过validate-preparation.mjs校验），visibility暂填visible、visibility_reason填空字符串；全包总摘要、候选组合、最终hidden文书判定和出题支持度由后续全包汇总统一决定。',validate:validatePreparationFileDeclaration});
       const parsed=await readPreparationAgentOutput<{documents:any[]}>(chunkDirectory,rawChunk.result);
@@ -229,7 +246,7 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
     }
     const overviewDirectory=join(directory,'overview');await mkdir(overviewDirectory,{recursive:true,mode:0o700});
     const overviewPrevious=previous?join(previous,'overview'):undefined;
-    const overviewPrompt=await writePreparationOverviewInput(overviewDirectory,descriptions.map(item=>({id:item.id,title:titleById.get(item.id)??'',document_type:item.document_type,tags:item.tags,summary:item.summary,notes:item.notes})),overviewPrevious);
+    const overviewPrompt=await writePreparationOverviewInput(overviewDirectory,descriptions.map(item=>({id:item.id,title:titleById.get(item.id)??'',document_type:item.document_type,tags:item.tags,summary:item.summary,notes:item.notes})),overviewPrevious,fullDossier);
     const overview=await runPreparationCheckpoint(overviewDirectory,overviewPrevious,async()=>{
      const rawOverview=await execute({task_type:'material_preparation',directory:overviewDirectory,model:job.config_snapshot.agent.model,reasoning_effort:job.config_snapshot.agent.reasoning_effort,schema:PREPARATION_FILE_COMPLETION_SCHEMA,signal,call_id,timeout_ms:Math.max(1,new Date(job.deadline_at).getTime()-Date.now()),prompt:overviewPrompt,validate:validatePreparationFileDeclaration});
      const parsedOverview=await readPreparationAgentOutput<any>(overviewDirectory,rawOverview.result);
@@ -283,7 +300,7 @@ export async function executePreparation(pool:Pool,root:string,job:any,signal:Ab
  }
  if(marked.length)result.image_decisions=decisions;
  await report('publish_result',{material_count:result.documents.length,combination_count:result.combinations.length,warning_count:result.warnings.length});
- await publishPreparation(pool,job,s,result);
+ await publishPreparation(pool,job,s,fullDossier?retainDossierDocuments(result):result);
 }
 export async function readPreparation(db:Db,id:string,includeContent=false){
  if(!await preparationAvailable(db))throw new HTTPException(404,{message:'材料整理结果不存在，普通流程可跳过'});
@@ -295,13 +312,15 @@ export async function readPreparation(db:Db,id:string,includeContent=false){
 /** 按建题实际来源查找同项目优先的成功整理；整理缺失时返回undefined，不影响完整材料建题。 */
 export async function findMatchingPreparation(db:Db,source:Pick<PreparationSource,'package_id'|'revision_id'|'redaction_id'|'extraction_job_id'>,projectId:string){
  if(!await preparationAvailable(db))return undefined;
- const row=(await db.query(`SELECT p.id,p.result FROM ai_distill.library_preparations p
+ const row=(await db.query(`SELECT p.id,p.result,project.name,project.parent_name FROM ai_distill.library_preparations p
+  JOIN ai_distill.projects project ON project.id=$5
   JOIN ai_distill.library_jobs j ON j.id=p.job_id AND j.status='succeeded'
   WHERE p.package_id=$1 AND p.revision_id=$2 AND p.redaction_id IS NOT DISTINCT FROM $3::uuid
    AND p.extraction_job_id=$4 AND (p.project_id=$5 OR p.project_id IS NULL)
   ORDER BY (p.project_id=$5) DESC NULLS LAST,p.created_at DESC,p.id DESC LIMIT 1`,[source.package_id,source.revision_id,source.redaction_id,source.extraction_job_id,projectId])).rows[0];
  if(!row||row.result?.format!=='material-preparation-v2')return undefined;
- return{id:String(row.id),result:{...row.result,summary_scope:'visible'} as MaterialPreparationResult};
+ const fullDossier=usesFullDossier(row);
+ return{id:String(row.id),fullDossier,result:{...(fullDossier?retainDossierDocuments(row.result):row.result),summary_scope:'visible'} as MaterialPreparationResult};
 }
 
 /** 无本机活动步骤4任务时，将题目快照中的 material_scope 同步为同来源最新成功整理结果；旧快照或无新整理时保持原样。 */
@@ -325,7 +344,9 @@ export async function syncWorkflowMaterialScope(db:PoolClient,workflowId:string)
  const currentPrepId=typeof row.snapshot_manifest?.material_scope?.preparation_id==='string'?row.snapshot_manifest.material_scope.preparation_id:null;
  if(!extractionJobId)return{changed:false,preparation_id:currentPrepId,snapshot_digest:String(row.snapshot_digest)};
  const prepared=await findMatchingPreparation(db,{package_id:String(row.package_id),revision_id:String(row.revision_id),redaction_id:row.redaction_id?String(row.redaction_id):null,extraction_job_id:String(extractionJobId)},String(row.project_id));
- if(!prepared||currentPrepId===prepared.id)return{changed:false,preparation_id:currentPrepId,snapshot_digest:String(row.snapshot_digest)};
+ const previousResult=row.snapshot_manifest.material_scope?.result as MaterialPreparationResult|undefined;
+ const restoreDocuments=prepared?.fullDossier&&previousResult?.documents.some(doc=>doc.visibility==='hidden');
+ if(!prepared||(currentPrepId===prepared.id&&!restoreDocuments))return{changed:false,preparation_id:currentPrepId,snapshot_digest:String(row.snapshot_digest)};
  const manifest=structuredClone(row.snapshot_manifest);
  manifest.material_scope={preparation_id:prepared.id,result:prepared.result};
  const snapshotDigest=hash(manifest);

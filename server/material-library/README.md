@@ -6,6 +6,8 @@
 
 - **当前执行绑定**：以项目、题目、任务、材料包、`revision` 和附件 ID 为准。已派发任务不因正文/配置/提示词/整理结果的内容摘要或环境指纹变化而被拒绝；保留任务取消、最新任务归属、材料集合完整性、结构格式和路径边界检查。摘要字段用于历史记录、内容寻址及缓存。
 
+豆包高经济价值法律主项目及返修期的项目级整理保留全部业务文书。新建普通整包题或重新派发出题同步整理范围时，历史整理中的整件隐藏标记也按可见采用。精确命中的独立排版噪声继续按原规则处理，显式选材快照仍按所选范围冻结。
+
 ## 新材料处理顺序与可跳过步骤
 
 本节供材料操作与维护人员使用。正式包和revision须由完整原件集合原子提取成功后发布；脱敏和材料整理是可选步骤。任务排队、运行或供应商`pending`都不能作为成功依据，以HTTP任务详情和正式结果回读为准。
@@ -144,6 +146,7 @@ PDF/DOCX/图片外部提取按需逐文件执行，每份冻结30分钟预算，
 - `DELETE /packages/:id`：按 `If-Match` 版本逻辑归档；若仍有运行中或排队的材料处理任务则拒绝。不会删除原件、历史、项目加载关系、题目私有快照或归档事件。`POST /packages/:id/restore` 可恢复已归档包。
 - `GET /packages/:id/usage`：加载项目与归档/撤回事件。界面按题目汇总当前状态，事件历史保留；移除引用和删除项目不改变全局库包。
 - `GET /projects/:id/material-candidates?q=...&page=...&page_size=...`：本期材料加载弹窗的搜索和分页候选；项目占用状态在同一候选查询中投影，避免目录结果后再发一轮使用记录查询；页面只在打开弹窗或改变查询时请求当前页。
+- `GET /projects/:id/loaded-materials/summary?processing_mode=aliases` 返回本期有效引用的材料包数、匹配处理模式且可用数、使用中数和已提交数，供期次详情折叠视图读取。
 - `GET /projects/:id/loaded-materials?include_removed=true`：返回本期当前和已移除的材料引用；已移除关系可由 `POST /projects/:id/loaded-materials/:linkId/restore` 恢复。
 - `GET /projects/:id/material-uses/:useId/events`：读取单条使用关系的提交/返修事件。`GET /projects/:id/material-uses` 只返回状态摘要，不把全期事件历史放进首屏响应。
 - `POST /projects/:id/loaded-materials/:linkId/questions`：按本期出题材料模式从指定脱敏结果或 MinerU 提取版本创建题目；题目名称、场景、角色视角、出题方向、等级和本期标签随请求传入，并进入题目快照及摘要防重键。

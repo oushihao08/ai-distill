@@ -1,6 +1,6 @@
 /**
  * 文件职责：管理项目对全局材料包的加载引用，不复制材料库原件或运行材料处理。
- * 关键入口：readLoadedLibraryPackages/loadLibraryPackage/updateLoadedLibraryPackage 管理来源选版与顺序；remove/restoreLoadedLibraryPackage 软移除和恢复原引用。加载前快速估算并记录完整材料DOCX页数（10页及以下仍可加载，返回页数与标记供界面标识），材料整理可跳过。
+ * 关键入口：readLoadedLibrarySummary 提供期次材料计数；readLoadedLibraryPackages/loadLibraryPackage/updateLoadedLibraryPackage 管理来源选版与顺序；remove/restoreLoadedLibraryPackage 软移除和恢复原引用。加载前快速估算并记录完整材料DOCX页数（10页及以下仍可加载，返回页数与标记供界面标识），材料整理可跳过。
  * 事务边界：写入按 package → project_group → project → link 的统一锁顺序执行；题目创建在独立模块处理。
  */
 import type {Pool,PoolClient} from 'pg';
@@ -68,17 +68,10 @@ async function withTransaction<T>(pool:Pool,operation:(db:PoolClient)=>Promise<T
  finally{db.release();}
 }
 
-export async function readLoadedLibraryPackages(pool:Pool,projectId:string,options:{includeRemoved?:boolean;page?:number;page_size?:number}={}):Promise<LoadedLink[]>{
- const paged=options.page!==undefined||options.page_size!==undefined;
- const page=options.page??1,pageSize=options.page_size??100;
- if(paged&&(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>500||!Number.isSafeInteger((page-1)*pageSize)))throw new HTTPException(400,{message:'本期材料分页参数无效'});
- const params:unknown[]=paged?[projectId,options.includeRemoved===true,pageSize+1,(page-1)*pageSize]:[projectId,options.includeRemoved===true];
- const result=await pool.query(`SELECT l.id,l.project_id,l.package_id,p.name AS package_name,l.selected_revision_id,l.selected_redaction_id,l.reuse_source_workflow_id,l.reuse_direction,
-   p.current_revision_id,l.position,l.lock_version,l.removed_at,l.created_at,l.updated_at,l.material_use_id,u.status AS usage_status,u.lock_version AS use_lock_version,
-   CASE WHEN l.selected_redaction_id IS NULL THEN 'original'
+const selectedProcessingMode=`CASE WHEN l.selected_redaction_id IS NULL THEN 'original'
     WHEN red_job.config_snapshot->'redaction_template'->>'workflow'='codex_plan' OR red.validation_report->>'redaction_template_id'='aliases' THEN 'aliases'
-    ELSE 'mask' END AS selected_processing_mode,
-   CASE WHEN l.selected_redaction_id IS NULL THEN EXISTS(
+    ELSE 'mask' END`;
+const selectedVersionUsable=`CASE WHEN l.selected_redaction_id IS NULL THEN EXISTS(
     SELECT 1 FROM ai_distill.library_revisions selected_rev
     JOIN ai_distill.library_jobs extraction ON extraction.package_id=l.package_id AND extraction.revision_id=selected_rev.id AND extraction.kind='extract' AND extraction.status='succeeded'
     WHERE selected_rev.id=l.selected_revision_id AND selected_rev.package_id=l.package_id AND selected_rev.state='ready' AND selected_rev.file_count>0
@@ -87,14 +80,42 @@ export async function readLoadedLibraryPackages(pool:Pool,projectId:string,optio
     AND ${redactionJobCurrentValidationSql('red_job')}
     AND EXISTS(SELECT 1 FROM ai_distill.library_jobs extraction WHERE extraction.id=red.extraction_job_id AND extraction.package_id=l.package_id AND extraction.status='succeeded')
     AND EXISTS(SELECT 1 FROM ai_distill.library_revisions selected_rev WHERE selected_rev.id=red.revision_id AND selected_rev.state='ready')
-   END AS selected_version_usable,
+   END`;
+const selectedVersionJoins=`LEFT JOIN ai_distill.library_redactions red ON red.id=l.selected_redaction_id
+  LEFT JOIN ai_distill.library_jobs red_job ON red_job.id=red.redaction_job_id`;
+
+export async function readLoadedLibrarySummary(pool:Pool,projectId:string,processingMode:string){
+ const {rows:[summary]}=await pool.query<{count:number;usable:number;inUse:number;submitted:number}>(`
+  SELECT count(*)::int AS count,
+   (count(*) FILTER (WHERE (${selectedProcessingMode})=$2 AND (${selectedVersionUsable})))::int AS usable,
+   (count(*) FILTER (WHERE coalesce(phase_use.status,linked_use.status) IS DISTINCT FROM 'submitted'))::int AS "inUse",
+   (count(*) FILTER (WHERE coalesce(phase_use.status,linked_use.status)='submitted'))::int AS submitted
+  FROM ai_distill.project_library_packages l
+  JOIN ai_distill.projects pr ON pr.id=l.project_id AND pr.deleted_at IS NULL
+  JOIN ai_distill.library_packages p ON p.id=l.package_id AND p.deleted_at IS NULL
+  LEFT JOIN ai_distill.project_material_uses linked_use ON linked_use.id=l.material_use_id
+  LEFT JOIN ai_distill.project_material_uses phase_use ON phase_use.package_id=l.package_id
+   AND phase_use.project_group_id=pr.project_group_id AND phase_use.owner_phase_id=pr.id
+  ${selectedVersionJoins}
+  WHERE l.project_id=$1 AND l.removed_at IS NULL`,[projectId,processingMode]);
+ return summary;
+}
+
+export async function readLoadedLibraryPackages(pool:Pool,projectId:string,options:{includeRemoved?:boolean;page?:number;page_size?:number}={}):Promise<LoadedLink[]>{
+ const paged=options.page!==undefined||options.page_size!==undefined;
+ const page=options.page??1,pageSize=options.page_size??100;
+ if(paged&&(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>500||!Number.isSafeInteger((page-1)*pageSize)))throw new HTTPException(400,{message:'本期材料分页参数无效'});
+ const params:unknown[]=paged?[projectId,options.includeRemoved===true,pageSize+1,(page-1)*pageSize]:[projectId,options.includeRemoved===true];
+ const result=await pool.query(`SELECT l.id,l.project_id,l.package_id,p.name AS package_name,l.selected_revision_id,l.selected_redaction_id,l.reuse_source_workflow_id,l.reuse_direction,
+   p.current_revision_id,l.position,l.lock_version,l.removed_at,l.created_at,l.updated_at,l.material_use_id,u.status AS usage_status,u.lock_version AS use_lock_version,
+   ${selectedProcessingMode} AS selected_processing_mode,
+   ${selectedVersionUsable} AS selected_version_usable,
    load_check.estimated_page_count AS load_estimated_docx_pages,load_check.load_eligible
   FROM ai_distill.project_library_packages l
   JOIN ai_distill.library_packages p ON p.id=l.package_id
   JOIN ai_distill.projects pr ON pr.id=l.project_id AND pr.deleted_at IS NULL
   LEFT JOIN ai_distill.project_material_uses u ON u.id=l.material_use_id
-  LEFT JOIN ai_distill.library_redactions red ON red.id=l.selected_redaction_id
-  LEFT JOIN ai_distill.library_jobs red_job ON red_job.id=red.redaction_job_id
+  ${selectedVersionJoins}
   ${libraryLoadEligibilityLateralSql('load_check','l.selected_revision_id','l.selected_redaction_id')}
   WHERE l.project_id=$1 AND ($2::boolean OR l.removed_at IS NULL) AND p.deleted_at IS NULL
   ORDER BY l.position,l.id${paged?' LIMIT $3 OFFSET $4':''}`,params);

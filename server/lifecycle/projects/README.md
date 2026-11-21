@@ -7,7 +7,7 @@
 | `work.ts` | Work的身份匹配、建题/出题/转换/渲染/作答/评分/交付投影注册，以及原准备/五件套入口 | `../steps.ts`、`../project-delivery.ts` |
 | `work-contract.ts` | Work schema、字段类型、同源投影与交付结构要求；原路径保留转出兼容 | Work注册与既有项目交付代码 |
 | `doubao.ts` | `豆包高经济价值`与`豆包高经济价值-医疗`：保留归档前脚本路径；归档后同步对应期次飞书，检查最终回执。目标仍由飞书模块按主项目分别冻结 | `../project-delivery.ts`、`../publication.ts` |
-| `doubao-projection.ts` | 豆包题包与飞书共用的普通数字考点展示；新出题将完整业务需求与步骤5冻结运行能力分开，允许声明已登记但未启用工具及文件需求；不改变作答派发校验或启用配置 | `../steps.ts`、`../../publishing/feishu-verification.ts` |
+| `doubao-projection.ts` | 豆包题包与飞书共用的普通数字考点展示；法律主项目及法律返修主项目共用出题提示词与能力 schema，将完整业务需求与步骤5冻结运行能力分开，允许声明已登记但未启用工具及文件需求；不改变作答派发校验或启用配置 | `../steps.ts`、`../../publishing/feishu-verification.ts` |
 | `skill-dependency.ts` | Skill Dependency 的逐题 Skill、平台Metadata/Rubric、依赖检查及核验声明；扩展字段参与版本摘要，沿用通用保存且不增加保存准入 | `../steps.ts` |
 
 ## 代码边界
