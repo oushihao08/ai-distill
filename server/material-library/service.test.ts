@@ -190,3 +190,36 @@ for(const outcome of ['rolled_back','committed_response_lost','rollback_unknown'
   expect(storagePath).not.toBe('');expect(await Bun.file(join(root,storagePath)).exists()).toBe(outcome!=='rolled_back');
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('历史导入保存为text或scanned类别的DOCX原件可在新revision与原子导入中复用',async()=>{
+ const {mkdtemp,mkdir,rm,writeFile}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join,relative}=await import('node:path'),{createHash}=await import('node:crypto');
+ const {createLibraryRevision}=await import('./service');
+ const {publishAtomicLibraryImport}=await import('./atomic-import');
+ const root=await mkdtemp(join(tmpdir(),'library-legacy-docx-'));
+ const docxBytes=Buffer.from([0x50,0x4b,0x03,0x04,0x14,0x00,0x00,0x00,0x00,0x00,0x64,0x6f,0x63,0x78]);
+ const sha256=createHash('sha256').update(docxBytes).digest('hex');
+ let storedPath='';
+ const revisionDb={query:async(sql:string,values:any[]=[])=>{
+  if(sql.startsWith('SELECT current_revision_id'))return{rows:[{lock_version:1}]};
+  if(sql.startsWith('INSERT INTO ai_distill.library_blobs')){storedPath=values[5];return{rows:[]};}
+  if(sql.startsWith('SELECT id,size_bytes,content_type'))return{rows:[{id:'legacy-docx-blob',size_bytes:docxBytes.length,content_type:'text',storage_path:storedPath}]};
+  if(sql.startsWith('UPDATE ai_distill.library_packages'))return{rows:[{lock_version:2}],rowCount:1};
+  return{rows:[],rowCount:1};
+ },release(){}};
+ try{
+  const rev=await createLibraryRevision({connect:async()=>revisionDb} as any,root,'package',1,crypto.randomUUID(),[{original_name:'质证意见.docx',bytes:docxBytes}]);
+  expect(rev.reused).toBe(false);
+  const stageDir=join(root,'material-library','jobs','job-1','import-source');
+  await mkdir(stageDir,{recursive:true});
+  const stageFile=join(stageDir,'file-1');
+  await writeFile(stageFile,docxBytes);
+  const atomicDb={query:async(sql:string)=>{
+   if(sql.startsWith('INSERT INTO ai_distill.library_blobs'))return{rows:[]};
+   if(sql.startsWith('SELECT id,size_bytes,content_type'))return{rows:[{id:'legacy-docx-blob',size_bytes:docxBytes.length,content_type:'text',storage_path:storedPath}]};
+   return{rows:[],rowCount:1};
+  }} as any;
+  const job:any={id:'job-1',request_key:crypto.randomUUID(),config_snapshot:{settings:{}},input_snapshot:{manifest_sha256:'m',request_digest:'d',atomic_import:{package_id:'pkg-1',revision_id:'rev-1',package_input:{name:'王联英',description:'',tags:[]},expected_version:null},files:[{file_id:'file-1',original_name:'质证意见.docx',position:1,source_sha256:sha256,size_bytes:docxBytes.length,redaction_mode:'model',content_type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',storage_path:relative(root,stageFile)}]}};
+  await publishAtomicLibraryImport(atomicDb,root,job);
+  expect(job.package_id).toBe('pkg-1');
+ }finally{await rm(root,{recursive:true,force:true});}
+});

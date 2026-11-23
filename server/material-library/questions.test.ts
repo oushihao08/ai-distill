@@ -70,7 +70,7 @@ test('creates a private question from a usable redaction while retaining OCR war
    if(sql.startsWith('SELECT question_tags'))return{rows:[{question_tags:['执行']}]};
    if(sql.startsWith('SELECT id,name,deleted_at FROM'))return{rows:[{id:'package-a',name:'共享材料',deleted_at:null}]};
    if(sql.startsWith('SELECT id,name,material_backend'))return{rows:[{id:'project-a',name:'验证项目',material_backend:'legacy',question_tags:['执行'],deleted_at:null}]};
-   if(sql.includes('FROM ai_distill.project_library_packages')&&sql.includes('FOR UPDATE'))return{rows:[{id:'link-a',package_id:'package-a',project_id:'project-a',selected_revision_id:'revision-a',selected_redaction_id:request.redaction_id,lock_version:3,removed_at:null}]};
+   if(sql.includes('FROM ai_distill.project_library_packages')&&sql.includes('selected_revision_id'))return{rows:[{id:'link-a',package_id:'package-a',project_id:'project-a',selected_revision_id:'revision-a',selected_redaction_id:request.redaction_id,lock_version:3,removed_at:null}]};
    if(sql.startsWith('SELECT r.id,r.package_id'))return{rows:[{id:request.redaction_id,revision_id:'revision-a',extraction_job_id:'extract-a',output_digest:'source-digest',validation_report:{usable_for_question:true,extraction_issue_count:1,redaction_template_workflow:'codex_plan'},revision_state:'ready',redact_status:'succeeded',extract_status:'succeeded',markdown:text,markdown_sha256:sha(text),redacted_index:index,index_sha256:sha(index)}]};
    if(sql.startsWith('SELECT f.id,f.original_name'))return{rows:[file]};
    if(sql.startsWith('SELECT file_count'))return{rows:[{file_count:1}]};
@@ -109,7 +109,7 @@ test('creates a private question from extracted original without requiring redac
    if(sql.startsWith('SELECT id,name,deleted_at FROM'))return{rows:[{id:'package-a',name:'共享材料',deleted_at:null}]};
    if(sql.startsWith('SELECT id,name,material_backend'))return{rows:[{id:'project-a',name:'验证项目',material_backend:'legacy',question_tags:['执行'],deleted_at:null}]};
    if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{material_source_mode:'original'}}]};
-   if(sql.includes('FROM ai_distill.project_library_packages')&&sql.includes('FOR UPDATE'))return{rows:[{id:'link-a',package_id:'package-a',project_id:'project-a',selected_revision_id:'44444444-4444-4444-8444-444444444444',selected_redaction_id:null,lock_version:3,removed_at:null}]};
+   if(sql.includes('FROM ai_distill.project_library_packages')&&sql.includes('selected_revision_id'))return{rows:[{id:'link-a',package_id:'package-a',project_id:'project-a',selected_revision_id:'44444444-4444-4444-8444-444444444444',selected_redaction_id:null,lock_version:3,removed_at:null}]};
    if(sql.startsWith('SELECT e.id,r.file_count'))return{rows:[{id:'extract-a',file_count:1}]};
    if(sql.startsWith('SELECT f.id,f.original_name'))return{rows:[file]};
    if(sql.startsWith('INSERT'))inserts.push({sql,values});
@@ -125,6 +125,42 @@ test('creates a private question from extracted original without requiring redac
   expect(inserts.some(item=>item.values[2]==='redacted_markdown')).toBe(false);
   expect(inserts.some(item=>item.sql.includes('INSERT INTO ai_distill.question_library_sources')&&item.values[13]==='original')).toBe(true);
   expect(inserts.filter(item=>item.sql.includes('INSERT INTO ai_distill.steps')).map(item=>item.values[1])).toEqual([4,5,6,7,8]);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('creates an original-mode question when a multi-file package contains one valid document and one textless photo',async()=>{
+ const {createLibraryQuestion}=await import('./questions');
+ const {installLibraryBlob}=await import('./storage');
+ const {createHash}=await import('node:crypto');
+ const {mkdtemp,rm}=await import('node:fs/promises');
+ const {tmpdir}=await import('node:os');
+ const {join}=await import('node:path');
+ const root=await mkdtemp(join(tmpdir(),'library-question-photo-'));
+ const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
+ try{
+  const textBlob=await installLibraryBlob(root,new TextEncoder().encode('起诉状原件'),'text/plain','local');
+  const photoBlob=await installLibraryBlob(root,new Uint8Array([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),'image/png','local');
+  const body='原告请求判令被告偿还借款本金50万元。';
+  const docA=JSON.stringify({version:1,source_sha256:textBlob.sha256,pages:[{page:1,text:body,structure:[{id:'b1',kind:'paragraph',text:body}],method:'ocr',issues:[]}]});
+  const docB=JSON.stringify({version:1,source_sha256:photoBlob.sha256,pages:[{page:1,text:'',structure:[],method:'ocr',issues:['empty_page']}]});
+  const rows=[
+   {id:'file-a',original_name:'起诉状.txt',position:1,redaction_mode:'model',source_sha256:textBlob.sha256,source_size_bytes:textBlob.size_bytes,source_content_type:'text/plain',source_storage_path:textBlob.storage_path,source_storage_target:'local',document_content:docA,document_blob_sha256:sha(docA),document_sha256:sha(body),document_issues:[]},
+   {id:'file-b',original_name:'现场照片.png',position:2,redaction_mode:'model',source_sha256:photoBlob.sha256,source_size_bytes:photoBlob.size_bytes,source_content_type:'image/png',source_storage_path:photoBlob.storage_path,source_storage_target:'local',document_content:docB,document_blob_sha256:sha(docB),document_sha256:sha(''),document_issues:[{page:1,kind:'empty_page'}]},
+  ];
+  const query=async(sql:string)=>{
+   if(sql.startsWith('SELECT package_id FROM'))return{rows:[{package_id:'package-a'}]};
+   if(sql.startsWith('SELECT question_tags'))return{rows:[{question_tags:['执行']}]};
+   if(sql.startsWith('SELECT id,name,deleted_at FROM'))return{rows:[{id:'package-a',name:'共享材料',deleted_at:null}]};
+   if(sql.startsWith('SELECT id,name,material_backend'))return{rows:[{id:'project-a',name:'验证项目',material_backend:'legacy',question_tags:['执行'],deleted_at:null}]};
+   if(sql.startsWith('SELECT config FROM ai_distill.project_step_configs'))return{rows:[{config:{material_source_mode:'original'}}]};
+   if(sql.includes('FROM ai_distill.project_library_packages')&&sql.includes('selected_revision_id'))return{rows:[{id:'link-a',package_id:'package-a',project_id:'project-a',selected_revision_id:'44444444-4444-4444-8444-444444444444',selected_redaction_id:null,lock_version:3,removed_at:null}]};
+   if(sql.startsWith('SELECT e.id,r.file_count'))return{rows:[{id:'extract-a',file_count:2}]};
+   if(sql.startsWith('SELECT f.id,f.original_name'))return{rows};
+   return{rows:[],rowCount:1};
+  };
+  const pool={query,connect:async()=>({query,release(){}})} as any;
+  const result=await createLibraryQuestion(pool,root,'project-a','link-a',{...request,request_key:'55555555-5555-4555-8555-555555555555',redaction_id:undefined,revision_id:'44444444-4444-4444-8444-444444444444'});
+  expect(result.reused).toBe(false);
  }finally{await rm(root,{recursive:true,force:true});}
 });
 

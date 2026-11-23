@@ -120,17 +120,17 @@ async function lockAndReadSource(db:Pick<PoolClient,'query'>,projectId:string,li
    JOIN ai_distill.library_documents d ON d.revision_id=f.revision_id AND d.file_id=f.id AND d.extraction_job_id=$2
    JOIN ai_distill.library_blobs doc ON doc.id=d.document_blob_id WHERE f.revision_id=$1 ORDER BY f.position`,[link.selected_revision_id,extraction.id])).rows as SourceFile[];
   if(!rows.length||rows.length!==Number(extraction.file_count))throw conflict('原文提取结果不完整');
-  const indexMaterials:any[]=[],markdownParts:string[]=[];
+  const indexMaterials:any[]=[],markdownParts:string[]=[],usableChecks:Array<{issues:unknown;pages:Array<{text:string}>}>=[];
   for(const file of rows){
    if(typeof file.document_content!=='string'||hash(file.document_content)!==file.document_blob_sha256)throw conflict('原文提取结构摘要校验失败');
    let document:any;try{document=JSON.parse(file.document_content);}catch{throw conflict('原文提取结构无效');}
-   assertLibraryExtractionUsable([{issues:file.document_issues,pages:document.pages}]);
-   if(document.version!==1||document.source_sha256!==file.source_sha256||hash(document.pages.map((page:any)=>page.text).join('\n'))!==file.document_sha256)throw conflict('原文提取正文摘要校验失败');
+   usableChecks.push({issues:file.document_issues,pages:document.pages});
+   if(!Array.isArray(document.pages)||document.version!==1||document.source_sha256!==file.source_sha256||hash(document.pages.map((page:any)=>page.text).join('\n'))!==file.document_sha256)throw conflict('原文提取正文摘要校验失败');
    const text=document.pages.map((page:any)=>String(page.text??'')).filter(Boolean).join('\n\n');
-   if(!text.trim())throw conflict('原文提取结果没有可用正文');
-   markdownParts.push(`# ${file.original_name}\n\n${text}`);
+   markdownParts.push(text.trim()?`# ${file.original_name}\n\n${text}`:`# ${file.original_name}`);
    indexMaterials.push({material_id:file.id,markdown:text,document});
   }
+  assertLibraryExtractionUsable(usableChecks);
   const markdown=markdownParts.join('\n\n---\n\n'),index=JSON.stringify({format:'source-index-v1',materials:indexMaterials});
   const markdownSha=hash(markdown),indexSha=hash(index),sourceDigest=hash(canonicalJson({revision_id:link.selected_revision_id,extraction_job_id:extraction.id,files:rows.map(file=>({id:file.id,source_sha256:file.source_sha256,document_sha256:file.document_sha256,document_blob_sha256:file.document_blob_sha256}))}));
   return{processing_mode:processingMode,material_mode:'original',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:String(link.selected_revision_id),extraction_job_id:String(extraction.id),redaction_id:null,source_digest:sourceDigest,markdown,markdown_sha256:markdownSha,index,index_sha256:indexSha,files:rows};
@@ -158,12 +158,14 @@ async function lockAndReadSource(db:Pick<PoolClient,'query'>,projectId:string,li
   JOIN ai_distill.library_blobs doc ON doc.id=d.document_blob_id
   WHERE f.revision_id=$1 ORDER BY f.position`,[redaction.revision_id,redaction.extraction_job_id])).rows as SourceFile[];
  if(!rows.length||rows.length!==Number((await db.query('SELECT file_count FROM ai_distill.library_revisions WHERE id=$1',[redaction.revision_id])).rows[0]?.file_count)||rows.length!==parsedIndex.materials.length)throw conflict('所选脱敏结果缺少完整附件或结构');
+ const usableChecks:Array<{issues:unknown;pages:Array<{text:string}>}>=[];
  for(const file of rows){
   if(!parsedIndex.materials.some((item:any)=>item?.material_id===file.id)||typeof file.document_content!=='string'||hash(file.document_content)!==file.document_blob_sha256||file.document_blob_sha256===undefined)throw conflict('材料提取结构与脱敏附件对应关系不完整');
   let document:any;try{document=JSON.parse(file.document_content);}catch{throw conflict('材料提取结构无效');}
-  assertLibraryExtractionUsable([{issues:file.document_issues,pages:document.pages}]);
-  if(document.version!==1||document.source_sha256!==file.source_sha256||hash(document.pages.map((page:any)=>page.text).join('\n'))!==file.document_sha256)throw conflict('材料提取正文摘要校验失败');
+  usableChecks.push({issues:file.document_issues,pages:document.pages});
+  if(!Array.isArray(document.pages)||document.version!==1||document.source_sha256!==file.source_sha256||hash(document.pages.map((page:any)=>page.text).join('\n'))!==file.document_sha256)throw conflict('材料提取正文摘要校验失败');
  }
+ assertLibraryExtractionUsable(usableChecks);
  return{processing_mode:processingMode,material_mode:'redacted',project_id:project.id,project_name:project.name,project_tags:project.question_tags??[],package_id:pkg.id,package_name:pkg.name,revision_id:redaction.revision_id,extraction_job_id:redaction.extraction_job_id,redaction_id:redaction.id,source_digest:redaction.output_digest,markdown:redaction.markdown,markdown_sha256:redaction.markdown_sha256,index:redaction.redacted_index,index_sha256:redaction.index_sha256,files:rows};
 }
 

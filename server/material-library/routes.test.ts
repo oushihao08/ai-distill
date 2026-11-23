@@ -61,7 +61,7 @@ describe('材料库 HTTP 路由输入边界',()=>{
   expect(incomplete.status).toBe(400);expect(await incomplete.text()).toContain('缺少导入名称或request_key');
   const invalidProvider=new FormData();invalidProvider.set('name','测试包');invalidProvider.set('request_key','11111111-1111-4111-8111-111111111111');invalidProvider.set('pdf_provider','unknown');
   const rejectedProvider=await app().request('/api/material-library/imports',{method:'POST',body:invalidProvider});
-  expect(rejectedProvider.status).toBe(400);expect(await rejectedProvider.text()).toContain('PDF OCR provider 仅支持MinerU');
+  expect(rejectedProvider.status).toBe(400);expect(await rejectedProvider.text()).toContain('PDF OCR provider 不支持');
   const retired=await app().request('/api/material-library/packages',{method:'POST'});
   expect(retired.status).toBe(410);
  });

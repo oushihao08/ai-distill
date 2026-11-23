@@ -13,7 +13,6 @@ declare module 'vue' {
   export interface GlobalComponents {
     AcceptedQuestionDetail: typeof import('./components/AcceptedQuestionDetail.vue')['default']
     AcceptedQuestionList: typeof import('./components/AcceptedQuestionList.vue')['default']
-    ActiveWorkflowTasks: typeof import('./components/ActiveWorkflowTasks.vue')['default']
     AnswerGenerationPolicySettings: typeof import('./components/AnswerGenerationPolicySettings.vue')['default']
     AnswerModelSet: typeof import('./components/AnswerModelSet.vue')['default']
     AnswerToolSettings: typeof import('./components/AnswerToolSettings.vue')['default']
@@ -21,6 +20,7 @@ declare module 'vue' {
     CodexConfig: typeof import('./components/CodexConfig.vue')['default']
     Column: typeof import('./layout/Column.vue')['default']
     DirectoryImportForm: typeof import('./components/DirectoryImportForm.vue')['default']
+    DispatchBatches: typeof import('./components/DispatchBatches.vue')['default']
     LegacyMaterialOrigin: typeof import('./components/LegacyMaterialOrigin.vue')['default']
     LibraryFileReader: typeof import('./components/LibraryFileReader.vue')['default']
     LibraryJobHistory: typeof import('./components/LibraryJobHistory.vue')['default']
@@ -39,6 +39,7 @@ declare module 'vue' {
     MaterialRecordsTable: typeof import('./components/MaterialRecordsTable.vue')['default']
     MaterialUsePanel: typeof import('./components/MaterialUsePanel.vue')['default']
     ModelEvaluationSummary: typeof import('./components/ModelEvaluationSummary.vue')['default']
+    MonitorTaskTable: typeof import('./components/MonitorTaskTable.vue')['default']
     PhasePreparation: typeof import('./components/PhasePreparation.vue')['default']
     ProjectAnswerModelsSummary: typeof import('./components/ProjectAnswerModelsSummary.vue')['default']
     ProjectCodexSettings: typeof import('./components/ProjectCodexSettings.vue')['default']
@@ -64,6 +65,7 @@ declare module 'vue' {
     WorkerConcurrencyConfig: typeof import('./components/WorkerConcurrencyConfig.vue')['default']
     WorkerMonitor: typeof import('./components/WorkerMonitor.vue')['default']
     WorkflowAttemptHistory: typeof import('./components/WorkflowAttemptHistory.vue')['default']
+    WorkflowCustomSteps: typeof import('./components/WorkflowCustomSteps.vue')['default']
     WorkflowHookRecords: typeof import('./components/WorkflowHookRecords.vue')['default']
     WorkflowPolicyEditor: typeof import('./components/WorkflowPolicyEditor.vue')['default']
   }

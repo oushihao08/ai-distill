@@ -47,6 +47,13 @@ const actionMessages=shallowRef<Record<string,string>>({});
 const history=shallowRef<{workflowId:string;title:string;ordinal:number;stepName:string}|null>(null);
 const selectedQuestion=shallowRef<Workflow|null>(null);
 const packageNames=computed(()=>Object.fromEntries(props.packages.map(item=>[item.id,item.title])));
+const effortLabels:Record<string,string>={low:'低',medium:'中',high:'高',xhigh:'超高'};
+function authoringModelLabel(flow:Workflow){
+ const config=flow.authoring_model;
+ if(!config?.model)return '—';
+ const effort=config.reasoning_effort;
+ return effort ? config.model+' · '+(effortLabels[effort]??effort) : config.model;
+}
 function sourceName(flow:Workflow){return flow.library_package_name||(flow.source_workflow_id?packageNames.value[flow.source_workflow_id]:null)||'旧题目目录';}
 const tagOptions=computed(()=>[...new Set(props.workflows.flatMap(displayTags))].sort((a,b)=>a.localeCompare(b,'zh-CN')));
 function searchableQuestionText(flow:Workflow){return [flow.title,flow.current_task_name,sourceName(flow)].filter(Boolean).join('\n').toLowerCase();}
@@ -182,10 +189,11 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
   <p v-if="!visibleWorkflows.length&&!statusLoading&&!props.loadingMore" class="text-sm text-muted">{{ !props.workflows.length?(props.materialPackagesEnabled?'暂无已创建题目。请在“本期材料”中选择材料包并设置题目名称、场景、角色、等级、方向和标签。':'暂无题目。将材料放入题目子文件夹后同步目录。'):'没有符合条件的题目' }}</p>
   <Column v-else class="w-full overflow-x-auto">
    <v-table density="compact" class="project-records-table min-w-1080px">
-    <thead><tr><th scope="col">题目</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
+    <thead><tr><th scope="col">题目</th><th scope="col" title="最近一次出题派发时指定的模型和推理强度">出题模型</th><th scope="col">所属材料包</th><th scope="col">当前附件</th><th v-for="stage in stageColumns" :key="stage.ordinal" scope="col">{{ stage.name }}</th><th scope="col">步骤操作</th></tr></thead>
     <tbody>
      <tr v-for="flow in visibleWorkflows" :key="flow.id">
       <td class="max-w-260px"><Column :gap="4"><Row wrap y="center" :gap="4"><button type="button" class="link-text cursor-pointer border-none bg-transparent p-0 text-left font-medium line-clamp-2" :title="`查看题目详情：${flow.title}`" @click="selectedQuestion=flow">{{ flow.title }}</button><v-chip v-if="flow.load_eligible===false" size="x-small" color="warning" variant="tonal">材料≤10页（约 {{ flow.load_estimated_docx_pages }} 页）</v-chip><Row v-if="displayTags(flow).length" wrap :gap="4"><v-chip v-for="tag in displayTags(flow)" :key="tag" size="small">{{ tag }}</v-chip></Row></Row></Column></td>
+      <td class="whitespace-nowrap">{{ authoringModelLabel(flow) }}</td>
       <td class="max-w-220px"><RouterLink v-if="flow.library_package_id" :to="`/materials/${flow.library_package_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><RouterLink v-else-if="flow.source_workflow_id" :to="`/workflows/${flow.source_workflow_id}`" class="link-text line-clamp-2" :title="sourceName(flow)">{{ sourceName(flow) }}</RouterLink><span v-else class="text-muted">旧题目目录</span></td>
       <td class="whitespace-nowrap"><v-btn variant="text" :disabled="!flow.material_count" @click="openMaterials(flow)">查看附件 · {{ flow.material_count??0 }} 份</v-btn></td>
       <td v-for="stage in stageColumns" :key="stage.ordinal" class="whitespace-nowrap"><v-btn size="small" variant="text" :color="stepState(flow,stage.ordinal).color" :title="stepHint(flow,stage.ordinal)" @click="openHistory(flow,stage.ordinal,stage.name)">{{ stepState(flow,stage.ordinal).label }}</v-btn></td>

@@ -13,6 +13,19 @@ export function localQueue(root=storageDirectory()){let q=queues.get(root);if(!q
 interface Execution {queue:LocalQueue;job:QueueJob}
 const current=new AsyncLocalStorage<Execution>();
 const registrationRoot=new AsyncLocalStorage<string>();
+const committedListeners=new WeakMap<LocalQueue,Set<()=>void>>();
+export function onLocalBusinessCommit(q:LocalQueue,listener:()=>void){
+ const listeners=committedListeners.get(q)??new Set();listeners.add(listener);committedListeners.set(q,listeners);
+ return ()=>listeners.delete(listener);
+}
+/** 业务事务已提交时才通知；登记或通知故障由既有终态对账恢复，不影响原业务的成功状态。 */
+export function notifyLocalBusinessCommit(id:string){
+ const c=current.getStore();if(!c||c.job.id!==id)return;
+ try{
+  const saved=c.queue.db.query("INSERT OR IGNORE INTO dispatch_commits(job) SELECT job FROM dispatch_tasks WHERE job=?").run(id);
+  if(saved.changes)current.exit(()=>{for(const listener of committedListeners.get(c.queue)??[])listener();});
+ }catch(error){logEvent('queue.reconciliation_failed',{component:'batch_dispatch',level:'warn',...classifyLogError(error)});}
+}
 export function withLocalQueueRoot<T>(root:string,run:()=>T){return registrationRoot.run(root,run);}
 export function localExecutionQueue(){return current.getStore()?.queue??localQueue(registrationRoot.getStore());}
 export function hasActiveLocalExecution(){return localQueueEnabled()&&Boolean(current.getStore());}
@@ -20,7 +33,7 @@ export function withLocalExecution<T>(queue:LocalQueue,job:QueueJob,execute:()=>
 /** 仅用于领取/失租清理的SQL；UUID经过校验，alias仅允许代码内标识。 */
 export function localClaimSql(alias:string,stale=false){if(!localQueueEnabled())return '';if(!/^[a-z_]+$/.test(alias))throw new Error('执行表别名无效');const c=current.getStore();if(stale||!c)return ' AND FALSE ';assertJobId(c.job.id);return ` AND ${alias}.id='${c.job.id}'::uuid `;}
 export function localWaitingSql(alias:string){return localQueueEnabled()&&current.getStore()?`${alias}.status IN ('waiting','running')`:`${alias}.status='waiting'`;}
-type ReplaceableKind='step'|'library'|'skill'|'advice';
+type ReplaceableKind='step'|'library'|'skill'|'advice'|'custom_step';
 /** 共享记录仅证明未开始的业务意图，不证明他机排队。与领取UPDATE竞争行锁；续作/已有结果不在此范围。 */
 export function foreignUnstartedSql(alias:string,kind:ReplaceableKind,target:'local'|'server'='local'){
  if(!/^[a-z_]+$/.test(alias))throw new Error('执行表别名无效');
@@ -28,16 +41,16 @@ export function foreignUnstartedSql(alias:string,kind:ReplaceableKind,target:'lo
  const owner=localExecutionQueue().executorId;assertJobId(owner);
  const state=kind==='library'
   ?`${alias}.status='queued' AND ${alias}.started_at IS NULL AND ${alias}.heartbeat_at IS NULL AND ${alias}.lease_token IS NULL AND ${alias}.result_summary='{}'::jsonb AND ${alias}.progress='{}'::jsonb AND ${alias}.execution_target='local'`
-  :`${alias}.status='waiting' AND ${alias}.result IS NULL${kind==='advice'?'':` AND ${alias}.heartbeat_at IS NULL AND ${alias}.session_id IS NULL`}${kind==='step'?` AND ${alias}.execution_target='local' AND NOT EXISTS(SELECT 1 FROM ai_distill.artifacts queued_artifact WHERE queued_artifact.attempt_id=${alias}.id)`:''}`;
+  :`${alias}.status='waiting' AND ${alias}.result IS NULL${kind==='advice'||kind==='custom_step'?'':` AND ${alias}.heartbeat_at IS NULL AND ${alias}.session_id IS NULL`}${kind==='custom_step'?` AND ${alias}.heartbeat_at IS NULL AND ${alias}.execution_target='local'`:''}${kind==='step'?` AND ${alias}.execution_target='local' AND NOT EXISTS(SELECT 1 FROM ai_distill.artifacts queued_artifact WHERE queued_artifact.attempt_id=${alias}.id)`:''}`;
  return `(${state} AND ${alias}.finished_at IS NULL AND EXISTS(SELECT 1 FROM ai_distill.execution_dispatches queued_owner WHERE queued_owner.job_id=${alias}.id AND queued_owner.job_kind='${kind}' AND queued_owner.executor_id<>'${owner}'::uuid AND queued_owner.generation=0))`;
 }
-type PendingScope={kind:'step';id:string;ordinal:number}|{kind:'library';id:string;jobKind:'intake'|'extract'|'redact'|'prepare'}|{kind:'skill'|'advice';id:string};
+type PendingScope={kind:'step';id:string;ordinal:number}|{kind:'library';id:string;jobKind:'intake'|'extract'|'redact'|'prepare'}|{kind:'skill'|'advice';id:string}|{kind:'custom_step';id:string;stepKey:string};
 /** 仅在用户新派发的原业务事务中替代他机未开始意图。失败整体回滚；不转移旧ID、不重放运行/未知调用。 */
 export async function supersedeForeignPending(db:Pick<PoolClient,'query'>,scope:PendingScope,target:'local'|'server'='local'){
  if(!localQueueEnabled()||current.getStore()||target!=='local')return;
- const table={step:'step_attempts',library:'library_jobs',skill:'project_skill_attempts',advice:'revision_advice_attempts'}[scope.kind];
- const selector=scope.kind==='step'?'j.workflow_id=$1 AND j.ordinal=$2':scope.kind==='library'?'j.revision_id=$1 AND j.kind=$2':scope.kind==='skill'?'j.project_id=$1':'j.workflow_id=$1';
- const values=scope.kind==='step'?[scope.id,scope.ordinal]:scope.kind==='library'?[scope.id,scope.jobKind]:[scope.id];
+ const table={step:'step_attempts',library:'library_jobs',skill:'project_skill_attempts',advice:'revision_advice_attempts',custom_step:'custom_step_runs'}[scope.kind];
+ const selector=scope.kind==='step'?'j.workflow_id=$1 AND j.ordinal=$2':scope.kind==='library'?'j.revision_id=$1 AND j.kind=$2':scope.kind==='custom_step'?'j.workflow_id=$1 AND j.step_key=$2':scope.kind==='skill'?'j.project_id=$1':'j.workflow_id=$1';
+ const values=scope.kind==='step'?[scope.id,scope.ordinal]:scope.kind==='library'?[scope.id,scope.jobKind]:scope.kind==='custom_step'?[scope.id,scope.stepKey]:[scope.id];
  const terminal=scope.kind==='library'?"status='cancelled',error_code='superseded_before_start',error_message='他机未开始待办已由本机明确新派发替代'":"status='skipped',error='他机未开始待办已由本机明确新派发替代'";
  await db.query(`UPDATE ai_distill.${table} AS j SET ${terminal},finished_at=now() WHERE ${selector} AND ${foreignUnstartedSql('j',scope.kind,target)}`,values);
 }
@@ -85,7 +98,7 @@ export async function reconcileRegistrations(pool:Pool,q:LocalQueue){
 }
 // 当前pg实现支持逐查询read timeout；类型包未声明该可选属性。Pool.query错误路径会释放失败连接。
 function boundedQuery(text:string):QueryConfig&{query_timeout:number}{return{text,query_timeout:15000};}
-const tables:Record<JobKind,string>={step:'step_attempts',skill:'project_skill_attempts',library:'library_jobs',hook:'hook_runs',remote:'remote_material_operations',advice:'revision_advice_attempts'};
+const tables:Record<JobKind,string>={step:'step_attempts',skill:'project_skill_attempts',library:'library_jobs',hook:'hook_runs',remote:'remote_material_operations',advice:'revision_advice_attempts',custom_step:'custom_step_runs'};
 export async function cloudJobState(pool:Pool,q:LocalQueue,job:QueueJob){
  const row=(await pool.query(boundedQuery(`SELECT j.status FROM ai_distill.${tables[job.kind]} j JOIN ai_distill.execution_dispatches d ON d.job_id=j.id WHERE j.id=$1 AND d.executor_id=$2 AND d.generation=$3`),[job.id,q.executorId,job.generation])).rows[0];return row?.status as string|undefined;
 }
@@ -140,6 +153,7 @@ export async function synchronizeCancellation(pool:Pool,q:LocalQueue,id:string){
     const cancelled=(await query("UPDATE ai_distill.step_attempts SET status='skipped',error='用户取消本机任务',finished_at=now() WHERE id=$1 AND status IN ('waiting','running') RETURNING workflow_id,ordinal",[id])).rows[0];
     if(cancelled)await query("UPDATE ai_distill.steps s SET status='failed',error='本机任务已取消',finished_at=now() WHERE workflow_id=$1 AND ordinal=$2 AND status IN ('waiting','running') AND NOT EXISTS(SELECT 1 FROM ai_distill.step_attempts a WHERE a.workflow_id=s.workflow_id AND a.ordinal=s.ordinal AND a.status IN ('waiting','running'))",[cancelled.workflow_id,cancelled.ordinal]);
    }else if(job.kind==='advice'){await query("UPDATE ai_distill.revision_advice_attempts SET status='skipped',error='用户取消返修建议',finished_at=now() WHERE id=$1 AND status IN ('waiting','running')",[id]);
+   }else if(job.kind==='custom_step'){await query("UPDATE ai_distill.custom_step_runs SET status='cancelled',error='用户取消定制步骤',finished_at=now() WHERE id=$1 AND status IN ('waiting','running')",[id]);
    }else{const table=tables[job.kind];await query(`UPDATE ai_distill.${table} SET status='failed' WHERE id=$1 AND status IN ('waiting','running')`,[id]);}
    await query('COMMIT');q.confirmCancellation(id);
   }catch(error){discard=error instanceof Error?error:new Error('取消同步失败');try{await query('ROLLBACK');}catch(rollbackError){logEvent('queue.rollback_failed',{level:'error',component:'local_execution_queue',...classifyLogError(rollbackError)});}throw error;}finally{db.release(discard);}

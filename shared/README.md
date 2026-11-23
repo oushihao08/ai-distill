@@ -92,4 +92,4 @@ Agent计划中的unresolved仅保存语义疑点，不因blocking标记或缺少
 
 `workflow-results.ts` 的答案模型摘要中，`minimum_score` 允许 `null`，与现有项目模型设置的未设置门槛值保持一致；它不在读取或聚合时转换为默认阈值。
 
-`AuthoringBatchContext`是独立于材料整理的同期期次设计参考；记录冻结时点、当前成功题目覆盖和缺失数量。`MaterialScopeSelection`兼容增加business_goal/core_work/deliverable_use内部元数据；旧结果可缺失。出题端仅投影白名单，不向作答或评分传递，不以摘要是否完整作为接收门槛。
+`MaterialScopeSelection`兼容保留business_goal/core_work/deliverable_use内部元数据；旧结果可缺失。出题端不生成跨题`batch-context.json`设计摘要，内部选择元数据亦不向作答或评分传递。

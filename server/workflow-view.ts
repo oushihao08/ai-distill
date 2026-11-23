@@ -8,7 +8,7 @@ import {readProjectWorkflowStepRows,workflowStepReadiness,type WorkflowStepState
 import {STEP_REGISTRY,isStepSealed} from '../shared/step-registry';
 
 type ProjectWorkflowView={steps:(WorkflowStepState&Record<string,any>)[];attempt_summary:{has_authored:boolean}};
-const projectWorkflowColumns=['id','project_id','title','created_at','status','source_key','workflow_kind','source_workflow_id','source_redaction_attempt_id','source_redaction_sha256','scenario','role_perspective','target_level','question_tags','authoring_direction','library_package_id','library_package_name','material_count','material_redaction_status','current_ordinal','current_status','current_decision','acceptance_result','current_task_name','current_question_version','current_rubric_version','answer_models','publication_status','has_authored','exported'] as const;
+const projectWorkflowColumns=['id','project_id','title','created_at','status','source_key','workflow_kind','source_workflow_id','source_redaction_attempt_id','source_redaction_sha256','scenario','role_perspective','target_level','question_tags','authoring_direction','library_package_id','library_package_name','material_count','material_redaction_status','current_ordinal','current_status','current_decision','acceptance_result','current_task_name','current_question_version','current_rubric_version','answer_models','publication_status','has_authored','exported','authoring_model'] as const;
 /** 项目列表以单行紧凑载荷跨远端连接传输；还原字段及pg的Date语义，保持HTTP响应不变。 */
 export async function readProjectWorkflowList(pool:Pool,sql:string,projectId:string,pageSize?:number,offset=0){
  const projection=projectWorkflowColumns.map(column=>`workflow_items.${column}`).join(',');

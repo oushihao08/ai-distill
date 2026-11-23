@@ -1,16 +1,24 @@
 /**
- * 职责：独立调用智谱 GLM-OCR 版面解析，并将页级布局完整转换为系统稳定 DocumentBlock 结构。
- * 关键入口：GlmOcrPdfExtractor.extract()；parseGlmOcrResponse() 负责严格页数、块结构和文字保留校验。
- * 使用场景：PDF_EXTRACTION_PROVIDER=glm-ocr 时由旧材料队列和全局材料库调用；不复用 MinerU 请求、响应或回退链。
+ * 职责：独立调用智谱 GLM-OCR 版面解析，并将 PDF、图片及 LibreOffice 渲染的 DOCX 页级布局转换为稳定 DocumentBlock 结构。
+ * 关键入口：`GlmOcrPdfExtractor`、`GlmOcrImageExtractor`、`GlmOcrDocxExtractor`；`parseGlmOcrResponse()` 负责严格页数、块结构和文字保留校验。
+ * 使用场景：显式选择 `glm-ocr` 或由双 OCR 池切换激活时调用；请求、响应转换与凭证同 MinerU 保持隔离。
  */
 import {createHash} from 'node:crypto';
-import {readFile} from 'node:fs/promises';
+import {execFile} from 'node:child_process';
+import {mkdir,mkdtemp,readFile,rm,stat} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {basename,extname,join} from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {promisify} from 'node:util';
+import {createLibreOfficeEnvironment} from '../libreoffice';
 import {command} from '../pdf';
 import {documentBlocksToText,type DocumentBlock,type DocumentCell,type DocumentRow,type Page} from '../pdf';
+import {runUnzip} from './mineru-api';
 import type {PdfExtractionProvider,PdfExtractionResult} from './types';
 
 export const GLM_OCR_VERSION='glm-ocr-layout-structured-v1';
-const MAX_BYTES=50*1024*1024,MAX_PAGES=100,TIMEOUT_MS=30*60*1000;
+const MAX_BYTES=50*1024*1024,MAX_IMAGE_BYTES=10*1024*1024,MAX_PAGES=100,TIMEOUT_MS=30*60*1000;
+const runFile=promisify(execFile);
 const isRecord=(value:unknown):value is Record<string,unknown>=>Boolean(value&&typeof value==='object'&&!Array.isArray(value));
 
 type GlmErrorKind='authentication'|'rate_limit'|'network'|'timeout'|'provider'|'configuration'|'invalid_response';
@@ -26,7 +34,7 @@ function checkStopped(signal:AbortSignal|undefined,active:AbortSignal){
 }
 
 /** 同一次 layout 请求覆盖响应体读取；任何失败都不自动重传原件。 */
-async function requestGlmLayout(bytes:Buffer,env:NodeJS.ProcessEnv,fetcher:typeof fetch,active:AbortSignal,signal?:AbortSignal,cropImages=false):Promise<unknown>{
+async function requestGlmLayout(bytes:Buffer,env:NodeJS.ProcessEnv,fetcher:typeof fetch,active:AbortSignal,signal?:AbortSignal,cropImages=false,mimeType:'application/pdf'|'image/png'|'image/jpeg'='application/pdf'):Promise<unknown>{
  checkStopped(signal,active);
  const key=env.ZHIPU_API_KEY?.trim();
  if(!key)throw glmError('configuration','glm_ocr_missing_key','未配置 ZHIPU_API_KEY');
@@ -37,7 +45,7 @@ async function requestGlmLayout(bytes:Buffer,env:NodeJS.ProcessEnv,fetcher:typeo
  }catch{throw glmError('configuration','glm_ocr_invalid_endpoint','GLM-OCR接口地址配置无效');}
  let response:Response;
  try{
-  response=await fetcher(url,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:'glm-ocr',file:`data:application/pdf;base64,${bytes.toString('base64')}`,...(cropImages?{return_crop_images:true}:{}),request_id:crypto.randomUUID()}),signal:active});
+  response=await fetcher(url,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:'glm-ocr',file:`data:${mimeType};base64,${bytes.toString('base64')}`,...(cropImages?{return_crop_images:true}:{}),request_id:crypto.randomUUID()}),signal:active});
  }catch(error){
   checkStopped(signal,active);
   if(error instanceof Error&&error.name==='TimeoutError')throw glmError('timeout','glm_ocr_timeout','GLM-OCR请求超时');
@@ -210,5 +218,134 @@ export class GlmOcrPdfExtractor implements PdfExtractionProvider{
   const timeout=AbortSignal.timeout(TIMEOUT_MS),active=signal?AbortSignal.any([signal,timeout]):timeout;
   const raw=await requestGlmLayout(bytes,this.env,this.fetcher,active,signal);
   return{provider:this.id,sha256,pages:parseGlmOcrResponse(raw,pageCount)};
+ }
+}
+
+/** PNG/JPG/JPEG 原件直传 GLM-OCR layout_parsing，投影为单页结构，无文字图片保留 empty_page。 */
+export class GlmOcrImageExtractor implements PdfExtractionProvider{
+ readonly id='glm-ocr' as const;
+ constructor(private readonly env:NodeJS.ProcessEnv=process.env,private readonly fetcher:typeof fetch=fetch){}
+ async extract(path:string,signal?:AbortSignal):Promise<PdfExtractionResult>{
+  signal?.throwIfAborted();
+  const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex');
+  if(bytes.length>MAX_IMAGE_BYTES)throw glmError('configuration','glm_ocr_image_too_large','图片超过GLM-OCR单文件限制（10 MiB）');
+  const ext=extname(path).toLowerCase();
+  const mimeType=bytes[0]===0x89&&bytes[1]===0x50?'image/png':bytes[0]===0xff&&bytes[1]===0xd8?'image/jpeg':ext==='.png'?'image/png':ext==='.jpg'||ext==='.jpeg'?'image/jpeg':undefined;
+  if(!mimeType)throw glmError('configuration','glm_ocr_unsupported_image','GLM-OCR仅支持PNG和JPEG图片');
+  const timeout=AbortSignal.timeout(TIMEOUT_MS),active=signal?AbortSignal.any([signal,timeout]):timeout;
+  const raw=await requestGlmLayout(bytes,this.env,this.fetcher,active,signal,false,mimeType);
+  const normalized=isRecord(raw)&&Array.isArray(raw.layout_details)&&raw.layout_details.length===1&&(!isRecord(raw.data_info)||raw.data_info.num_pages===undefined)
+   ?{...raw,data_info:{...(isRecord(raw.data_info)?raw.data_info:{}),num_pages:1}}
+   :raw;
+  return{provider:this.id,sha256,pages:parseGlmOcrResponse(normalized,1)};
+ }
+}
+
+function decodeWordXml(value:string){
+ return value.replace(/&#x([\da-f]+);/gi,(_,hex:string)=>String.fromCodePoint(Number.parseInt(hex,16))).replace(/&#(\d+);/g,(_,dec:string)=>String.fromCodePoint(Number(dec))).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&');
+}
+
+function parseDocxParagraphXml(inner:string):string{
+ return [...inner.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\s*\/>|<w:br(?:\s[^>]*)?\/>/g)]
+  .map(match=>match[1]!==undefined?decodeWordXml(match[1]):match[0].startsWith('<w:tab')?'\t':'\n')
+  .join('');
+}
+
+function parseDocxDocumentXmlBlocks(xml:string):DocumentBlock[]{
+ const blocks:DocumentBlock[]=[];
+ let index=0;
+ for(const match of xml.matchAll(/<w:tbl(?:\s[^>]*)?>([\s\S]*?)<\/w:tbl>|<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g)){
+  if(match[1]!==undefined){
+   const rows:DocumentRow[]=[];
+   for(const tr of match[1].matchAll(/<w:tr(?:\s[^>]*)?>([\s\S]*?)<\/w:tr>/g)){
+    const cells:DocumentCell[]=[];
+    for(const tc of tr[1]!.matchAll(/<w:tc(?:\s[^>]*)?>([\s\S]*?)<\/w:tc>/g)){
+     const cellText=[...tc[1]!.matchAll(/<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g)].map(p=>parseDocxParagraphXml(p[1]!)).filter(Boolean).join('\n');
+     const gridSpan=Number(/<w:gridSpan\s+[^>]*w:val=["'](\d+)["']/i.exec(tc[1]!)?.[1]??0);
+     cells.push({text:cellText,...(gridSpan>1?{columnSpan:gridSpan}:{})});
+    }
+    if(cells.length)rows.push({cells});
+   }
+   if(rows.length)blocks.push({id:`xml-b${++index}`,kind:'table',rows});
+  }else if(match[2]!==undefined){
+   const text=parseDocxParagraphXml(match[2]);
+   if(text.trim())blocks.push({id:`xml-b${++index}`,kind:'paragraph',text});
+  }
+ }
+ return blocks;
+}
+
+/** DOCX 优先经隔离 LibreOffice 转临时 PDF 识别；本机未安装 soffice 时直接解析 OOXML 段落/表格并将内嵌图片送 GLM-OCR 识别，绑定原 DOCX 摘要。 */
+export class GlmOcrDocxExtractor implements PdfExtractionProvider{
+ readonly id='glm-ocr' as const;
+ private readonly pdfExtractor:PdfExtractionProvider;
+ private readonly imageExtractor:PdfExtractionProvider;
+ constructor(
+  private readonly env:NodeJS.ProcessEnv=process.env,
+  fetcher:typeof fetch=fetch,
+  options:{pdfExtractor?:PdfExtractionProvider;imageExtractor?:PdfExtractionProvider;convertToPdf?:(sourcePath:string,outputDir:string,signal?:AbortSignal)=>Promise<string>}={},
+ ){
+  this.pdfExtractor=options.pdfExtractor??new GlmOcrPdfExtractor(env,fetcher);
+  this.imageExtractor=options.imageExtractor??new GlmOcrImageExtractor(env,fetcher);
+  this.convertToPdf=options.convertToPdf??((sourcePath,outputDir,activeSignal)=>this.defaultConvertToPdf(sourcePath,outputDir,activeSignal));
+ }
+ private readonly convertToPdf:(sourcePath:string,outputDir:string,signal?:AbortSignal)=>Promise<string>;
+ private async defaultConvertToPdf(sourcePath:string,outputDir:string,signal?:AbortSignal):Promise<string>{
+  const profile=join(outputDir,'profile');
+  await mkdir(profile,{recursive:true,mode:0o700});
+  const loEnv=await createLibreOfficeEnvironment(profile);
+  const soffice=this.env.LIBREOFFICE_PATH||'soffice';
+  await runFile(soffice,[`-env:UserInstallation=${pathToFileURL(profile).href}`,'--headless','--convert-to','pdf','--outdir',outputDir,sourcePath],{timeout:180_000,maxBuffer:4*1024*1024,signal,env:loEnv});
+  const pdfPath=join(outputDir,`${basename(sourcePath,extname(sourcePath))}.pdf`);
+  const info=await stat(pdfPath).catch(()=>null);
+  if(!info?.isFile()||info.size<5)throw glmError('provider','glm_ocr_docx_convert_failed','LibreOffice未能生成有效DOCX转换PDF');
+  return pdfPath;
+ }
+ private async extractFromDocxArchive(sourceCopy:string,tempDir:string,sha256:string,signal?:AbortSignal):Promise<PdfExtractionResult>{
+  const listing=new TextDecoder().decode(await runUnzip(['-Z1',sourceCopy],2*1024*1024,signal)).split(/\r?\n/).filter(Boolean);
+  const structure:DocumentBlock[]=[];
+  if(listing.includes('word/document.xml')){
+   const xml=new TextDecoder('utf-8',{fatal:false}).decode(await runUnzip(['-p',sourceCopy,'word/document.xml'],32*1024*1024,signal));
+   structure.push(...parseDocxDocumentXmlBlocks(xml));
+  }
+  const mediaEntries=listing.filter(entry=>/^word\/media\/[A-Za-z0-9._-]+\.(?:png|jpe?g)$/i.test(entry)&&!entry.includes('..'));
+  for(const [index,entry] of mediaEntries.entries()){
+   signal?.throwIfAborted();
+   const imgBytes=await runUnzip(['-p',sourceCopy,entry],MAX_IMAGE_BYTES+1024,signal);
+   if(imgBytes.byteLength>MAX_IMAGE_BYTES)continue;
+   const ext=entry.toLowerCase().endsWith('.png')?'png':'jpg';
+   const imgPath=join(tempDir,`media-${index}.${ext}`);
+   await Bun.write(imgPath,imgBytes);
+   const imgResult=await this.imageExtractor.extract(imgPath,signal);
+   const imgBlocks=imgResult.pages[0]?.structure??[];
+   if(!documentBlocksToText(imgBlocks).trim())continue;
+   structure.push(...imgBlocks.map(block=>({...block,id:`media-${index}-${block.id}`})));
+  }
+  const text=documentBlocksToText(structure);
+  return{provider:this.id,sha256,pages:[{page:1,text,structure,method:'ocr',model:'glm-ocr',...(!text.trim()?{issues:['empty_page']}:{ })}]};
+ }
+ async extract(path:string,signal?:AbortSignal):Promise<PdfExtractionResult>{
+  signal?.throwIfAborted();
+  const bytes=await readFile(path),sha256=createHash('sha256').update(bytes).digest('hex');
+  const tempDir=await mkdtemp(join(tmpdir(),'glm-docx-'));
+  try{
+   const sourceCopy=join(tempDir,'source.docx');
+   await Bun.write(sourceCopy,bytes);
+   let pdfPath:string|undefined;
+   try{
+    pdfPath=await this.convertToPdf(sourceCopy,tempDir,signal);
+   }catch(error){
+    if((error as NodeJS.ErrnoException)?.code==='ENOENT'){
+     return await this.extractFromDocxArchive(sourceCopy,tempDir,sha256,signal);
+    }
+    throw error;
+   }
+   const pdfResult=await this.pdfExtractor.extract(pdfPath,signal);
+   const structure=pdfResult.pages.flatMap(page=>(page.structure??[]).map(block=>({...block,id:`p${page.page}-${block.id}`})));
+   const text=documentBlocksToText(structure);
+   return{provider:this.id,sha256,pages:[{page:1,text,structure,method:'ocr',model:'glm-ocr',...(!text.trim()?{issues:['empty_page']}:{ })}]};
+  }finally{
+   await rm(tempDir,{recursive:true,force:true});
+  }
  }
 }

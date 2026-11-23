@@ -61,16 +61,16 @@ async function bundleDocxParts(files:NonNullable<Awaited<ReturnType<typeof readC
 }
 
 /** 可见题目ID与隐藏系统ID均关联workflow UUID；普通文本字段不锁定或冻结。 */
-export async function syncArchivedWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,targetOverride?:FeishuTarget,allowRecreateDeleted=false,attachmentFormatOverride?:FeishuAttachmentFormat,combinedMaterial=false){
- return syncWorkflowToFeishu(pool,workflowId,storageRoot,assetRoot,'archived',targetOverride,allowRecreateDeleted,undefined,attachmentFormatOverride,combinedMaterial);
+export async function syncArchivedWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,targetOverride?:FeishuTarget,allowRecreateDeleted=false,attachmentFormatOverride?:FeishuAttachmentFormat,combinedMaterial=false,expectedAuthor?:string){
+ return syncWorkflowToFeishu(pool,workflowId,storageRoot,assetRoot,'archived',targetOverride,allowRecreateDeleted,undefined,attachmentFormatOverride,combinedMaterial,undefined,expectedAuthor);
 }
 
 /** 显式上传当前出题结果为未完成草稿；不要求达标/归档，也不更改工作流步骤。 */
-export async function syncAuthoredWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,targetOverride?:FeishuTarget,revisionAttemptId?:string,attachmentFormatOverride?:FeishuAttachmentFormat,combinedMaterial=false,replaceRecordId?:string){
- return syncWorkflowToFeishu(pool,workflowId,storageRoot,assetRoot,'draft',targetOverride,false,revisionAttemptId,attachmentFormatOverride,combinedMaterial,replaceRecordId);
+export async function syncAuthoredWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,targetOverride?:FeishuTarget,revisionAttemptId?:string,attachmentFormatOverride?:FeishuAttachmentFormat,combinedMaterial=false,replaceRecordId?:string,expectedAuthor?:string){
+ return syncWorkflowToFeishu(pool,workflowId,storageRoot,assetRoot,'draft',targetOverride,false,revisionAttemptId,attachmentFormatOverride,combinedMaterial,replaceRecordId,expectedAuthor);
 }
 
-async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,stage:'draft'|'archived',targetOverride?:FeishuTarget,allowRecreateDeleted=false,revisionAttemptId?:string,attachmentFormatOverride?:FeishuAttachmentFormat,combinedMaterial=false,replaceRecordId?:string){
+async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:string,assetRoot:string,stage:'draft'|'archived',targetOverride?:FeishuTarget,allowRecreateDeleted=false,revisionAttemptId?:string,attachmentFormatOverride?:FeishuAttachmentFormat,combinedMaterial=false,replaceRecordId?:string,expectedAuthor?:string){
  workflowId=workflowId.toLowerCase();
  // 跨数据库校验、远端分页和附件上传；子进程预算均须覆盖整段会话。
  const openFeishuClient=()=>feishuClient({timeoutMs:600_000});
@@ -117,6 +117,7 @@ async function syncWorkflowToFeishu(pool:Pool,workflowId:string,storageRoot:stri
   };
   const snapshotKey=(value:any)=>stage==='archived'?value?.archive?.source_digest:createHash('sha256').update(canonicalJson({question_version:value?.question?.question_version,rubric_version:value?.question?.rubric_version,authoring_input_digest:value?.authoring_input_digest})).digest('hex');
   const initial=await snapshot();
+  if(expectedAuthor&&initial?.authoring_attempt_id!==expectedAuthor)throw new SyncError('feishu_authoring_version_changed');
   if(!initial||!initial.question||!initial.authoring_input||!initial.question.question_version||!initial.question.rubric_version)throw new SyncError(stage==='archived'?'feishu_current_archive_required':'feishu_current_authoring_required');
   if(stage==='archived'&&(initial.archive.question_version!==initial.question.question_version||initial.archive.rubric_version!==initial.question.rubric_version))throw new SyncError('feishu_current_archive_required');
   // 草稿用出题版本和冻结输入生成本地比较键；正式交付仍使用归档摘要与attempt身份。

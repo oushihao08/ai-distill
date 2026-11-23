@@ -99,13 +99,8 @@ async function copyPreviousDraft(directory: string, previousDirectory?: string) 
  }
 }
 
-/** 完整正文与校验脚本落在私有任务目录，Agent将大JSON写入output/preparation.json并本地校验，末条仅返回文件声明。 */
-export async function writePreparationAgentInput(
- directory: string,
- materials: PreparationInput[],
- options: { mode?: 'single' | 'chunk'; previousDirectory?: string; fullDossier?: boolean } = {},
-) {
- const mode = options.mode ?? 'single';
+/** 按本次来源 ID 建立私有正文清单，供分段读卷及整包汇总按需回查。 */
+async function writePreparationSources(directory: string, materials: PreparationInput[]) {
  const manifest = [];
  for (const [index, material] of materials.entries()) {
   const file = `material-${String(index + 1).padStart(6, '0')}.txt`;
@@ -113,6 +108,16 @@ export async function writePreparationAgentInput(
   manifest.push({ id: material.id, title: material.title, file, characters: material.text.length });
  }
  await writeFile(join(directory, 'materials.json'), JSON.stringify({ count: materials.length, units: manifest }, null, 2), { mode: 0o600 });
+}
+
+/** 完整正文与校验脚本落在私有任务目录，Agent将大JSON写入output/preparation.json并本地校验，末条仅返回文件声明。 */
+export async function writePreparationAgentInput(
+ directory: string,
+ materials: PreparationInput[],
+ options: { mode?: 'single' | 'chunk'; previousDirectory?: string; fullDossier?: boolean } = {},
+) {
+ const mode = options.mode ?? 'single';
+ await writePreparationSources(directory, materials);
  await writeFile(join(directory, 'target-schema.json'), JSON.stringify(mode === 'chunk' ? MATERIAL_PREPARATION_SUMMARY_SCHEMA : MATERIAL_PREPARATION_SINGLE_SCHEMA, null, 2), { mode: 0o600 });
  await writeFile(join(directory, 'validation-context.json'), JSON.stringify({ mode, ids: materials.map(m => m.id) }), { mode: 0o600 });
  await writeFile(join(directory, 'validate-preparation.mjs'), VALIDATOR_SCRIPT, { mode: 0o600 });
@@ -130,18 +135,20 @@ export async function writePreparationOverviewInput(
  directory: string,
  descriptions: Array<{ id: string; title?: string; document_type?: string; tags?: string[]; summary: string; notes?: string }>,
  previousDirectory?: string,
- fullDossier = false,
+ dossierSources?: PreparationInput[],
 ) {
+ const fullDossier = dossierSources !== undefined;
+ if (dossierSources) await writePreparationSources(directory, dossierSources);
  await writeFile(join(directory, 'descriptions.json'), JSON.stringify({ count: descriptions.length, documents: descriptions }, null, 2), { mode: 0o600 });
  await writeFile(join(directory, 'target-schema.json'), JSON.stringify(MATERIAL_PREPARATION_CHUNKED_OVERVIEW_SCHEMA, null, 2), { mode: 0o600 });
  await writeFile(join(directory, 'validation-context.json'), JSON.stringify({ mode: 'overview', ids: descriptions.map(d => d.id) }), { mode: 0o600 });
  await writeFile(join(directory, 'validate-preparation.mjs'), VALIDATOR_SCRIPT, { mode: 0o600 });
  await copyPreviousDraft(directory, previousDirectory);
- return preparationPrompt(fullDossier) + `\n<超百份文书全包汇总与可见性判定接口>
-1. 读取当前目录 descriptions.json（含按原顺序逐份完整阅读后形成的 id、title、document_type、tags、summary、notes）。只依据这些描述汇总全包，不补造原文未确认的事实；若存在 resume/preparation.json 可先核对。
-2. ${fullDossier ? '全部文书保持可见，hidden_documents 返回空数组；结合全卷提出仍待办理的工作。' : '分段阶段仅提取了事实描述（visibility 尚未判定）。本轮必须结合你提出的候选组合，按上文 <可见性> 的4项条件逐一核查全部文书：凡属现成目标成果或形成于候选 as_of 之后直接泄露主要结论/计算、且剩余 visible 材料足以支撑案件的文书（如泄题的生效裁判文书、现成目标意见/清单），必须将其 id 与具体 visibility_reason 列入 hidden_documents 数组；保持 visible 的文书不要列入 hidden_documents。没有有效候选组合时 hidden_documents 必须为空数组；combinations 的 document_ids 严禁引用任何 hidden_documents 中的 id。'}
+ return preparationPrompt(fullDossier) + `\n<超百份文书全包汇总接口>
+1. 读取当前目录 descriptions.json（含按原顺序逐份完整阅读后形成的 id、title、document_type、tags、summary、notes）。${fullDossier ? '先按描述定位可能相关的文书，涉及新的办理用途或跨文书联系时，用 materials.json 按 id 找到对应正文，回读相关段落后再写入候选。' : '只依据这些描述汇总全包。'}不补造原文未确认的事实；若存在 resume/preparation.json 可先核对。
+2. ${fullDossier ? '结合全卷提出仍待办理的工作。接口字段 hidden_documents 固定填 []。' : '分段阶段仅提取了事实描述（visibility 尚未判定）。本轮必须结合你提出的候选组合，按上文 <可见性> 的4项条件逐一核查全部文书：凡属现成目标成果或形成于候选 as_of 之后直接泄露主要结论/计算、且剩余 visible 材料足以支撑案件的文书（如泄题的生效裁判文书、现成目标意见/清单），必须将其 id 与具体 visibility_reason 列入 hidden_documents 数组；保持 visible 的文书不要列入 hidden_documents。没有有效候选组合时 hidden_documents 必须为空数组；combinations 的 document_ids 严禁引用任何 hidden_documents 中的 id。'}
 3. 将符合 target-schema.json 的完整 JSON（含 package_summary、hidden_documents、combinations、question_support）写入 output/preparation.json（条目较多时禁止单次工具调用手写大JSON转义，可先分片落盘再由脚本合并），运行 \`${validatorCommand()}\` 直至 valid:true，最后只返回 {"preparation_file":"output/preparation.json"}。
-</超百份文书全包汇总与可见性判定接口>`;
+</超百份文书全包汇总接口>`;
 }
 
 export function validatePreparationFileDeclaration(value: unknown) {
@@ -219,21 +226,22 @@ summary：事实及证明作用；document_type：文书类型；tags：具体�
 hidden_texts：只列扫描软件广告、水印、无关页眉页脚，以及仅表示原件分页的独立页码行；source_text逐字复制该段完整原文，reason说明判断依据。相同原文重复出现只列一次；不同页码须分别列出。不要选医疗记录、检查结论、费用、日期、病例或检查编号、正文引用的证据页码、文书标题或混有正文的段落；不确定时保留，返回空数组。此字段只控制整理后的显示副本，不修改来源。
 </逐项描述>
 <候选组合>
-先依据法律关系、主体、证据和程序时点提出可出题的单方律师／法务工作，再判断材料可见性；材料不足可不提候选，不凑数量，不设计代法院或仲裁庭起草裁判文书。
-每组写direction、单方party、scenes（工作场景scene、可用信息截止阶段as_of）、core_work（待完成的专业判断和工作）、deliverables（成果名称、接收人、后续用途）、关键visible依据document_ids、notes（前后工作依赖、成果核验和适用边界）。形成“材料依据—专业处理—使用动作—实际文件—验收证据”闭环；需要编辑、审签、核算、更新、提交或留档的成果，应是可直接使用且可打开、重算或渲染核验的文件。
+先依据法律关系、主体、证据和程序时点提出可出题的单方律师／法务工作${fullDossier ? '' : '，再判断材料可见性'}；材料不足可不提候选，不凑数量，不设计代法院或仲裁庭起草裁判文书。
+每组写direction、单方party、scenes（工作场景scene、可用信息截止阶段as_of）、core_work（待完成的专业判断和工作）、deliverables（成果名称、接收人、后续用途）、关键${fullDossier ? '' : 'visible'}依据document_ids、notes（前后工作依赖、成果核验和适用边界）。形成“材料依据—专业处理—使用动作—实际文件—验收证据”闭环；需要编辑、审签、核算、更新、提交或留档的成果，应是可直接使用且可打开、重算或渲染核验的文件。
 同组只服务一方；多个场景须案件、工作及时点相容，不同立场另列组合。不要重复逐项摘要或提前求解。组合供出题Agent选择，不预定最终题目。
 </候选组合>
-<可见性>
-${fullDossier ? `所有文书填visible，visibility_reason留空。按全卷实际进度推荐工作；发现已有目标文稿时，查明其用途和效力，选择尚待解决的事项。正文内的实质内容一律保留，hidden_texts仅用于上述排版噪声。` : `默认visible。只有同时满足下列条件才标hidden：①存在对应候选；②该材料是候选要制作的同类现成成果，或形成于其as_of之后；③正文直接给出该候选应产出的主要结论、计算或成果；④其他visible材料仍足以支持主体、关系、请求、金额、证据、时间线和程序状态。visibility_reason写明对应候选、泄露点或晚于哪个as_of，以及剩余依据为何充分；“透露结论”等空泛理由无效。没有有效候选组合时全部材料标visible。
-判决、裁定、调解和执行文书按上述条件判断，不按类型一概隐藏；单方办案必需的既有生效裁判、程序裁定或送达基础保持visible，不为构造裁判起草任务隐藏它们。混有待考结果与不可拆分必要案件事实、空白、残片或边界不明时保持visible。若材料既泄露一组候选又是另一组的必要依据，保持visible并放弃被泄露的候选。内容相同或实质重复的文书采用一致visibility；重复关系不明时保持visible。组合只能引用visible材料；hidden文书不进入下游出题、作答、评分及交付附件，visible摘要不得透露其存在、编号或答案。`}
-</可见性>
+${fullDossier ? `按全卷实际进度推荐工作；发现已有目标文稿时，查明其用途和效力，选择尚待解决的事项。逐份记录的接口字段 visibility 固定填 visible，visibility_reason 留空。
+逐份 summary 留下原文能定位的事实；某处记载的条件、状态或适用范围会影响其业务用途时，一并写明。形成候选后，回看只作为背景使用的材料，与相关文书对读。若确实影响某一方当前要作的决定，在该组合 notes 用具体文书名称和条款、日期或事项指出回查处，写清关联事实、影响的办理动作和尚待核实的前提；将所据文书 id 放入该组 document_ids。若是另一方或独立委托，只有卷内依据足以支撑实际工作时才另列候选。已有候选写清的内容不重复，找不到新的办理后果就结束。` : `<可见性>
+默认visible。只有同时满足下列条件才标hidden：①存在对应候选；②该材料是候选要制作的同类现成成果，或形成于其as_of之后；③正文直接给出该候选应产出的主要结论、计算或成果；④其他visible材料仍足以支持主体、关系、请求、金额、证据、时间线和程序状态。visibility_reason写明对应候选、泄露点或晚于哪个as_of，以及剩余依据为何充分；“透露结论”等空泛理由无效。没有有效候选组合时全部材料标visible。
+判决、裁定、调解和执行文书按上述条件判断，不按类型一概隐藏；单方办案必需的既有生效裁判、程序裁定或送达基础保持visible，不为构造裁判起草任务隐藏它们。混有待考结果与不可拆分必要案件事实、空白、残片或边界不明时保持visible。若材料既泄露一组候选又是另一组的必要依据，保持visible并放弃被泄露的候选。内容相同或实质重复的文书采用一致visibility；重复关系不明时保持visible。组合只能引用visible材料；hidden文书不进入下游出题、作答、评分及交付附件，visible摘要不得透露其存在、编号或答案。
+</可见性>`}
 <出题支持度>
-出题支持度question_support评估visible材料能否独立支持至少一道可作答、可客观评分的单方法律实务题；不按页数、材料数或候选数加分。dimensions各填0至2整数：task_actor（服务主体、立场、权限）；factual_basis（关系、请求、金额、时间、证据；仅能做条件式任务时可得1）；professional_judgment（证据取舍、规则适用、核算或办理判断）；deliverable_viability（成果的实际用途）；information_boundary（信息足够且现成成果未直接答完）。reason写visible材料的决定性依据，不提及hidden文书或编号；allowed_task_types写单方律师／法务可支持题型；unsupported_conclusions写仅凭visible材料不能确定的结论。
+出题支持度question_support评估${fullDossier ? '全卷' : 'visible'}材料能否独立支持至少一道可作答、可客观评分的单方法律实务题；不按页数、材料数或候选数加分。dimensions各填0至2整数：task_actor（服务主体、立场、权限）；factual_basis（关系、请求、金额、时间、证据；仅能做条件式任务时可得1）；professional_judgment（证据取舍、规则适用、核算或办理判断）；deliverable_viability（成果的实际用途）；information_boundary（信息足够且现成成果未直接答完）。reason写${fullDossier ? '全卷材料的决定性依据' : 'visible材料的决定性依据，不提及hidden文书或编号'}；allowed_task_types写单方律师／法务可支持题型；unsupported_conclusions写仅凭${fullDossier ? '本卷' : 'visible'}材料不能确定的结论。
 不返回总分或状态：程序求和，8至10为正常，6至7仅限条件式或收窄任务，0至5为危险。危险时combinations为空；高分但确无候选时仍返回空数组。
 </出题支持度>
 <事实与总摘要>
 区分主张、证据记载和法院认定，以及事件、制作、申请、取得、送达的时间；不明时写阶段或条件，不猜日期或补造事实。
-package_summary只概括visible依据支持的法律关系、材料构成、主要事实及程序状态；不写处理进度、hidden答案，也不遗漏visible材料支持的关键主体、金额、日期、证据和程序节点。
+package_summary只概括${fullDossier ? '全卷' : 'visible'}依据支持的法律关系、材料构成、主要事实及程序状态；不写处理进度${fullDossier ? '，也不遗漏全卷' : '、hidden答案，也不遗漏visible'}材料支持的关键主体、金额、日期、证据和程序节点。
 </事实与总摘要>`;
 }
 

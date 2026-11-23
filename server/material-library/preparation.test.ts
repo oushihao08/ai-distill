@@ -120,7 +120,7 @@ test('建题自动匹配精确来源的整理结果；无表或无匹配记录�
  const query=async(sql:string)=>sql.includes('to_regclass')?{rows:[{available:true}]}:{rows:[prepared]};
  const source={package_id:'p',revision_id:'r',redaction_id:'redaction',extraction_job_id:'extract'};
  const found=await findMatchingPreparation({query} as any,source,projectId);
- expect(found).toEqual({...prepared,result:{...prepared.result,summary_scope:'visible'}});
+ expect(found).toEqual({...prepared,fullDossier:false,result:{...prepared.result,summary_scope:'visible'}});
  const frozen:any={package_id:'p',revision_id:'r',redaction_id:'redaction',extraction_job_id:'extract',source_digest:'digest',markdown:'FULL MATERIAL',index:JSON.stringify(sourceIndex)};
  const attached=await attachPreparationContext({query} as any,frozen,projectId);
  expect(attached.markdown).toBe('FULL MATERIAL');expect(attached.material_scope?.result.package_summary).toBe(result.package_summary);
@@ -387,7 +387,7 @@ test('整包出题支持度由五维分数确定状态并约束危险候选，�
 test('整理入队与显式恢复冻结预算、模型和稳定来源；规则、模型或引擎变化不阻断续作',async()=>{
  const before=process.env.EXECUTION_QUEUE_MODE;process.env.EXECUTION_QUEUE_MODE='legacy';
  try{
-  const source=JSON.stringify({prepared_documents:[{id:'source',title:'材料',text:'正文'}]});const jobs:any[]=[];
+  let source=JSON.stringify({prepared_documents:[{id:'source',title:'材料',text:'正文'}]});const jobs:any[]=[];
   const db={query:async(sql:string,values:any[]=[])=>{
    if(sql.includes("to_regclass('ai_distill.library_preparations')"))return{rows:[{available:true}]};
    if(sql.includes('SELECT r.package_id'))return{rows:[{package_id:id,revision_id:projectId,extraction_job_id:'extract',output_digest:'digest',text_content:source,sha256:hash(source)}]};
@@ -415,6 +415,15 @@ test('整理入队与显式恢复冻结预算、模型和稳定来源；规则�
   expect((await enqueuePreparation(pool as any,'/unused',projectId,{request_key:'44444444-4444-4444-8444-444444444444',redaction_id:id,api_settings:{...apiSettings,base_url:'https://integrate.api.nvidia.com/v1'}})).reused).toBe(true);
   await expect(enqueuePreparation(pool as any,'/unused',projectId,{...request,request_key:'55555555-5555-4555-8555-555555555555',api_settings:apiSettings})).rejects.toThrow('不能同时指定');
   await expect(enqueuePreparation(pool as any,'/unused',projectId,{...request,execution_timeout_ms:0})).rejects.toThrow('执行预算');
+  for(const [count,characters,minutes] of [[100,1,30],[256,1,58],[672,1,98],[101,45001,434]] as const){
+   source=JSON.stringify({prepared_documents:Array.from({length:count},(_,i)=>({id:String(i),text:'字'.repeat(characters)}))});
+   await enqueuePreparation(pool as any,'/unused',projectId,{...request,request_key:crypto.randomUUID()});
+   expect(jobs.at(-1).config_snapshot.settings.execution.task_timeout_ms).toBe(minutes*60000);
+  }
+  await enqueuePreparation(pool as any,'/unused',projectId,{...request,request_key:crypto.randomUUID(),execution_timeout_ms:480000});
+  expect(jobs.at(-1).config_snapshot.settings.execution.task_timeout_ms).toBe(480000);
+  await enqueuePreparation(pool as any,'/unused',projectId,{redaction_id:id,request_key:crypto.randomUUID(),api_settings:apiSettings});
+  expect(jobs.at(-1).config_snapshot.settings.execution.task_timeout_ms).toBe(1800000);
  }finally{if(before===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=before;}
 });
 

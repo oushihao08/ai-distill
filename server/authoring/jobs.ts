@@ -5,9 +5,11 @@
  */
 import {resolveProjectPath} from '../paths';
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
+import {resolveStepProjectKey} from '../lifecycle/steps';
+import {customStepRegistry,invalidateDownstreamCustomSteps,readLatestCustomRepairEvaluation,runBeforeAnchorGates} from '../custom-steps';
 import {startAttemptHeartbeat} from '../attempt-heartbeat';
 import {assertWorkflowNotArchived} from '../workflow-archive-guard';
-import {localQueueEnabled,supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
+import {notifyLocalBusinessCommit,localQueueEnabled,supersedeForeignPending,releaseRolledBackRegistrations,forgetLocalRegistrations,registerLocalJob,localClaimSql,localWaitingSql,deferLocalPublication,cachedExternalCall,resumeStepFailure,readStepFailure,saveStepFailure,RecordedStepFailure} from '../execution-queue/runtime';
 import {frozenRevisionAdvice,validFrozenAdvice,assertRepairStepAllowed,type FrozenAdvice} from '../revision-advice/jobs';
 import {watchTaskCancellation} from '../task-signal';
 import type {Pool,PoolClient} from 'pg';
@@ -67,14 +69,14 @@ async function withRetryableTx(pool: Pool, action: (tx: PoolClient) => Promise<v
 import type {QuestionMaterialOrigin} from '../../shared/material-library';
 import {readQuestionMaterials,type QuestionMaterials} from '../question-materials';
 import {syncWorkflowMaterialScope} from '../material-library/preparation';
-import type {AuthoringBatchContext,MaterialScopeSelection,MaterialScopeContext} from '../../shared/material-preparation-result';
+import type {MaterialScopeContext} from '../../shared/material-preparation-result';
 import {renderPublicQuestionPackage,runAuthoring,FRESH_AUTHORING_CONTRACT,type AuthoringResult,type AuthoringRule} from './executor';
 import {readAnswerToolPolicyFromStepConfig,type AnswerToolPolicy} from '../answer-models/tool-policy';
 
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex');
 const stableDesignContext=(context:NonNullable<FrozenInput['design_context']>)=>({...('scenario'in context?{scenario:context.scenario}:{}),...('role_perspective'in context?{role_perspective:context.role_perspective}:{}),...('target_level'in context?{target_level:context.target_level}:{}),...('question_tags'in context?{question_tags:context.question_tags}:{})});
 const workflowSql="SELECT w.*,p.name AS project_name,p.local_skill_path,p.material_root,p.workspace_path,p.parent_name,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources qls WHERE qls.workflow_id=w.id) AS has_library_snapshot,s1.status AS ingestion_status,s9.status AS redaction_status\n FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL\n LEFT JOIN ai_distill.steps s1 ON s1.workflow_id=w.id AND s1.ordinal=1 LEFT JOIN ai_distill.steps s9 ON s9.workflow_id=w.id AND s9.ordinal=9\n WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w";
-interface FrozenInput {revision_advice?:FrozenAdvice;content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;scoring_policy?:ScoringPolicy;system_authoring_prompt?:string;project_name?:string;answer_capabilities?:AnswerToolPolicy;authoring_contract?:string;title:string;authoring_direction?:string;material_scope?:MaterialScopeContext;batch_context?:AuthoringBatchContext;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];model_materials?:{id:string;sha256:string}[];digest:string}
+interface FrozenInput {revision_advice?:FrozenAdvice;content_contract?:'work_legal_v1';hooks?:FrozenStageHooks;custom_before_gates?:Record<string,Record<string,unknown>>;scoring_policy?:ScoringPolicy;system_authoring_prompt?:string;project_name?:string;answer_capabilities?:AnswerToolPolicy;authoring_contract?:string;title:string;authoring_direction?:string;material_scope?:MaterialScopeContext;batch_context?:Record<string,unknown>;design_context?:{scenario?:string;role_perspective?:string;target_level?:string;question_tags?:string[]};question_id?:string;source_files?:{name:string;path:string}[];project_prompt?:ProjectPromptSnapshot;rule_version_id?:string;rule_attempt_id?:string;rule_source_digest?:string;rule_snapshot_path?:string;rule_files?:{path:string;sha256:string;size_bytes:number}[];redaction_attempt_id?:string;material_origin?:QuestionMaterialOrigin;materials:{id:string;sha256:string}[];model_materials?:{id:string;sha256:string}[];digest:string}
 const materialIdentity=(input:Pick<FrozenInput,'redaction_attempt_id'|'material_origin'>)=>input.material_origin?.kind==='library_v1'?{material_origin:{kind:input.material_origin.kind,material_mode:input.material_origin.material_mode,...(input.material_origin.material_processing_mode?{material_processing_mode:input.material_origin.material_processing_mode}:{}),package_id:input.material_origin.package_id,revision_id:input.material_origin.revision_id,redaction_id:input.material_origin.redaction_id,snapshot_digest:input.material_origin.snapshot_digest}}:{redaction_attempt_id:input.material_origin?.kind==='legacy'?input.material_origin.redaction_attempt_id:input.redaction_attempt_id};
 const designContext=(workflow:any)=>{const context={...(workflow.scenario?{scenario:String(workflow.scenario)}:{}),...(workflow.role_perspective?{role_perspective:String(workflow.role_perspective)}:{}),...(workflow.target_level?{target_level:String(workflow.target_level)}:{}),...(Array.isArray(workflow.question_tags)&&workflow.question_tags.length?{question_tags:workflow.question_tags.map(String)}:{})};return Object.keys(context).length?context:undefined;};
 const sourceFiles=(workflow:any):{name:string;path:string}[]=>Array.isArray(workflow.source_manifest)?workflow.source_manifest.filter((file:any)=>typeof file?.name==='string'&&typeof file?.path==='string').map((file:any)=>({name:file.name,path:file.path})):[];
@@ -105,6 +107,7 @@ const inputDigestSuffix=(input:Omit<FrozenInput,'digest'>)=>({
  ...(input.authoring_contract?{authoring_contract:input.authoring_contract}:{}),
  ...(input.scoring_policy?{scoring_policy:JSON.parse(canonicalJson(input.scoring_policy))}:{}),
  ...(input.hooks?{hooks:JSON.parse(canonicalJson(input.hooks))}:{}),
+ ...(input.custom_before_gates?{custom_before_gates:JSON.parse(canonicalJson(input.custom_before_gates))}:{}),
 });
 export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.stringify(input.rule_version_id ? {
     ...inputDigestPrefix(input),
@@ -164,46 +167,28 @@ export async function saveMaterialScopeSelection(db:PoolClient,projectId:string,
    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,scope_key) DO NOTHING`,[projectId,workflowId,attemptId,choice.direction.trim(),scene,hash(key)]);
  }
 }
-export const MAX_BATCH_CONTEXT_SELECTIONS=80;
 export const MAX_USED_COMBINATIONS=300;
-/** 只读取当前步骤成功投影，历史重出结果不混入；白名单字段限制参考内容，超阈值时优先保留同标签及近期记录以防step_attempts.input呈O(N^2)膨胀。 */
-export async function freezeAuthoringBatch(db:PoolClient,projectId:string,workflowId:string,questionTags?:string[]):Promise<AuthoringBatchContext>{
- const rows=(await db.query(`SELECT w.id,w.question_tags,s.finished_at,s.result->'material_scope_selection' AS selection
+async function freezeMaterialScope(db:PoolClient,projectId:string,workflowId:string,prepared:any):Promise<MaterialScopeContext|undefined>{
+ if(!prepared||prepared.result?.format!=='material-preparation-v2')return undefined;
+ const rows=(await db.query(`SELECT s.result->'material_scope_selection' AS selection
  FROM ai_distill.steps s JOIN ai_distill.workflows w ON w.id=s.workflow_id
  WHERE w.project_id=$1 AND w.id<>$2 AND w.deleted_at IS NULL
  AND s.ordinal=4 AND s.status='succeeded' ORDER BY w.id`,[projectId,workflowId])).rows;
- const clean=(value:any):MaterialScopeSelection|undefined=>{
-  if(!value||typeof value!=='object'||Array.isArray(value))return;
-  const str=(v:unknown)=>typeof v==='string'?v.trim():'';
-  const list=(v:unknown)=>Array.isArray(v)?v.filter((x):x is string=>typeof x==='string').map(x=>x.trim()).filter(Boolean):[];
-  const item:MaterialScopeSelection={direction:str(value.direction),party:str(value.party),scenes:list(value.scenes),deliverables:list(value.deliverables)};
-  for(const key of ['business_goal','core_work','deliverable_use'] as const)if(str(value[key]))item[key]=str(value[key]);
-  if(!item.direction&&!item.party&&!item.scenes.length&&!item.deliverables.length&&!item.core_work&&!item.business_goal&&!item.deliverable_use)return;
-  return item;
- };
- const entries:{item:MaterialScopeSelection;tags:string[];finishedAt:number;index:number}[]=[];let missing=0;
- for(const [index,row] of rows.entries()){const item=clean(row.selection);if(!item){missing++;continue;}
-  const extra=Array.isArray(row.selection.additional_combinations)?row.selection.additional_combinations.map(clean).filter(Boolean):[];
-  if(extra.length)item.additional_combinations=extra;
-  const tags=Array.isArray(row.question_tags)?row.question_tags.filter((t:unknown):t is string=>typeof t==='string').map((t:string)=>t.trim()).filter(Boolean):[];
-  const finishedAt=row.finished_at?Date.parse(String(row.finished_at))||0:0;
-  entries.push({item,tags,finishedAt,index});
- }
- if(entries.length<=MAX_BATCH_CONTEXT_SELECTIONS){
-  return{captured_at:new Date().toISOString(),total:rows.length,included:entries.length,missing,truncated:false,selections:entries.map(e=>e.item)};
- }
- const allUsed=new Map<string,{direction:string;scene:string}>();
- for(const {item} of entries)for(const choice of [item,...(item.additional_combinations??[])])for(const scene of choice.scenes)if(choice.direction)allUsed.set(scopeKey(choice.direction,scene),{direction:choice.direction,scene});
- const targetTags=new Set((questionTags??[]).filter((t):t is string=>typeof t==='string').map(t=>t.trim()).filter(Boolean));
- const overlap=(tags:string[])=>targetTags.size?tags.reduce((n,tag)=>n+(targetTags.has(tag)?1:0),0):0;
- const top=[...entries].sort((a,b)=>overlap(b.tags)-overlap(a.tags)||b.finishedAt-a.finishedAt||b.index-a.index).slice(0,MAX_BATCH_CONTEXT_SELECTIONS);
- return{captured_at:new Date().toISOString(),total:rows.length,included:top.length,missing,truncated:true,selections:top.map(e=>e.item),used_combinations:[...allUsed.values()].slice(0,MAX_USED_COMBINATIONS)};
-}
-function freezeMaterialScope(prepared:any,batch:AuthoringBatchContext):MaterialScopeContext|undefined{
- if(!prepared||prepared.result?.format!=='material-preparation-v2')return undefined;
  const used=new Map<string,{direction:string;scene:string}>();
- for(const pair of batch.used_combinations??[])if(pair?.direction&&pair?.scene)used.set(scopeKey(pair.direction,pair.scene),{direction:pair.direction,scene:pair.scene});
- for(const primary of batch.selections)for(const item of [primary,...(primary.additional_combinations??[])])for(const scene of item.scenes)if(item.direction)used.set(scopeKey(item.direction,scene),{direction:item.direction,scene});
+ for(const row of rows){
+  const primary=row.selection;if(!primary||typeof primary!=='object'||Array.isArray(primary))continue;
+  for(const item of [primary,...(Array.isArray(primary.additional_combinations)?primary.additional_combinations:[])]){
+   if(!item||typeof item.direction!=='string'||!item.direction.trim()||!Array.isArray(item.scenes))continue;
+   const direction=item.direction.trim();
+   for(const rawScene of item.scenes){
+    if(typeof rawScene!=='string'||!rawScene.trim())continue;
+    const scene=rawScene.trim();used.set(scopeKey(direction,scene),{direction,scene});
+    if(used.size>=MAX_USED_COMBINATIONS)break;
+   }
+   if(used.size>=MAX_USED_COMBINATIONS)break;
+  }
+  if(used.size>=MAX_USED_COMBINATIONS)break;
+ }
  return{preparation_id:String(prepared.preparation_id),result:prepared.result,used_combinations:[...used.values()]};
 }
 
@@ -226,10 +211,22 @@ export interface AuthoringDispatchOptions {
  timeout_ms?: number;
 }
 /** options.web：仅本次派发改用网页Agent出题；options.provider/model/reasoning_effort：显式覆盖出题执行后端，避免读取数据库默认配置。 */
-export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDispatchOptions){
+export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDispatchOptions,batch?:{attempt:string;project:string;source?:{package_id?:string;revision_id?:string;redaction_id?:string|null;preparation_id?:string}}){
  const db=await pool.connect();
  try{
-  await db.query('BEGIN');await assertWorkflowNotArchived(db,id);await assertRepairStepAllowed(db,id,4);await syncWorkflowMaterialScope(db,id);const source=await prerequisites(db,id);
+  await db.query('BEGIN');
+  if(batch){
+   const replay=await db.query('SELECT id FROM ai_distill.step_attempts WHERE id=$1 AND workflow_id=$2 AND ordinal=4',[batch.attempt,id]);
+   if(replay.rowCount){await db.query('COMMIT');return{id:batch.attempt,reused:true};}
+  }
+  await assertWorkflowNotArchived(db,id);await assertRepairStepAllowed(db,id,4);await syncWorkflowMaterialScope(db,id);const source=await prerequisites(db,id);
+  if(batch){
+   const expected=batch.source,origin=source.origin;
+   if(source.workflow.project_id!==batch.project||expected&&(origin.kind!=='library_v1'||
+    (['package_id','revision_id','redaction_id'] as const).some(k=>expected[k]!==undefined&&expected[k]!==origin[k])||
+    expected.preparation_id!==undefined&&expected.preparation_id!==('loaded_materials' in source?source.loaded_materials?.material_scope?.preparation_id:undefined)))
+    throw new HTTPException(409,{message:'批次指定的期次、材料来源或整理结果与题目快照不一致'});
+  }
   const optProvider=options?.provider?(options.provider.trim().toLowerCase()==='antigravity'?'agy':options.provider.trim().toLowerCase()):undefined;
   const hasExplicitAgent=Boolean(optProvider||options?.model||options?.reasoning_effort);
   const skipDbStepConfig=Boolean(hasExplicitAgent&&options?.prompt);
@@ -267,24 +264,30 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDis
   const answerCapabilities=readAnswerToolPolicyFromStepConfig(answerConfig)??{server_tools:[],local_tools:[]};
   const scoreWorkflow=validateWorkflowConfig(scoreConfig?.workflow);
   const scoringPolicy:ScoringPolicy|undefined=scoreWorkflow?.contract==='model_report_v1'?{contract:scoreWorkflow.contract,rules_text:scoreWorkflow.rules_text,reference_answer:scoreWorkflow.reference_answer}:undefined;
+  if(batch&&config.provider==='web')throw new HTTPException(409,{message:'本批使用 Agent 槽，请指定 Agent 出题模型'});
   if(config.provider==='web'&&!localQueueEnabled())throw new HTTPException(409,{message:'网页Agent出题需要本机独立队列（EXECUTION_QUEUE_MODE=local）'});
   const hooks=await freezeStageHooks(dirname(source.skill_path),config.workflow);
   const loggingConfig=(config.provider==='web'?{model:`web:${config.web.provider}`,provider:'web'}:{model:config.model,reasoning_effort:config.reasoning_effort,provider:config.provider}) as {model?:string;reasoning_effort?:string;provider?:string};
   const advice=await frozenRevisionAdvice(db,id);
-  const batchContext=await freezeAuthoringBatch(db,source.workflow.project_id,id,Array.isArray(source.workflow.question_tags)?source.workflow.question_tags:undefined);
-  const materialScope=freezeMaterialScope('loaded_materials' in source?source.loaded_materials?.material_scope:undefined,batchContext);
-  const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,answer_capabilities:answerCapabilities,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),batch_context:batchContext,question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
+  const materialScope=await freezeMaterialScope(db,source.workflow.project_id,id,'loaded_materials' in source?source.loaded_materials?.material_scope:undefined);
+  const projectKey=resolveStepProjectKey({parent_name:source.workflow.parent_name,project_name:source.workflow.project_name});
+  const baseBeforeGates=await runBeforeAnchorGates(customStepRegistry,projectKey,4,{project_id:String(source.workflow.project_id),workflow_id:id,materials:source.materials,model_materials:'model_materials'in source?source.model_materials:undefined,authoring_direction:typeof source.workflow.authoring_direction==='string'?source.workflow.authoring_direction:null});
+  const latestRepairEvaluation=await readLatestCustomRepairEvaluation(db,customStepRegistry,projectKey,id);
+  const customBeforeGates=baseBeforeGates||latestRepairEvaluation?{...(baseBeforeGates??{}),...(latestRepairEvaluation?{repair_evaluation:latestRepairEvaluation as unknown as Record<string,unknown>}:{})}:undefined;
+  const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(customBeforeGates?{custom_before_gates:customBeforeGates}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,answer_capabilities:answerCapabilities,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};
   await supersedeForeignPending(db,{kind:'step',id,ordinal:4});
   const previous=(await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND input->>'digest'=$2 AND config=$3::jsonb AND status IN ('waiting','running') ORDER BY attempt DESC LIMIT 1",[id,input.digest,JSON.stringify(config)])).rows[0];
+  if(previous&&batch&&previous.id!==batch.attempt)throw new HTTPException(409,{message:'此题已有另一出题任务'});
   if(previous){await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'authoring',workflow_id:id,project_id:source.workflow.project_id,ordinal:4,attempt_id:previous.id,operation:'authoring_enqueue',provider:loggingConfig.provider??'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent('attempt.reused',{level:'info',state:'reused'}));return{id:previous.id,reused:true};}
   if((await db.query("SELECT id FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 AND status IN ('waiting','running') LIMIT 1",[id])).rowCount)throw new HTTPException(409,{message:'此题目已有出题任务'});
-  const attempt=crypto.randomUUID();
+  const attempt=batch?.attempt??crypto.randomUUID();
   await db.query("INSERT INTO ai_distill.step_attempts(id,workflow_id,ordinal,attempt,status,input,config) SELECT $2,$1::uuid,4,COALESCE(max(attempt),0)+1,'waiting',$3,$4 FROM ai_distill.step_attempts WHERE workflow_id=$1::uuid AND ordinal=4",[id,attempt,JSON.stringify(input),JSON.stringify(config)]);
   await registerLocalJob(db,attempt,'step',config.provider==='web'?'web':'agent','authoring');
   await db.query("UPDATE ai_distill.steps SET implemented=true,status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal=4",[id]);
   await db.query("UPDATE ai_distill.steps SET status='waiting',result=NULL,error=NULL,started_at=NULL,finished_at=NULL WHERE workflow_id=$1 AND ordinal>4 AND ordinal<=8",[id]);
   await db.query("UPDATE ai_distill.step_attempts SET status='skipped',error='题目更新，后续任务失效',finished_at=now() WHERE workflow_id=$1 AND ordinal>4 AND ordinal<=8 AND status IN ('waiting','running')",[id]);
+  await invalidateDownstreamCustomSteps(db,undefined,customStepRegistry,projectKey,id,4);
   await db.query("UPDATE ai_distill.workflows SET status='waiting' WHERE id=$1",[id]);
   await db.query("UPDATE ai_distill.project_exports SET status='stale',error='题目或评分标准更新',finished_at=now() WHERE project_id=$1 AND status IN ('running','succeeded')",[source.workflow.project_id]);
   await db.query('COMMIT');forgetLocalRegistrations(db);withLogContext({component:'authoring',workflow_id:id,project_id:source.workflow.project_id,ordinal:4,attempt_id:attempt,operation:'authoring_enqueue',provider:loggingConfig.provider??'codex',model:loggingConfig.model,reasoning_effort:loggingConfig.reasoning_effort},()=>logEvent('attempt.enqueued',{level:'info',state:'waiting',material_count:input.materials.length}));return{id:attempt,reused:false};
@@ -482,7 +485,6 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                         scoring_policy: job.input.scoring_policy
                     } : {}),
                     ...(job.input.material_scope?{material_scope:job.input.material_scope}:{}),
-                    ...(job.input.batch_context?{batch_context:job.input.batch_context}:{}),
                     workspace_path: resolveProjectPath(job.input.project_prompt.workspace_path),
                     root: join(directory, 'private'),
                     project_name: job.input.project_name,
@@ -544,6 +546,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
             await tx.query('INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [crypto.randomUUID(), job.workflow_id, job.id, 'authored_question', relative(resolve(root), packagePath), hash(publicPackage), publicPackage.length, publicPackage.toString('utf8')]);
             await prepareCommittedStageHooks({...hookContext,pool:tx}, { draft: result.draft });
         });
+        notifyLocalBusinessCommit(job.id);
         logEvent('attempt.completed', { level: 'info', state: 'succeeded' });
         await runCommittedStageHooks(hookContext, { draft: result.draft });
         await emitLifecycle(pool,'committed', {stage:'authoring',execution_id:job.id,workflow_id:job.workflow_id,project_id:job.project_id,signal,data:{result:storedResult}});

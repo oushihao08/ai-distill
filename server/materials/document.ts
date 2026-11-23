@@ -25,11 +25,11 @@ export interface DocumentExtractor {
 
 /** 统一汇总单页已有识别问题、空白页（empty_page）与乱码/无法辨认标记（unreadable）。 */
 export function collectExtractedPageIssues(page: Pick<Page, 'text' | 'issues'>): string[] {
- return [
+ return [...new Set([
   ...(page.issues ?? []),
   ...(!page.text.trim() ? ['empty_page'] : []),
   ...(/无法辨认|\uFFFD/.test(page.text) ? ['unreadable'] : []),
- ];
+ ])];
 }
 
 /** 补齐单页默认段落结构，并在需要时校验或同步结构文字投影。 */

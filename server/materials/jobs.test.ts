@@ -11,7 +11,7 @@ test('new extraction defaults to MinerU and rejects GLM OCR',()=>{
  expect(resolvePdfProvider({MINERU_KEY:'token'})).toBe('mineru-api');
  expect(resolvePdfProvider({MINERU_KEY:'token',PDF_EXTRACTION_PROVIDER:'mineru-cli'})).toBe('mineru-cli');
  expect(()=>resolvePdfProvider({MINERU_KEY:'token',PDF_EXTRACTION_PROVIDER:'glm-ocr'})).toThrow('仅支持MinerU');
- expect(()=>resolvePdfProvider({})).toThrow('MINERU_KEY');
+ expect(()=>resolvePdfProvider({})).toThrow('API Token');
 });
 test('MinerU API success does not call CLI fallback',async()=>{
  let apiCalls=0,cliCalls=0;const result={provider:'mineru-api',sha256:'sha',pages:[]} as any;

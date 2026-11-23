@@ -31,7 +31,7 @@ SQLite使用WAL/FULL同步及短事务，目录0700、文件0600；不能放在�
 ## HTTP契约
 
 - `GET /api/system/execution-queue`：本机模式、executor_id和轻量队列状态；默认仅返回活动与待人工核实/待补交项（`monitorJobs`），显式传 `include_history=true` 才包含已提交/失败/取消历史；不返回结果BLOB、租约令牌或正文。
-- `POST /api/system/execution-queue/adopt`：`{jobs:[{id,kind}]}`，kind为step/skill/library/hook/remote；1–100个明确的旧waiting/queued任务。已属于其他执行器、正在运行或同步钩子拒绝。route/lane由业务记录解析，不接受客户端伪造。
+- `POST /api/system/execution-queue/adopt`：`{jobs:[{id,kind}]}`，kind为step/skill/library/hook/remote/advice/custom_step；1–100个明确的旧waiting/queued任务。已属于其他执行器、正在运行或同步钩子拒绝。route/lane由业务记录解析，不接受客户端伪造。
 - `POST /api/system/execution-queue/:id/cancel`：只取消本机记录；返回cancel_requested与cloud_synced。其他机请求应通过明确业务取消入口通知，不能冒充本机已停止。
 - `POST /api/system/execution-queue/:id/abandon-library-import`：用户明确接受旧外部调用结果未知时，提交 `{acknowledge_unknown_result:true}`。仅处理本机已停止、租约过期且处于`needs_review`的原子提取入库任务；事务内将旧正式job记为`user_abandoned_unknown`失败并清除租约，保留原任务历史，然后才允许用新请求键重新提交。原供应商调用是否已收费仍是未知，不将其记为OCR失败。
 - `POST /api/system/execution-queue/:id/abandon-library-job`：提交 `{acknowledge_unknown_result:true}`，用于解锁已过租且无活动执行器的材料库任务（含`redact`、已有包`extract`、`prepare`、`intake`）：本机`needs_review`任务立即结算为`user_abandoned_unknown`并更新本机队列为`failed`；非本机/无主过租任务须在租约过期满5分钟后才允许结算为`user_abandoned_expired_lease`。正在本机排队、运行或已提交的任务拒绝放弃。
@@ -116,3 +116,5 @@ worker监控和`/api/monitor`只投影活动、待登记、待同步及待核实
 `GET /api/system/execution-queue`每项保留lane/state/generation，并增加 `executor_id` 和仅running时的 `claimed_by_pid`；活动step/library/advice按同ID读取冻结的 `provider`、`requested_model`、`reasoning_effort`，历史终态及不支持的任务保持null。监控接口提供相同领取标记；不返回租约令牌、完整配置或检查点。冻结身份读取失败明确失败/partial，不使用旧配置补值。
 
 同机多个终端必须请求同一服务，或显式共用同一STORAGE_DIR及其runtime队列、槽位数据库；任务主键、BEGIN IMMEDIATE原子领取、PID/租约及PG executor/generation共同约束同一任务的消费。不共用运行目录的独立服务不是一个共享槽位池；不同机器不迁移或重新认领正在运行和未知任务。不要仅按界面排队标签重新派发。本次增加可见标记，不改变既有领取/替代策略，也不证明未观察的其他机器已升级。
+
+本机批次状态与队列共用 SQLite。批次上限在原子领取时执行；业务事务提交后可以立即唤醒需要该产物的后继。清单、状态与恢复见[批次调度](../batch-dispatch/README.md)。

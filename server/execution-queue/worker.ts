@@ -1,6 +1,7 @@
 /** 本机队列消费入口：只对本机已确认业务ID调用既有执行器；不扫描云端等待队列。 */
 import type {Pool,QueryConfig} from 'pg';
 import {join} from 'node:path';
+import {startBatchWorker} from '../batch-dispatch/worker';
 import {runWorkerPool} from '../worker-pool';
 import {getAgentConcurrencyGate,closeAgentConcurrencyGate} from '../concurrency';
 import {runNextPublication} from '../publishing/tasks';
@@ -18,11 +19,12 @@ import {runNextLibraryJob} from '../material-library/runner';
 /** 已登记的历史hook任务兼容；新生命周期脚本不进入此路由。 */
 import {runNextHook} from '../workflow-hook-worker';
 import {runNextRemoteMaterialOperation} from '../remote-material-operations';
+import {customStepRegistry,runNextCustomStep} from '../custom-steps';
 import {logEvent,classifyLogError} from '../logging';
 import {localQueue,webAgentSlotLimit,withLocalExecution,reconcileRegistrations,cloudJobState,isTransientCommitFailure,PendingLocalCommit,assertLocalQueueEnvironment,reconcileTerminalOutcome,synchronizeLocalCancellations,reconcileFinishedJobs} from './runtime';
 import type {QueueJob,Lane} from './store';
 async function dispatch(pool:Pool,root:string,job:QueueJob,signal:AbortSignal,metadata?:Record<string,any>){
- const table=job.kind==='library'?'library_jobs':job.kind==='skill'?'project_skill_attempts':job.kind==='hook'?'hook_runs':job.kind==='remote'?'remote_material_operations':job.kind==='advice'?'revision_advice_attempts':'step_attempts';
+ const table=job.kind==='library'?'library_jobs':job.kind==='skill'?'project_skill_attempts':job.kind==='hook'?'hook_runs':job.kind==='remote'?'remote_material_operations':job.kind==='advice'?'revision_advice_attempts':job.kind==='custom_step'?'custom_step_runs':'step_attempts';
  const raw=metadata??(await pool.query(`SELECT to_jsonb(j) AS job FROM ai_distill.${table} j WHERE id=$1`,[job.id])).rows[0]?.job;
  if(!raw)return false;const target=raw.execution_target??'local';
  if(job.kind==='library')return runNextLibraryJob(pool,root,raw.executor_kind,target,signal,job.id);
@@ -38,12 +40,13 @@ async function dispatch(pool:Pool,root:string,job:QueueJob,signal:AbortSignal,me
   case 'redact':return runNextRedaction(pool,root,signal,raw.config?.provider==='codex'?'codex':'api',target);
   case 'hook':return runNextHook(pool,signal,'all');
   case 'remote':return runNextRemoteMaterialOperation(pool);
+  case 'custom_step':return runNextCustomStep(pool,root,customStepRegistry,signal);
   default:throw new Error('本机任务执行路由无效');
  }
 }
 /** worker模式只决定可消费任务；任务仍须属于本机队列，工作流范围只允许显式步骤。 */
 export function canRunLocalTask(mode:string,job:QueueJob,raw:{workflow_id?:string;execution_target?:string;ordinal?:number;input?:{hooks?:unknown}},target:string,workflowIds?:string[]){
- if(workflowIds&&(!raw.workflow_id||!workflowIds.includes(raw.workflow_id)||!(job.kind==='advice'||job.kind==='step'&&[4,5,6,8].includes(raw.ordinal??0))))return false;
+ if(workflowIds&&(!raw.workflow_id||!workflowIds.includes(raw.workflow_id)||!(job.kind==='advice'||job.kind==='custom_step'||job.kind==='step'&&[4,5,6,8].includes(raw.ordinal??0))))return false;
  if(job.kind==='remote')return !workflowIds&&target==='server'&&['all','api','server','materials'].includes(mode);
  if((raw.execution_target??'local')!==target)return false;
  if(mode==='all')return true;
@@ -77,6 +80,9 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
    }
   })().finally(()=>{nextSync=Date.now()+5000;reconciliation=undefined;});
  };
+ let queueWake=new AbortController();
+ const wakeConsumers=()=>{const previous=queueWake;queueWake=new AbortController();previous.abort();};
+ const batches=!workflowIds?.length&&target==='local'&&['all','local'].includes(mode)?startBatchWorker(pool,q,limits.agent,wakeConsumers,claimSignal):undefined;
  const consume=async(lane:Lane)=>{
   sync();if(claimSignal.aborted)return false;
   // 在SQLite领取前将明确工作流范围投影为任务ID；不领取后再丢弃范围外任务。
@@ -85,13 +91,13 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
   {
    const candidates=q.pending(lane);
    allowedIds=[];
-   const tables={step:'step_attempts',library:'library_jobs',skill:'project_skill_attempts',hook:'hook_runs',remote:'remote_material_operations',advice:'revision_advice_attempts'} as const;
+   const tables={step:'step_attempts',library:'library_jobs',skill:'project_skill_attempts',hook:'hook_runs',remote:'remote_material_operations',advice:'revision_advice_attempts',custom_step:'custom_step_runs'} as const;
    for(const kind of Object.keys(tables) as (keyof typeof tables)[]){
     const selected=candidates.filter(j=>j.kind===kind);if(!selected.length)continue;
     // 领取前只取亲和性字段，不批量搬运题面、附件、答案或结果JSON。
     const projection=kind==='step'
      ?"jsonb_build_object('workflow_id',j.workflow_id,'ordinal',j.ordinal,'execution_target',j.execution_target,'config',jsonb_build_object('provider',j.config->>'provider'),'input',jsonb_build_object('hooks',CASE WHEN j.input->'hooks' IS NOT NULL AND j.input->'hooks'<>'null'::jsonb THEN '{}'::jsonb ELSE NULL END))"
-     :kind==='advice'?"jsonb_build_object('workflow_id',j.workflow_id)":kind==='library'?"jsonb_build_object('executor_kind',j.executor_kind,'execution_target',j.execution_target)":"'{}'::jsonb";
+     :kind==='advice'?"jsonb_build_object('workflow_id',j.workflow_id)":kind==='custom_step'?"jsonb_build_object('workflow_id',j.workflow_id,'execution_target',j.execution_target)":kind==='library'?"jsonb_build_object('executor_kind',j.executor_kind,'execution_target',j.execution_target)":"'{}'::jsonb";
     const query:QueryConfig&{query_timeout:number}={text:`SELECT j.id,j.status,${projection} AS job FROM ai_distill.${tables[kind]} j WHERE j.id=ANY($1::uuid[])`,query_timeout:15000};
     const rows=(await pool.query(query,[selected.map(j=>j.id)])).rows;
     const candidatesById=new Map(selected.map(candidate=>[candidate.id,candidate]));
@@ -106,6 +112,7 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
   }
   if(claimSignal.aborted)return false;
   const job=q.claim(lane,allowedIds);if(!job)return false;
+  batches?.wake();
   const controller=new AbortController(),abort=()=>controller.abort(signal.reason);signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
   const heartbeat=setInterval(()=>{if(!q.heartbeat(job.id,job.lease!))controller.abort(new Error('本机任务取消或失租'));},500);heartbeat.unref();
   try{
@@ -121,10 +128,10 @@ export async function runLocalQueueWorker(pool:Pool,root:string,signal:AbortSign
    try{recoverable=isTransientCommitFailure(error)&&(Boolean(q.stepFailure(job)||q.libraryFailure(job))||(!q.hasUnknownCall(job.id)&&q.hasResult(job.id)));}catch(checkpointError){logEvent('queue.checkpoint_invalid',{level:'error',component:'local_execution_queue',...classifyLogError(checkpointError)});}
    q.finish(job.id,job.lease!,q.get(job.id)?.cancel_requested?'cancelled':error instanceof PendingLocalCommit||recoverable?'result_pending_commit':'needs_review',error instanceof PendingLocalCommit?error.message:'执行或业务回执待核实，不自动重复调用');
    logEvent('worker.dispatch.failed',{level:'error',component:'local_execution_queue',...classifyLogError(error)});return true;
-  }finally{clearInterval(heartbeat);signal.removeEventListener('abort',abort);}
+  }finally{clearInterval(heartbeat);signal.removeEventListener('abort',abort);batches?.wake();}
  };
  try{await Promise.all(lanes.map(lane=>runWorkerPool(async()=>{
   const permit=await gates.get(lane)!.run(()=>consume(lane),{signal:claimSignal});return permit.acquired?permit.value:false;
- },{component:`local_${lane}`,concurrency:laneLimit(lane),beforeDispatch,signal:claimSignal,idleMs:3000,errorDelayMs:5000})));}
- finally{if(reconciliation)await reconciliation;for(const lane of lanes)closeAgentConcurrencyGate(gateRoot(lane));}
+ },{component:`local_${lane}`,concurrency:laneLimit(lane),beforeDispatch,signal:claimSignal,idleMs:3000,idleWake:()=>queueWake.signal,errorDelayMs:5000})));}
+ finally{await batches?.close();if(reconciliation)await reconciliation;for(const lane of lanes)closeAgentConcurrencyGate(gateRoot(lane));}
 }

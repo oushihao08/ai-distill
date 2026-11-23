@@ -27,7 +27,7 @@
 | 本题冻结附件的完整获准正文 | 是 | `question-materials.ts` → `jobs.ts` | 仅含整理结果中的可见脱敏文书，不含隐藏文书、其他题或材料库未加载内容。 |
 | 当前有效项目Skill | 是 | `rule-files.ts` → `jobs.ts` → `executor.ts` | 只冻结指定Skill集合；运行时读取情况须看会话事件。 |
 | 通用出题规则、项目步骤提示词、结果schema | 是 | `shared/step-prompts.ts`、`jobs.ts`、`executor.ts` | 分区提供，不能彼此替代。 |
-| 同期题目的白名单设计摘要 | 条件进入 | `freezeAuthoringBatch()` | 只用于设计避重，不含历史题面、答案、rubric或评分。 |
+| 同期题目的跨题设计摘要（`batch-context.json`） | 否 | 已移除 | 新派发不再查询或注入同期其他题目的设计摘要；仅在存在本题`material-scope.json`时附带已用方向/场景对（上限300项），旧冻结任务残留`batch_context`仅保留摘要兼容。 |
 | 历史题面、历史答案、历史评分、个人记忆 | 否 | `jobs.ts`/`executor.ts`边界 | 显式人工返修建议是唯一受控文本例外。 |
 | 作答模型身份、目标分数 | 否 | 不组装 | 作者负责产出题包，不根据目标成绩反推题目。 |
 | 本期步骤5受控能力 | 是（豆包法律及法律返修新任务） | `jobs.ts`冻结、`lifecycle/projects/doubao-projection.ts`区分需求与运行能力 | 描述运行现状；豆包`answer_requirements`独立声明业务需求，未启用工具不缩减题目，不证明已能运行。 |
@@ -53,7 +53,7 @@
 
 ## 来源与设计输入
 
-材料整理和同期设计摘要按条件提供为参考；设计、难度、多样性和完整交付方法由指定Skill维护，执行器不重复定义。执行器只说明参考输入边界及material_scope_selection等字段的填报要求，旧结果缺少元数据不新增建题门槛。
+材料整理按条件提供为参考；设计、难度、多样性和完整交付方法由指定Skill维护，执行器不重复定义。执行器只说明参考输入边界及material_scope_selection等字段的填报要求，旧结果缺少元数据不新增建题门槛。
 
 1. 共享库快照题由`readQuestionMaterials()`读取创建时固定的脱敏正文或提取原文；无本机活动出题尝试时，`enqueueAuthoring()`先通过`syncWorkflowMaterialScope()`对齐同来源最新成功整理结果（也可显式调用`POST /api/workflows/:id/material-scope`）。若快照含材料整理结果，作者收到按文书边界拼成的可见脱敏正文投影，不含整理结果中标记为隐藏的文书；完整来源附件及摘要仍单独冻结以核对来源。隐藏文书同样不进入作答和评分输入，题面、标答和rubric不得依赖它们。旧目录/旧包派生题仍要求步骤1和9成功，并读取该次脱敏数据库产物。不能从当前期次设置切换旧题来源，也不能为缺失快照静默回退旧步骤。
 2. 派发读取当前有效Skill（含期次覆盖）、步骤4配置及步骤6的评分政策。Skill仅按`skill/`集合冻结；项目`materials/`、`project.json`、旧题、答案和历史评分不是本次主动提供的业务输入。
@@ -129,11 +129,9 @@ Work专属schema、提示片段、题包同源派生、公开/私有投影和版
 
 有匹配的材料整理结果时，作者另收到 `material-scope.json`（由`visiblePreparationContext`投影总摘要、可见文书与全可见候选组合，不透传`question_support`）：提示词要求浏览总摘要和全部可见文书标题，相关逐份摘要按线索读取；整理结果仅作索引，案件判断仍以完整可见附件正文为准。整理缺失不阻断出题。
 
-## 本期设计参考
+## 本期设计参考边界
 
-新派发独立冻结`batch_context`，不以材料整理成功为前提。仅查询同一期其他未删除题目的步骤4当前成功投影，白名单保留`material_scope_selection`的方向、代理方、场景、交付、业务目标、核心工作及成果用途；不读取历史题面、答案、rubric或评分。无元数据计入missing，不反推补齐；有效记录超过80条时按同标签命中数与最近完成时间优先裁剪`selections`至80条并置`truncated=true`，同时在`used_combinations`完整保留全期已用方向/场景对（上限300项），避免`step_attempts.input`呈$O(N^2)$膨胀。冻结时间仅为观察信息，不参与输入复用摘要，设计内容仍参与摘要。旧任务没有此字段时沿原输入执行。
-
-执行器将参考写入`input/batch-context.json`，内部选择元数据继续随原JSON保存，不进入公开题面、作答或评分。重复、缺失选择不拦保存。并发尚未完成题目不在参考中；不为避重增加锁、自动重出或调整评分。材料范围中的旧used_combinations从同一当前参考派生，不再混合历史尝试。
+新派发不再生成或写入`input/batch-context.json`，避免同期其他题目的交付清单与工作概括对作者形成跨题模板诱导。仅当本题存在匹配的材料整理结果（`material-scope.json`）时，`freezeMaterialScope()`从同期其他未删除题目的步骤4当前成功投影提取已用`{direction, scene}`对（上限300项）填入`used_combinations`；内部选择元数据继续随尝试JSON保存，不进入公开题面、作答或评分。历史已存冻结输入若含`batch_context`字段，仅在`inputDigest()`保留可选哈希兼容，执行时不再落盘或拼入提示词。
 
 ## 显式开头修订
 

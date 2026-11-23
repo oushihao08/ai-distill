@@ -50,16 +50,17 @@ export function registerExecutionQueueRoutes(app:Hono,pool:Pool,root:string){
  app.post('/api/system/execution-queue/adopt',async c=>{
   if(!localQueueEnabled())throw new HTTPException(409,{message:'尚未启用本机独立队列'});
   const body=await c.req.json<{jobs:{id:string;kind:JobKind}[]}>().catch(()=>{throw new HTTPException(400,{message:'认领参数须为JSON'});});
-  if(!body||!Array.isArray(body.jobs)||!body.jobs.length||body.jobs.length>100||body.jobs.some(j=>!j||typeof j.id!=='string'||!['step','skill','library','hook','remote','advice'].includes(j.kind)))throw new HTTPException(400,{message:'必须明确指定1至100个旧任务，不能自动导入全库'});
+  if(!body||!Array.isArray(body.jobs)||!body.jobs.length||body.jobs.length>100||body.jobs.some(j=>!j||typeof j.id!=='string'||!['step','skill','library','hook','remote','advice','custom_step'].includes(j.kind)))throw new HTTPException(400,{message:'必须明确指定1至100个旧任务，不能自动导入全库'});
   const q=localQueue(root),db=await pool.connect(),accepted:string[]=[],intents:{id:string;kind:JobKind;lane:Lane;route:string}[]=[];
   try{await db.query('BEGIN');for(const input of body.jobs){
-   uuid(input.id);const table=({step:'step_attempts',skill:'project_skill_attempts',library:'library_jobs',hook:'hook_runs',remote:'remote_material_operations',advice:'revision_advice_attempts'} as const)[input.kind];if(!table)throw new HTTPException(400,{message:'任务类型无效'});
+   uuid(input.id);const table=({step:'step_attempts',skill:'project_skill_attempts',library:'library_jobs',hook:'hook_runs',remote:'remote_material_operations',advice:'revision_advice_attempts',custom_step:'custom_step_runs'} as const)[input.kind];if(!table)throw new HTTPException(400,{message:'任务类型无效'});
    const j=(await db.query(`SELECT to_jsonb(j) AS job FROM ai_distill.${table} j WHERE id=$1 FOR UPDATE`,[input.id])).rows[0]?.job;
    if(!j||!['waiting','queued'].includes(j.status))throw new HTTPException(409,{message:'只能认领明确指定的未开始任务'});
    const owner=(await db.query('SELECT executor_id FROM ai_distill.execution_dispatches WHERE job_id=$1',[input.id])).rows[0];if(owner&&owner.executor_id!==q.executorId)throw new HTTPException(409,{message:'任务已归属另一台电脑，不自动迁移'});
    let route:string,lane:Lane;
    if(input.kind==='library'){route=`library:${j.kind}`;lane=j.executor_kind;}
    else if(input.kind==='advice'){route='advice';lane='agent';}
+   else if(input.kind==='custom_step'){route='custom_step';lane=j.lane;}
    else if(input.kind==='skill'){route='skill';lane='agent';}
    else if(input.kind==='hook'){if(j.mode!=='async')throw new HTTPException(409,{message:'同步钩子属于原主任务'});route='hook';lane='hook';}
    else if(input.kind==='remote'){route='remote';lane='remote';}

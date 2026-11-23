@@ -4,7 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {feishuTextFields} from './feishu-verification';
 // mock.module为进程级替身；隔离子进程，避免污染同次运行的材料/路由测试。
 if(process.env.AI_DISTILL_FEISHU_TEST_ISOLATED!=='1'){
- test('飞书同步八种分支在隔离进程中通过',()=>{
+ test('飞书同步各分支在隔离进程中通过',()=>{
   const result=spawnSync(process.execPath,['test',import.meta.path],{env:{...process.env,AI_DISTILL_FEISHU_TEST_ISOLATED:'1'},encoding:'utf8'});
   if(result.status!==0)throw new Error(result.stderr);expect(result.status).toBe(0);
  });
@@ -24,7 +24,7 @@ mock.module('./feishu-api',()=>({SyncError:class extends Error{constructor(publi
  if(state.changeOnRead)state.snapshot.question={...state.snapshot.question,question_version:'new'};
  return{record:{record_id:'record',fields:state.fields}};
 }})}));
-const {syncArchivedWorkflowToFeishu,clearFeishuDeliverySessionCache}=await import('./feishu');
+const {syncAuthoredWorkflowToFeishu,syncArchivedWorkflowToFeishu,clearFeishuDeliverySessionCache}=await import('./feishu');
 function setup(existing=true){
  clearFeishuDeliverySessionCache();
  const question={question_version:'q1',rubric_version:'r1',task_name:'任务',task_type:'服务',question:'正文',rubric:['考点'],answer_approach:'思路',reference_answer:'答案'};
@@ -39,6 +39,14 @@ function setup(existing=true){
  }};
  return{connect:async()=>{state.heldDb++;return db;},query:async(sql:string,args:any[])=>sql.startsWith('SELECT w.project_id')?{rows:[{project_id:'project',phase_name:'第六期'}]}:db.query(sql,args)} as any;
 }
+test('草稿和归档均在写飞书前核对清单冻结的出题尝试',async()=>{
+ for(const mode of ['draft','archived']){
+  const pool=setup();
+  const r=mode==='draft'?await syncAuthoredWorkflowToFeishu(pool,id,'storage','assets',undefined,undefined,undefined,false,undefined,'stale'):
+    await syncArchivedWorkflowToFeishu(pool,id,'storage','assets',undefined,false,undefined,false,'stale');
+  expect((r as any).reason_code).toBe('feishu_authoring_version_changed');expect(state.calls).toHaveLength(0);
+ }
+});
 test('新记录写可见题目ID，六字段回读通过才成功，且媒体上传不持有PG连接',async()=>{const pool=setup(false);let uploadHeldDb=-1;const r=await syncArchivedWorkflowToFeishu(pool,id,'storage','assets');uploadHeldDb=state.heldDb;expect(r.status).toBe('succeeded');expect((r as any).verification.status).toBe('passed');expect(state.fields['题目ID']).toBe(id);expect(state.exportOptions.expectedAuthoringInput).toEqual(state.snapshot.authoring_input);expect(state.closed).toBe(true);expect(uploadHeldDb).toBe(0);});
 test('已有记录补空题目ID后重新核对，不重复创建',async()=>{const pool=setup();delete state.fields['题目ID'];const r=await syncArchivedWorkflowToFeishu(pool,id,'storage','assets');expect(r.status).toBe('succeeded');expect(state.calls.filter((c:any)=>c.method==='POST'&&!c.path.includes('/records/search')&&!c.path.includes('upload_all'))).toHaveLength(0);expect(state.calls.some((c:any)=>c.method==='PUT')).toBe(true);});
 test('已有记录正文截断返回具体差异，绝不覆写',async()=>{const pool=setup();state.fields.prompt='';const r:any=await syncArchivedWorkflowToFeishu(pool,id,'storage','assets');expect(r.status).toBe('failed');expect(r.verification.status).toBe('failed');expect(r.verification.differences[0].field).toBe('prompt');expect(state.fields.prompt).toBe('');expect(state.calls.some((c:any)=>c.method==='POST'&&!c.path.includes('/records/search')&&!c.path.includes('upload_all'))).toBe(false);});

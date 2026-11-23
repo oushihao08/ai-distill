@@ -65,8 +65,8 @@ if(workflowIdsRaw&&(!workflowIds?.length||workflowIds.some(id=>!/^[0-9a-f]{8}-[0
 const concurrency=readConcurrencySettings(process.env,root);
 const materialConcurrency=concurrency.llmApi;
 let pool:ReturnType<typeof createPool>;
-// 连接池随Agent并发扩容（每个运行任务另有心跳与提交），显式DB_POOL_MAX优先；上限沿用createPool的32。
-const workerPoolMax=process.env.DB_POOL_MAX?.trim()?undefined:Math.min(32,Math.max(10,concurrency.agent+6));
+// 连接池随Agent与模型API并发共同扩容（每个运行任务另有心跳与提交），显式DB_POOL_MAX优先；上限沿用createPool的32。
+const workerPoolMax=process.env.DB_POOL_MAX?.trim()?undefined:Math.min(32,Math.max(12,concurrency.agent+concurrency.llmApi+6));
 try{pool=createPool(process.env,workerPoolMax===undefined?undefined:{max:workerPoolMax});}catch(error){logEvent('service.start_failed',{level:'error',component:'task_worker',...classifyLogError(error)});await logger.close();throw error;}
  configureAgentCredentialHome(()=>readAgentCredentialHome(pool));
 const controller = new AbortController();

@@ -62,6 +62,7 @@ export const HELP = `ai-distill（全部命令支持 --json；本机命令接受
   attempt show --attempt UUID | attempt wait --ids UUID,... [--timeout 1h] [--full]
   advice show --workflow UUID | advice generate (--workflow UUID | --project UUID (--ids UUID,... | --all))
   batch create --project UUID (--ids UUID,... | --all) --size N --to STEP_KEY --out 新路径 | batch show --file 路径 | batch skip --file 路径 --ids UUID,... --reason 原因
+  dispatch preview|start (--file 清单.json | --url https://清单地址) | dispatch list | dispatch show --batch UUID [--summary | --state 状态] | dispatch stop|events --batch UUID [--after N] | dispatch limits --batch UUID --file 容量.json
   monitor show | queue show [--history] | queue diagnose | queue cancel --job UUID | queue adopt --file JSON | queue abandon-job --job UUID --acknowledge-unknown-result | queue abandon-import --job UUID --acknowledge-unknown-result | queue reconcile-failed --job UUID --event UUID --instance UUID
   system concurrency show | system concurrency update --file JSON | agent config show | agent config update --file JSON | agent test
   web status | web doctor | web login --provider deepseek|gemini | web close
@@ -87,7 +88,7 @@ function parse(args: string[]) {
     if (!value.startsWith('--')) { words.push(value); continue; }
     const key=value.slice(2);
     if (flags.has(key)) throw new CliError(`参数重复：--${key}`);
-    if (['force','all','redacted-only','json','help','full','content','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects','preserve-images','combined-material','summary-only','history','metadata-only','acknowledge-unknown-result'].includes(key)) flags.set(key,true);
+    if (['force','all','redacted-only','json','help','full','content','clear-existing','ready-only','archived-only','include-removed','apply','acknowledge-side-effects','preserve-images','combined-material','summary-only','summary','history','metadata-only','acknowledge-unknown-result'].includes(key)) flags.set(key,true);
     else if (key==='status'&&(args[i+1]===undefined||args[i+1].startsWith('--'))) flags.set(key,true);
     else {
       const next=args[++i]; if(next===undefined||next.startsWith('--')) throw new CliError(`参数缺值：--${key}`);
@@ -211,6 +212,7 @@ const COMMAND_FLAGS: Readonly<Record<string,readonly string[]>> = {
       'feishu draft-sync':['workflow','base-token','table','revision-attempt','replace-record-id','attachment-format','combined-material'],'feishu draft-sync-batch':['project','ids','out','base-token','table','attachment-format','combined-material'],
       'export failed':['project','ids','all'],
       'export review':['project','ids'],
+      'dispatch preview':['file','url'],'dispatch start':['file','url'],'dispatch list':[],'dispatch show':['batch','summary','state'],'dispatch limits':['batch','file'],'dispatch stop':['batch'],'dispatch events':['batch','after'],
       'artifact download':['artifact','out'],'monitor show':[],
       'batch create':['project','ids','all','size','to','out'],'batch show':['file'],'batch skip':['file','ids','reason'],
     };
@@ -797,6 +799,23 @@ export async function runCommand(args: string[], client?: ApiClient, signal?: Ab
         }
         return{outcome:results.every(row=>row.status==='queued')?'complete':'partial',project_id:project,results,advice_attempt_ids:results.filter(row=>row.status==='queued').map(row=>row.id)};
       }
+      case 'dispatch preview':
+      case 'dispatch start': {
+        if(flags.has('file')===flags.has('url'))throw new CliError('须且只能指定 --file 或 --url');
+        let manifest:unknown;
+        if(flags.has('file'))manifest=await readJsonFile(required('file'),'批次清单');
+        else {
+          const url=new URL(required('url'));if(!['http:','https:'].includes(url.protocol))throw new CliError('清单 URL 只支持 HTTP(S)');
+          const response=await fetch(url,{signal:signal?AbortSignal.any([signal,AbortSignal.timeout(30000)]):AbortSignal.timeout(30000)});
+          if(!response.ok)throw new CliError('读取线上清单失败 HTTP '+response.status);manifest=await response.json();
+        }
+        data=await post('/api/dispatch-batches'+(command==='dispatch preview'?'/preview':''),manifest);break;
+      }
+      case 'dispatch list': data=await get('/api/dispatch-batches');break;
+      case 'dispatch show': data=await get('/api/dispatch-batches/'+uuid('batch')+(flags.has('summary')?'?summary=1':flags.has('state')?'?state='+encodeURIComponent(required('state')):''));break;
+      case 'dispatch limits': data=await put('/api/dispatch-batches/'+uuid('batch')+'/limits',await readJsonFile(required('file'),'批次容量'));break;
+      case 'dispatch events': data=await get('/api/dispatch-batches/'+uuid('batch')+'/events?after='+encodeURIComponent(String(flags.get('after')??0)));break;
+      case 'dispatch stop': data=await post('/api/dispatch-batches/'+uuid('batch')+'/stop');break;
       case 'monitor show': data=await get('/api/monitor');break;
       case 'web status': {
         const queue=object(await get('/api/system/execution-queue'),'本机队列');

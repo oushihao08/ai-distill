@@ -22,6 +22,7 @@ export interface WorkerPoolOptions {
   concurrency: number;
   signal: AbortSignal;
   idleMs: number;
+  idleWake?: () => AbortSignal;
   errorDelayMs?: number;
   beforeDispatch?: () => Promise<boolean>;
   onError?: (error: unknown, worker: number) => void;
@@ -106,6 +107,7 @@ export async function runWorkerPool(
   const loops = Array.from({ length: options.concurrency }, async (_, worker) => {
     let previousFailure: string | undefined;
     while (!options.signal.aborted) {
+      const wake=options.idleWake?.();
       let worked = false;
       let failed = false;
       try {
@@ -126,7 +128,7 @@ export async function runWorkerPool(
         options.onError?.(error, worker);
       }
       if (!worked || failed) {
-        await delay(failed ? (options.errorDelayMs ?? 5000) : options.idleMs, options.signal);
+        await delay(failed ? (options.errorDelayMs ?? 5000) : options.idleMs, !failed&&wake?AbortSignal.any([options.signal,wake]):options.signal);
       }
     }
   });

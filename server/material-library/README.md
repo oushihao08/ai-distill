@@ -8,6 +8,10 @@
 
 豆包高经济价值法律主项目及返修期的项目级整理保留全部业务文书。新建普通整包题或重新派发出题同步整理范围时，历史整理中的整件隐藏标记也按可见采用。精确命中的独立排版噪声继续按原规则处理，显式选材快照仍按所选范围冻结。
 
+材料整理未显式选模型时优先使用本机材料库设置的脱敏 Agent 模型与推理强度；材料库保存 API 配置时回退系统 Agent 默认值。显式 Agent、API 或网页设置仍按请求冻结。
+
+这两个项目用逐份 `summary` 保留会影响材料用途的原文事实，用候选组合的 `notes` 说明材料间的联系、可回查的位置及对办理决定的影响，依据写入同组 `document_ids`。超百份文书的本机 Agent 汇总目录同时提供 `descriptions.json` 和本次来源的 `materials.json` 与正文，可定向回读跨分段的依据。结果随 `library_preparations.result` 入库，经题目材料快照进入作者的 `input/material-scope.json`。复用旧整理沿用旧内容；需要重新分析时使用既有强制整理入口。
+
 ## 新材料处理顺序与可跳过步骤
 
 本节供材料操作与维护人员使用。正式包和revision须由完整原件集合原子提取成功后发布；脱敏和材料整理是可选步骤。任务排队、运行或供应商`pending`都不能作为成功依据，以HTTP任务详情和正式结果回读为准。
@@ -66,8 +70,8 @@ HTTP入口为`GET /api/material-library/redactions/:id/name-revision-source?proj
 | `storage.ts` | 原件内容寻址安装、同摘要事务锁、确认回滚后的本次无引用文件回收及受管路径/摘要校验；文本入口共用`insertLibraryTextBlob()`核对正文/MIME/UTF8字节数 |
 | `service.ts` | 包资料、不可变文件集合、上传幂等、逻辑归档/恢复、历史与使用查询；复用原件时核验字节摘要与大小，只修复不可变文件对象的受管存储路径 |
 | `settings.ts` | 共用SQLite配置数据库；首次读取初始化并持久化默认模板，每次派发重新读取；乐观版本控制、事务保存，不保存密钥 |
-| `jobs.ts` | 入队时读取共用设置并冻结；请求重放、执行lane、租约、取消、失租和终态事务 |
-| `runner.ts` | 领取后的调度、心跳、取消与截止；local队列模式下不因瞬时远端数据库抖动误杀本机存活子进程，提交前续期有效租约；入库和提取执行；`executeExtraction`/`runClaimedJob`支持隔离行为验证 |
+| `jobs.ts` | 入队时读取共用设置及 OCR 池当前活跃引擎并冻结；`assertLibraryExtractionUsable()` 按整包至少含一份非空正文校验，允许同包内附带无字照片/空白扫描件；请求重放、执行lane、租约、取消、失租和终态事务前瞬时DB重试 |
+| `runner.ts` | 领取后的调度、心跳、取消与截止；local队列模式及有效租约期内不因瞬时远端数据库抖动误杀在途入库/提取，提交前续期有效租约；未显式锁定 provider 的提取任务接入双 OCR 池（连续失败 5 次自动切换）与 `ChunkedPdfExtractor` 大PDF自动分片提取 |
 | `extraction-checkpoint.ts` | 私有单文件检查点读写；按原件与正文摘要及结构复用，不以provider/格式指纹拦截；异常降级继续，不发布或派发任务 |
 | `result-reuse.ts` | 成功提取正文、整包原件集合及整理正文的复用查询和ID映射；跨包复制结果前核对完整集合，不把部分重合当完全重复 |
 | `redaction-runner.ts` | 仅按冻结Agent模板执行整包化名并事务发布；旧字段映射快照在读取正文前拒绝 |
@@ -107,9 +111,9 @@ Agent本地校验器打包为Node兼容ESM；Windows使用`node --preserve-symli
 
 包名称/说明/标签与处理设置分开。历史`library_packages.processing_settings`保留兼容初始快照，不再作为新任务执行配置，也不从包详情返回；包创建/更新接口拒绝单包处理配置写入。未保存共用配置时，从数据库系统提示词与当前系统模型/提取默认组合完整配置。保存后的共用设置只影响之后派发的新任务，历史任务与题目快照不回写。
 
-新默认`extraction.provider_config`为空兼容对象；既有旧Vision配置可读，不自动删除已保存设置。实际PDF文本供应商、转换版本由任务`pdf_provider`与`pdf_ocr_version`冻结；新导入或单次extract只允许`mineru-api`或`mineru-cli`，省略时使用MinerU API默认。环境或请求指定其他文本provider时直接拒绝。调整未来有效提取配置时须同时更新检查点身份，不能跨供应商或转换版本复用续作检查点。原子导入显式启用`preserve_images`时，PDF另向GLM-OCR请求`return_crop_images`并下载版面图片裁块；有裁块时以裁块作为逐图候选，无裁块时沿用PDF嵌入对象提取。此路径需要`ZHIPU_API_KEY`，默认导入不调用智谱。图片候选只供已标记文件的材料整理逐图判断，脱敏输入不读取图片；图文DOCX仅使用通过判断的候选。既有已提取版本不会自动补图，须新建提取任务。
+新默认`extraction.provider_config`为空兼容对象；既有旧Vision配置可读，不自动删除已保存设置。新导入或单次extract可显式指定`mineru-api`、`glm-ocr`或`mineru-cli`（置顶`pdf_provider_explicit=true`）；省略时接入`<STORAGE_DIR>/material-library/ocr-pool.sqlite3`持久化的双OCR池（`mineru-api` ↔ `glm-ocr`），任一引擎连续真实失败达5次且备选引擎凭证已配置时原子切换活跃引擎，当场用备选引擎重试第5次文件并使后续排队与新入队任务同步跟随新活跃引擎。PDF提取统一经`ChunkedPdfExtractor`复用`splitLargePdf()`按40页/25MiB阈值自动拆片提取并还原原页码与原件SHA-256。原子导入显式启用`preserve_images`时，PDF另向GLM-OCR请求`return_crop_images`并下载版面图片裁块；有裁块时以裁块作为逐图候选，无裁块时沿用PDF嵌入对象提取。此路径需要`ZHIPU_API_KEY`，默认导入不调用智谱裁图。图片候选只供已标记文件的材料整理逐图判断，脱敏输入不读取图片；图文DOCX仅使用通过判断的候选。既有已提取版本不会自动补图，须新建提取任务。
 
-PNG/JPG/JPEG始终将原图直传`mineru-api`并解析为单页文档，不转PDF、不调用或回退GLM-OCR/CLI。图片检查点绑定原件SHA-256、PNG/JPG/JPEG格式、provider及MinerU版本，不能跨文件或格式复用。
+PNG/JPG/JPEG原件按所选或OCR池当前活跃引擎直传（`mineru-api`或`glm-ocr`）并解析为单页文档，无文字纯照片保留`empty_page`提示；DOCX在`glm-ocr`激活时经隔离LibreOffice转为临时PDF后提取并投影为单逻辑页、保留DOCX原件SHA-256。图片检查点绑定原件SHA-256、PNG/JPG/JPEG格式、provider及OCR版本，不能跨文件或格式复用。
 
 PDF/DOCX/图片外部提取按需逐文件执行，每份冻结30分钟预算，整包预算按外部文件数累计并封顶24小时；到期以技术失败终结并释放本地执行槽，不自动重试。上传成功后若供应商持续返回等待状态，到期也不会继续刷新任务寿命或改走CLI重复提交。纯文本提取和脱敏任务仍按共用设置执行，Agent整包脱敏沿用冻结执行预算。
 
@@ -158,7 +162,7 @@ PDF/DOCX/图片外部提取按需逐文件执行，每份冻结30分钟预算，
 
 ## 验证与维护边界
 
-脱敏派发、执行及建题来源复制前共用 `assertLibraryExtractionUsable()` 检查文件、页数和正文可处理性；整个文件无正文时在模型调用前明确拒绝，空白页随有正文的其余页保留。OCR issues 是识别提示，不能等同于脱敏丢失内容，不再仅凭提示数量阻断脱敏或建题。提示保留在提取文档、脱敏索引及 validation_report.extraction_issues 中，原件摘要、页/字段覆盖及原文定位仍校验。脱敏验收比较已提取原文与脱敏正文的实质内容，允许正常遮盖及无实质影响的格式差异；usable_for_question 表示输入和脱敏产物可用于建题，不证明原PDF逐字OCR准确。此政策不回写历史任务/产物。
+脱敏派发、执行、导入及建题来源复制前共用 `assertLibraryExtractionUsable()` 检查文件、页数和正文可处理性；整包所有文件均无正文（含单文件全空）时在模型调用前明确拒绝，整包已有非空业务正文时保留同包内的空白页或无文字纯图附件（标记 `empty_page`）而不连坐整包。OCR issues 是识别提示，不能等同于脱敏丢失内容，不再仅凭提示数量阻断脱敏或建题。提示保留在提取文档、脱敏索引及 validation_report.extraction_issues 中，原件摘要、页/字段覆盖及原文定位仍校验。脱敏验收比较已提取原文与脱敏正文的实质内容，允许正常遮盖及无实质影响的格式差异；usable_for_question 表示输入和脱敏产物可用于建题，不证明原PDF逐字OCR准确。此政策不回写历史任务/产物。
 
 以下文件是源码级替身测试，不连接真实 OCR、脱敏模型或外部平台；具体检查边界如下：`storage.test.ts`验证原件内容寻址、字节重校验和文件名边界；`service.test.ts`验证资料过滤/版本、逻辑归档恢复及使用历史投影；`jobs.test.ts`验证提取/脱敏来源校验、执行lane、取消、失租和晚到结果；`projects.test.ts`验证加载关系和选版；`projects-routes.test.ts`验证候选分页、恢复和按单条读取事件；`questions.test.ts`验证题目字段、摘要和脱敏/原文快照；`preview.test.ts`验证正文摘要与文件身份限制；`legacy-import.test.ts`验证旧数据导入不伪装提取/脱敏结果并保留原期关系；`uses.test.ts`验证材料使用签名和跨期/返修状态边界。测试文件存在不代表本轮已运行，也不证明真实 OCR/脱敏质量。
 
@@ -312,7 +316,7 @@ HTTP：`POST /api/material-library/revisions/:id/prepare`接收`request_key`、`
 
 ### 整理显式恢复与预算
 
-prepare请求可带`execution_timeout_ms`（1000至86400000毫秒，默认30分钟），只冻结本次预算，prepare领取任务时不再被通用30分钟上限二次截短。`POST /api/material-library/jobs/:id/prepare-resume`接收新`request_key`和可选预算，只允许失败/取消的prepare，继承来源、项目和模型，创建新job并保留`previous_job_id`；活动/成功任务不续作。续作只校验同材料包、同revision、同提取/脱敏/项目来源；规则、模型、引擎和提示词变化不作为拒绝条件。相同request-key仍查回原回执。
+prepare请求可带`execution_timeout_ms`（1000至86400000毫秒）。未显式指定时，文件型 Agent 超过100个整理单元按实际分段数计算，上限24小时，每段预留4分钟，另留30分钟用于全卷汇总。单次整理、API 和网页通道默认30分钟。该值是截止上限，完成即释放槽位。入队时冻结本次预算，prepare 领取任务时使用该值。`POST /api/material-library/jobs/:id/prepare-resume`接收新`request_key`和可选预算，只允许失败/取消的prepare，继承来源、项目和模型，创建新job并保留`previous_job_id`；活动/成功任务不续作。续作只校验同材料包、同revision、同提取/脱敏/项目来源；规则、模型、引擎和提示词变化不作为拒绝条件。相同request-key仍查回原回执。
 
 单次完整响应在私有preparation目录原子保存`checkpoint.json`。显式续作在稳定来源相同时复用具有完整`response`的检查点，不再比对引擎、规则、模型、提示词或schema指纹；当前结果编译仍校验字段、ID及结构。未完成调用或残缺文件不复用。每次复用复制到本次私有目录；不自动重试、不启动worker、不延长原任务deadline。
 

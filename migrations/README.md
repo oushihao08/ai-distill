@@ -83,3 +83,4 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 - `062_prepare_api_executor.sql`：仅允许可选材料整理任务选择本机API执行池；原Agent整理及其他材料任务约束不变。应用后新API整理任务才能成功入队。
 - `063_library_image_review.sql`：给材料库文件增加逐图价值判断标记，历史文件默认 `false`；与可选保图入库和材料整理配套，不回填或修改历史提取结果。需核实目标库已应用且新版 API/worker 同时加载后才启用新参数。
 - `064_web_agent_lane.sql`：为网页Agent（DeepSeek/Gemini）独立通道放宽`execution_dispatches.lane`，并允许材料库`prepare`任务使用`executor_kind='web'`（仍仅local目标）；`redact` 额外允许本机目标的 `web`，仅供离线作业台（人工网页操作后交回），自动网页脱敏由应用层拒绝。同时重建042列内联的`library_jobs_executor_kind_check`与`library_jobs_executor_target`，不回填历史任务。仅写入文件，未对任何库应用；需核实目标库后按完整文件名定向应用，且新版API/worker同时加载后才启用web派发。
+- `065_project_custom_steps.sql`：创建项目定制步骤独立表 `ai_distill.custom_step_runs`（支持单次步骤与单槽位多子运行 `sub_run_key`），扩充 `execution_dispatches.job_kind` 允许 `'custom_step'` 并挂载 `execution_owner_guard` 触发器；不改动基础 `steps` 或 `step_attempts`。属按需可选迁移，未应用时既有文字流程正常启动运行。

@@ -341,10 +341,10 @@ export async function createLibraryRevision(pool:Pool,storageRoot:string,id:stri
     }
     if(existingBlob.content_type!==blob.content_type){
      // 同一UTF8原件可按TXT/MD命名；复用已核验的字节，不改既有对象的MIME。
-     // 历史PDF的scanned/text识别类别继续兼容，二进制格式仍不能混用。
+     // 历史导入原件的scanned/text识别类别继续兼容PDF与DOCX，不同二进制格式之间仍不能混用。
      const compatibleText=['text/plain','text/markdown'].includes(blob.content_type)&&['text/plain','text/markdown'].includes(existingBlob.content_type);
-     const legacyPdf=blob.content_type==='application/pdf'&&['scanned','text'].includes(existingBlob.content_type);
-     if(!compatibleText&&!legacyPdf)throw conflict('已有材料对象与新文件的类型或摘要信息不一致');
+     const legacyBinary=['application/pdf','application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(blob.content_type)&&['scanned','text'].includes(existingBlob.content_type);
+     if(!compatibleText&&!legacyBinary)throw conflict('已有材料对象与新文件的类型或摘要信息不一致');
     }
     blobId=existingBlob.id;
    }

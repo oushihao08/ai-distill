@@ -232,3 +232,57 @@ test('local queue execution survives extended DB outage past initial lease witho
   expect(committed).toBe(true);
  }finally{q.close();if(prev===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=prev;await rm(root,{recursive:true,force:true});}
 });
+
+test('multi-file extraction survives transient progress heartbeat timeout within valid lease and tolerates auxiliary textless photo in atomic import',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'library-progress-hb-')),db=fakePool();
+ let hbCalls=0,connectCalls=0;
+ const basePool=db.pool;
+ const resilientPool={
+  query:async(input:any,params?:any[])=>{
+   const {sql}=queryParts(input,params);
+   if(sql.startsWith('UPDATE ai_distill.library_jobs SET heartbeat')){
+    hbCalls++;
+    if(hbCalls===1)throw Object.assign(new Error('Connection terminated due to connection timeout'),{code:'ETIMEDOUT'});
+    return{rows:[{id:'job'}],rowCount:1};
+   }
+   return basePool.query(input,params);
+  },
+  connect:async()=>{
+   connectCalls++;
+   if(connectCalls===1)throw Object.assign(new Error('Connection terminated due to connection timeout'),{code:'ETIMEDOUT'});
+   return basePool.connect();
+  },
+ } as any;
+ try{
+  const contractBytes=Buffer.from('%PDF-contract'),photoBytes=new Uint8Array([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);
+  await writeFile(join(root,'contract.pdf'),contractBytes);
+  await writeFile(join(root,'photo.png'),photoBytes);
+  const files=[
+   {file_id:crypto.randomUUID(),format:'pdf',source_sha256:hash(contractBytes),size_bytes:contractBytes.length,storage_path:'contract.pdf',original_name:'合同.pdf',content_type:'application/pdf',position:1,redaction_mode:'model'},
+   {file_id:crypto.randomUUID(),format:'png',source_sha256:hash(photoBytes),size_bytes:photoBytes.length,storage_path:'photo.png',original_name:'现场照片.png',content_type:'image/png',position:2,redaction_mode:'model'},
+  ];
+  const atomicJob={
+   ...job(),
+   lease_expires_at:new Date(Date.now()+60_000).toISOString(),
+   input_snapshot:{manifest_sha256:'manifest',files,atomic_import:{package_id:crypto.randomUUID(),revision_id:crypto.randomUUID(),package_input:{name:'测试卷宗',description:'',tags:[]},expected_version:null}},
+  };
+  const extractor={
+   async extract(path:string){
+    if(path.endsWith('.png'))return{format:'png' as const,provider:'mineru-api' as const,sha256:files[1]!.source_sha256,pages:[{page:1,text:'',structure:[],method:'ocr' as const,issues:['empty_page']}]};
+    return{format:'pdf' as const,provider:'mineru-api' as const,sha256:files[0]!.source_sha256,pages:doc.pages};
+   },
+  };
+  await executeExtraction(resilientPool,root,atomicJob,new AbortController().signal,extractor);
+  expect(hbCalls).toBe(2);
+  expect(connectCalls).toBe(2);
+  expect(db.published).toHaveLength(2);
+  expect(db.commits()).toBe(1);
+
+  const allEmptyJob={
+   ...atomicJob,
+   id:crypto.randomUUID(),
+   input_snapshot:{...atomicJob.input_snapshot,files:[files[1]!]},
+  };
+  await expect(executeExtraction(basePool,root,allEmptyJob,new AbortController().signal,extractor)).rejects.toMatchObject({reason_code:'library_extraction_not_usable'});
+ }finally{await rm(root,{recursive:true,force:true});}
+});

@@ -11,6 +11,7 @@ import {workflowStepDisplay} from '../utils/workflow-status';
 import { dateLabel, fileSize, numberedRubric } from '../utils/format';
 import { isStepSealed } from '@shared/step-registry';
 import { statusLabels, type Attempt, type WorkflowDetail, type Step, type RedactionProgress } from '../types/api';
+import WorkflowCustomSteps from '../components/WorkflowCustomSteps.vue';
 import WorkflowHookRecords from '../components/WorkflowHookRecords.vue';
 import MaterialRecordsTable from '../components/MaterialRecordsTable.vue';
 import MaterialPackageQuestionForm from '../components/MaterialPackageQuestionForm.vue';
@@ -207,6 +208,7 @@ async function exportDocx(){try{exportingDocx.value=true;error.value='';docxArch
    <Column class="w-full lg:w-auto min-w-0 lg:flex-1" :gap="16">
     <Column v-if="!data.materials.length && data.workflow.source_manifest?.length" class="surface-panel p-16" :gap="8"><p class="text-xs text-muted">待入库目录材料：</p><span v-for="source in data.workflow.source_manifest" :key="source.name" class="text-xs text-muted break-all">{{ source.name }} · {{ fileSize(source.size) }}</span></Column>
     <MaterialRecordsTable :workflow-id="data.workflow.id" :materials="data.materials" :steps="data.steps" :redaction-status="data.steps.find(step=>step.ordinal===9)?.status" :redaction-queued="data.attempts.some(attempt=>attempt.ordinal===9 && attempt.status==='waiting')" :disabled="submitting||derivedQuestion" :prefer-redacted="questionMaterialMode==='redacted'" @add="addMaterial" @delete="deleting=$event" @updated="refresh" />
+    <WorkflowCustomSteps v-if="!materialPackage" :key="`custom-${data.workflow.id}`" :workflow-id="data.workflow.id" :authoring-status="stepStatus(4)" @updated="refresh" />
     <WorkflowHookRecords v-if="!materialPackage" :key="data.workflow.id" :workflow-id="data.workflow.id" @updated="refresh" />
     <section class="surface-card  p-16 min-w-0"><Column :gap="12"><Row x="between"><h2 class="section-title">最近执行状态</h2><span class="text-sm text-muted">{{ visibleAttempts.length }} 次</span></Row>
      <Column class="w-full overflow-x-auto">

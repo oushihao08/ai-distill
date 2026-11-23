@@ -51,10 +51,10 @@ export async function importMineruExtraction(pool:Pool,root:string,revisionId:st
    if(pageCount!==input.page_count)throw conflict('MinerU页数与PDF原件不一致');
    let document;
    try{document=ensurePages(parseMineruJson(input.content_list,pageCount),file.sha256);}catch{throw new HTTPException(400,{message:'MinerU content_list结构无法完整转换'});}
-   assertLibraryExtractionUsable([{issues:[],pages:document.pages}]);
    const issues=document.pages.flatMap(p=>(p.issues??[]).map(kind=>({page:p.page,kind})));
    prepared.push({file,document,issues,content_list_sha256:hash(canonicalJson(input.content_list))});
   }
+  assertLibraryExtractionUsable(prepared.map(p=>({issues:p.issues,pages:p.document.pages})));
   const jobId=randomUUID(),config={protocol:'mineru-desktop-import-v1',provider:'mineru-desktop',model_invoked:false};
   const snapshot={protocol:config.protocol,manifest_sha256:revision.manifest_sha256,files:prepared.map(p=>({file_id:p.file.id,source_sha256:p.file.sha256,content_list_sha256:p.content_list_sha256,page_count:p.document.pages.length}))};
   const summary={provider:config.provider,imported:true,model_invoked:false,file_count:prepared.length,page_count:prepared.reduce((n,p)=>n+p.document.pages.length,0),issue_count:prepared.reduce((n,p)=>n+p.issues.length,0)};

@@ -17,6 +17,7 @@ import {publishWorkflow,type PublicationBinding} from './jobs';
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
 import {completeProjectPublication} from '../lifecycle/publication';
 import {resolveProjectDelivery,loadProjectArchive} from './project-delivery';
+import {assertBeforePublishCustomStepsReady,customStepRegistry} from '../custom-steps';
 import {watchTaskCancellation} from '../task-signal';
 import {logEvent,classifyLogError,withLogContext} from '../logging';
 
@@ -56,11 +57,12 @@ async function publicationBinding(db:Pick<Pool,'query'>,workflowId:string):Promi
  return{project_id:workflow.project_id,title:workflow.title,parent_name:workflow.parent_name??null,phase_name:workflow.phase_name??null,source_key:workflow.source_key??null,acceptance_attempt_id:accepted.id,source_digest:accepted.input.source_digest,delivery_digest:delivery.digest};
 }
 
-export async function enqueuePublication(pool:Pool,workflowId:string,root:string,identity?:Identity,exportsRoot=assetRoot){
+export async function enqueuePublication(pool:Pool,workflowId:string,root:string,identity?:Identity&{pilot_skip_optional?:boolean},exportsRoot=assetRoot){
  const db=await pool.connect();
  try{
   await db.query('BEGIN');await assertWorkflowNotArchived(db,workflowId);
   const binding=await publicationBinding(db,workflowId);
+  await assertBeforePublishCustomStepsReady(db,customStepRegistry,binding.parent_name,workflowId,isEvaluationPipelineSealed()?binding.source_digest:undefined,{pilot_skip_optional:identity?.pilot_skip_optional===true});
   const projectArchive=await loadProjectArchive(await resolveProjectDelivery(binding.parent_name));
   const legacyAgentConfig=await projectArchive?.readConfig?.(db,binding.project_id,workflowId)??null;
   const input={binding,legacy_agent_config:legacyAgentConfig,delivery_identity:identity??null,exports_root:exportsRoot};

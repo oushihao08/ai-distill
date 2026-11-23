@@ -123,7 +123,7 @@ function buildPreparation(materials:{units:{id:string;title:string;text:string}[
 }
 /** 解析上传的 input.json / delivery.json，合成满足当前schema的完整出题结果。 */
 function buildDraft(turn:WebChatTurn){
-        const inputJson=JSON.parse(findUploadedText(turn,'input.json')) as {materials:{id:string}[];material_scope?:string;batch_context?:string};
+        const inputJson=JSON.parse(findUploadedText(turn,'input.json')) as {materials:{id:string}[];material_scope?:string};
         const deliveryJson=JSON.parse(findUploadedText(turn,'delivery.json')) as {schema:{properties?:Record<string,any>}};
         const attachmentIds=inputJson.materials.map(m=>m.id);
         const needScope=Boolean(deliveryJson.schema?.properties&&'material_scope_selection' in deliveryJson.schema.properties);

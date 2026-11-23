@@ -107,3 +107,5 @@ bun test ./cli/client.test.ts ./cli/commands.test.ts ./cli/library-batch.test.ts
 ```
 
 （注意使用 `./cli/...` 完整路径，不要运行 `bun test cli` 以免按子串误匹配其他目录。）
+
+批次清单入口为 `dispatch`，支持本地文件、线上 JSON、状态摘要、增量事件、调整容量和停止续派。参数与结构见[批次调度](../server/batch-dispatch/README.md)。

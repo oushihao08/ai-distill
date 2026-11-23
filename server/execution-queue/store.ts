@@ -1,11 +1,12 @@
 /** 本机执行队列：API持久化意图，worker原子领取；不存凭证、不执行业务SQL。公开入口 LocalQueue。 */
+import {batchSchema} from '../batch-dispatch/store';
 import {Database} from 'bun:sqlite';
 import {mkdirSync,chmodSync,readFileSync,writeFileSync,linkSync,unlinkSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {serialize,deserialize} from 'node:v8';
-export type JobKind='step'|'skill'|'library'|'hook'|'remote'|'advice';
+export type JobKind='step'|'skill'|'library'|'hook'|'remote'|'advice'|'custom_step';
 export type Lane='agent'|'api'|'internal'|'hook'|'remote'|'web';
 export type QueueState='pending_registration'|'queued'|'running'|'result_pending_commit'|'needs_review'|'committed'|'cancelled'|'failed'|'stale';
 export interface QueueJob {id:string;generation:number;kind:JobKind;lane:Lane;state:QueueState;lease:string|null;pid:number|null;cancel_requested:number;cancel_synced:number;created_at:number;updated_at:number;route:string;error:string|null}
@@ -39,6 +40,9 @@ export class LocalQueue {
    CREATE INDEX IF NOT EXISTS jobs_kind_state ON jobs(kind,state);
    CREATE INDEX IF NOT EXISTS jobs_unsynced_cancel ON jobs(created_at,id) WHERE cancel_requested=1 AND cancel_synced=0;`);
   if(!deviceToken){const home=join(homedir(),'.local','share','ai-distill');mkdirSync(home,{recursive:true,mode:0o700});const tokenPath=join(home,'device-id');const temporary=join(home,`.device-${randomUUID()}`);try{writeFileSync(temporary,randomUUID(),{flag:'wx',mode:0o600});try{linkSync(temporary,tokenPath);}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}}finally{try{unlinkSync(temporary);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}}deviceToken=readFileSync(tokenPath,'utf8').trim();if(!uuid.test(deviceToken))throw new Error('本机设备标记无效，请核实运行目录而非重置活动队列');}
+  this.db.exec(batchSchema);
+  this.db.exec(`CREATE TRIGGER IF NOT EXISTS dispatch_queue_transition AFTER UPDATE OF state ON jobs WHEN OLD.state<>NEW.state
+   BEGIN INSERT INTO dispatch_events(batch,task,state,at) SELECT batch,id,NEW.state,NEW.updated_at FROM dispatch_tasks WHERE job=NEW.id; END;`);
   const digest=createHash('sha256').update(deviceToken).digest('hex');
   this.db.query('INSERT OR IGNORE INTO identity VALUES(1,?,?)').run(randomUUID(),digest);
   const identity=this.db.query('SELECT executor_id,device_digest FROM identity WHERE id=1').get() as {executor_id:string;device_digest:string};
@@ -90,9 +94,14 @@ export class LocalQueue {
   this.db.query("UPDATE jobs SET state=CASE WHEN cancel_requested=1 THEN 'cancelled' ELSE 'queued' END,updated_at=? WHERE id=? AND state='pending_registration'").run(Date.now(),id);
   this.db.query('DELETE FROM admissions WHERE job_id=?').run(id);return true;
  }).immediate();}
- claim(lane:Lane,allowedIds?:string[]){if(allowedIds?.length===0)return null;for(const id of allowedIds??[])assertJobId(id);return this.db.transaction(()=>{const row=this.db.query("SELECT * FROM jobs WHERE lane=? AND (state='queued' OR (state='result_pending_commit' AND updated_at<?)) AND cancel_requested=0"+(allowedIds?` AND id IN (${allowedIds.map(()=>'?').join(',')})`:'')+" ORDER BY created_at,id LIMIT 1").get(lane,Date.now()-5000,...(allowedIds??[])) as QueueJob|null;if(!row)return null;const lease=randomUUID();this.db.query("UPDATE jobs SET state='running',lease=?,pid=?,updated_at=? WHERE id=?").run(lease,process.pid,Date.now(),row.id);return this.get(row.id);}).immediate();}
- heartbeat(id:string,lease:string){return this.db.query("UPDATE jobs SET updated_at=? WHERE id=? AND lease=? AND state='running' AND cancel_requested=0").run(Date.now(),id,lease).changes===1;}
- finish(id:string,lease:string,state:QueueState,error:string|null=null){return this.db.query('UPDATE jobs SET state=?,error=?,lease=NULL,pid=NULL,updated_at=? WHERE id=? AND lease=?').run(state,error,Date.now(),id,lease).changes===1;}
+ claim(lane:Lane,allowedIds?:string[]){if(allowedIds?.length===0)return null;for(const id of allowedIds??[])assertJobId(id);return this.db.transaction(()=>{const row=this.db.query("SELECT * FROM jobs WHERE lane=? AND (state='queued' OR (state='result_pending_commit' AND updated_at<?)) AND cancel_requested=0"+(allowedIds?` AND id IN (${allowedIds.map(()=>'?').join(',')})`:'')+` AND NOT EXISTS(
+   SELECT 1 FROM dispatch_tasks t JOIN dispatch_batches b ON b.id=t.batch
+   WHERE t.job=jobs.id AND t.state IN ('dispatching','submitted') AND b.agent_limit IS NOT NULL AND jobs.lane='agent'
+   AND (SELECT count(DISTINCT j.id) FROM dispatch_tasks other JOIN jobs j ON j.id=other.job
+    WHERE other.batch=t.batch AND j.state='running' AND j.lane='agent')>=b.agent_limit)
+   ORDER BY created_at,id LIMIT 1`).get(lane,Date.now()-5000,...(allowedIds??[])) as QueueJob|null;if(!row)return null;const lease=randomUUID();this.db.query("UPDATE jobs SET state='running',lease=?,pid=?,updated_at=? WHERE id=?").run(lease,process.pid,Date.now(),row.id);return this.get(row.id);}).immediate();}
+ heartbeat(id:string,lease:string){return this.db.query("UPDATE jobs SET updated_at=? WHERE id=? AND lease=? AND state='running' AND cancel_requested=0").run(Date.now(),id,lease).changes>0;}
+ finish(id:string,lease:string,state:QueueState,error:string|null=null){return this.db.query('UPDATE jobs SET state=?,error=?,lease=NULL,pid=NULL,updated_at=? WHERE id=? AND lease=?').run(state,error,Date.now(),id,lease).changes>0;}
  cancel(id:string){this.db.query("UPDATE jobs SET cancel_requested=1,cancel_synced=0,state=CASE WHEN state IN ('pending_registration','queued','result_pending_commit') THEN 'cancelled' ELSE state END,updated_at=? WHERE id=? AND state NOT IN ('committed','failed','cancelled','stale')").run(Date.now(),id);}
  resolve(id:string,state:QueueState){this.db.query('UPDATE jobs SET state=?,lease=NULL,pid=NULL,updated_at=? WHERE id=?').run(state,Date.now(),id);}
  settle(id:string,state:QueueState,generation:number){this.db.query("UPDATE jobs SET state=?,updated_at=? WHERE id=? AND state IN ('queued','needs_review','result_pending_commit') AND generation=?").run(state,Date.now(),id,generation);}

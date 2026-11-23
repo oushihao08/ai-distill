@@ -63,16 +63,18 @@ import {assertWorkflowNotArchived} from './workflow-archive-guard';
 import {registerRemoteMaterialRoutes} from './remote-material-routes';
 import {readSystemStepPrompts,saveSystemStepPrompts,readSystemAuthoringDefaults,validateAuthoringDefaults} from './system-step-prompts';
 import {lockProjectPromptScope,propagateProjectGroupPrompt,readProjectGroupPrompts,sharedPromptOrdinal} from './project-step-prompts';
+import {registerBatchRoutes} from './batch-dispatch/routes';
 import {registerMaterialLibraryRoutes} from './material-library/routes';
 import {registerProjectLibraryRoutes} from './material-library/projects-routes';
 import {libraryLoadEligibilityLateralSql} from './material-library/load-eligibility';
 import {recoverCreatedProject} from './project-creation-recovery';
 import {registerProjectGroupRoutes,resolveProjectGroup,validatePhaseNumber} from './project-groups';
 import {documentBlocksToText} from './materials/pdf';
+import {customStepRegistry,registerCustomStepRoutes} from './custom-steps';
 
 const repositoryRoot=resolve(fileURLToPath(new URL('../',import.meta.url)));
-// 钩子与手动建议结构按功能启用；缺少可选结构不阻断既有文字流程健康检查。
-const requiredMigrations=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql')&&name!=='033_workflow_hooks.sql'&&name!=='050_manual_revision_advice.sql'&&(name!=='047_local_execution_dispatch.sql'||localQueueEnabled())).sort();
+// 钩子、手动建议与项目定制步骤结构按功能启用；缺少可选结构不阻断既有文字流程健康检查。
+const requiredMigrations=(await readdir(new URL('../migrations/',import.meta.url))).filter(name=>name.endsWith('.sql')&&name!=='033_workflow_hooks.sql'&&name!=='050_manual_revision_advice.sql'&&name!=='065_project_custom_steps.sql'&&(name!=='047_local_execution_dispatch.sql'||localQueueEnabled())).sort();
 const projectExportsRoot=resolve(repositoryRoot,'assets/out');
 const projectPhaseLabel=(parentName:string,phaseName:string)=>phaseName?`${parentName} - ${phaseName}`:parentName;
 
@@ -247,6 +249,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   finally{await rm(directory,{recursive:true,force:true});}
  });
  registerExecutionQueueRoutes(app,pool,storageRoot);
+ registerBatchRoutes(app,pool,storageRoot);
  // Only explicitly configured loopback services may be read; this never dispatches or adopts tasks.
  const monitorPeers=(process.env.MONITOR_PEER_URLS??'').split(',').map(value=>value.trim()).filter(Boolean).map(value=>{
   const url=new URL(value);
@@ -555,6 +558,11 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
      (SELECT status FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal NOT IN (${hiddenStepFilter}) AND (s.status NOT IN ('succeeded','skipped') OR (s.ordinal=7 AND s.result->>'decision'='repair')) ORDER BY display_position LIMIT 1) AS current_status,
      (SELECT result->>'decision' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=7) AS current_decision,
      (SELECT jsonb_build_object('decision',s.result->'decision','model_scores',s.result->'model_scores','aggregate',s.result->'aggregate') FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=7 AND s.status='succeeded' AND s.result->>'decision'='accepted') AS acceptance_result,
+     (SELECT jsonb_build_object(
+       'model',CASE WHEN a.config->>'provider'='web' THEN 'web:' || (a.config#>>'{web,provider}') ELSE a.config->>'model' END,
+       'reasoning_effort',a.config->>'reasoning_effort')
+      FROM ai_distill.step_attempts a WHERE a.workflow_id=w.id AND a.ordinal=4
+      ORDER BY a.attempt DESC LIMIT 1) AS authoring_model,
      (SELECT s.result->>'task_name' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4) AS current_task_name,
      (SELECT s.result->>'question_version' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4) AS current_question_version,
      (SELECT s.result->>'rubric_version' FROM ai_distill.steps s WHERE s.workflow_id=w.id AND s.ordinal=4) AS current_rubric_version,
@@ -938,6 +946,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
  });
  app.get('/api/workflows/:id/revision-advice',async c=>c.json(await listRevisionAdvice(pool,uuid(c.req.param('id')))));
  app.post('/api/workflows/:id/revision-advice',async c=>{if(isEvaluationPipelineSealed())throw new HTTPException(409,{message:'作答、评分与达标判断步骤已暂时封存，暂不生成返修建议'});return c.json(await enqueueRevisionAdvice(pool,uuid(c.req.param('id'))),202);});
+ registerCustomStepRoutes(app,pool,storageRoot,customStepRegistry);
  app.patch('/api/workflows/:id/authoring-direction',async c=>{
   const id=uuid(c.req.param('id'));
   let body:unknown;try{body=await c.req.json();}catch{throw new HTTPException(400,{message:'请求内容须为 JSON'});}

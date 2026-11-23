@@ -192,6 +192,22 @@ export function parseMineruDocxJson(value: unknown): Page[] {
  return [{ page: 1, text, structure: page.blocks, method: 'text' }];
 }
 
+/** 单张图片直传 MinerU API 后投影为单页结构；纯照片/印章无文字时保留 empty_page 提示而不抛 ocr_empty。 */
+export function parseMineruImageJson(value: unknown): Page[] {
+ if (!Array.isArray(value)) throw new Error('MinerU图片JSON结构无效');
+ const page = { blocks: [] as DocumentBlock[] };
+ const groups = value.length && value.every(Array.isArray) ? value as unknown[][] : [value];
+ let ordinal = 0;
+ for (const group of groups) for (const candidate of group) {
+  if (!isRecord(candidate)) throw new Error('MinerU图片JSON块无效');
+  const block = candidate as MineruBlock;
+  if (typeof block.type === 'string' && block.type.toLowerCase() === 'image') continue;
+  page.blocks.push(...toBlocks(block, ordinal++));
+ }
+ const text = documentBlocksToText(page.blocks);
+ return [{ page: 1, text, structure: page.blocks, method: 'ocr', model: 'mineru-vlm', ...(!text.trim() ? { issues: ['empty_page'] } : {}) }];
+}
+
 export class MineruCliPdfExtractor implements PdfExtractionProvider {
  readonly id = 'mineru-cli' as const;
  constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}

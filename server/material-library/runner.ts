@@ -4,23 +4,25 @@
  * 边界：发布库级 blob/文档/脱敏结果，入库封存 revision，任务状态由 jobs.ts 管理；外部调用以 library_job_id 关联，不创建 step_attempt。
  */
 import {emitProjectLifecycle as emitLifecycle} from '../lifecycle';
-import {deferLocalPublication,hasActiveLocalExecution,readLibraryFailure,saveLibraryFailure} from '../execution-queue/runtime';
+import {deferLocalPublication,hasActiveLocalExecution,isTransientCommitFailure,readLibraryFailure,saveLibraryFailure} from '../execution-queue/runtime';
 import {mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import type {LibraryExecutionTarget,LibraryExecutorKind} from '../../shared/material-library';
 import {type DocumentExtractor,extractLocalDocument,ProjectDocumentExtractor,collectExtractedPageIssues} from '../materials/document';
+import {ChunkedPdfExtractor} from '../materials/pdf-extraction/chunked-pdf';
 import {MineruCliPdfExtractor} from '../materials/pdf-extraction/mineru-cli';
 import {MineruApiDocxExtractor,MineruApiFirstPdfExtractor,MineruApiImageExtractor,MineruApiPdfExtractor} from '../materials/pdf-extraction/mineru-api';
 import {mineruToken} from '../materials/pdf-extraction/mineru-credentials';
+import {availableOcrPoolProviders,OcrPoolDocumentExtractor} from '../materials/pdf-extraction/ocr-pool';
 import {runExternalCall} from '../external-call';
 import {classifyLogError,enterLogContext,logEvent,withLogContext} from '../logging';
 import {validateFile} from '../validation';
 import {withLibraryPublicationLock,finishLibraryJob,failLibraryJob,heartbeatLibraryJob,claimLibraryJob,libraryExternalExtractionTimeoutMs,LIBRARY_JOB_LEASE_MS,assertLibraryExtractionUsable} from './jobs';
 import {readLibraryBlob,cleanupRolledBackLibraryBlobs,installLibraryBlob,lockLibraryBlobWrites} from './storage';
 import {extractImageCandidates,glmImageRole,shouldExtractImageCandidates,type ImageCandidate} from './image-candidates';
-import {extractGlmOcrImageRegions,GlmOcrPdfExtractor} from '../materials/pdf-extraction/glm-ocr';
+import {extractGlmOcrImageRegions,GlmOcrDocxExtractor,GlmOcrImageExtractor,GlmOcrPdfExtractor} from '../materials/pdf-extraction/glm-ocr';
 import {publishAtomicLibraryImport} from './atomic-import';
 import {hash,jobDirectory,ensurePages,storeExtractedDocument} from './execution-shared';
 import {executeRedaction} from './redaction-runner';
@@ -38,16 +40,37 @@ async function sourceBytes(root:string,item:any){
  return bytes;
 }
 
-async function executeIntake(pool:Pool,root:string,job:any,signal:AbortSignal){
+async function safeProgressHeartbeat(pool:Pool,job:any,progress:Record<string,unknown>,onRefreshed?:(sentAt:number)=>void){
+ const sentAt=Date.now();
+ const leaseExpiresAt=Number.isFinite(Date.parse(job.lease_expires_at))?Date.parse(job.lease_expires_at):sentAt+LIBRARY_JOB_LEASE_MS;
+ try{
+  const active=await heartbeatLibraryJob(pool,job.id,job.lease_token,progress);
+  if(active){
+   job.lease_expires_at=new Date(sentAt+LIBRARY_JOB_LEASE_MS).toISOString();
+   onRefreshed?.(sentAt);
+   return;
+  }
+  throw stopReason(await libraryStopReason(pool,job)??'lease_lost');
+ }catch(error){
+  if(error&&typeof error==='object'&&typeof (error as {reason_code?:unknown}).reason_code==='string')throw error;
+  if((hasActiveLocalExecution()||Date.now()<leaseExpiresAt)&&(isTransientCommitFailure(error)||(error instanceof Error&&/timeout/i.test(error.message)))){
+   logEvent('heartbeat.write_failed',{level:'error',...classifyLogError(error)});
+   return;
+  }
+  throw error;
+ }
+}
+
+async function executeIntake(pool:Pool,root:string,job:any,signal:AbortSignal,onLeaseRefreshed?:(sentAt:number)=>void){
  const files=job.input_snapshot.files as any[];
  let total=0;
  for(const [index,item] of files.entries()){
   if(signal.aborted)throw new Error('材料任务已取消');
   const bytes=await sourceBytes(root,item);total+=bytes.byteLength;
-  const current=(await pool.query(`SELECT f.id,b.sha256,b.size_bytes,b.storage_path FROM ai_distill.library_files f JOIN ai_distill.library_blobs b ON b.id=f.blob_id
+  const current=(await pool.query(`SELECT f.id,b.sha256,b.size_bytes,b.storage_path FROM ai_distill.library_blobs b JOIN ai_distill.library_files f ON b.id=f.blob_id
    WHERE f.id=$1 AND f.revision_id=$2`,[item.file_id,job.revision_id])).rows[0];
   if(!current)throw new Error('入库来源清单已变化');
-  await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'intake',completed_files:index+1,total_files:files.length,verified_bytes:total});
+  await safeProgressHeartbeat(pool,job,{phase:'intake',completed_files:index+1,total_files:files.length,verified_bytes:total},onLeaseRefreshed);
  }
  await finishLibraryJob(pool,job.id,job.lease_token,{file_count:files.length,total_bytes:total,manifest_sha256:job.input_snapshot.manifest_sha256},async db=>{
   const sealed=await db.query("UPDATE ai_distill.library_revisions SET state='ready',sealed_at=now() WHERE id=$1 AND package_id=$2 AND state='pending' AND manifest_sha256=$3 AND file_count=$4 RETURNING id",[job.revision_id,job.package_id,job.input_snapshot.manifest_sha256,files.length]);
@@ -55,21 +78,30 @@ async function executeIntake(pool:Pool,root:string,job:any,signal:AbortSignal){
  });
 }
 
-async function documentExtractor(root:string,jobId:string,provider:unknown,formats:string[]){
+async function documentExtractor(root:string,jobId:string,provider:unknown,explicitProvider:boolean){
  if(!['mineru-api','mineru-cli','glm-ocr'].includes(String(provider)))throw new HTTPException(409,{message:'提取任务缺少有效的冻结供应商，请创建新的提取任务'});
- const hasPdf=formats.includes('pdf'),hasMineruNative=formats.some(format=>['docx','png','jpg','jpeg'].includes(format));
- if(provider==='glm-ocr'&&formats.some(format=>format!=='pdf'))throw new HTTPException(409,{message:'GLM-OCR任务含不支持的格式'});
- if(((hasPdf&&provider!=='glm-ocr')||hasMineruNative)&&!mineruToken())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
- if(hasPdf&&provider==='glm-ocr'&&!process.env.ZHIPU_API_KEY?.trim())throw new HTTPException(503,{message:'GLM-OCR文本提取服务未配置'});
- const cli=new MineruCliPdfExtractor(process.env);
- const pdf=provider==='glm-ocr'?new GlmOcrPdfExtractor(process.env):provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli);
- const extractor=new ProjectDocumentExtractor(pdf,new MineruApiDocxExtractor(process.env),new MineruApiImageExtractor(process.env));
+ const cacheRoot=join(root,'pdf-splits');
+ let extractor:DocumentExtractor;
+ if(!explicitProvider&&provider!=='mineru-cli'){
+  if(!availableOcrPoolProviders(process.env).length)throw new HTTPException(503,{message:'文本提取服务未配置'});
+  extractor=new OcrPoolDocumentExtractor(root,process.env);
+ }else if(provider==='glm-ocr'){
+  if(!process.env.ZHIPU_API_KEY?.trim())throw new HTTPException(503,{message:'GLM-OCR文本提取服务未配置'});
+  const pdf=new ChunkedPdfExtractor(new GlmOcrPdfExtractor(process.env),{providerMaxPages:100,cacheRoot});
+  const image=new GlmOcrImageExtractor(process.env);
+  extractor=new ProjectDocumentExtractor(pdf,new GlmOcrDocxExtractor(process.env,fetch,{pdfExtractor:pdf,imageExtractor:image}),image);
+ }else{
+  if(!mineruToken())throw new HTTPException(503,{message:'MinerU文本提取服务未配置'});
+  const cli=new MineruCliPdfExtractor(process.env);
+  const pdf=new ChunkedPdfExtractor(provider==='mineru-cli'?cli:new MineruApiFirstPdfExtractor(new MineruApiPdfExtractor(process.env),cli),{providerMaxPages:200,cacheRoot});
+  extractor=new ProjectDocumentExtractor(pdf,new MineruApiDocxExtractor(process.env),new MineruApiImageExtractor(process.env));
+ }
  const directory=join(jobDirectory(root,jobId),'source');
  await mkdir(directory,{recursive:true,mode:0o700});
  return{directory,extractor};
 }
 
-export async function executeExtraction(pool:Pool,root:string,job:any,signal:AbortSignal,extractorOverride?:DocumentExtractor){
+export async function executeExtraction(pool:Pool,root:string,job:any,signal:AbortSignal,extractorOverride?:DocumentExtractor,onLeaseRefreshed?:(sentAt:number)=>void){
  const files=job.input_snapshot.files as any[],results:{item:any;document:ReturnType<typeof ensurePages>;issues:Record<string,unknown>[];images?:ImageCandidate[];existingImages?:ReusedImageCandidate[];reused:boolean;reusedFrom?:string}[]=[];
  let extraction:{directory:string;extractor:DocumentExtractor}|null=null;
  for(const [index,item] of files.entries()){
@@ -81,7 +113,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
   else if(!document){
    if(!extraction){
     if(extractorOverride){const directory=join(jobDirectory(root,job.id),'source');await mkdir(directory,{recursive:true,mode:0o700});extraction={directory,extractor:extractorOverride};}
-    else extraction=await documentExtractor(root,job.id,job.config_snapshot.pdf_provider,files.map(file=>String(file.format)));
+    else extraction=await documentExtractor(root,job.id,job.config_snapshot.pdf_provider,job.config_snapshot?.pdf_provider_explicit===true);
    }
    const path=join(extraction.directory,`${item.file_id}.${item.format}`);
    try{await writeFile(path,Buffer.from(bytes),{mode:0o600,flag:'wx'});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST'||hash(await readFile(path))!==item.source_sha256)throw error;}
@@ -118,7 +150,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
    if(images.length>300||images.reduce((sum,image)=>sum+image.bytes.byteLength,0)>100*1024*1024)throw new Error('图片候选数量或总大小超过限制');
   }
   results.push({item,document,issues,images,existingImages,reused:!!cached,reusedFrom:cached?.source_job_id??(cached?job.previous_job_id:undefined)});
-  if(!await heartbeatLibraryJob(pool,job.id,job.lease_token,{phase:'extract',completed_files:index+1,total_files:files.length,reused_files:results.filter(result=>result.reused).length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)}))throw stopReason(await libraryStopReason(pool,job)??'lease_lost');
+  await safeProgressHeartbeat(pool,job,{phase:'extract',completed_files:index+1,total_files:files.length,reused_files:results.filter(result=>result.reused).length,issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)},onLeaseRefreshed);
  }
  if(job.input_snapshot.atomic_import){
   const emptyFileIds=results.filter(result=>result.document.pages.every(page=>!page.text.trim())).map(result=>result.item.file_id);
@@ -127,6 +159,7 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
  }
  const summaries=await finishLibraryJob(pool,job.id,job.lease_token,{file_count:results.length,reused_files:results.filter(result=>result.reused).length,reused_sources:results.filter(result=>result.reusedFrom).map(result=>({file_id:result.item.file_id,job_id:result.reusedFrom})),page_count:results.reduce((sum,result)=>sum+result.document.pages.length,0),issue_count:results.reduce((sum,result)=>sum+result.issues.length,0)},async db=>{
   await publishAtomicLibraryImport(db,root,job);
+  const publishedChecks:Array<{issues:unknown;pages:Array<{text:string}>;page_count:number}>=[];
   for(const result of results){
    const imageCandidates=[];
    if(result.images?.length){
@@ -142,10 +175,11 @@ export async function executeExtraction(pool:Pool,root:string,job:any,signal:Abo
     }
    }
    const {blob,document}=await storeExtractedDocument(db,result.document,result.existingImages??(result.images?imageCandidates:undefined));
-   if(job.input_snapshot.atomic_import)assertLibraryExtractionUsable([{issues:result.issues,pages:document.pages,page_count:document.pages.length}]);
+   publishedChecks.push({issues:result.issues,pages:document.pages,page_count:document.pages.length});
    await db.query(`INSERT INTO ai_distill.library_documents(id,revision_id,file_id,extraction_job_id,document_blob_id,source_sha256,text_sha256,page_count,issues)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[crypto.randomUUID(),job.revision_id,result.item.file_id,job.id,blob.id,result.item.source_sha256,hash(document.pages.map(page=>page.text).join('\n')),document.pages.length,JSON.stringify(result.issues)]);
   }
+  if(job.input_snapshot.atomic_import)assertLibraryExtractionUsable(publishedChecks);
  });
  if(summaries)await cleanupExtractionArtifacts(root,job.id);
 }
@@ -185,6 +219,7 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
   void heartbeatLibraryJob(pool,job.id,job.lease_token).then(async active=>{
    if(settled||publicationLocked||local.signal.aborted)return;
    if(active){
+    job.lease_expires_at=new Date(sentAt+LIBRARY_JOB_LEASE_MS).toISOString();
     armLease(sentAt+LIBRARY_JOB_LEASE_MS);
     if(heartbeatFailed)logEvent('heartbeat.write_recovered',{level:'info'});
     heartbeatFailed=false;
@@ -209,8 +244,9 @@ export async function runClaimedJob(pool:Pool,root:string,job:any,signal:AbortSi
    publicationLocked=true;clearInterval(heartbeat);clearTimeout(leaseTimer);
    logEvent('library_job.publication_locked',{level:'info'});
   },()=>withTaskSignal(local.signal,async()=>{
-   if(job.kind==='intake')await executeIntake(pool,root,job,local.signal);
-   else if(job.kind==='extract')await executeExtraction(pool,root,job,local.signal);
+   const refreshLease=(sentAt:number)=>armLease(sentAt+LIBRARY_JOB_LEASE_MS);
+   if(job.kind==='intake')await executeIntake(pool,root,job,local.signal,refreshLease);
+   else if(job.kind==='extract')await executeExtraction(pool,root,job,local.signal,undefined,refreshLease);
    else if(job.kind==='prepare')await executePreparation(pool,root,job,local.signal);
    else await executeRedaction(pool,root,job,local.signal);
   }));

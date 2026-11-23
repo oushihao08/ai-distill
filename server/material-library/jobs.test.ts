@@ -38,11 +38,13 @@ test('redaction retains OCR warnings without treating them as redaction content 
  expect(()=>assertLibraryExtractionUsable([{page_count:1,issues:null}])).toThrow('提取结果');
 });
 
-test('redaction preflight rejects empty files but permits blank pages alongside body text',()=>{
+test('redaction preflight rejects all-empty packages but permits blank pages or auxiliary textless photos alongside body text',()=>{
  expect(()=>assertLibraryExtractionUsable([])).toThrow('提取结果');
  expect(()=>assertLibraryExtractionUsable([{page_count:0,issues:[]}])).toThrow('提取结果');
  expect(()=>assertLibraryExtractionUsable([{issues:[],pages:[{text:'  '}]}])).toThrow('提取结果');
+ expect(()=>assertLibraryExtractionUsable([{issues:[],pages:[{text:''}]},{issues:[{page:1,kind:'empty_page'}],pages:[{text:'   '}]}])).toThrow('提取结果');
  expect(()=>assertLibraryExtractionUsable([{page_count:2,issues:[{page:2,kind:'empty_page'}],pages:[{text:'借款本金10000元'},{text:' '}]}])).not.toThrow();
+ expect(()=>assertLibraryExtractionUsable([{page_count:1,issues:[],pages:[{text:'民事起诉状正文'}]},{page_count:1,issues:[{page:1,kind:'empty_page'}],pages:[{text:''}]}])).not.toThrow();
 });
 
 test('complete issue-free extraction is eligible and retains the original documents',()=>{
@@ -51,10 +53,11 @@ test('complete issue-free extraction is eligible and retains the original docume
  expect(documents).toEqual([{page_count:1,issues:[],pages:[{text:'完整测试正文'}]}]);
 });
 
-test('new extraction rejects GLM OCR before accessing the database',async()=>{
- expect(()=>validateLibraryJobRequest({kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',pdf_provider:'glm-ocr'})).toThrow('MinerU');
+test('new extraction accepts supported OCR providers and rejects unknown providers before accessing the database',async()=>{
+ expect(validateLibraryJobRequest({kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',pdf_provider:'glm-ocr'}).pdf_provider).toBe('glm-ocr');
+ expect(()=>validateLibraryJobRequest({kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',pdf_provider:'unsupported-ocr'})).toThrow('OCR provider');
  let connected=false;
- await expect(enqueueLibraryJob({connect:async()=>{connected=true;throw new Error('must not connect');}} as any,'package','revision',{kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',pdf_provider:'glm-ocr'})).rejects.toThrow('MinerU');
+ await expect(enqueueLibraryJob({connect:async()=>{connected=true;throw new Error('must not connect');}} as any,'package','revision',{kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',pdf_provider:'unsupported-ocr'})).rejects.toThrow('OCR provider');
  expect(connected).toBe(false);
 });
 
@@ -78,7 +81,7 @@ test('requires an explicit successful extraction reference for redaction request
  expect(validateLibraryJobRequest({kind:'redact',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',extraction_job_id:'123e4567-e89b-42d3-a456-426614174001'}).kind).toBe('redact');
  expect(()=>validateLibraryJobRequest({kind:'redact',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local'})).toThrow();
  expect(()=>validateLibraryJobRequest({kind:'intake',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',extraction_job_id:'123e4567-e89b-42d3-a456-426614174001'})).toThrow();
- expect(()=>validateLibraryJobRequest({kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',pdf_provider:'glm-ocr'})).toThrow();
+ expect(validateLibraryJobRequest({kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',pdf_provider:'glm-ocr'}).pdf_provider).toBe('glm-ocr');
  expect(()=>validateLibraryJobRequest({kind:'redact',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',extraction_job_id:'123e4567-e89b-42d3-a456-426614174001',pdf_provider:'glm-ocr'})).toThrow();
  expect(()=>validateLibraryJobRequest({kind:'extract',request_key:'123e4567-e89b-42d3-a456-426614174000',execution_target:'local',pdf_provider:'unknown'})).toThrow();
 });

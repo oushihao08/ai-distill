@@ -71,10 +71,10 @@ export async function importGlmExtraction(pool:Pool,root:string,revisionId:strin
    const cleaned=cleanScanNoisePages(document.pages.map(page=>({file_id:file.id,page:page.page,blocks:page.structure!})),{englishOnlyParagraphs:true});
    const residues=findExtractionResidues(cleaned.pages);
    if(residues.length)throw conflict(`GLM-OCR正文仍有格式残留，请复核第${[...new Set(residues.map(item=>item.page))].join('、')}页`);
-   assertLibraryExtractionUsable([{issues:[],pages:document.pages}]);
    const issues=document.pages.flatMap(page=>(page.issues??[]).map(kind=>({page:page.page,kind})));
    prepared.push({file,document,issues});
   }
+  assertLibraryExtractionUsable(prepared.map(p=>({issues:p.issues,pages:p.document.pages})));
   const jobId=randomUUID(),config={protocol:'glm-ocr-structured-import-v1',provider:'glm-ocr',ocr_version:GLM_OCR_VERSION,model_invoked:true,docx_conversion:'original-docx-pdf-v2'};
   const snapshot={protocol:config.protocol,manifest_sha256:revision.manifest_sha256,files:prepared.map(({file,document})=>({file_id:file.id,source_sha256:file.sha256,rendered_sha256:inputs.find(input=>input.file_id===file.id)?.rendered_sha256??null,page_count:document.pages.length}))};
   const summary={provider:config.provider,imported:true,model_invoked:true,file_count:prepared.length,page_count:prepared.reduce((n,p)=>n+p.document.pages.length,0),segmented_file_count:prepared.filter(p=>p.document.pages.length>100).length,issue_count:prepared.reduce((n,p)=>n+p.issues.length,0)};

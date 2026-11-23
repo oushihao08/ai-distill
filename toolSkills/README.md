@@ -5,7 +5,7 @@
 | 目录 | 职责与边界 |
 | --- | --- |
 | [question-design-simulator](question-design-simulator/SKILL.md) | 出题点子对照推演、整版成题预测，以及同版豆包首次实测回验 |
-| [doubao-answer-review](doubao-answer-review/SKILL.md) | 豆包网页复测、附件回收、耗时和助手回合核对、逐题独立评分与复盘 |
+| [doubao-answer-review](doubao-answer-review/SKILL.md) | 重出后逐题建立豆包工作任务并提交题面与案卷，或接管已有作答，监控、收件、核对耗时与回合并独立评分 |
 | [materials-full-capacity-dispatch](materials-full-capacity-dispatch/SKILL.md) | 已授权材料批次的全量分页扫描、实时容量回读与持续补位 |
 | [phase8-materials-full-capacity](phase8-materials-full-capacity/SKILL.md) | 第八期八个固定来源目录（132 逻辑包）入库/脱敏/整理双通道推进 |
 | [feishu-operations](feishu-operations/SKILL.md) | 飞书表格/字段/记录/附件通用 CLI 与豆包人员分配；不定义评分达标规则 |

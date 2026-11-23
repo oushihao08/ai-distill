@@ -7,13 +7,14 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `mineru-cli.ts` | MinerU CLI PDF 适配器：限制子进程环境、解析带页码 JSON 并支持超时和取消。 |
-| `mineru-api.ts` | MinerU v4 API 适配器与 PDF API 优先／CLI 回退组合；DOCX、PNG、JPG、JPEG原件直接走API，图片校验单页结构且不进入回退链。 |
+| `ocr-pool.ts` | 管理 `mineru-api` 与 `glm-ocr` 双云端 OCR 池，状态持久化于 `<STORAGE_DIR>/material-library/ocr-pool.sqlite3`；单引擎连续真实失败达 5 次且备选引擎已配置时原子切换活跃引擎、当场重试第 5 次文件，并使后续排队与新入队任务跟随新活跃引擎执行，另提供池内 429 限流退避重试。 |
+| `chunked-pdf.ts` | `ChunkedPdfExtractor` 复用 `../pdf-split.ts` 的 `splitLargePdf()`，对超过单次页数（默认 40 页）或体积（默认 25 MiB）阈值的 PDF 自动拆片逐片提取，再按原页偏移合并并保留完整原件 SHA-256 与总页数；小 PDF 零开销直通。 |
+| `mineru-cli.ts` | MinerU CLI PDF 适配器与 `parseMineruJson`、`parseMineruDocxJson`、`parseMineruImageJson` 结构转换器：限制子进程环境、解析带页码 JSON 并支持超时和取消。 |
+| `mineru-api.ts` | MinerU v4 API 适配器与 PDF API 优先／CLI 回退组合；上传地址申请与文件 PUT 支持 408/429/5xx 及瞬时网络错误有界退避重试，结果下载补齐 curl 18/22/52/92 瞬断重试；DOCX、PNG、JPG、JPEG原件直接走API，单图无文字与 DOCX 内嵌无字装饰图保留 `empty_page` 或跳过而不连坐整份文档。 |
 
-PDF 与 DOCX 请求显式启用 MinerU 的 `is_ocr`，以处理扫描页和仅含嵌入图片、没有 Word 文字节点的原件。结果仍须产生可提取正文；只有图片块的 ZIP 保持失败，不以图片路径充当正文。此变更只对加载新版代码后提交的新任务生效，历史失败任务不自动重投。供应商返回通用 `task_failed` 时没有文件级原因，不能将启用 OCR 视为已验证修复。
-2026-11-06 实际核验：一份图片型 DOCX 的 MinerU 结果仅含 `image` 块；将其结果中的转换 PDF 再提交仍只得图片块，直接提交同一张嵌入 JPG 则得到文字块。此类结果现在按原块顺序逐张直传 MinerU OCR，任一图片无正文即以 `ocr_empty` 阻止整份发布；文字块使用含原块序号与图片摘要的稳定 ID，正式来源仍是完整 DOCX 原件。使用实际失败的高经8期2 case31 DOCX 独立调用新版适配器，返回 1 个逻辑页、15 个正文块、180 字；尚未作为完整材料包原子入库。图片请求统一显式设置 `is_ocr: true`。
+PDF 与 DOCX 请求显式启用 MinerU 的 `is_ocr`，以处理扫描页和仅含嵌入图片、没有 Word 文字节点的原件。图片型 DOCX 拆出内嵌图片逐张直传 MinerU OCR，跳过无文字装饰图/纯印章图并合并有文字块，整份全空时标记 `empty_page` 交由上层整包可用性判断；文字块使用含原块序号与图片摘要的稳定 ID，正式来源仍是完整 DOCX 原件。图片请求统一显式设置 `is_ocr: true`。
 | `mineru-credentials.ts` | 从进程环境选择主用或预备 MinerU 精准解析 API Token；只为新请求选凭证，不把密钥写入任务或诊断。 |
-| `glm-ocr.ts` | 智谱 `layout_parsing` 独立适配器；严格核对页数，将全部带正文的布局块转换为当前 `DocumentBlock`，不经过 MinerU 回退链。 |
+| `glm-ocr.ts` | 智谱 `layout_parsing` 独立适配器（含 `GlmOcrPdfExtractor`、`GlmOcrImageExtractor`、`GlmOcrDocxExtractor`）；PDF 严格核对页数，PNG/JPEG（≤10 MiB）单页直传，DOCX 优先经隔离 LibreOffice 转临时 PDF 识别，未安装 `soffice` 时自动解析 OOXML 段落/表格并将 `word/media` 内嵌图片送 GLM-OCR 识别，统一投影为单逻辑页并绑定原 DOCX 摘要。 |
 | `aliyun-docmind.ts` | 阿里云 Document Mind 文档解析大模型版客户端；复用官方 Node SDK 完成本地文件上传、轮询和 layout 分页收集，当前仅用于对照验证，不改变默认 provider。 |
 | `types.ts` | PDF 提取供应商契约：统一页级文本、来源指纹和供应商标识。 |
 

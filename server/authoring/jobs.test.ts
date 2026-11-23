@@ -350,10 +350,11 @@ test('本地结果提交断线只恢复完整作者成果，不重复创建作�
  try{
   delete process.env.EXECUTION_QUEUE_MODE;await enqueueAuthoring(f.pool,'workflow');f.state.job=f.saved;
   process.env.EXECUTION_QUEUE_MODE='local';queue=new LocalQueue(join(f.root,'queue'),'test-device');queue.intent(f.saved.id,'step','agent','authoring');queue.confirm(f.saved.id);const job=queue.claim('agent')!;
-  let attempts=0,drop=true;const pool={query:f.pool.query.bind(f.pool),connect:async()=>{const db=await f.pool.connect();return{release:()=>db.release(),query:async(sql:string,values?:unknown[])=>{if(drop&&sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'")){drop=false;throw Object.assign(new Error('Connection terminated unexpectedly'),{code:'ECONNRESET'});}return db.query(sql,values);}};}} as unknown as Pool;
+  let attempts=0,drop=true;const pool={query:f.pool.query.bind(f.pool),connect:async()=>{const db=await f.pool.connect();return{release:()=>db.release(),query:async(sql:string,values?:unknown[])=>{if(drop&&sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'")){throw Object.assign(new Error('Connection terminated unexpectedly'),{code:'ECONNRESET'});}return db.query(sql,values);}};}} as unknown as Pool;
   const author=async()=>{attempts++;return authored;};
   await expect(withLocalExecution(queue,job,()=>runNextAuthoring(pool,join(f.root,'storage'),author))).rejects.toBeInstanceOf(PendingLocalCommit);
   expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='failed'"))).toBe(false);
+  drop=false;
   await withLocalExecution(queue,job,()=>runNextAuthoring(pool,join(f.root,'storage'),author));expect(attempts).toBe(1);
   expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
  }finally{queue?.close();if(old===undefined)delete process.env.EXECUTION_QUEUE_MODE;else process.env.EXECUTION_QUEUE_MODE=old;await rm(f.root,{recursive:true,force:true});}
@@ -428,45 +429,14 @@ test('生命周期前置先于模型，后置在提交释放连接后同步等�
  }finally{release?.();removeBefore();removeAfter();await rm(f.root,{recursive:true,force:true});}
 });
 
-test('批次参考只查询同期当前成功投影并白名单复制设计字段',async()=>{
- const {freezeAuthoringBatch}=await import('./jobs');let sql='',params:unknown[]=[];
- const db={query:async(q:string,p:unknown[])=>{sql=q;params=p;return{rows:[{selection:{direction:'诉讼',party:'被告',scenes:['举证'],deliverables:['意见'],core_work:'审查证据',question:'禁止泄漏题面',rubric:['禁止泄漏评分'],reference_answer:'禁止泄漏标答',additional_combinations:[{direction:'调解',party:'被告',scenes:['协商'],deliverables:['协议'],business_goal:'解决争议',answer_approach:'禁止泄漏思路'}]}},{selection:null},{selection:{}}]};}};
- const batch=await freezeAuthoringBatch(db as any,'phase','self');
- expect(params).toEqual(['phase','self']);expect(sql).toContain('w.project_id=$1 AND w.id<>$2 AND w.deleted_at IS NULL');expect(sql).toContain("s.status='succeeded'");expect(sql).not.toContain('step_attempts');
- expect(batch).toMatchObject({total:3,included:1,missing:2,truncated:false});expect(JSON.stringify(batch)).not.toContain('禁止泄漏');expect(batch.selections[0]?.additional_combinations?.[0]?.business_goal).toBe('解决争议');
-});
-test('大批次参考超过80题时按同标签与近期优先裁剪selections，且全期used_combinations不丢失',async()=>{
- const {freezeAuthoringBatch,MAX_BATCH_CONTEXT_SELECTIONS}=await import('./jobs');
- const rows=Array.from({length:120},(_,i)=>({
-  id:`wf-${i+1}`,
-  question_tags:i===5||i===10?['建设工程','结算']:['民间借贷'],
-  finished_at:new Date(Date.UTC(2026,10,1,0,0,i)).toISOString(),
-  selection:{direction:`方向${i+1}`,party:'原告',scenes:[`场景${i+1}`],deliverables:['意见书'],core_work:`核心工作${i+1}`},
- }));
- const db={query:async()=>({rows})};
- const batch=await freezeAuthoringBatch(db as any,'phase','self',['建设工程']);
- expect(batch.total).toBe(120);
- expect(batch.included).toBe(MAX_BATCH_CONTEXT_SELECTIONS);
- expect(batch.truncated).toBe(true);
- expect(batch.selections).toHaveLength(MAX_BATCH_CONTEXT_SELECTIONS);
- expect(batch.selections[0]?.direction).toBe('方向11');
- expect(batch.selections[1]?.direction).toBe('方向6');
- expect(batch.selections[2]?.direction).toBe('方向120');
- expect(batch.used_combinations).toHaveLength(120);
-});
-test('批次观察时间不破坏任务复用，设计变化参与摘要且无整理也传入作者',async()=>{
+test('新派发不再生成batch_context，历史冻结记录残留batch_context仍兼容摘要与执行',async()=>{
  const f=await projectFixture();try{
   await enqueueAuthoring(f.pool,'workflow');const input=f.saved.input;
-  expect(input.material_scope).toBeUndefined();expect(input.batch_context).toMatchObject({total:0,missing:0,selections:[]});
-  expect(inputDigest({...input,batch_context:{...input.batch_context,captured_at:'later'}})).toBe(input.digest);
-  expect(inputDigest({...input,batch_context:{...input.batch_context,selections:[{direction:'不同',party:'被告',scenes:[],deliverables:[]}]}})).not.toBe(input.digest);
-  f.state.job=f.saved;await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{expect(options.batch_context).toEqual(input.batch_context);return authored;});
- }finally{await rm(f.root,{recursive:true,force:true});}
-});
-test('旧冻结任务缺少批次参考仍执行，作者缺少设计摘要仍保存',async()=>{
- const f=await projectFixture();try{
-  await enqueueAuthoring(f.pool,'workflow');delete f.saved.input.batch_context;f.saved.input.digest=inputDigest(f.saved.input);f.state.job=f.saved;
-  await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{expect(options.batch_context).toBeUndefined();return authored;});
+  expect(input.material_scope).toBeUndefined();expect(input.batch_context).toBeUndefined();
+  const legacyWithBatch={...input,batch_context:{captured_at:'2026-10-30T00:00:00Z',total:1,included:1,missing:0,truncated:false,selections:[{direction:'不同',party:'被告',scenes:[],deliverables:[]}]}};
+  expect(inputDigest({...legacyWithBatch,batch_context:{...legacyWithBatch.batch_context,captured_at:'later'}})).toBe(inputDigest(legacyWithBatch));
+  f.state.job={...f.saved,input:{...legacyWithBatch,digest:inputDigest(legacyWithBatch)}};
+  await runNextAuthoring(f.pool,join(f.root,'storage'),async options=>{expect('batch_context' in options).toBe(false);return authored;});
   expect(f.calls.some(c=>c.sql.startsWith("UPDATE ai_distill.step_attempts SET status='succeeded'"))).toBe(true);
  }finally{await rm(f.root,{recursive:true,force:true});}
 });

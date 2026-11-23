@@ -26,6 +26,10 @@ projects/
 │   ├── materials/                      # 项目规则输入；当前归档另存执行观察
 │   ├── skill/                          # 作者出题 Skill
 │   └── scripts/                        # 直交说明及项目转换边界
+├── ALE/                                # ALE 跨领域专业工作任务包与环境/评分/轨迹主项目
+│   ├── materials/                      # 项目方技术规范原文转换稿
+│   ├── skill/                          # 跨领域高强度任务设计与打包 Skill
+│   └── scripts/                        # 单题归档、动态/反例质检与第 7 节批次组包工具
 └── Work法律全场景/                     # Work 主项目
     ├── materials/                      # 共享项目规范
     ├── skill/                          # 共享出题 skill
