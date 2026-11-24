@@ -576,21 +576,36 @@ describe('多项目目标路由、大文件分片上传与本地快照零跨网�
 
  test('无附件纯文本题目交付时，兼容真实飞书回读省略空的“输入附件”字段（undefined/null）',async()=>{
   clearFeishuDeliverySessionCache();
-  const fake=createFakeFeishu();
-  const origCall=fake.client.call.bind(fake.client);
-  fake.client.call=async(path:string,method='GET',body?:any)=>{
-   const res=await origCall(path,method,body);
-   if(method==='GET'&&path.includes('/records/rec_')){
-    const clone=structuredClone(res);
-    delete clone.record.fields['输入附件'];
-    return clone;
-   }
-   return res;
-  };
-  const session=await createFeishuDeliverySession({clientFactory:async()=>fake.client});
+  let storedFields:Record<string,any>={};
+  const clientFactory=async()=>({
+   async close(){},
+   async list(path:string){
+    if(path.endsWith('/fields')){
+     return[
+      ['题目ID',1],['飞书账号',11],['xpert uid',1],['专家来源',3],['一级行业',3],['L1职业簇',3],
+      ['任务名称',1],['任务类型',1],['prompt',1],['输入附件',17],['考点rubric',1],['作答思路',1],
+      ['标准答案-文本',1],['标准答案-附件',17],['题目是否完成',3],['系统同步ID',1],
+     ].map(([field_name,type],i)=>({field_id:`fld_${i}`,field_name,type}));
+    }
+    if(path.endsWith('/views'))return[{view_id:'vew_1',view_type:'grid'}];
+    return[];
+   },
+   async call(path:string,method='GET',body?:any){
+    if(path.includes('/views/'))return{view:{property:{hidden_fields:['fld_15']}}};
+    if(path.includes('/records/search'))return{items:[]};
+    if(method==='POST'&&path.includes('/records')){
+     storedFields={...body.fields};
+     delete storedFields['输入附件'];
+     return{record:{record_id:'recNoFiles1',fields:storedFields}};
+    }
+    return{record:{record_id:'recNoFiles1',fields:storedFields}};
+   },
+   async download(){return new Uint8Array();},
+  });
+  const session=await createFeishuDeliverySession({clientFactory:clientFactory as any});
   const draft=await deliverQuestionToFeishu({
    workflowId:WF_A,
-   question:makeQuestion('纯文本题目'),
+   question:SAMPLE_QUESTION,
    stage:'draft',
    target:{base_token:BASE,table_id:TABLE},
    attachmentFormat:'pdf',
