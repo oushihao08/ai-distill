@@ -10,12 +10,13 @@
 | [`contracts.ts`](contracts.ts) | 7 大领域配额常量、9 字段 `AleCheckRecord`、原始轨迹 `model_turns`/`tool_calls`/Token 精确复算、线性插值分位数（P50/P90）与 LFS/占位检测 | 纯计算函数库，零 I/O |
 | [`ale_grader_lib.py`](ale_grader_lib.py) | 标准公共判分底座库（`ExcelEvaluator` 双引擎公式重算与微扰动 `probe`、`DocxExtractor` 多列表格与枚举提取、`GradeReporter` 第 7 节报告生成） | 由 `delivery.ts` 自动打入私有 `tests/ale_grader_lib.py`，Agent 执行期不可见 |
 | [`office_lint.py`](office_lint.py) | 零业务知识通用格式/公式语法与重算回显工具（回显 `.xlsx` 各表维度、公式重算值、`#REF!/#NAME?/循环引用` 错误及 `.docx` 表格行列预览） | 由 `delivery.ts` 自动打入公开 `environment/tools/office_lint.py`，并在 `calibrate.ts` 沙盒只读挂载 |
-| [`archive.ts`](archive.ts) | 工作台第 8 步归档准备入口：校验并读取本题冻结来源附件（共享材料库或旧目录）装填 `input.attachments`，`readConfig()` 返回 `null` 不占 Agent 槽位 | 由 `project-delivery.ts` 动态加载，不向子进程传凭证 |
-| [`delivery.ts`](delivery.ts) | 工作台第 8 步自动归档子进程入口；同时支持 `--from-draft` CLI 将含 `ale_package` 的草稿与材料展开为 `tasks/<task_id>/` 并复用 `server/document-generation` 生成真实 `.docx` 与活公式 `.xlsx` | 仅写指定输出目录；自动执行动态基线与单因子反例实测，未执行的模型标定步骤如实标 `SKIP` |
+| [`archive.ts`](archive.ts) | 工作台第 8 步归档准备入口：校验并读取本题冻结来源附件装填 `input.attachments`；同时经 `realpath` 严格防越界与零软链校验定位 `.storage/<workflow_id>/custom-steps/ALE/staged/tasks/<task_id>/`，存在 `runs/`、`review/` 或复评配套 `tests/grade.py` 时写入 `input.ale_staged`，`readConfig()` 返回 `null` 不占 Agent 槽位 | 由 `project-delivery.ts` 动态加载，绝不向子进程传递任何凭证 |
+| [`delivery.ts`](delivery.ts) | 工作台第 8 步自动归档子进程入口；同时支持 `--from-draft` CLI（可选 `--staged-task-dir <dir>`）将草稿与材料展开为 `tasks/<task_id>/`、安全拷贝已提交 `runs/` 与 `review/`、在校验同 `task_id` 与 `rubric.json` 一致后同步 staged `tests/grade.py`，并强制实跑动态反例与保存产物离线重评（`CHK-01`–`CHK-07`） | 仅写指定输出目录；拒绝任何符号链接；归档出的 `tasks/<task_id>/` 可直接作为 `batch-package.ts` 输入 |
 | [`verify-task.ts`](verify-task.ts) | 单题全量质检器：检查文件齐备/UTF-8/LF/可执行权限/零LFS、契约对齐、五阶段真值隔离、`rubric.json` 七要素与门控、动态基线与单因子反例（`--execute`）、8次标定 `1–3/8` 与 `opus-5`/`gpt-5.6-sol` 防 hack 审查（`--require-runs`） | 默认纯只读；`--execute` 在系统临时沙盒运行 `grade.py` 后自动清理 |
 | [`calibrate.ts`](calibrate.ts) | 本地 Codex CLI 隔离标定与轨迹采集器：执行输入与环境预检（`--dry-run`），按五阶段隔离启动 `codex exec`（`gpt-6.1-sol` / `gpt-5.6-sol`，`reasoning_effort=max`），转换 `trajectory.jsonl` 与 `run.json` 并离线调用 `tests/grade.py` 输出 `grade.json` | `--dry-run` 零副作用；真实执行会调用本机 ChatGPT 套餐配额并写入目标题包 `runs/` |
 | [`batch-package.ts`](batch-package.ts) | 第 7 节批次组包器：逐题强校验、拦截重复/同构题与超配额领域、归集 `tasks/` 与 `shared/`、生成 `trajectory_stats.csv`、`batch_manifest.json`、`SHA256SUMS.txt` 及 UTF-8 `.zip` | 目标已存在时拒绝覆盖；任一题目存在未关闭缺陷即中止组包 |
 | [`grader-and-lint.test.ts`](grader-and-lint.test.ts) | `ale_grader_lib.py`、`office_lint.py`、`delivery.ts` 与 `calibrate.ts` 完备单元与集成测试 | 临时沙盒运行，自动清理 |
+| [`delivery-closure.test.ts`](delivery-closure.test.ts) | 第 8 步归档闭环端到端测试：验证 `archive.ts` -> `deliverFromWorkbench`（`CHK-01`–`CHK-07` 全 `PASS`）-> `batch-package.ts` ZIP 双向哈希核验及软链/篡改拦截 | 临时沙盒运行，自动清理 |
 
 ---
 
@@ -56,15 +57,22 @@ bun projects/ALE/scripts/verify-task.ts /绝对路径/tasks/<task_id> --execute 
 ### 步骤 5：示范模型真实成功轨迹采集（第 1 节）
 使用 `opus-5` 或 `gpt-5.6-sol` 在同一冻结环境下采集**至少 1 条真实完整成功轨迹**（存入 `runs/<model>/<run_id>/`，严禁拿 `solve.sh` / oracle 日志冒充）。
 
-### 步骤 6：全量成功轨迹防 Hack 审计与单题封签（第 5 节）
+### 步骤 6：全量成功轨迹防 Hack 审计、第 8 步归档闭环与单题封签（第 5 节）
 1. 对每条 `success == true` 的轨迹（含标定成功轮与示范成功轮）执行离线产物重评、言行果分四合一核对、越界命令与 `canary` 扫描，写入 `review/<run_id>.json`（`verdict: "CLEAN_PASS"`）。
-2. 运行完整带轨迹门禁的单题校验（退出码须为 `0`）：
+2. **工作台第 8 步自动归档闭环**：当工作流已完成定制步骤 `ale_calibrate_8plus1`（产物位于 `.storage/<workflow_id>/custom-steps/ALE/staged/tasks/<task_id>/`）后执行第 8 步归档，`archive.ts` 会自动执行 `realpath` 防越界与零符号链接核验，将暂存标定路径传入 `delivery.ts`；`delivery.ts` 在校验同 `task_id` 与 `tests/rubric.json` 契约一致后，安全同步已提交的 `runs/`、`review/` 及 `regrade_only` 阶段更新的 `tests/grade.py`，并强制实跑动态反例与全量成功轨迹保存产物离线重评，使归档目录中的 `check_records_<task_id>.json` 达到 `CHK-01`–`CHK-07` 全项 `PASS`。
+3. 命令行手工合并草稿与 staged 标定目录（或单独对成品目录复核）：
    ```sh
+   bun projects/ALE/scripts/delivery.ts \
+     --from-draft /绝对路径/result.json \
+     --materials-dir /绝对路径/输入材料目录 \
+     --out /绝对路径/归档输出目录 \
+     --staged-task-dir /绝对路径/staged/tasks/<task_id>
+
    bun projects/ALE/scripts/verify-task.ts /绝对路径/tasks/<task_id> --execute --require-runs
    ```
 
 ### 步骤 7：第 7 节标准 `batch/` 组包、双端哈希核验与买方冻结接收
-1. 编写批次输入清单 `batch_spec.json`，执行组包器：
+1. 编写批次输入清单 `batch_spec.json`（`task_dir` 可直接指向工作台第 8 步归档输出的 `assets/out/附件库/ALE/.../tasks/<task_id>`），执行组包器：
    ```sh
    bun projects/ALE/scripts/batch-package.ts /绝对路径/batch_spec.json
    ```

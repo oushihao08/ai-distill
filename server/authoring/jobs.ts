@@ -28,6 +28,7 @@ import {webAuthoringExecutor} from '../web-executors/authoring';
 import {readRuleFile,readProjectPrompt,resolveEffectiveProjectSkill,scanProjectPrompt,verifyRuleSnapshot,type ProjectPromptSnapshot} from '../rule-files';
 import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,prepareCommittedStageHooks,runCommittedStageHooks,StageHookError,type FrozenStageHooks} from '../lifecycle/scripts';
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
+import {readCurrentRedactionForDocx} from '../materials/redacted-docx-export';
 import {hookAdditionText} from '../workflow-hooks';
 import {AUTHORING_FIXED_PROMPT,DEFAULT_STEP_PROMPTS} from '../../shared/step-prompts';
 
@@ -209,6 +210,7 @@ export interface AuthoringDispatchOptions {
  reasoning_effort?: string;
  prompt?: string;
  timeout_ms?: number;
+ skip_repair_evaluation?: boolean;
 }
 /** options.web：仅本次派发改用网页Agent出题；options.provider/model/reasoning_effort：显式覆盖出题执行后端，避免读取数据库默认配置。 */
 export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDispatchOptions,batch?:{attempt:string;project:string;source?:{package_id?:string;revision_id?:string;redaction_id?:string|null;preparation_id?:string}}){
@@ -271,8 +273,13 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDis
   const advice=await frozenRevisionAdvice(db,id);
   const materialScope=await freezeMaterialScope(db,source.workflow.project_id,id,'loaded_materials' in source?source.loaded_materials?.material_scope:undefined);
   const projectKey=resolveStepProjectKey({parent_name:source.workflow.parent_name,project_name:source.workflow.project_name});
-  const baseBeforeGates=await runBeforeAnchorGates(customStepRegistry,projectKey,4,{project_id:String(source.workflow.project_id),workflow_id:id,materials:source.materials,model_materials:'model_materials'in source?source.model_materials:undefined,authoring_direction:typeof source.workflow.authoring_direction==='string'?source.workflow.authoring_direction:null});
-  const latestRepairEvaluation=await readLatestCustomRepairEvaluation(db,customStepRegistry,projectKey,id);
+  const loadedMaterials='loaded_materials'in source?source.loaded_materials:undefined;
+  const structuredDocx=loadedMaterials?await readCurrentRedactionForDocx(db,id).catch(()=>undefined):undefined;
+  const preparedDocs=structuredDocx&&'prepared_documents'in structuredDocx&&Array.isArray(structuredDocx.prepared_documents)?structuredDocx.prepared_documents:undefined;
+  const gateMaterials=loadedMaterials?loadedMaterials.attachments.map(att=>({id:att.id,sha256:att.sha256,text:att.content,source_names:att.source_names,...(preparedDocs?{prepared_documents:preparedDocs}:{})})) : source.materials;
+  const gateModelMaterials=loadedMaterials?.model_attachments?loadedMaterials.model_attachments.map(att=>({id:att.id,sha256:att.sha256,text:att.content,source_names:att.source_names,...(preparedDocs?{prepared_documents:preparedDocs}:{})})) : ('model_materials'in source?source.model_materials:undefined);
+  const baseBeforeGates=await runBeforeAnchorGates(customStepRegistry,projectKey,4,{project_id:String(source.workflow.project_id),workflow_id:id,materials:gateMaterials,model_materials:gateModelMaterials,authoring_direction:typeof source.workflow.authoring_direction==='string'?source.workflow.authoring_direction:null});
+  const latestRepairEvaluation=options?.skip_repair_evaluation===true?null:await readLatestCustomRepairEvaluation(db,customStepRegistry,projectKey,id);
   const customBeforeGates=baseBeforeGates||latestRepairEvaluation?{...(baseBeforeGates??{}),...(latestRepairEvaluation?{repair_evaluation:latestRepairEvaluation as unknown as Record<string,unknown>}:{})}:undefined;
   const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(customBeforeGates?{custom_before_gates:customBeforeGates}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,answer_capabilities:answerCapabilities,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
   const input:FrozenInput={...frozen,digest:inputDigest(frozen)};
@@ -503,7 +510,11 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     }),
                     system_authoring_prompt: job.input.system_authoring_prompt ?? '',
                     step_prompt: (job.config.prompt ?? DEFAULT_STEP_PROMPTS[4])
+                        + (job.input.custom_before_gates && Object.entries(job.input.custom_before_gates).some(([k]) => k !== 'repair_evaluation')
+                            ? `\n\n<前置关卡冻结输入锁定>\n${JSON.stringify(Object.fromEntries(Object.entries(job.input.custom_before_gates).filter(([k]) => k !== 'repair_evaluation')), null, 2)}\n以上为本次执行环境输入的唯一权威锁定路径与 SHA-256；写入 task_card.json.inputs 与 tests/grade.py 的输入哈希必须与之完全一致。\n</前置关卡冻结输入锁定>`
+                            : '')
                         + (job.input.revision_advice ? `\n\n<本次手动返修建议>\n${job.input.revision_advice.text}\n以上建议仅供修正设计；案件事实以本次附件为准，不得以降低评分要求制造达标。\n</本次手动返修建议>` : '')
+                        + (job.input.custom_before_gates?.repair_evaluation ? `\n\n<上轮标定与质检返修诊断>\n${JSON.stringify(job.input.custom_before_gates.repair_evaluation, null, 2)}\n以上诊断为上一版真实标定与质检数据；请据此修正口径歧义、门控失衡或难度结构，案件事实以本次附件为准，严禁以降低实质评分标准或放水制造达标。\n</上轮标定与质检返修诊断>` : '')
                         + hookAdditionText(additions),
                     model: job.config.provider === 'web' ? `web:${job.config.web.provider}` : job.config.model,
                     reasoning_effort: job.config.provider === 'web' ? 'none' : job.config.reasoning_effort,

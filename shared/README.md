@@ -15,7 +15,8 @@
 | `material-preparation.ts` | CLI与服务端共用的精确编辑、分册范围和完整覆盖校验；不判断主体或法律内容，不访问数据库 |
 | `workflow-results.ts` | 当前答案、评分、达标汇总的共享类型与 JSON 读取边界；不改变历史存储格式 |
 | `step-prompts.ts` | 脱敏、出题、作答和评分的系统提示词；出题另提供固定通用规则，作者任务单独冻结该规则与项目可配置提示词 |
-| `step-registry.ts` | 步骤 key、持久化 ordinal、可见 position、默认启用项和脱敏默认提示词 |
+| `step-registry.ts` | 步骤 key、持久化 ordinal、可见 position、默认启用项、`SEALED_STEP_ORDINALS` 评测封存开关与脱敏默认提示词 |
+| `web-agent.ts` | 网页 Agent（DeepSeek/Gemini）通道的提供方枚举、冻结配置校验 `validateWebAgentSettings()` 与独立槽位上限 |
 | `score.test.ts` | 新评分指标与原始分、否决项之间的百分制转换边界 |
 | `step-registry.test.ts` | legacy、library_v1及旧材料包的可见步骤身份兼容 |
 | `workflow-results.test.ts` | 答案/评分摘要读取时的形状校验与非法字段拒绝 |

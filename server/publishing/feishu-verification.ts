@@ -27,6 +27,10 @@ export function assertAuthoringMaterialBinding(input:any,source:{origin:any;atta
   if(canonicalJson(input.material_origin)!==canonicalJson(source.origin))throw new VerificationError('feishu_material_version_mismatch',['材料包版本']);
  }else if((input.redaction_attempt_id??input.material_origin?.redaction_attempt_id)!==source.origin.redaction_attempt_id)throw new VerificationError('feishu_material_version_mismatch',['脱敏版本']);
 }
+/** 按顺序精确比对远端输入附件的文件名集合，不放宽数量或顺序约束。 */
+export function hasFeishuAttachmentNames(value:unknown,expectedNames:readonly string[]):boolean{
+ return Array.isArray(value)&&value.length===expectedNames.length&&value.every((file:any,index:number)=>file?.name===expectedNames[index]);
+}
 export function assertOriginalManifest(expected:{id:string;sha256:string;size_bytes?:number}[],actual:{id:string;sha256:string;size_bytes:number|string}[]){
  if(!expected.length||expected.length!==actual.length||new Set(expected.map(x=>x.id)).size!==expected.length)throw new VerificationError('feishu_material_manifest_mismatch',['附件数量']);
  const byId=new Map(actual.map(x=>[x.id,x]));

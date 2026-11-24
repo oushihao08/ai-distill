@@ -2,7 +2,7 @@
 
 适用于本主项目的维护者和出题作者。第一期使用全局材料库的冻结材料快照；`materials/` 保存项目方规则来源，`skill/` 是作者出题规则，`scripts/` 放本项目的交付转换。作答模型使用的 Skill 是逐题产物，不等于这里的作者 Skill。
 
-本项目以真实业务任务为基础，每题交付 Instruction、Input Files、Rubric、Golden Answer、Skill 文件及 Metadata。材料整理只提供候选范围；作者须依据本题全部冻结附件决定任务，说明 Skill 特有规则如何改变可观察的专业结果。题目不得把决定性 Skill 规则泄入 Instruction。原始项目要求见[本地归档](../../执行观察/alidocs-project-archive-20261108/archive/全过程索引.md)。
+本项目以真实业务任务为基础，每题交付 Instruction、Input Files、Rubric、Golden Answer、Skill 文件及 Metadata。材料整理只提供候选范围；作者须依据本题全部冻结附件决定任务，说明 Skill 特有规则如何改变可观察的专业结果。题目不得把决定性 Skill 规则泄入 Instruction。原始项目要求归档于本地忽略目录 `执行观察/alidocs-project-archive-20261108/archive/全过程索引.md`。
 
 本期目标为材料整理、出题和本地交付。带／不带 Skill 的模型跑分、平台提交和人工验收是后续独立状态；本地交付包不能冒称已通过这些门槛。项目运行状态以本机 API 回读为准，不从目录存在推断数据库期次已建立。
 

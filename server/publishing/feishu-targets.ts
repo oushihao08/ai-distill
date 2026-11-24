@@ -58,27 +58,28 @@ async function project(pool:Pick<Pool,'query'>,id:string){
  FROM ai_distill.projects p LEFT JOIN ai_distill.project_step_configs c ON c.project_id=p.id AND c.ordinal=8
  WHERE p.id=$1 AND p.deleted_at IS NULL`,[id])).rows[0];
 }
-/** 未配置时保持现有按期次目标；显式配置只接受具体表ID，避免同名表产生含混路由。 */
-export async function readFeishuDeliveryConfig(pool:Pick<Pool,'query'>,projectId:string):Promise<{default_target:DefaultTarget;source:'phase_default'|'configured';attachment_format:FeishuAttachmentFormat}|null>{
+/** 未配置时豆包法律、医疗和返修主项目保持既定期次默认目标；其他主项目默认目标为null，支持显式配置default_target或单次传target覆盖。 */
+export async function readFeishuDeliveryConfig(pool:Pick<Pool,'query'>,projectId:string):Promise<{default_target:DefaultTarget|null;source:'phase_default'|'configured'|'unconfigured';attachment_format:FeishuAttachmentFormat}|null>{
  const row=await project(pool,projectId);if(!row)return null;
- const group=String(row.project_group_id??'');if(!ENABLED_GROUPS.has(group))return null;
+ const group=String(row.project_group_id??'');
  const defaultFormat:FeishuAttachmentFormat=group===LEGAL_GROUP||group===REVISION_GROUP?'pdf':'docx';
  const attachmentFormat=row.settings?.attachment_format===undefined?defaultFormat:validateFeishuAttachmentFormat(row.settings.attachment_format);
  if(row.settings?.default_target)return{default_target:validateFeishuTarget(row.settings.default_target),source:'configured',attachment_format:attachmentFormat};
+ if(!ENABLED_GROUPS.has(group))return{default_target:null,source:'unconfigured',attachment_format:attachmentFormat};
  const phase=String(row.phase_name??'').trim();if(!phase)throw bad('期次名称缺失');
  if(group===MEDICAL_GROUP){
   const target=MEDICAL_PHASE_DEFAULT_TARGETS[phase];
-  if(!target)return null;
+  if(!target)return{default_target:null,source:'unconfigured',attachment_format:attachmentFormat};
   return{default_target:target,source:'phase_default',attachment_format:attachmentFormat};
  }
  if(group===REVISION_GROUP){
   const target=REVISION_PHASE_DEFAULT_TARGETS[phase];
-  if(!target)return null;
+  if(!target)return{default_target:null,source:'unconfigured',attachment_format:attachmentFormat};
   return{default_target:target,source:'phase_default',attachment_format:attachmentFormat};
  }
  return{default_target:PHASE_DEFAULT_TARGETS[phase]??{base_token:DEFAULT_BASE,table_name:phase},source:'phase_default',attachment_format:attachmentFormat};
 }
-async function requireProject(pool:Pool,id:string){if(!await readFeishuDeliveryConfig(pool,id))throw new HTTPException(404,{message:'本项目未启用豆包飞书交付'});}
+async function requireProject(pool:Pool,id:string){if(!await readFeishuDeliveryConfig(pool,id))throw new HTTPException(404,{message:'项目不存在'});}
 async function payload(c:Context){try{const body=await c.req.json();if(!object(body))throw bad('须提交JSON对象');return body;}catch(error){if(error instanceof HTTPException)throw error;throw bad('须提交有效JSON');}}
 function remoteError(error:unknown):never{if(error instanceof HTTPException)throw error;throw new HTTPException(502,{message:error instanceof SyncError?error.code:'飞书请求失败，请先核对远端结果再重试'});}
 

@@ -43,13 +43,15 @@ function readAuthoringSettings(value:unknown):AuthoringDispatchOptions|undefined
  const effort=typeof src.reasoning_effort==='string'?src.reasoning_effort.trim():typeof src.effort==='string'?src.effort.trim():undefined;
  const prompt=typeof src.prompt==='string'?src.prompt:undefined;
  const timeout=typeof src.timeout_ms==='number'?src.timeout_ms:undefined;
- if(!provider&&!model&&!effort&&!prompt&&timeout===undefined)return undefined;
+ const skipRepairEvaluation=typeof src.skip_repair_evaluation==='boolean'?src.skip_repair_evaluation:undefined;
+ if(!provider&&!model&&!effort&&!prompt&&timeout===undefined&&skipRepairEvaluation===undefined)return undefined;
  return{
   ...(provider?{provider:provider.toLowerCase()==='antigravity'?'agy':provider.toLowerCase()}:{}),
   ...(model?{model}:{}),
   ...(effort?{reasoning_effort:effort}:{}),
   ...(prompt?{prompt}:{}),
   ...(timeout!==undefined?{timeout_ms:timeout}:{}),
+  ...(skipRepairEvaluation!==undefined?{skip_repair_evaluation:skipRepairEvaluation}:{}),
  };
 }
 interface RouteDependencies {
@@ -100,7 +102,7 @@ export function registerWorkflowExecutionRoutes(app:Hono,{pool,dispatch,storageR
     let body:unknown;try{body=JSON.parse(raw);}catch{throw new HTTPException(400,{message:'出题参数须为有效JSON'});}
     if(!body||typeof body!=='object'||Array.isArray(body))throw new HTTPException(400,{message:'出题参数须为JSON对象'});
     const b=body as Record<string,unknown>;
-    const allowedKeys=['web_settings','authoring_settings','provider','model','reasoning_effort','effort','prompt','timeout_ms'];
+    const allowedKeys=['web_settings','authoring_settings','provider','model','reasoning_effort','effort','prompt','timeout_ms','skip_repair_evaluation'];
     if(Object.keys(b).some(key=>!allowedKeys.includes(key)))throw new HTTPException(400,{message:`出题参数只允许 ${allowedKeys.join(', ')}`});
     const web=readWebSettings(b.web_settings);
     const authoring=readAuthoringSettings(b);

@@ -94,19 +94,20 @@ export async function readLibraryPackages(pool:Pool,options:{q?:string;page?:num
  const usageProjectId=options.usage_project_id?uuid(options.usage_project_id):undefined;
  const state=options.redaction_state??'all';
  if(!['all','ready','not_ready'].includes(state))throw new HTTPException(400,{message:'脱敏状态无效'});
+ const sourceMode=options.source_mode??'any';if(!['any','redacted','original'].includes(sourceMode))throw new HTTPException(400,{message:'材料来源模式无效'});
  const preparationState=options.preparation_state??'all';
  if(!['all','ready','not_ready'].includes(preparationState))throw new HTTPException(400,{message:'整理状态无效'});
  let preparationFilter='';
  if(preparationState!=='all'){
   const available=(await pool.query("SELECT to_regclass('ai_distill.library_preparations') IS NOT NULL AS available")).rows[0]?.available===true;
+  const phaseScope=usageProjectId?`AND (preparation.project_id IS NULL OR preparation.project_id=$8::uuid) ${sourceMode==='redacted'?'AND preparation.redaction_id IS NOT NULL':sourceMode==='original'?'AND preparation.redaction_id IS NULL':''}`:'';
   preparationFilter=available?`AND ${preparationState==='not_ready'?'NOT ':''}EXISTS(
    SELECT 1 FROM ai_distill.library_preparations preparation
    JOIN ai_distill.library_jobs preparation_job ON preparation_job.id=preparation.job_id AND preparation_job.status='succeeded'
    WHERE preparation.package_id=p.id AND preparation.revision_id=r.id AND preparation.result->>'format'='material-preparation-v2'
+    ${phaseScope}
   )`:preparationState==='ready'?'AND false':'';
  }
-
- const sourceMode=options.source_mode??'any';if(!['any','redacted','original'].includes(sourceMode))throw new HTTPException(400,{message:'材料来源模式无效'});
  const needsAvailableFilter=options.ready_only===true||state!=='all'||sourceMode==='redacted';
  const needsExtractedFilter=sourceMode==='original';
  const availableLateral=(pkgExpr:string)=>`CROSS JOIN LATERAL (SELECT count(*)::int FROM ai_distill.library_redactions x

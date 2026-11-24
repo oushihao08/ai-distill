@@ -70,6 +70,8 @@
 | `model-set.test.ts` | 验证模型登记/集合校验、凭证不入库、顺序与阈值摘要，以及集合变化后的结果失效写入；数据库使用替身。 |
 | `generation-policy.ts` | 作答时长与推理活动策略：解析请求上限、阈值，并以持续活动、最大间隔和末次活动新鲜度判断免评分资格。 |
 | `generation-policy.test.ts` | 验证时长默认、配置边界及推理事件资格拒绝条件；不调用供应商。 |
+| `tool-policy.ts` | 校验并冻结项目步骤5的 OpenRouter 服务端工具与本地受控工具策略，生成不可变 attempt 配置。 |
+| `local-tools.ts` | 为 OpenRouter API 作答提供只读冻结附件与受管 attempt 目录产物工具定义及受限执行器。 |
 | `provider.ts` | 作答供应商公共契约：定义固定模型配置、文字作答请求、完整答案、usage 及可选工具轨迹。 |
 | `qwen.ts` | Qwen 作答兼容入口；实际配置解析和 HTTP 由 llm-api 管理。 |
 | `qwen.test.ts` | 验证Qwen/DashScope与OpenRouter路由、请求和响应校验、用量、错误保密、取消及响应体超时；供应商请求使用替身，含一个本机HTTP夹具。 |

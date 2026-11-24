@@ -270,10 +270,14 @@ export async function buildAleBatchPackage(spec: BatchBuildSpec) {
       task_id: row.task_id,
       model: row.model,
       status: row.status,
+      input_tokens: [] as number[],
+      output_tokens: [] as number[],
       total_tokens: [] as number[],
       model_turns: [] as number[],
       tool_calls: [] as number[],
     };
+    if (row.input_tokens !== null) groupedDistributions[key].input_tokens.push(row.input_tokens);
+    if (row.output_tokens !== null) groupedDistributions[key].output_tokens.push(row.output_tokens);
     if (row.total_tokens !== null) groupedDistributions[key].total_tokens.push(row.total_tokens);
     groupedDistributions[key].model_turns.push(row.model_turns);
     groupedDistributions[key].tool_calls.push(row.tool_calls);
@@ -283,6 +287,8 @@ export async function buildAleBatchPackage(spec: BatchBuildSpec) {
     model: g.model,
     status: g.status,
     sample_count: g.model_turns.length,
+    input_tokens: summarizeDistribution(g.input_tokens),
+    output_tokens: summarizeDistribution(g.output_tokens),
     total_tokens: summarizeDistribution(g.total_tokens),
     model_turns: summarizeDistribution(g.model_turns),
     tool_calls: summarizeDistribution(g.tool_calls),
@@ -299,6 +305,29 @@ export async function buildAleBatchPackage(spec: BatchBuildSpec) {
           model_turns: 1.0,
           tool_calls: 1.0,
         };
+
+  // 5b. 写出规范第 6 节全量质检记录与第 7 节原始/转换轨迹字段映射说明
+  const allQaRecords = verifiedTasks.flatMap(({ summary }) => summary.records);
+  await writeFile(join(batchRoot, 'qa_check_records.json'), JSON.stringify(allQaRecords, null, 2) + '\n', { mode: 0o600 });
+  const schemaMapping = {
+    schema_version: 'ale.trajectory_mapping.v1',
+    raw_file: 'runs/<model>/<run_id>/raw_codex_events.jsonl',
+    converted_file: 'runs/<model>/<run_id>/trajectory.jsonl',
+    lossless_statement:
+      '转换件与原始 NDJSON 调用流一并实交，完整保留全部消息顺序、工具调用 ID/参数、完整退出码与标准输出/补丁内容及原始 usage，零压缩截断。',
+    field_mapping: {
+      'item.completed (item.type in command_execution|mcp_tool_call|web_search|file_change)':
+        '拆分为相邻两条记录：(1) role=assistant, type=model_response, tool_calls=[{id, name, arguments}]；(2) role=tool, type=tool_result, tool_call_id, exit_code, status, output（保留完整工具返回正文，不计入 model_turns）',
+      'item.completed (item.type == agent_message)': 'role=assistant, type=model_response, text=item.text, tool_calls=[]',
+      'turn.completed.usage':
+        '写入末条 assistant 记录 usage 及 run.json.usage（含 input_tokens、cached_input_tokens、output_tokens、reasoning_output_tokens、total_tokens）',
+      reasoning_disclosure:
+        'Codex/OpenAI 接口未暴露明文内部思维链文本，仅暴露 reasoning_output_tokens 计数（已包含在 output_tokens 内），按第 5 节据实声明。',
+    },
+  };
+  await writeFile(join(batchRoot, 'trajectory_schema_mapping.json'), JSON.stringify(schemaMapping, null, 2) + '\n', {
+    mode: 0o600,
+  });
 
   // 先扫描现有文件生成 batch_manifest.json 内的文件清单，再将 batch_manifest.json 纳入最终 SHA256SUMS.txt
   const preManifestFiles = await listAllFiles(batchRoot);

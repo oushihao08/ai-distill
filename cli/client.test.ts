@@ -1,7 +1,15 @@
 /** CLI HTTP 边界测试：本机限制、响应异常和写请求不重试；全部使用注入 fetch，不连接业务环境。 */
 import {describe, expect, test} from 'bun:test';
 import {ApiClient, CliError} from './client';
-import {mkdtemp,readFile,stat,rm} from 'node:fs/promises';
+import {
+  atomicWriteJson,
+  fetchAllProjectWorkflowItems,
+  mapWithConcurrency,
+  parseStrictFlagPairs,
+  withExclusiveFileLock,
+  writeExclusiveJson,
+} from './shared';
+import {mkdtemp,readFile,readdir,stat,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -90,4 +98,75 @@ test('下载到文件保留字节和权限，失败不覆盖或创建伪产物',
   await expect(failed.downloadTo('/api/artifacts/a/download',missing)).rejects.toMatchObject({detail:{kind:'http_error',http_status:404}});
   await expect(stat(missing)).rejects.toMatchObject({code:'ENOENT'});
  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+describe('CLI 共用基础设施 (cli/shared.ts)', () => {
+  test('writeExclusiveJson、atomicWriteJson 与 withExclusiveFileLock 保证 0600 独占、原子替换不留临时文件且互斥保护', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cli-shared-fs-'));
+    try {
+      const target = join(root, 'state.json');
+      await writeExclusiveJson(target, { step: 1 }, '文件已存在');
+      expect((await stat(target)).mode & 0o777).toBe(0o600);
+      await expect(writeExclusiveJson(target, { step: 2 }, '文件已存在')).rejects.toThrow('文件已存在');
+
+      await atomicWriteJson(target, { step: 2, ok: true });
+      expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ step: 2, ok: true });
+      expect((await readdir(root)).filter((f: string) => f.endsWith('.tmp'))).toEqual([]);
+
+      const lockPath = `${target}.lock`;
+      await writeFile(lockPath, 'busy');
+      await expect(withExclusiveFileLock(lockPath, async () => 1, { busyMessage: '锁占用' })).rejects.toThrow('锁占用');
+      await rm(lockPath);
+      const lockedValue = await withExclusiveFileLock(lockPath, async () => {
+        expect((await readdir(root)).includes('state.json.lock')).toBe(true);
+        return 42;
+      });
+      expect(lockedValue).toBe(42);
+      expect((await readdir(root)).includes('state.json.lock')).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('mapWithConcurrency 严格保持输入顺序，并在首错或中断后停止领取剩余项', async () => {
+    const ordered = await mapWithConcurrency([30, 5, 15, 1], 2, async (delay, idx) => {
+      await new Promise((r) => setTimeout(r, delay));
+      return `${idx}:${delay}`;
+    });
+    expect(ordered).toEqual(['0:30', '1:5', '2:15', '3:1']);
+
+    const seen: number[] = [];
+    await expect(
+      mapWithConcurrency([0, 1, 2, 3, 4], 2, async (n) => {
+        seen.push(n);
+        if (n === 1) throw new Error('boom');
+        await new Promise((r) => setTimeout(r, 15));
+        return n;
+      }),
+    ).rejects.toThrow('boom');
+    expect(seen.includes(4)).toBe(false);
+  });
+
+  test('fetchAllProjectWorkflowItems 完整翻页并校验 UUID，parseStrictFlagPairs 拒绝重复与缺值', async () => {
+    const w1 = '00000000-0000-4000-8000-000000000011';
+    const w2 = '00000000-0000-4000-8000-000000000012';
+    const requestedPaths: string[] = [];
+    const items = await fetchAllProjectWorkflowItems(
+      async (path) => {
+        requestedPaths.push(path);
+        return path.includes('page=1')
+          ? { items: [{ id: w1, workflow_kind: 'question' }], has_more: true }
+          : { items: [{ id: w2, workflow_kind: 'question' }], has_more: false };
+      },
+      '00000000-0000-4000-8000-000000000001',
+      { kind: 'question', pageSize: 1 },
+    );
+    expect(items.map((x) => x.id)).toEqual([w1, w2]);
+    expect(requestedPaths[0]).toContain('kind=question&page=1&page_size=1');
+
+    const flags = parseStrictFlagPairs(['--workflow', w1, '--request-key', w2], '参数错误');
+    expect(flags.get('workflow')).toBe(w1);
+    expect(() => parseStrictFlagPairs(['--workflow', w1, '--workflow', w2], '参数错误')).toThrow('参数错误');
+    expect(() => parseStrictFlagPairs(['--workflow'], '参数错误')).toThrow('参数错误');
+  });
 });

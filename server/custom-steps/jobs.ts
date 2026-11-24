@@ -30,6 +30,7 @@ import {
 } from '../execution-queue/runtime';
 import { resolveStepProjectKey } from '../lifecycle/steps';
 import { classifyLogError, logEvent, withLogContext } from '../logging';
+import { readCurrentRedactionForDocx } from '../materials/redacted-docx-export';
 import { readQuestionMaterials } from '../question-materials';
 import { assertWorkflowNotArchived } from '../workflow-archive-guard';
 import {
@@ -46,12 +47,18 @@ import type { CustomStepRegistry } from './registry';
 
 type Db = Pick<Pool | PoolClient, 'query'>;
 
-function resolveParallelCap(def: CustomStepDefinition, config?: Record<string, unknown>): number {
+export function resolveParallelCap(def: CustomStepDefinition, config?: Record<string, unknown>): number {
   const preset = typeof config?.preset === 'string' ? config.preset : undefined;
   const presetDefault =
-    preset === 'sample_3' ? 3 : preset === 'sample_5' ? 5 : preset === 'formal_8plus1' ? 8 : (def.max_parallel_subruns ?? 8);
+    preset === 'sample_3'
+      ? 3
+      : preset === 'sample_5'
+        ? 5
+        : preset === 'formal_8plus1'
+          ? (def.max_parallel_subruns ?? 12)
+          : (def.max_parallel_subruns ?? 8);
   const raw = Number(config?.max_parallel_subruns ?? presetDefault);
-  if (!Number.isFinite(raw)) return Math.min(MAX_ALLOWED_PARALLEL_SUBRUNS, presetDefault);
+  if (!Number.isFinite(raw)) return Math.min(MAX_ALLOWED_PARALLEL_SUBRUNS, Math.max(1, Math.trunc(presetDefault)));
   return Math.min(MAX_ALLOWED_PARALLEL_SUBRUNS, Math.max(1, Math.trunc(raw)));
 }
 
@@ -830,6 +837,11 @@ export async function runNextCustomStep(
       String(claimed.sub_run_key),
     );
     const loadedMaterials = await readQuestionMaterials(pool, String(claimed.workflow_id), storageRoot);
+    const structuredDocx = await readCurrentRedactionForDocx(pool, String(claimed.workflow_id)).catch(() => undefined);
+    const preparedDocuments =
+      structuredDocx && 'prepared_documents' in structuredDocx && Array.isArray(structuredDocx.prepared_documents)
+        ? structuredDocx.prepared_documents
+        : undefined;
     const modelAtts = loadedMaterials.model_attachments?.length
       ? loadedMaterials.model_attachments
       : loadedMaterials.attachments;
@@ -840,6 +852,7 @@ export async function runNextCustomStep(
       text: att.content,
       model_sha256: modelAtts[idx]?.sha256,
       model_text: modelAtts[idx]?.content,
+      ...(preparedDocuments ? { prepared_documents: preparedDocuments } : {}),
     }));
 
     const out = await withLogContext(

@@ -1,3 +1,8 @@
+/**
+ * 职责：历史第七期（`q7-run-20261101`）孤儿材料整理任务一次性人工修复工具。
+ * 运行入口：`bun tools/q7/db-fix-prepare.ts`（仅历史排障留档，日常运维严禁绕过 HTTP API 直连数据库）。
+ * 副作用：读取 `.env` 与 `.storage/q7-run-20261101/ledger.json`，在唯一执行节点归属校验下回写指定 `library_jobs` 状态。
+ */
 import {Client} from 'pg';
 import {readFileSync} from 'fs';
 

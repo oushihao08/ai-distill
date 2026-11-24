@@ -71,10 +71,23 @@ async function walkFiles(root: string): Promise<{ rel: string; abs: string; mode
   return out.sort((a, b) => a.rel.localeCompare(b.rel, 'en'));
 }
 
-function runGradeInSandbox(taskRoot: string, artifactsDir: string, gradeOutPath: string): { code: number; stdout: string; stderr: string; grade?: any } {
+function runGradeInSandbox(
+  taskRoot: string,
+  artifactsDir: string,
+  gradeOutPath: string,
+  inputDir: string = join(taskRoot, 'environment', 'input'),
+): { code: number; stdout: string; stderr: string; grade?: any } {
   const proc = spawnSync(
     'python3',
-    [join(taskRoot, 'tests', 'grade.py'), '--artifacts-dir', artifactsDir, '--output', gradeOutPath],
+    [
+      join(taskRoot, 'tests', 'grade.py'),
+      '--artifacts-dir',
+      artifactsDir,
+      '--output',
+      gradeOutPath,
+      '--input-dir',
+      inputDir,
+    ],
     {
       cwd: taskRoot,
       encoding: 'utf8',
@@ -373,11 +386,12 @@ export async function verifyTaskDirectory(taskDir: string, options: VerifyTaskOp
     try {
       const sandboxTask = join(tempBase, 'task');
       await cp(root, sandboxTask, { recursive: true });
+      const sandboxInputDir = join(sandboxTask, 'environment', 'input');
       const dynErrors: string[] = [];
 
       // B01: 参考成品基线验证
       const b01Out = join(tempBase, 'grade-b01.json');
-      const b01 = runGradeInSandbox(sandboxTask, join(sandboxTask, 'solution/artifacts'), b01Out);
+      const b01 = runGradeInSandbox(sandboxTask, join(sandboxTask, 'solution/artifacts'), b01Out, sandboxInputDir);
       const refMode = rubricSpec?.scale?.reference_target?.mode ?? 'deterministic';
       const minRefScore = refMode === 'deterministic' ? 1.0 : 0.9;
       if (
@@ -401,10 +415,10 @@ export async function verifyTaskDirectory(taskDir: string, options: VerifyTaskOp
       await cp(join(tempBase), emptyArtifacts, { recursive: false }).catch(() => {});
       await require('node:fs/promises').mkdir(emptyArtifacts, { recursive: true });
       const b02Out = join(tempBase, 'grade-b02.json');
-      const b02 = runGradeInSandbox(sandboxTask, emptyArtifacts, b02Out);
+      const b02 = runGradeInSandbox(sandboxTask, emptyArtifacts, b02Out, sandboxInputDir);
       if (b02.code !== 0 || !b02.grade || b02.grade.normalized_score !== 0 || b02.grade.success !== false) {
         dynErrors.push(
-          `B02 空提交(no-op)异常(code=${b02.code}, score=${b02.grade?.normalized_score}, success=${b02.grade?.success})`,
+          `B02 空提交(no-op)异常(code=${b02.code}, score=${b02.grade?.normalized_score}, success=${b02.grade?.success}${b02.stderr ? `, err=${b02.stderr.slice(0, 160)}` : ''})`,
         );
       }
 
@@ -417,7 +431,7 @@ export async function verifyTaskDirectory(taskDir: string, options: VerifyTaskOp
           variantCount += 1;
           const vDir = join(sandboxTask, 'tests/reference/variants', v.id);
           const vOut = join(tempBase, `grade-${v.id}.json`);
-          const res = runGradeInSandbox(sandboxTask, vDir, vOut);
+          const res = runGradeInSandbox(sandboxTask, vDir, vOut, sandboxInputDir);
           if (res.code !== 0 || !res.grade) {
             dynErrors.push(`变体 ${v.id} 评分器异常退出(code=${res.code}): ${res.stderr.slice(0, 120)}`);
             continue;

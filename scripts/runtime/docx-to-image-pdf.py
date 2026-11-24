@@ -2,6 +2,7 @@
 """Batch DOCX -> image-only PDF; --workflow first uses the shared material DOCX API. Writes PDFs and a result manifest, never uploads files."""
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import hashlib
 import json
 import os
@@ -55,6 +56,34 @@ def verify_chinese_fonts(source, font_report):
         raise RuntimeError("Chinese text has no embedded CJK font in the converted PDF; refusing to publish")
 
 
+def _render_pdf_chunk(intermediate_path, start_index, end_index, dpi, output_path):
+    document = pdfium.PdfDocument(intermediate_path)
+    images = []
+    try:
+        scale = dpi / 72
+        for index in range(start_index, end_index):
+            page = document[index]
+            try:
+                images.append(page.render(scale=scale).to_pil().convert("RGB"))
+            finally:
+                page.close()
+        if not images:
+            raise RuntimeError("Empty PDF chunk")
+        images[0].save(
+            output_path,
+            "PDF",
+            resolution=dpi,
+            quality=90,
+            title="",
+            save_all=True,
+            append_images=images[1:],
+        )
+    finally:
+        for image in images:
+            image.close()
+        document.close()
+
+
 def convert(source, destination, dpi, soffice):
     with tempfile.TemporaryDirectory(prefix="docx-image-pdf-") as temp:
         work = Path(temp)
@@ -70,27 +99,35 @@ def convert(source, destination, dpi, soffice):
         if "NotoSansLisu" in fonts or "LastResort" in fonts:
             raise RuntimeError("Chinese font fallback failed; refusing to publish")
         verify_chinese_fonts(source, fonts)
-        # Rasterize only after font validation. Build in a temporary file and publish after every page is merged.
-        document = pdfium.PdfDocument(str(intermediate))
-        pages = []
-        for index in range(len(document)):
-            page = document[index]
-            image = page.render(scale=dpi / 72).to_pil().convert("RGB")
-            path = work / f"{index:05d}.pdf"
-            image.save(path, "PDF", resolution=dpi, quality=90, title="")
-            image.close()
-            page.close()
-            pages.append(str(path))
-        document.close()
-        if not pages:
+        # Rasterize only after font validation. Multi-page documents parallelize across CPU cores by contiguous chunks.
+        probe = pdfium.PdfDocument(str(intermediate))
+        page_count = len(probe)
+        probe.close()
+        if page_count <= 0:
             raise RuntimeError("Empty PDF")
         temporary_output = destination.with_suffix(".partial.pdf")
         try:
-            command("pdfunite", *pages, str(temporary_output), timeout=1800)
+            if page_count <= 6:
+                _render_pdf_chunk(str(intermediate), 0, page_count, dpi, str(temporary_output))
+            else:
+                workers = min(os.cpu_count() or 4, 6, (page_count + 3) // 4)
+                chunk_size = (page_count + workers - 1) // workers
+                ranges = [
+                    (start, min(page_count, start + chunk_size), work / f"chunk-{idx:03d}.pdf")
+                    for idx, start in enumerate(range(0, page_count, chunk_size))
+                ]
+                with ProcessPoolExecutor(max_workers=len(ranges)) as pool:
+                    futures = [
+                        pool.submit(_render_pdf_chunk, str(intermediate), start, end, dpi, str(chunk_path))
+                        for start, end, chunk_path in ranges
+                    ]
+                    for future in futures:
+                        future.result()
+                command("pdfunite", *(str(chunk_path) for _, _, chunk_path in ranges), str(temporary_output), timeout=1800)
             result = pdfium.PdfDocument(str(temporary_output))
             count = len(result)
             result.close()
-            if count != len(pages):
+            if count != page_count:
                 raise RuntimeError("Page count changed during image conversion")
             if command("pdftotext", str(temporary_output), "-").strip():
                 raise RuntimeError("Output contains extractable text")

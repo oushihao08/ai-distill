@@ -11,7 +11,7 @@
 | [AGENTS.md](AGENTS.md) | 工程约束、数据不变量、运行授权和说明文档维护规则 |
 | [CLI](cli/README.md)、[操作 Skill](skill/SKILL.md) | AI 的操作入口、命令参数、异步等待与恢复；默认直接调用本机 HTTP API，用户明确要求命令行时使用 CLI |
 | [程序批次调度](server/batch-dispatch/README.md) | 清单明确限定四类任务，Worker 按业务回执补位，工作台和 CLI 均可读取持久进度 |
-| [定时容量调度 Skill](toolSkills/ai-distill-scheduled-runner/SKILL.md) | 按指定间隔逐题对账并补位，推进出题、作答、评分及授权返修；指定执行范围后才启动 |
+| [满载容量调度 Skill](toolSkills/materials-full-capacity-dispatch/SKILL.md) | 按实时队列容量持续补位推进已授权材料入库、脱敏、整理、期次加载与出题 |
 | [通用飞书操作 Skill/CLI](toolSkills/feishu-operations/SKILL.md) | 管理多维表格/字段/记录/视图及附件；豆包交付复用其CLI，业务防重/版本/回执仍在交付模块 |
 | [后端](server/README.md)、[前端](web/README.md) | 模块与文件用途、接口调用和界面结构 |
 | [共享契约](shared/README.md) | 稳定步骤身份、公开类型和输入输出契约 |

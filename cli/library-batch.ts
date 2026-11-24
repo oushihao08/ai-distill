@@ -1,6 +1,7 @@
 /** 材料库搜索批次：模糊定位期次、按且关系固定全分页命中包，并通过现有HTTP单包入口派发；清单写前记录请求键，未知写入停止并保留原键。由commands.ts调用，不直连数据库。 */
-import {readFile,writeFile,rename,open,unlink} from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
 import {ApiClient,CliError} from './client';
+import {atomicWriteJson,isUuid,withExclusiveFileLock,writeExclusiveJson} from './shared';
 type Stage='intake'|'extract'|'redact'|'prepare';
 type Row={package_id:string;name:string;revision_id:string;request_key:string;state:string;reason?:string;job_id?:string;body?:Record<string,unknown>;response?:unknown};
 type Plan={version:1;kind:Stage;project_id?:string;project_name?:string;filters:Record<string,string>;created_at:string;items:Row[]};
@@ -21,15 +22,14 @@ export async function planLibraryBatch(api:ApiClient,flags:Map<string,string|boo
  const pageSize=500;
  for(let page=1;;page++){const q=new URLSearchParams({page:String(page),page_size:String(pageSize),redaction_state:filters.redaction_state!,preparation_state:filters.preparation_state!});const result=await get(`/api/material-library/packages?${q}`);for(const p of result.items){if(p.deleted_at||!p.current_revision_id)continue;if(project&&!fuzzy(p.name,project.name))continue;if(filters.q&&!filters.q.split(/\s+/).every(term=>fuzzy(p.name,term)))continue;if(filters.extraction_state!=='all'&&p.extraction_status!==filters.extraction_state)continue;found.set(p.id,p);}if(page*pageSize>=result.total_count)break;if(!result.items.length)throw new CliError('搜索分页变化，请重新生成清单');}
  const plan:Plan={version:1,kind,...(project?{project_id:project.id,project_name:project.name}:{}),filters,created_at:new Date().toISOString(),items:[...found.values()].map(p=>({package_id:p.id,name:p.name,revision_id:p.current_revision_id,request_key:crypto.randomUUID(),state:'planned'}))};
- await writeFile(out,JSON.stringify(plan,null,2)+'\n',{flag:'wx',mode:0o600});return {...plan,file:out,count:plan.items.length,note:'仅固定搜索命中范围，未派发；不同筛选条件同时满足。'};
+ await writeExclusiveJson(out,plan,'无法创建材料批次清单；文件须不存在且父目录已创建');return {...plan,file:out,count:plan.items.length,note:'仅固定搜索命中范围，未派发；不同筛选条件同时满足。'};
 }
 export async function runLibraryBatch(api:ApiClient,file:string,signal?:AbortSignal){
- const lock=await open(file+'.lock','wx',0o600);const temp=file+'.'+crypto.randomUUID()+'.tmp';
- try{
- const plan=JSON.parse(await readFile(file,'utf8')) as Plan;
- const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
- if(plan.version!==1||!['intake','extract','redact','prepare'].includes(plan.kind)||!Array.isArray(plan.items)||plan.items.some(r=>!uuid.test(r.package_id)||!uuid.test(r.revision_id)||!uuid.test(r.request_key))||(plan.project_id&&!uuid.test(plan.project_id)))throw new CliError('无效材料批次清单');
- const save=async()=>{await writeFile(temp,JSON.stringify(plan,null,2)+'\n',{mode:0o600});await rename(temp,file);};
+ return withExclusiveFileLock(file+'.lock',async()=>{
+  let plan:Plan;
+  try{plan=JSON.parse(await readFile(file,'utf8')) as Plan;}catch{throw new CliError('无效材料批次清单',{kind:'file_error'});}
+  if(plan.version!==1||!['intake','extract','redact','prepare'].includes(plan.kind)||!Array.isArray(plan.items)||plan.items.some(r=>!isUuid(r.package_id)||!isUuid(r.revision_id)||!isUuid(r.request_key))||(plan.project_id&&!isUuid(plan.project_id)))throw new CliError('无效材料批次清单');
+  const save=()=>atomicWriteJson(file,plan);
  const get=(p:string)=>api.json(p,'GET',undefined,signal);
  const mode=plan.project_id?(await get(`/api/projects/${plan.project_id}/material-processing`)).material_processing_mode:'aliases';
  for(const row of plan.items){
@@ -62,5 +62,5 @@ export async function runLibraryBatch(api:ApiClient,file:string,signal?:AbortSig
   catch(error){row.reason=error instanceof Error?error.message:'派发失败';row.response=error instanceof CliError?error.detail:{};if(error instanceof CliError&&error.detail.dispatched===false)row.state='planned';await save();break;}
  }
  return{file,kind:plan.kind,project_id:plan.project_id,counts:plan.items.reduce((n,r)=>(n[r.state]=(n[r.state]??0)+1,n),{} as Record<string,number>),items:plan.items};
- }finally{await lock.close();await unlink(file+'.lock');}
+ });
 }

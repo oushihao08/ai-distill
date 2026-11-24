@@ -8,6 +8,7 @@ import {mkdir,readdir,readFile,rename,rm,stat,writeFile,copyFile} from 'node:fs/
 import {join,resolve,basename} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {CliError} from './client';
+import {atomicWriteJson,mapWithConcurrency} from './shared';
 import {readOfflineTask,importOfflineReply,offlineRoot} from '../server/web-agent/offline-transport';
 import {stitchReplies} from '../server/web-executors/chat-loop';
 import type {WebAgentProvider} from '../shared/web-agent';
@@ -49,8 +50,7 @@ function renderLedger(ledger:Ledger){
 }
 async function saveLedger(out:string,ledger:Ledger){
   ledger.updated_at=now();
-  const json=join(out,'对账台.json'),tmp=`${json}.${process.pid}.tmp`;
-  await writeFile(tmp,JSON.stringify(ledger,null,2));await rename(tmp,json);
+  await atomicWriteJson(join(out,'对账台.json'),ledger,false);
   await writeFile(join(out,'对账台.md'),renderLedger(ledger));
 }
 
@@ -58,15 +58,13 @@ async function candidates(http:OfflineHttp,stage:OfflineStage,options:{project?:
   if(stage==='author'){
     if(!options.project)throw new CliError('出题阶段需要 --project');
     if(options.ids){
-      // 指定题目时逐题读取轻量详情，避免读取整期项目清单。
-      const rows:Candidate[]=[];
-      for(const id of options.ids){
+      // 指定题目时有界并发读取轻量详情，避免读取整期项目清单或串行等待。
+      return mapWithConcurrency(options.ids,4,async(id)=>{
         const detail=await http.get(`/api/workflows/${id}?view=status`);
         const workflow=detail?.workflow??detail;
         if(workflow?.project_id&&workflow.project_id!==options.project)throw new CliError(`题目 ${id} 不属于该期次`);
-        rows.push({task:`author-${id}`,title:String(workflow?.title??id),workflow_id:id,project_id:options.project});
-      }
-      return rows;
+        return {task:`author-${id}`,title:String(workflow?.title??id),workflow_id:id,project_id:options.project};
+      });
     }
     const picked:Candidate[]=[];
     for(let page=1;;page++){
@@ -74,6 +72,7 @@ async function candidates(http:OfflineHttp,stage:OfflineStage,options:{project?:
       const workflows:any[]=Array.isArray(result?.workflows)?result.workflows:[];
       for(const w of workflows){
         if(!['succeeded','running'].includes(w.authoring_status)){
+          if(options.skip?.has(`author-${w.id}`))continue;
           picked.push({task:`author-${w.id}`,title:String(w.title??w.id),workflow_id:w.id,project_id:options.project});
           if(options.limit!==undefined&&picked.length>=options.limit)break;
         }
@@ -84,22 +83,25 @@ async function candidates(http:OfflineHttp,stage:OfflineStage,options:{project?:
   }
   if(stage==='prepare'){
     if(options.ids){
-      const rows:Candidate[]=[];
-      for(const redaction of options.ids){
+      return mapWithConcurrency(options.ids,4,async(redaction)=>{
         const meta=await http.get(`/api/material-library/redactions/${redaction}/preview?metadata_only=true`);
         const pkg=await http.get(`/api/material-library/packages/${meta.package_id}`);
-        rows.push({task:`prepare-${redaction}`,title:String(pkg.name),package_id:meta.package_id,revision_id:meta.revision_id,redaction_id:redaction,...(options.project?{project_id:options.project}:{})});
-      }
-      return rows;
+        return {task:`prepare-${redaction}`,title:String(pkg.name),package_id:meta.package_id,revision_id:meta.revision_id,redaction_id:redaction,...(options.project?{project_id:options.project}:{})};
+      });
     }
     if(!options.project)throw new CliError('整理阶段需要 --project 或 --ids（脱敏结果ID）');
-    const loaded=(await http.get(`/api/projects/${options.project}/loaded-materials`))?.items??[];
     const rows:Candidate[]=[];
-    for(const item of loaded){
-      if(!item.selected_redaction_id)continue;
-      const existing=await http.get(`/api/material-library/packages/${item.package_id}/preparations?redaction_id=${item.selected_redaction_id}&project_id=${options.project}&summary_only=true&page_size=1`);
-      if(Array.isArray(existing?.items)&&existing.items.length)continue;
-      rows.push({task:`prepare-${item.selected_redaction_id}`,title:String(item.package_name),package_id:item.package_id,revision_id:item.selected_revision_id,redaction_id:item.selected_redaction_id,project_id:options.project});
+    for(let page=1;;page++){
+      const listed=await http.get(`/api/projects/${options.project}/loaded-materials?page=${page}&page_size=200`);
+      const loaded:any[]=Array.isArray(listed?.items)?listed.items:[];
+      for(const item of loaded){
+        if(options.limit!==undefined&&rows.length>=options.limit)break;
+        if(!item.selected_redaction_id||options.skip?.has(`prepare-${item.selected_redaction_id}`))continue;
+        const existing=await http.get(`/api/material-library/packages/${item.package_id}/preparations?redaction_id=${item.selected_redaction_id}&project_id=${options.project}&summary_only=true&page_size=1`);
+        if(Array.isArray(existing?.items)&&existing.items.length)continue;
+        rows.push({task:`prepare-${item.selected_redaction_id}`,title:String(item.package_name),package_id:item.package_id,revision_id:item.selected_revision_id,redaction_id:item.selected_redaction_id,project_id:options.project});
+      }
+      if(!loaded.length||!listed?.has_more||(options.limit!==undefined&&rows.length>=options.limit))break;
     }
     return rows;
   }

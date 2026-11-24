@@ -84,6 +84,7 @@ HTTP入口为`GET /api/material-library/redactions/:id/name-revision-source?proj
 | `redaction-review.ts` | 显式复核Agent已发布产物，将当前结论及历史追加到job.result_summary，不改不可变产物或任务成功历史 |
 | `preparation.ts` | 可跳过的材料整理任务：Agent写`output/preparation.json`并运行本地`validate-preparation.mjs`自检，超100份文书分段后经`hidden_documents`汇总统一判定隐藏文书，API通道带2轮校验修正；不自动补调 |
 | `preparation-support.ts` | 材料整理共用系统提示词`PREPARATION_PROMPT`、文件输入与`validate-preparation.mjs`生成（文书较多时约束先写纯文本/JSONL分片再由本地脚本合并落盘）、响应检查点`runPreparationCheckpoint`与逐图审核检查点`imageDecisionCheckpoint` |
+| `image-candidates.ts` | 从受管原件提取稳定坐标与 SHA-256 的候选插图字节，仅供可选保图整理审核使用，不传给脱敏任务 |
 | `worker-once.ts` | 验收入口，只消费HTTP已创建的指定本机Agent材料job UUID，复用共享Agent槽位与正式事务，不领取其他任务 |
 | `prepared-import.ts` | 导入Codex已审阅的原文编辑/分册计划：校验完整提取来源、精确编辑、范围覆盖与请求幂等，在同一事务保存新任务及脱敏结果；不OCR、不调用模型、不改旧结果 |
 | `mineru-import.ts` | 导入MinerU桌面端content_list：核对完整版本原件摘要与PDF页数，复用结构转换，事务保存提取文档与来源摘要；不重跑OCR、不脱敏 |
@@ -149,7 +150,7 @@ PDF/DOCX/图片外部提取按需逐文件执行，每份冻结30分钟预算，
 - `GET /packages?ready_only=true`：在分页前按全部历史可用脱敏结果过滤；`archived_only=true` 列出已逻辑归档包，默认仅返回使用中的包。`page_size`上限500，普通页面仍按需读取30条；每页的包资料、总数和材料使用轻量摘要（主项目、所属期、使用中/已提交）由同一条SQL返回，不带事件详情；新文件版本失败不隐藏旧成功版；POST加载/PATCH选版在包/项目事务锁内再次验证非空且有效的选择。
 - `DELETE /packages/:id`：按 `If-Match` 版本逻辑归档；若仍有运行中或排队的材料处理任务则拒绝。不会删除原件、历史、项目加载关系、题目私有快照或归档事件。`POST /packages/:id/restore` 可恢复已归档包。
 - `GET /packages/:id/usage`：加载项目与归档/撤回事件。界面按题目汇总当前状态，事件历史保留；移除引用和删除项目不改变全局库包。
-- `GET /projects/:id/material-candidates?q=...&page=...&page_size=...`：本期材料加载弹窗的搜索和分页候选；项目占用状态在同一候选查询中投影，避免目录结果后再发一轮使用记录查询；页面只在打开弹窗或改变查询时请求当前页。
+- `GET /projects/:id/material-candidates?q=...&page=...&page_size=...&source_mode=any|redacted|original&preparation_state=all|ready|not_ready`：本期材料加载弹窗与CLI建题候选的搜索和分页接口；支持按来源模式与材料整理完成状态在单条SQL内下推过滤，项目占用状态在同一候选查询中投影，避免目录结果后再发N+1查询。
 - `GET /projects/:id/loaded-materials/summary?processing_mode=aliases` 返回本期有效引用的材料包数、匹配处理模式且可用数、使用中数和已提交数，供期次详情折叠视图读取。
 - `GET /projects/:id/loaded-materials?include_removed=true`：返回本期当前和已移除的材料引用；已移除关系可由 `POST /projects/:id/loaded-materials/:linkId/restore` 恢复。
 - `GET /projects/:id/material-uses/:useId/events`：读取单条使用关系的提交/返修事件。`GET /projects/:id/material-uses` 只返回状态摘要，不把全期事件历史放进首屏响应。

@@ -12,7 +12,7 @@ import {workflowStepDisplay,batchStepIssue,type WorkflowStatusView} from '../uti
 import WorkflowAttemptHistory from './WorkflowAttemptHistory.vue';
 import AcceptedQuestionDetail from './AcceptedQuestionDetail.vue';
 
-const props=defineProps<{workflows:Workflow[];packages:Workflow[];projectId:string;workflowStatus?:Record<string,ProjectWorkflowStatus>;materialPackagesEnabled?:boolean;hasMore?:boolean;loadingMore?:boolean}>();
+const props=defineProps<{workflows:Workflow[];totalQuestions?:number;packages:Workflow[];projectId:string;workflowStatus?:Record<string,ProjectWorkflowStatus>;materialPackagesEnabled?:boolean;hasMore?:boolean;loadingMore?:boolean}>();
 const emit=defineEmits<{refresh:[];'load-all':[]}>();
 const materialsOpen=shallowRef(false),materialsBusy=shallowRef(false),materialsError=shallowRef('');
 const materialsDetail=shallowRef<WorkflowDetail>();
@@ -62,6 +62,8 @@ const filteredWorkflows=computed(()=>{
  return props.workflows.filter(flow=>(!selectedTag.value||displayTags(flow).includes(selectedTag.value))&&searchableQuestionText(flow).includes(keyword))
   .filter(flow=>statusFilters.value.every(filter=>!filter.value||stepState(flow,filter.ordinal).label===filter.value));
 });
+const hasActiveFilter=computed(()=>Boolean(search.value?.trim()||selectedTag.value||authorStatus.value||deliveryStatus.value));
+const totalQuestions=computed(()=>props.hasMore ? props.totalQuestions : props.workflows.length);
 const pageCount=computed(()=>Math.max(1,Math.ceil(filteredWorkflows.value.length/pageSize)));
 const visibleWorkflows=computed(()=>filteredWorkflows.value.slice((page.value-1)*pageSize,page.value*pageSize));
 const stageColumns=computed(()=>[...(!props.materialPackagesEnabled?[{ordinal:1,name:'入库'},{ordinal:9,name:'脱敏'}]:[]),{ordinal:4,name:'出题'},{ordinal:8,name:'交付归档'}]);
@@ -165,8 +167,7 @@ onBeforeUnmount(()=>{detailsDisposed=true;refreshRequestedAgain=false;detailsCon
 watch([()=>props.workflows,()=>props.workflowStatus,()=>props.projectId],syncDetailsFromProject);
 watch([search,selectedTag,authorStatus,deliveryStatus],()=>{
  page.value=1;
- const hasActiveFilter=Boolean((search.value??'').trim()||selectedTag.value||authorStatus.value||deliveryStatus.value);
- if(hasActiveFilter&&props.hasMore&&!props.loadingMore)emit('load-all');
+ if(hasActiveFilter.value&&props.hasMore&&!props.loadingMore)emit('load-all');
 });
 watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 </script>
@@ -174,7 +175,7 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
 <template>
  <Column class="surface-card p-16" :gap="12">
   <Row x="between" wrap :gap="12">
-   <Column :gap="4"><h2 class="section-title">题目记录</h2><span class="text-xs text-muted">匹配 {{ filteredWorkflows.length }} 道题 · 每页 {{ pageSize }} 道<template v-if="props.loadingMore"> · 正在加载全部题目…</template></span></Column>
+   <Column :gap="4"><h2 class="section-title">题目记录</h2><span class="text-xs text-muted"><template v-if="totalQuestions!=null">全期 {{ totalQuestions }} 道题 · </template><template v-if="props.hasMore">已加载 {{ props.workflows.length }} 道 · </template><template v-if="hasActiveFilter">{{ props.hasMore ? '已加载中匹配' : '匹配' }} {{ filteredWorkflows.length }} 道 · </template>每页 {{ pageSize }} 道<template v-if="props.loadingMore"> · 加载中…</template></span></Column>
    <Row wrap y="center" :gap="8">
     <v-select v-model="authorStatus" :items="statusOptions" label="出题状态" placeholder="全部" aria-label="按出题状态筛选" hide-details clearable class="filter-field-compact" />
     <v-select v-model="deliveryStatus" :items="statusOptions" label="交付状态" placeholder="全部" aria-label="按交付状态筛选" hide-details clearable class="filter-field-compact" />
@@ -205,7 +206,7 @@ watch(pageCount,()=>{page.value=Math.min(page.value,pageCount.value);});
   <WorkflowAttemptHistory v-if="history" :key="`${history.workflowId}-${history.ordinal}`" v-bind="history" @close="history=null" />
   <AcceptedQuestionDetail v-if="selectedQuestion" :workflow-id="selectedQuestion.id" :title="selectedQuestion.title" @close="selectedQuestion=null" />
   <Row x="between" wrap y="center" :gap="8">
-   <span class="text-xs text-muted">第 {{ page }} / {{ pageCount }} 页</span>
+   <span class="text-xs text-muted">{{ props.hasMore ? '已加载记录' : '' }}第 {{ page }} / {{ pageCount }} 页</span>
    <v-pagination v-model="page" :length="pageCount" :total-visible="5" :disabled="pageCount<=1" aria-label="题目记录分页" />
   </Row>
  </Column>

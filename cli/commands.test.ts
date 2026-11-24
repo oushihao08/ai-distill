@@ -895,4 +895,235 @@ describe('网页Agent派发参数', () => {
       expect(calls.at(-1)!.url.pathname).toBe(`/api/projects/${project}/skill/attempts/${attempt}/adopt`);
     }finally{await rm(root,{recursive:true,force:true});}
   });
+
+  test('项目定制步骤、批量交付对账、统一API通道与显式恢复扩展完整对齐服务端契约', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cli-extended-capabilities-'));
+    try {
+      const third = '00000000-0000-4000-8000-000000000005';
+      const fourth = '00000000-0000-4000-8000-000000000006';
+      const customStepFile = join(root, 'custom-step.json');
+      const repairEvalFile = join(root, 'repair-eval.json');
+      const apiSettingsFile = join(root, 'api-settings.json');
+      const promptFile = join(root, 'prompt.txt');
+      const expectedPromptFile = join(root, 'expected-prompt.txt');
+      const modelFile = join(root, 'model.json');
+      const systemPromptsFile = join(root, 'system-prompts.json');
+
+      await writeFile(customStepFile, JSON.stringify({ preset: 'sample_3', max_parallel_subruns: 3 }));
+      await writeFile(repairEvalFile, JSON.stringify({ verdict: 'needs_grader_patch', recommended_scope: 'grader_only_regrade', action_items: ['修正阈值'] }));
+      await writeFile(apiSettingsFile, JSON.stringify({ provider: 'openrouter', model: 'z-ai/glm-5.3-flash', enable_thinking: false }));
+      await writeFile(promptFile, '更新后的主项目步骤提示词');
+      await writeFile(expectedPromptFile, '旧提示词');
+      await writeFile(modelFile, JSON.stringify({ name: 'TestModel', config: { provider: 'siliconflow', model: 'Qwen/Qwen3-32B' } }));
+      await writeFile(systemPromptsFile, JSON.stringify({ prompts: { author_question: '默认提示词' } }));
+
+      let customPoll = 0;
+      const calls: { url: URL; init?: RequestInit }[] = [];
+      const client = new ApiClient(undefined, async (input, init) => {
+        const url = new URL(String(input));
+        calls.push({ url, init });
+        if (url.pathname.endsWith('/skill-dependency-package') || url.pathname.endsWith('/download')) {
+          return new Response(new Uint8Array([80, 75, 3, 4]));
+        }
+        if (url.pathname === `/api/workflows/${question}/custom-steps` && (!init?.method || init.method === 'GET')) {
+          customPoll++;
+          return Response.json({
+            available: true,
+            project_key: 'ale',
+            source_digest: 'd1',
+            steps: [
+              {
+                step_key: 'ale_calibrate_runs',
+                status: customPoll < 2 ? 'running' : 'succeeded',
+                active_sub_runs: customPoll < 2 ? 2 : 0,
+              },
+            ],
+          });
+        }
+        if (url.pathname === `/api/projects/${project}/material-processing`) {
+          return Response.json({ material_processing_mode: 'aliases', material_source_mode: 'redacted' });
+        }
+        if (url.pathname === `/api/projects/${project}/loaded-materials/summary`) {
+          return Response.json({ loaded_count: 12, ready_count: 10, in_use_count: 6, submitted_count: 2 });
+        }
+        if (url.pathname === `/api/workflows/${question}`) {
+          return Response.json({
+            workflow: { id: question, title: '已验证题' },
+            steps: [{ ordinal: 8, status: 'succeeded', result: { feishu_deliveries: { 'appBaseToken01:tblTarget1': { status: 'succeeded', record_id: 'recOk1', verification: { status: 'passed' } } } } }],
+          });
+        }
+        if (url.pathname === `/api/workflows/${second}`) {
+          return Response.json({
+            workflow: { id: second, title: '待补传题' },
+            steps: [{ ordinal: 8, status: 'succeeded', result: { feishu_deliveries: {} } }],
+          });
+        }
+        if (url.pathname === `/api/workflows/${third}`) {
+          return Response.json({
+            workflow: { id: third, title: '核验失败题' },
+            steps: [{ ordinal: 8, status: 'succeeded', result: { feishu_deliveries: { 'appBaseToken01:tblTarget1': { status: 'succeeded', record_id: 'recFail1', verification: { status: 'failed' } } } } }],
+          });
+        }
+        if (url.pathname === `/api/workflows/${fourth}`) {
+          return Response.json({
+            workflow: { id: fourth, title: '未归档题' },
+            steps: [{ ordinal: 8, status: 'waiting', result: null }],
+          });
+        }
+        return Response.json({ ok: true, id: attempt });
+      });
+
+      const scopedCustom = await runCommand(['custom-step', '--help']);
+      expect(scopedCustom.help).toContain('custom-step wait');
+      expect(scopedCustom.help).toContain('custom-step repair-evaluation');
+
+      await runCommand(['custom-step', 'list', '--workflow', question], client);
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/workflows/${question}/custom-steps`);
+      customPoll = 0;
+
+      await runCommand(['custom-step', 'run', '--workflow', question, '--step', 'ale_calibrate_runs', '--file', customStepFile], client);
+      expect([calls.at(-1)!.url.pathname, JSON.parse(String(calls.at(-1)!.init?.body))]).toEqual([
+        `/api/workflows/${question}/custom-steps/ale_calibrate_runs/run`,
+        { preset: 'sample_3', max_parallel_subruns: 3 },
+      ]);
+
+      const waitedCustom = await runCommand(['custom-step', 'wait', '--workflow', question, '--step', 'ale_calibrate_runs', '--timeout', '5s'], client);
+      expect(waitedCustom.outcome).toBe('complete');
+      expect(waitedCustom.data.status).toBe('succeeded');
+      expect(customPoll).toBe(2);
+
+      await runCommand(['custom-step', 'cancel', '--workflow', question, '--step', 'ale_calibrate_runs'], client);
+      expect([calls.at(-1)!.url.pathname, calls.at(-1)!.init?.method]).toEqual([`/api/workflows/${question}/custom-steps/ale_calibrate_runs/cancel`, 'POST']);
+
+      await runCommand(['custom-step', 'repair-evaluation', '--workflow', question, '--step', 'ale_calibrate_runs', '--file', repairEvalFile], client);
+      expect([calls.at(-1)!.url.pathname, calls.at(-1)!.init?.method]).toEqual([`/api/workflows/${question}/custom-steps/ale_calibrate_runs/repair-evaluation`, 'PUT']);
+
+      // 批量交付回执对账
+      const batchDelivery = await runCommand([
+        'workflow', 'delivery', 'show',
+        '--project', project,
+        '--ids', [question, second, third, fourth].join(','),
+        '--base-token', 'appBaseToken01',
+        '--table', 'tblTarget1',
+      ], client);
+      expect(batchDelivery.outcome).toBe('complete');
+      expect(batchDelivery.data.counts).toMatchObject({
+        total: 4,
+        archived: 3,
+        not_archived: 1,
+        verified_passed: 1,
+        not_synced: 1,
+        verification_failed: 1,
+      });
+      expect(batchDelivery.data.pending_sync_workflow_ids).toEqual([second, third]);
+
+      // Skill Dependency 与材料原件下载、单题带身份归档、脱敏 DOCX 生成
+      const skillZipPath = join(root, 'skill-dep.zip');
+      const skillDownloaded = await runCommand(['skill-dependency', 'download', '--workflow', question, '--out', skillZipPath], client);
+      expect(skillDownloaded.data).toMatchObject({ path: skillZipPath, bytes: 4, package: 'skill_dependency', submission_performed: false });
+
+      const matOutPath = join(root, 'material.pdf');
+      const matDownloaded = await runCommand(['material', 'download', '--material', second, '--out', matOutPath], client);
+      expect(matDownloaded.data).toEqual({ path: matOutPath, bytes: 4 });
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/materials/${second}/download`);
+
+      await runCommand(['workflow', 'redacted-docx', 'generate', '--workflow', question], client);
+      expect([calls.at(-1)!.url.pathname, calls.at(-1)!.init?.method]).toEqual([`/api/workflows/${question}/redacted-docx`, 'POST']);
+
+      await expect(runCommand(['workflow', 'publish', '--workflow', question, '--task-id', 'T-1'], client)).rejects.toThrow('--task-id 与 --org 须同时提供');
+      await runCommand(['workflow', 'publish', '--workflow', question, '--task-id', 'T-1', '--org', 'OrgA'], client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({ delivery_identity: { task_id: 'T-1', org: 'OrgA' } });
+
+      // 统一 API 模型通道（redact 与 prepare）及互斥校验
+      await runCommand([
+        'library', 'job', 'start',
+        '--revision', question, '--kind', 'redact', '--target', 'local', '--request-key', attempt, '--extraction-job', second,
+        '--api-provider', 'deepseek', '--api-model', 'deepseek-chat', '--api-thinking', 'off',
+      ], client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body)).api_settings).toEqual({
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        enable_thinking: false,
+      });
+
+      await runCommand([
+        'library', 'prepare', 'start',
+        '--revision', question, '--redaction', second, '--request-key', attempt,
+        '--api-settings-file', apiSettingsFile,
+      ], client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body)).api_settings).toEqual({
+        provider: 'openrouter',
+        model: 'z-ai/glm-5.3-flash',
+        enable_thinking: false,
+      });
+      await expect(runCommand([
+        'library', 'prepare', 'start',
+        '--revision', question, '--redaction', second, '--request-key', attempt,
+        '--agent-model', 'gpt-5', '--reasoning-effort', 'medium',
+        '--api-provider', 'deepseek', '--api-model', 'deepseek-chat',
+      ], client)).rejects.toThrow('不能同时提供');
+
+      // 期次材料处理模式与自动汇总
+      const modeRes = await runCommand(['project', 'materials', 'mode', '--project', project], client);
+      expect(modeRes.data.material_processing_mode).toBe('aliases');
+      const summaryRes = await runCommand(['project', 'materials', 'summary', '--project', project], client);
+      expect(summaryRes.data.ready_count).toBe(10);
+      expect(calls.at(-1)!.url.search).toBe('?processing_mode=aliases');
+
+      // 工作流显式恢复与核查命令
+      await runCommand(['workflow', 'material-scope', 'sync', '--workflow', question], client);
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/workflows/${question}/material-scope`);
+      await runCommand(['workflow', 'authoring', 'select', '--workflow', question, '--attempt', attempt, '--expected-latest-attempt', second], client);
+      expect([calls.at(-1)!.url.pathname, JSON.parse(String(calls.at(-1)!.init?.body))]).toEqual([
+        `/api/workflows/${question}/authoring-results/${attempt}/select`,
+        { expected_latest_attempt_id: second },
+      ]);
+      await runCommand(['workflow', 'answer-score', 'restore', '--workflow', question, '--answer-only'], client);
+      expect([calls.at(-1)!.url.pathname, JSON.parse(String(calls.at(-1)!.init?.body))]).toEqual([
+        `/api/workflows/${question}/answer-score-results/restore`,
+        { answer_only: true },
+      ]);
+      await runCommand(['workflow', 'library-history', '--workflow', question], client);
+      expect(calls.at(-1)!.url.pathname).toBe(`/api/workflows/${question}/library-history`);
+      await runCommand(['workflow', 'deleted-sources', '--project', project, '--ids', `${question},${second}`], client);
+      expect(calls.at(-1)!.url.pathname + calls.at(-1)!.url.search).toBe(`/api/projects/${project}/deleted-question-sources?ids=${question},${second}`);
+
+      await runCommand(['attempt', 'cancel-waiting-score', '--attempt', attempt, '--workflow', question, '--executor', second], client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({ workflow_id: question, executor_id: second });
+      await expect(runCommand(['attempt', 'cancel-stopped-executor', '--attempt', attempt, '--workflow', question, '--executor', second, '--expected-heartbeat', 'null', '--executor-stopped'], client)).rejects.toThrow('--acknowledge-unknown-result');
+      await runCommand(['attempt', 'cancel-stopped-executor', '--attempt', attempt, '--workflow', question, '--executor', second, '--expected-heartbeat', 'null', '--executor-stopped', '--acknowledge-unknown-result'], client);
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({
+        workflow_id: question,
+        executor_id: second,
+        expected_heartbeat_at: null,
+        executor_stopped: true,
+        acknowledge_unknown_result: true,
+      });
+
+      // 系统健康、提示词、监控源与模型目录
+      await runCommand(['system', 'health'], client);
+      expect(calls.at(-1)!.url.pathname).toBe('/api/health');
+      await runCommand(['system', 'prompts', 'show'], client);
+      expect(calls.at(-1)!.url.pathname).toBe('/api/system/step-prompts');
+      await runCommand(['system', 'prompts', 'update', '--file', systemPromptsFile], client);
+      expect([calls.at(-1)!.url.pathname, calls.at(-1)!.init?.method]).toEqual(['/api/system/step-prompts', 'PUT']);
+      await runCommand(['project', 'prompt', 'update', '--project', project, '--ordinal', '4', '--file', promptFile, '--expected-prompt-file', expectedPromptFile], client);
+      expect([calls.at(-1)!.url.pathname, JSON.parse(String(calls.at(-1)!.init?.body))]).toEqual([
+        `/api/projects/${project}/steps/4/prompt`,
+        { prompt: '更新后的主项目步骤提示词', expected_prompt: '旧提示词' },
+      ]);
+      await runCommand(['models', 'api-catalog'], client);
+      expect(calls.at(-1)!.url.pathname).toBe('/api/llm-api/models');
+      await runCommand(['models', 'register', '--file', modelFile], client);
+      expect([calls.at(-1)!.url.pathname, calls.at(-1)!.init?.method]).toEqual(['/api/answer-models', 'POST']);
+      await runCommand(['models', 'toggle', '--model-id', second, '--enabled', 'false'], client);
+      expect([calls.at(-1)!.url.pathname, JSON.parse(String(calls.at(-1)!.init?.body))]).toEqual([`/api/answer-models/${second}`, { enabled: false }]);
+      await runCommand(['monitor', 'sources'], client);
+      expect(calls.at(-1)!.url.pathname).toBe('/api/monitor-sources');
+      await runCommand(['monitor', 'show', '--source', 'local'], client);
+      expect(calls.at(-1)!.url.pathname + calls.at(-1)!.url.search).toBe('/api/monitor?source=local');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

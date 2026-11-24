@@ -5,8 +5,10 @@
 
 | 目录 | 内容 |
 | --- | --- |
-| [`runtime/`](runtime/README.md) | 本地服务启动和部署脚本；`package.json` 的 `start:iterm` 直接调用 `runtime/start-iterm.sh` |
-| [`diagnostics/`](diagnostics/README.md) | 只读结构化日志查询等诊断工具 |
+| [`runtime/`](runtime/README.md) | 本地服务启动、期次辅助推进和部署脚本；`package.json` 的 `start:iterm` 直接调用 `runtime/start-iterm.sh` |
+| [`automation/`](automation/README.md) | 特定历史期次（如高经第九期）的全链路材料流水线自动化脚本 |
+| [`diagnostics/`](diagnostics/README.md) | 只读结构化日志查询、OCR 坐标探针与离线实验比对等诊断工具 |
+| [`evaluation/`](evaluation/README.md) | 模型推理档位（如 `low` vs `medium`）离线对比评测脚本（只读数据库，结果写 `.storage/evaluation/`） |
 | [`verification/`](verification/README.md) | 跨项目集成、隔离数据库、模型接口和系统模块验收脚本；按脚本说明确认是否会触发真实 API 或写入证据 |
 
 豆包高经济价值和 Work 法律全场景的项目专用工具分别见[豆包脚本索引](../projects/豆包高经济价值/scripts/README.md)和[Work 脚本索引](../projects/Work法律全场景/scripts/README.md)。

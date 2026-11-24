@@ -4,7 +4,7 @@
  * 使用场景：由工作流 API 调用；不派发 worker 任务或写入步骤、尝试、发布与返修状态。
  */
 import {materialDocxLayout,type MaterialDocxLayout} from '../lifecycle/material-docx';
-import {resolveProjectPath} from '../paths';
+import {resolveProjectPath,storageDirectory} from '../paths';
 import {assertAuthoringMaterialBinding,assertOriginalManifest} from '../publishing/feishu-verification';
 
 import {preparationUnits,validateSelectedMaterialIndex,visiblePreparedDocuments,isHiddenPreparationBlock} from '../../shared/material-preparation-result';
@@ -18,7 +18,7 @@ import {HTTPException} from 'hono/http-exception';
 import {redactionInputDigest} from './redaction-jobs';
 import {REDACTED_DOCX_RENDERER_VERSION,buildDocx,preparedTextDocument,type RedactedDocumentStructure} from '../document-generation/docx';
 import {documentBlocksToText} from './pdf';
-import {readQuestionMaterials} from '../question-materials';
+import {readQuestionMaterials,readQuestionMaterialsWithIndex,type QuestionMaterials} from '../question-materials';
 import {filterEnglishOnlyBlocks,filterEnglishOnlyText} from '../../shared/material-paragraph-filter';
 import {documentBlockFields} from '../../shared/prepared-structure';
 import {readLibraryBlob} from '../material-library/storage';
@@ -46,7 +46,7 @@ type Source={material_id:string;source_sha256:string;artifact_id:string;artifact
 type Original={id:string;original_name:string;storage_path:string;sha256:string;size_bytes:number|string};
 type FileChange={path:string;previous:Buffer|null};
 type IndexedDocument={document:RedactedDocumentStructure;structure_sha256:string};
-type ExportContext={selected_materials?:boolean;preparation_applied?:boolean;workflow_id:string;project_id:string;project_name:string;parent_name:string|null;phase_name:string|null;title:string;source_key:string|null;attempt_id:string|null;redacted_sha256:string;markdown:string;materialMarkdown:Map<string,string>;materialDocuments:Map<string,IndexedDocument>;originals:Original[];material_origin?:import('@shared/material-library').QuestionMaterialOrigin;material_snapshot_digest?:string;material_mode?:'redacted'|'original';prepared_documents?:{id:string;title:string;text:string;duplicate_of?:string|null;document?:RedactedDocumentStructure}[]};
+type ExportContext={question_materials?:QuestionMaterials;selected_materials?:boolean;preparation_applied?:boolean;workflow_id:string;project_id:string;project_name:string;parent_name:string|null;phase_name:string|null;title:string;source_key:string|null;attempt_id:string|null;redacted_sha256:string;markdown:string;materialMarkdown:Map<string,string>;materialDocuments:Map<string,IndexedDocument>;originals:Original[];material_origin?:import('@shared/material-library').QuestionMaterialOrigin;material_snapshot_digest?:string;material_mode?:'redacted'|'original';prepared_documents?:{id:string;title:string;text:string;duplicate_of?:string|null;document?:RedactedDocumentStructure}[]};
 type ManifestMaterial={material_id:string;source_sha256:string;document_sha256:string;docx_artifact_id:string;docx_sha256:string};
 type DocxManifestV1={format:'redacted-docx-manifest-v1';attempt_id:string|null;redacted_sha256:string;renderer_version:string;materials:ManifestMaterial[]};
 type DocxManifestV2={format:'redacted-docx-manifest-v2';attempt_id:null;material_origin:import('@shared/material-library').QuestionMaterialOrigin;snapshot_digest:string;redacted_sha256:string;renderer_version:string;materials:ManifestMaterial[]};
@@ -169,26 +169,33 @@ async function readCurrentSources(db:Pool|PoolClient,workflowId:string):Promise<
  return result.rows as Source[];
 }
 
-/** 复用题目冻结索引校验，供DOCX导出和归档结构传递。 */
-export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:string){
+/** 复用题目冻结索引校验（library_v1直接复用本地快照缓存已校验的parsed_index，不重复跨网下载大JSON），供DOCX导出和归档结构传递。 */
+export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:string,storageRoot?:string){
  const sourceKind=(await db.query(`SELECT p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources s WHERE s.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id WHERE w.id=$1`,[workflowId])).rows[0];
  if(sourceKind?.material_backend==='library_v1'||sourceKind?.has_library_snapshot){
-  const source=await readQuestionMaterials(db,workflowId);
+  const source=await readQuestionMaterialsWithIndex(db,workflowId,storageRoot??storageDirectory());
   if(source.origin.kind!=='library_v1')throw new HTTPException(409,{message:'材料库来源信息无效'});
-  const record=(await db.query('SELECT snapshot_manifest,redaction_id FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0];
-  if(record?.snapshot_manifest?.version===3){
-   const indexArtifact=(await db.query('SELECT content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND attempt_id IS NULL',[workflowId,record.snapshot_manifest.material_index.artifact_id])).rows[0];
-   if(typeof indexArtifact?.content!=='string')throw new HTTPException(409,{message:'选用材料索引缺失'});
-   const index=JSON.parse(indexArtifact.content),prepared_documents=projectPreparedDocuments(validateSelectedMaterialIndex(index,source.attachments[0]!.content));
-   return{attempt_id:null,redacted_sha256:source.attachments[0]!.sha256,markdown:source.attachments[0]!.content,materialMarkdown:new Map<string,string>(),materialDocuments:new Map<string,IndexedDocument>(),material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:source.origin.material_mode,prepared_documents,selected_materials:true};
+  const snapshotManifest=source.snapshot_manifest??(await db.query('SELECT snapshot_manifest FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0]?.snapshot_manifest;
+  if(snapshotManifest?.version===3){
+   let index=source.parsed_index;
+   if(!index){
+    const indexArtifact=(await db.query('SELECT content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND attempt_id IS NULL',[workflowId,snapshotManifest.material_index.artifact_id])).rows[0];
+    if(typeof indexArtifact?.content!=='string')throw new HTTPException(409,{message:'选用材料索引缺失'});
+    index=JSON.parse(indexArtifact.content);
+   }
+   const prepared_documents=projectPreparedDocuments(validateSelectedMaterialIndex(index,source.attachments[0]!.content));
+   return{question_materials:source,attempt_id:null,redacted_sha256:source.attachments[0]!.sha256,markdown:source.attachments[0]!.content,materialMarkdown:new Map<string,string>(),materialDocuments:new Map<string,IndexedDocument>(),material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:source.origin.material_mode,prepared_documents,selected_materials:true};
   }
   if(source.origin.material_mode==='original'){
-   const indexArtifact=(await db.query("SELECT id,content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND kind='source_index' AND attempt_id IS NULL",[workflowId,record?.snapshot_manifest?.material_index?.artifact_id])).rows[0];
-   let index:any;try{if(typeof indexArtifact?.content!=='string')throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库原文结构索引缺失或损坏'});}
-   if(index.format!=='source-index-v1'||!Array.isArray(index.materials)||!Array.isArray(record?.snapshot_manifest?.files)||index.materials.length!==record.snapshot_manifest.files.length)throw new HTTPException(409,{message:'材料库原文索引与冻结来源不匹配'});
+   let index=source.parsed_index;
+   if(!index){
+    const indexArtifact=(await db.query("SELECT id,content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND kind='source_index' AND attempt_id IS NULL",[workflowId,snapshotManifest?.material_index?.artifact_id])).rows[0];
+    try{if(typeof indexArtifact?.content!=='string')throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库原文结构索引缺失或损坏'});}
+   }
+   if(index.format!=='source-index-v1'||!Array.isArray(index.materials)||!Array.isArray(snapshotManifest?.files)||index.materials.length!==snapshotManifest.files.length)throw new HTTPException(409,{message:'材料库原文索引与冻结来源不匹配'});
    const materialMarkdown=new Map<string,string>(),materialDocuments=new Map<string,IndexedDocument>();
    for(const [position,item] of index.materials.entries()){
-    const file=record.snapshot_manifest.files[position];
+    const file=snapshotManifest.files[position];
     if(typeof item?.material_id!=='string'||item.material_id!==file?.material_id||typeof item.markdown!=='string'||!item.document||item.document.version!==1||!Array.isArray(item.document.pages)||materialMarkdown.has(item.material_id))throw new HTTPException(409,{message:'材料库原文附件或MinerU结构无效'});
     const pages=item.document.pages.map((page:any)=>{if(!Number.isSafeInteger(page.page)||!Array.isArray(page.structure))throw new HTTPException(409,{message:'材料库原文页面结构无效'});return{page:page.page,blocks:page.structure,...(Array.isArray(page.issues)&&page.issues.length?{issues:page.issues}:{})};});
     const document:RedactedDocumentStructure={format:'redacted-structure-v1',pages};
@@ -196,14 +203,17 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
     if(projected!==item.markdown)throw new HTTPException(409,{message:'材料库原文结构与正文投影不一致'});
     materialMarkdown.set(item.material_id,item.markdown);materialDocuments.set(item.material_id,{document,structure_sha256:digest(JSON.stringify(document))});
    }
-   const sources=record.snapshot_manifest.files.map((file:any)=>String(file.material_id));
+   const sources=snapshotManifest.files.map((file:any)=>String(file.material_id));
    if(sources.some((id:string)=>!materialDocuments.has(id)))throw new HTTPException(409,{message:'材料库原文索引缺少附件结构'});
-   const projection=preparationDocxProjection(record.snapshot_manifest,index);
-   return{attempt_id:null,redacted_sha256:source.attachments[0]?.sha256??'',markdown:source.attachments[0]?.content??'',materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'original' as const,...projection};
+   const projection=preparationDocxProjection(snapshotManifest,index);
+   return{question_materials:source,attempt_id:null,redacted_sha256:source.attachments[0]?.sha256??'',markdown:source.attachments[0]?.content??'',materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'original' as const,...projection};
   }
-  const indexArtifact=(await db.query('SELECT id,content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND kind=\'redacted_index\' AND attempt_id IS NULL',[workflowId,(record?.snapshot_manifest?.material_index??record?.snapshot_manifest?.redacted_index)?.artifact_id])).rows[0];
-  let index:any;try{if(typeof indexArtifact?.content!=='string')throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库脱敏索引缺失或损坏'});}
-  if(index.format!=='redacted-index-v2'||!Array.isArray(index.materials)||!Array.isArray(record?.snapshot_manifest?.files))throw new HTTPException(409,{message:'材料库脱敏索引与冻结来源不匹配'});
+  let index=source.parsed_index;
+  if(!index){
+   const indexArtifact=(await db.query('SELECT id,content,sha256 FROM ai_distill.artifacts WHERE workflow_id=$1 AND id=$2 AND kind=\'redacted_index\' AND attempt_id IS NULL',[workflowId,(snapshotManifest?.material_index??snapshotManifest?.redacted_index)?.artifact_id])).rows[0];
+   try{if(typeof indexArtifact?.content!=='string')throw new Error('invalid index');index=JSON.parse(indexArtifact.content);}catch{throw new HTTPException(409,{message:'材料库脱敏索引缺失或损坏'});}
+  }
+  if(index.format!=='redacted-index-v2'||!Array.isArray(index.materials)||!Array.isArray(snapshotManifest?.files))throw new HTTPException(409,{message:'材料库脱敏索引与冻结来源不匹配'});
   const materialMarkdown=new Map<string,string>(),materialDocuments=new Map<string,IndexedDocument>();
   for(const item of index.materials){
    if(typeof item?.material_id!=='string'||typeof item.markdown!=='string'||materialMarkdown.has(item.material_id))throw new HTTPException(409,{message:'材料库脱敏附件正文缺失或重复'});
@@ -216,11 +226,11 @@ export async function readCurrentRedactionForDocx(db:Pool|PoolClient,workflowId:
     materialDocuments.set(item.material_id,{document,structure_sha256});
    }
   }
-  const sources=record.snapshot_manifest.files.map((file:any)=>({material_id:String(file.material_id),source_sha256:String(file.source_sha256)}));
+  const sources=snapshotManifest.files.map((file:any)=>({material_id:String(file.material_id),source_sha256:String(file.source_sha256)}));
   if(sources.length!==index.materials.length||sources.some((item:any)=>!materialMarkdown.has(item.material_id)||!materialDocuments.has(item.material_id)))throw new HTTPException(409,{message:'材料库脱敏索引缺少附件或文档结构'});
-  const projection=preparationDocxProjection(record.snapshot_manifest,index);
+  const projection=preparationDocxProjection(snapshotManifest,index);
   const prepared_documents=projection.applied?projection.prepared_documents:projectPreparedDocuments(index.prepared_documents);
-  return{attempt_id:null,redacted_sha256:source.attachments[0]!.sha256,markdown:source.attachments[0]!.content,materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'redacted' as const,preparation_applied:projection.applied,prepared_documents};
+  return{question_materials:source,attempt_id:null,redacted_sha256:source.attachments[0]!.sha256,markdown:source.attachments[0]!.content,materialMarkdown,materialDocuments,material_origin:source.origin,material_snapshot_digest:source.origin.snapshot_digest,material_mode:'redacted' as const,preparation_applied:projection.applied,prepared_documents};
  }
  const step=(await db.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=9',[workflowId])).rows[0];
  const row=(await db.query("SELECT a.id,a.status,a.input,a.result,ar.id AS artifact_id,ar.content,ar.sha256 FROM ai_distill.step_attempts a JOIN ai_distill.artifacts ar ON ar.workflow_id=a.workflow_id AND ar.attempt_id=a.id AND ar.kind='redacted_markdown' WHERE a.workflow_id=$1 AND a.ordinal=9 ORDER BY a.attempt DESC LIMIT 1",[workflowId])).rows[0];
@@ -310,27 +320,27 @@ export function planMaterialDocxExports(sections:ReadonlyArray<{id:string;title:
  return sections.map((section,index)=>({...section,filename:preparedDocxFilename(section,index)}));
 }
 
-async function contextForExport(db:Pool|PoolClient,workflowId:string):Promise<ExportContext>{
+async function contextForExport(db:Pool|PoolClient,workflowId:string,storageRoot?:string):Promise<ExportContext>{
  const workflow=(await db.query('SELECT w.id AS workflow_id,w.project_id,w.title,w.source_key,w.workflow_kind,p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources s WHERE s.workflow_id=w.id) AS has_library_snapshot,p.name AS project_name,p.parent_name,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL FOR UPDATE OF w',[workflowId])).rows[0];
  if(!workflow)throw new HTTPException(404,{message:'工作流不存在'});
  // 材料导出独立于出题、评分、达标与归档；冻结来源校验仍由下方读取器负责。
- const redaction=await readCurrentRedactionForDocx(db,workflowId);
+ const redaction=await readCurrentRedactionForDocx(db,workflowId,storageRoot);
  if(typeof workflow.project_name!=='string'||typeof workflow.title!=='string')throw new HTTPException(409,{message:'项目或题目名称不完整'});
  const originals=(await db.query('SELECT id,original_name,storage_path,sha256,size_bytes FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL ORDER BY created_at,id',[workflowId])).rows as Original[];
  if(!originals.length)throw new HTTPException(409,{message:'当前题目没有可归档附件'});
  return{...workflow,project_name:workflow.project_name,parent_name:workflow.parent_name??workflow.project_name,phase_name:workflow.phase_name??null,title:workflow.title,...redaction,originals};
 }
 
-/** 按项目布局导出逐文书或合并DOCX，使用题目冻结来源；不改变工作流步骤。 */
+/** 按项目布局导出逐文书或合并DOCX，使用题目冻结来源；不改变工作流步骤。直接随返回值附带已核验内存 files 供交付复用。 */
 export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,storageRoot:string,projectExportsRoot:string,expectedMode?:'redacted'|'original',options:{allowPublicationInProgress?:boolean;expectedAuthoringInput?:unknown;deliveryLayout?:'combined'}={}){
  const db=await pool.connect();let tx=false;const changes:FileChange[]=[];
  try{
   await db.query('BEGIN');tx=true;
-  const context=await contextForExport(db,workflowId);
+  const context=await contextForExport(db,workflowId,storageRoot);
   let verifiedOriginals=new Map<string,Buffer>();
   // 飞书交付必须与有效出题尝试使用同一来源；普通材料导出仍可在出题前使用。
   if(options.expectedAuthoringInput){
-   const source=await readQuestionMaterials(db,workflowId);
+   const source=context.question_materials??await readQuestionMaterials(db,workflowId,storageRoot);
    assertAuthoringMaterialBinding(options.expectedAuthoringInput,source);
    if(source.origin.kind==='library_v1'){
     verifiedOriginals=await verifyLibraryOriginalManifest(db,workflowId,context.originals,storageRoot);
@@ -352,6 +362,7 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
    try{if(typeof row.content!=='string'||digest(row.content)!==row.sha256)continue;const parsed=JSON.parse(row.content);if(['redacted-docx-manifest-v1','redacted-docx-manifest-v2','material-docx-manifest-v3'].includes(parsed?.format)&&Array.isArray(parsed.materials)){priorManifest=parsed as DocxManifest;break;}}catch(error){if(error instanceof SyntaxError)continue;continue;}
   }
   const artifacts:{artifact_id:string;material_id:string;filename:string;sha256:string;reused:boolean}[]=[];
+  const exportedFiles:{bytes:Buffer;filename:string}[]=[];
   const manifestMaterials:ManifestMaterial[]=[];
   for(const material of context.originals){
    let bytes:Buffer;
@@ -384,25 +395,31 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
    const sourceDigest=priorManifest&&'source_sha256'in priorManifest?priorManifest.source_sha256:priorManifest?.redacted_sha256;
    const manifestMaterial=priorManifest?.materials.find(item=>(current?item.docx_artifact_id===String(current.id)&&item.material_id===material.id&&item.document_sha256===document_sha256:item.material_id===material.id&&item.document_sha256===document_sha256)),manifestMatches=priorSourceMatches&&sourceDigest===context.redacted_sha256&&priorManifest?.renderer_version===REDACTED_DOCX_RENDERER_VERSION&&manifestMaterial?.source_sha256===material.sha256&&manifestMaterial?.document_sha256===document_sha256&&manifestMaterial?.docx_artifact_id===current?.id&&manifestMaterial?.docx_sha256===current?.sha256;
    if(current?.attempt_id===context.attempt_id&&current.storage_path===storagePath&&manifestMatches){
-    try{const existing=await readSafeFile(projectExportsRoot,storagePath);if(digest(existing)===current.sha256){artifacts.push({artifact_id:String(current.id),material_id:material.id,filename,sha256:current.sha256,reused:true});manifestMaterials.push({material_id:material.id,source_sha256:material.sha256,document_sha256,docx_artifact_id:String(current.id),docx_sha256:current.sha256});continue;}}catch(error){if(!(error instanceof HTTPException&&error.status===404))throw error;}
+    try{const existing=await readSafeFile(projectExportsRoot,storagePath);if(digest(existing)===current.sha256){artifacts.push({artifact_id:String(current.id),material_id:material.id,filename,sha256:current.sha256,reused:true});exportedFiles.push({bytes:existing,filename});manifestMaterials.push({material_id:material.id,source_sha256:material.sha256,document_sha256,docx_artifact_id:String(current.id),docx_sha256:current.sha256});continue;}}catch(error){if(!(error instanceof HTTPException&&error.status===404))throw error;}
    }
-   const docx=await buildDocx(filterMaterialDocxSource(document?.document??context.materialMarkdown.get(material.id)!),{materialMath:true}),sha256=digest(docx);
+   const docx=Buffer.from(await buildDocx(filterMaterialDocxSource(document?.document??context.materialMarkdown.get(material.id)!),{materialMath:true})),sha256=digest(docx);
    await installFile(docxPath,docx,sha256,changes);
    const artifactId=current?String(current.id):randomUUID();
    if(current)await db.query('UPDATE ai_distill.artifacts SET attempt_id=$2,storage_path=$3,sha256=$4,size_bytes=$5,content=NULL,created_at=now() WHERE id=$1',[artifactId,context.attempt_id,storagePath,sha256,docx.byteLength]);
    else await db.query("INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content,material_id) VALUES($1,$2,$3,$4,$5,$6,$7,NULL,$8)",[artifactId,workflowId,context.attempt_id,artifactKind,storagePath,sha256,docx.byteLength,material.id]);
    artifacts.push({artifact_id:artifactId,material_id:material.id,filename,sha256,reused:false});
+   exportedFiles.push({bytes:docx,filename});
    manifestMaterials.push({material_id:material.id,source_sha256:material.sha256,document_sha256,docx_artifact_id:artifactId,docx_sha256:sha256});
   }
+  const allReused=artifacts.length>0&&artifacts.every(artifact=>artifact.reused);
   const manifest:DocxManifest=context.material_origin?.kind==='library_v1'
    ?{format:'material-docx-manifest-v3',attempt_id:null,material_origin:context.material_origin,snapshot_digest:context.material_snapshot_digest!,material_mode:materialMode,source_sha256:context.redacted_sha256,renderer_version:REDACTED_DOCX_RENDERER_VERSION,materials:manifestMaterials}
    :{format:'redacted-docx-manifest-v1',attempt_id:context.attempt_id,redacted_sha256:context.redacted_sha256,renderer_version:REDACTED_DOCX_RENDERER_VERSION,materials:manifestMaterials};
   const manifestContent=JSON.stringify(manifest),manifestSha256=digest(manifestContent),manifestFilename=context.material_origin?.kind==='library_v1'?'material-docx-manifest.json':'redacted-docx-manifest.json',manifestPath=join(dirname(location.docxPath),manifestFilename),manifestStoragePath=location.storagePath.replace(/[^/]+$/,manifestFilename),currentManifestRow=priorManifestRows.find(row=>row.content===manifestContent),manifestArtifactId=currentManifestRow?String(currentManifestRow.id):priorManifestRows[0]?String(priorManifestRows[0].id):randomUUID();
   await installFile(manifestPath,Buffer.from(manifestContent),manifestSha256,changes);
-  if(priorManifestRows.length)await db.query('UPDATE ai_distill.artifacts SET attempt_id=$2,storage_path=$3,sha256=$4,size_bytes=$5,content=$6,material_id=NULL,created_at=now() WHERE id=$1',[manifestArtifactId,context.attempt_id,manifestStoragePath,manifestSha256,Buffer.byteLength(manifestContent),manifestContent]);
-  else await db.query("INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content,material_id) VALUES($1,$2,$3,'redacted_docx_manifest',$4,$5,$6,$7,NULL)",[manifestArtifactId,workflowId,context.attempt_id,manifestStoragePath,manifestSha256,Buffer.byteLength(manifestContent),manifestContent]);
-  await db.query("DELETE FROM ai_distill.artifacts WHERE workflow_id=$1 AND kind IN ('redacted_docx','original_docx') AND NOT(id=ANY($2::uuid[]))",[workflowId,artifacts.map(artifact=>artifact.artifact_id)]);
-  await db.query("DELETE FROM ai_distill.artifacts WHERE workflow_id=$1 AND kind='redacted_docx_manifest' AND id<>$2",[workflowId,manifestArtifactId]);
+  // 若全部DOCX与唯一manifest行均完全一致，跳过无变更UPDATE/DELETE往返以缩短远端事务耗时。
+  const skipManifestDbWrites=allReused&&Boolean(currentManifestRow)&&priorManifestRows.length===1&&prior.length===artifacts.length;
+  if(!skipManifestDbWrites){
+   if(priorManifestRows.length)await db.query('UPDATE ai_distill.artifacts SET attempt_id=$2,storage_path=$3,sha256=$4,size_bytes=$5,content=$6,material_id=NULL,created_at=now() WHERE id=$1',[manifestArtifactId,context.attempt_id,manifestStoragePath,manifestSha256,Buffer.byteLength(manifestContent),manifestContent]);
+   else await db.query("INSERT INTO ai_distill.artifacts(id,workflow_id,attempt_id,kind,storage_path,sha256,size_bytes,content,material_id) VALUES($1,$2,$3,'redacted_docx_manifest',$4,$5,$6,$7,NULL)",[manifestArtifactId,workflowId,context.attempt_id,manifestStoragePath,manifestSha256,Buffer.byteLength(manifestContent),manifestContent]);
+   await db.query("DELETE FROM ai_distill.artifacts WHERE workflow_id=$1 AND kind IN ('redacted_docx','original_docx') AND NOT(id=ANY($2::uuid[]))",[workflowId,artifacts.map(artifact=>artifact.artifact_id)]);
+   await db.query("DELETE FROM ai_distill.artifacts WHERE workflow_id=$1 AND kind='redacted_docx_manifest' AND id<>$2",[workflowId,manifestArtifactId]);
+  }
   await db.query('COMMIT');tx=false;
   const oldQuestionDirs=new Set<string>();
   for(const artifact of prior){
@@ -418,7 +435,7 @@ export async function exportCurrentMaterialDocx(pool:Pool,workflowId:string,stor
     catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')console.error('旧版附件库目录清理失败，请手动核对');}
    }
   }catch{console.error('旧版附件库目录清理失败，请手动核对');}
-  return{...artifacts[0]!,artifacts,reused:artifacts.every(artifact=>artifact.reused),archive_path:location.archivePath};
+  return{...artifacts[0]!,artifacts,files:exportedFiles,reused:allReused,archive_path:location.archivePath};
  }catch(error){
   if(tx)try{await db.query('ROLLBACK');tx=false;}catch{console.error('DOCX导出索引事务回滚失败');}
   try{await restoreFiles(changes);}catch{console.error('附件库导出失败后文件恢复失败');}
@@ -465,7 +482,7 @@ export const readCurrentRedactedDocx=readCurrentMaterialDocx;
 /** 原文题目按冻结整理决定生成独立图文版；不改变现有纯文本DOCX及其artifact。 */
 export async function buildCurrentMaterialImageDocx(pool:Pool,workflowId:string,storageRoot:string,previewPreparationId?:string){
  // 默认使用题目快照；显式预览只替换整理结果，并校验版本、来源摘要和项目，绝不回写冻结快照。
- const context=await contextForExport(pool,workflowId);
+ const context=await contextForExport(pool,workflowId,storageRoot);
  if(context.material_origin?.kind!=='library_v1'||context.material_mode!=='original')throw new HTTPException(409,{message:'图文版仅支持冻结原文的材料库题目'});
  const row=(await pool.query('SELECT snapshot_manifest FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0];
  const manifest=row?.snapshot_manifest;let scope=manifest?.material_scope;

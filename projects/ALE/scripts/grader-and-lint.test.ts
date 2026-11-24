@@ -9,7 +9,7 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,7 +127,10 @@ assert approx_equal(pert_v, round(200000 * 0.154 * 37 / 365, 2), abs_tol=1e-6)
 assert delta_v > 1500
 print("ALL_PYTHON_ASSERTIONS_PASSED")
 `;
-      const proc = spawnSync('python3', ['-c', pyTestScript], { encoding: 'utf8' });
+      const proc = spawnSync('python3', ['-c', pyTestScript], {
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+      });
       expect(proc.status).toBe(0);
       expect(proc.stdout).toContain('ALL_PYTHON_ASSERTIONS_PASSED');
     } finally {
@@ -149,6 +152,14 @@ print("ALL_PYTHON_ASSERTIONS_PASSED")
         '| 建议入账口径 | 【按生效裁判口径登记】。详见第3节关于前手台账冲突之说明。 | 附件1第71页生效证明书 | - |',
         '',
         '补充意见：本项目不予采纳“按前手草稿全额计提”，而应采纳“按终本回款冲抵后余额列示”执行。',
+        '',
+        '## 签批结论',
+        '',
+        '☐ 同意报价    ☒ 调价复议    ☐ 暂缓收购',
+        '',
+        '| 指标 | 金额 | 报价判断 |',
+        '| --- | --- | --- |',
+        '| 腾徽基准分配额 | 20,560.45 | 仅基准情景达到目标 |',
       ].join('\n');
       await writeFile(docxPath, await buildDocx(mdContent, { style: 'legal' }));
 
@@ -162,9 +173,14 @@ assert doc.extract_key_number("核定有效本金") == 1250000.0
 assert doc.extract_key_number("基准日应付利息") == 184320.55
 assert doc.extract_enum_choice("建议入账口径", ["按生效裁判口径登记", "按前手送审口径登记"]) == "按生效裁判口径登记"
 assert doc.extract_enum_choice("补充意见", ["按前手草稿全额计提", "按终本回款冲抵后余额列示"]) == "按终本回款冲抵后余额列示"
+assert doc.extract_enum_choice("签批结论", ["同意报价", "调价复议", "暂缓收购"]) == "调价复议"
+assert doc.extract_enum_choice("报价判断", ["两情景均达到目标", "仅基准情景达到目标", "两情景均低于目标"]) == "仅基准情景达到目标"
 print("DOCX_OK")
 `;
-      const proc = spawnSync('python3', ['-c', pyScript], { encoding: 'utf8' });
+      const proc = spawnSync('python3', ['-c', pyScript], {
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+      });
       expect(proc.status).toBe(0);
       expect(proc.stdout).toContain('DOCX_OK');
     } finally {
@@ -522,6 +538,34 @@ wb2.save(p_bad)
       // 预检同步通过
       const pre = await preflightTask(res.task_dir, 'gpt-6.1-sol');
       expect(pre.input_files).toEqual(['附件1.txt']);
+
+      // 确定性 DOCX 构建与 .docx 输入契约解析验证（同内容跨时区/多次生成 SHA-256 严格一致，拒绝写纯文本入 .docx）
+      const { buildDeterministicAleMaterialDocx, resolveAleInputMaterials } = await import('./docx-material');
+      const { sha256Hex: hashHex } = await import('./contracts');
+      const docxA = await buildDeterministicAleMaterialDocx({ text: inputText });
+      const docxB = await buildDeterministicAleMaterialDocx({ text: inputText });
+      expect(Buffer.from(docxA).subarray(0, 4).toString('binary')).toBe('PK\x03\x04');
+      expect(hashHex(docxA)).toBe(hashHex(docxB));
+
+      const resolvedDocx = await resolveAleInputMaterials(
+        [{ path: 'environment/input/附件1.docx', sha256: hashHex(docxA) }],
+        [{ id: 'm1', sha256: inputSha, text: inputText }],
+      );
+      expect(resolvedDocx.length).toBe(1);
+      expect(resolvedDocx[0]!.name).toBe('附件1.docx');
+      expect(resolvedDocx[0]!.bytes).toBeDefined();
+      expect(hashHex(resolvedDocx[0]!.bytes!)).toBe(hashHex(docxA));
+
+      // 写入损坏非 DOCX 内容进 附件1.docx 时，preflightTask 立即以格式阻断
+      const brokenDir = join(tmp, 'broken-docx');
+      await mkdir(join(brokenDir, 'environment', 'input'), { recursive: true });
+      await writeFile(join(brokenDir, 'instruction.md'), '请读取 `/workspace/input/附件1.docx`\n', 'utf8');
+      await writeFile(join(brokenDir, 'task_card.json'), JSON.stringify({ task_id: 'T1', deliverables_contract: [] }), 'utf8');
+      await writeFile(join(brokenDir, 'environment', 'env.json'), JSON.stringify({ timeout_sec: 60 }), 'utf8');
+      await writeFile(join(brokenDir, 'environment', 'reset.sh'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await writeFile(join(brokenDir, 'environment', 'input', '附件1.docx'), 'plain text fake docx', 'utf8');
+      const brokenPre = await preflightTask(brokenDir, 'gpt-6.1-sol');
+      expect(brokenPre.blockers.some((b) => b.includes('不是合法的 DOCX ZIP 二进制文件'))).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

@@ -13,7 +13,7 @@ export function startBatchWorker(
   onQueued: () => void,
   signal: AbortSignal
 ) {
-  const delivery = Number(process.env.BATCH_DELIVERY_CONCURRENCY ?? 1);
+  const delivery = Number(process.env.BATCH_DELIVERY_CONCURRENCY ?? 4);
   if (!Number.isInteger(delivery) || delivery < 1 || delivery > 32) throw new RangeError('交付并发须为 1 至 32');
   let stopped = false;
   const wake = () => {

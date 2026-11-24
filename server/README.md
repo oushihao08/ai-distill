@@ -21,6 +21,10 @@ Bun/Hono 提供本地 HTTP API，PostgreSQL 保存业务意图、执行归属和
 | [agent/](agent/README.md)、[codex/](codex/README.md)、[antigravity/](antigravity/README.md) | 本地 Agent 任务契约、共用 CLI 进程/沙箱底座（`agent/cli-runtime.ts`）、注册驱动判断（`isRegisteredAgentProvider()`）及底层 Codex / Antigravity CLI 适配；作者和盲作答/评分使用不同隔离策略 |
 | [llm-api/](llm-api/README.md) | API配置、凭证、JSON/SSE共用的消息字段拒绝规则及本机请求槽位；model返回值未知时为null |
 | [skill-generation/](skill-generation/README.md) | 项目规则生成候选 Skill、来源校验与采用 |
+| [execution-queue/](execution-queue/README.md) | 每机独立 SQLite 执行队列（`agent`/`api`/`web`/`internal`）、容量门控、跨机认领与故障对账 |
+| [custom-steps/](custom-steps/README.md) | 项目级隔离定制步骤插座（独立表 `custom_step_runs`、前后置关卡与单槽位滑动窗口子运行） |
+| [lifecycle/](lifecycle/README.md) | 主项目键解析、同步可插拔步骤后置增强与基线契约 |
+| [web-agent/](web-agent/README.md)、[web-executors/](web-executors/README.md) | 浏览器 CDP 会话适配（DeepSeek/Gemini/Fake）与网页对话内校验执行器 |
 | [batch-dispatch/](batch-dispatch/README.md) | 本机清单、事件、依赖放行、加权派发和分项进度 API |
 | [monitoring/](monitoring/README.md) | 本机资源、worker、活动尝试和安全队列状态 |
 

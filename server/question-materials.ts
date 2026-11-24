@@ -21,6 +21,7 @@ type MaterialArtifact={id:string;kind:string;attempt_id:string|null;sha256:strin
 type SnapshotArtifact=Omit<MaterialArtifact,'content'>&{content?:string|null;storage_path?:string;size_bytes?:number|string};
 export interface QuestionMaterialAttachment {id:string;sha256:string;content:string;source_names:string[];attempt_id:string|null}
 export interface QuestionMaterials {origin:QuestionMaterialOrigin;attachments:QuestionMaterialAttachment[];digest:string;model_attachments?:QuestionMaterialAttachment[];material_scope?:{preparation_id:string;result:import('../shared/material-preparation-result').MaterialPreparationResult}}
+export interface QuestionMaterialsWithIndex extends QuestionMaterials {snapshot_manifest?:any;parsed_index?:any}
 
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const conflict=(message:string)=>new HTTPException(409,{message});
@@ -98,7 +99,7 @@ async function cacheSnapshot(root:string,workflowId:string,artifact:SnapshotArti
  }
 }
 
-async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise<QuestionMaterials>{
+async function readLibraryMaterials(db:Db,workflowId:string,root:string,includeIndex=false):Promise<QuestionMaterialsWithIndex>{
  const started=performance.now();
  const row=(await db.query(`SELECT project_id,package_id,revision_id,redaction_id,material_mode,source_digest,snapshot_manifest,snapshot_digest,markdown_artifact_id,index_artifact_id
   FROM ai_distill.question_library_sources WHERE workflow_id=$1`,[workflowId])).rows[0];
@@ -175,24 +176,35 @@ async function readLibraryMaterials(db:Db,workflowId:string,root:string):Promise
  const attachment:QuestionMaterialAttachment={id:markdown.id,sha256:markdown.sha256,content:markdown.content,source_names:manifest.files.map((file:any)=>String(file.original_name??'')).filter(Boolean),attempt_id:null};
  const prepared=manifest.material_scope?.result?.format==='material-preparation-v2'&&typeof manifest.material_scope.preparation_id==='string'
   ?{preparation_id:String(manifest.material_scope.preparation_id),result:manifest.material_scope.result as import('../shared/material-preparation-result').MaterialPreparationResult}:undefined;
+ const extra=includeIndex?{snapshot_manifest:manifest,parsed_index:parsedIndex}:{};
  if(!prepared){
   const docs=preparationUnits(parsedIndex).map(unit=>({id:unit.id,title:unit.title,text:'',document:{format:'redacted-structure-v1' as const,pages:unit.pages},source_refs:unit.source_refs??[]}));
-  if(!docs.length)return{origin,attachments:[attachment],digest:String(row.snapshot_digest)};
+  if(!docs.length)return{origin,attachments:[attachment],digest:String(row.snapshot_digest),...extra};
   const content=renderPreparationDocuments(docs);
-  return{origin,attachments:[attachment],model_attachments:content.trim()?[{...attachment,content,sha256:hash(content)}]:[],digest:String(row.snapshot_digest)};
+  return{origin,attachments:[attachment],model_attachments:content.trim()?[{...attachment,content,sha256:hash(content)}]:[],digest:String(row.snapshot_digest),...extra};
  }
  // 隐藏文书不进入出题、作答和评分的模型正文，与材料DOCX交付同一可见范围；冻结来源附件仍保留完整正文用于来源绑定。
  const modelDocuments=visiblePreparedDocuments(prepared.result,preparationUnits(parsedIndex));
  const content=renderPreparationDocuments(modelDocuments);
  const modelAttachment:QuestionMaterialAttachment={...attachment,sha256:hash(content),content};
- return{origin,attachments:[attachment],model_attachments:[...(content.trim()?[modelAttachment]:[])],digest:String(row.snapshot_digest),material_scope:{preparation_id:prepared.preparation_id,result:visiblePreparationContext(prepared.result)}};
+ return{origin,attachments:[attachment],model_attachments:[...(content.trim()?[modelAttachment]:[])],digest:String(row.snapshot_digest),material_scope:{preparation_id:prepared.preparation_id,result:visiblePreparationContext(prepared.result)},...extra};
 }
 
 export async function readQuestionMaterials(db:Db,workflowId:string,root=storageDirectory()):Promise<QuestionMaterials>{
  const row=(await db.query(`SELECT p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources s WHERE s.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w
   JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL`,[workflowId])).rows[0];
  if(!row)throw new HTTPException(404,{message:'工作流不存在'});
- if(row.material_backend==='library_v1'||row.has_library_snapshot)return readLibraryMaterials(db,workflowId,root);
+ if(row.material_backend==='library_v1'||row.has_library_snapshot)return readLibraryMaterials(db,workflowId,root,false);
+ if(row.material_backend!=='legacy')throw conflict('题目材料后端无效');
+ return readLegacyMaterials(db,workflowId);
+}
+
+/** 供材料DOCX导出与飞书交付复用已由本地快照缓存核验过的 snapshot_manifest 与 parsed_index，避免二次跨网下载多MB索引。 */
+export async function readQuestionMaterialsWithIndex(db:Db,workflowId:string,root=storageDirectory()):Promise<QuestionMaterialsWithIndex>{
+ const row=(await db.query(`SELECT p.material_backend,EXISTS(SELECT 1 FROM ai_distill.question_library_sources s WHERE s.workflow_id=w.id) AS has_library_snapshot FROM ai_distill.workflows w
+  JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL`,[workflowId])).rows[0];
+ if(!row)throw new HTTPException(404,{message:'工作流不存在'});
+ if(row.material_backend==='library_v1'||row.has_library_snapshot)return readLibraryMaterials(db,workflowId,root,true);
  if(row.material_backend!=='legacy')throw conflict('题目材料后端无效');
  return readLegacyMaterials(db,workflowId);
 }

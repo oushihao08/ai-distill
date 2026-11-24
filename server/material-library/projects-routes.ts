@@ -39,9 +39,10 @@ export function registerProjectLibraryRoutes(app:Hono,pool:Pool,storageRoot:stri
   const phaseId=uuid(c.req.param('id'));
   const query=c.req.query('q')??'',page=Number(c.req.query('page')??1),pageSize=Number(c.req.query('page_size')??30);
   const sourceMode=c.req.query('source_mode')??'any';if(!['any','redacted','original'].includes(sourceMode))throw new HTTPException(400,{message:'材料来源模式无效'});
+  const preparationState=c.req.query('preparation_state')??'all';if(!['all','ready','not_ready'].includes(preparationState))throw new HTTPException(400,{message:'整理状态无效'});
   const [phaseResult,catalog]=await Promise.all([
    pool.query('SELECT project_group_id FROM ai_distill.projects WHERE id=$1 AND deleted_at IS NULL',[phaseId]),
-   readLibraryPackages(pool,{q:query,page,page_size:pageSize,usage_project_id:phaseId,source_mode:sourceMode as 'any'|'redacted'|'original'}),
+   readLibraryPackages(pool,{q:query,page,page_size:pageSize,usage_project_id:phaseId,source_mode:sourceMode as 'any'|'redacted'|'original',preparation_state:preparationState}),
   ]);
   const phase=phaseResult.rows[0];
   if(!phase)throw new HTTPException(404,{message:'期次不存在'});

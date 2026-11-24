@@ -93,3 +93,19 @@ test('使用事件按记录读取且拒绝跨期/不存在的使用记录',async
  expect(missing.status).toBe(404);
  expect(statements.some(sql=>sql.includes('project_material_use_events'))).toBe(true);
 });
+
+test('候选材料支持按 preparation_state=ready 服务端下推过滤已整理材料包',async()=>{
+ const statements:string[]=[];
+ const app=appWith((sql)=>{
+  statements.push(sql);
+  if(sql.startsWith('SELECT project_group_id FROM ai_distill.projects'))return{rows:[{project_group_id:null}],rowCount:1};
+  if(sql.includes('to_regclass(\'ai_distill.library_preparations\')'))return{rows:[{available:true}],rowCount:1};
+  if(sql.includes('SELECT p.id,p.name,p.description'))return{rows:[{id:packageId,name:'已整理材料包',available_redaction_count:1,total_count:1}],rowCount:1};
+  return undefined;
+ });
+ const response=await app.request(`/api/projects/${phaseId}/material-candidates?source_mode=redacted&preparation_state=ready&page_size=20`);
+ expect(response.status).toBe(200);
+ const catalogSql=statements.find(sql=>sql.includes('SELECT p.id,p.name,p.description'))!;
+ expect(catalogSql).toContain('ai_distill.library_preparations');
+ expect(catalogSql).toContain('material-preparation-v2');
+});

@@ -3,11 +3,15 @@
  * 验证边界：各档位（sample_3 / sample_5 / formal_8plus1 / custom）的 8+3 同发、两波回退、早停撤单、示范先过等待标定完结及首波全败自动补发第二波。
  */
 import { describe, expect, test } from 'bun:test';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   MAX_ALLOWED_PARALLEL_SUBRUNS,
   validateRepairEvaluationJson,
   type RecordedSubRun,
 } from '../../../server/custom-steps/contract';
+import { verifyTaskDirectory } from '../scripts/verify-task';
 import { buildAleCalibrationRepairEvaluation, planAleCalibrationSubRuns, resolveAleCalibrationPolicy } from './calibrate-8plus1';
 import { ALE_CUSTOM_STEPS } from './index';
 import { runAlePreAuthoringLock } from './pre-authoring-lock';
@@ -39,35 +43,56 @@ function mockSubRun(
 }
 
 describe('ALE 定制步骤单元验证 (T2)', () => {
-  test('ale_pre_authoring_lock：锁定 environment/input/附件N.txt 与 SHA-256（兼容仅哈希摘要输入与全文输入），拒绝空材料', () => {
-    expect(() =>
+  test('ale_pre_authoring_lock：锁定 environment/input/附件N.docx 与确定性 SHA-256（兼容仅哈希摘要输入与正文/分册输入），拒绝空材料', async () => {
+    await expect(
       runAlePreAuthoringLock({
         project_id: 'p1',
         project_key: 'ALE',
         workflow_id: 'wf1',
         materials: [],
       }),
-    ).toThrow(/未绑定任何有效来源材料/);
+    ).rejects.toThrow(/未绑定任何有效来源材料/);
 
     const sha = 'a'.repeat(64);
-    const out = runAlePreAuthoringLock({
+    const outSummaryOnly = await runAlePreAuthoringLock({
       project_id: 'p1',
       project_key: 'ALE',
       workflow_id: 'wf1',
       materials: [{ id: 'raw-1', sha256: 'b'.repeat(64) }],
       model_materials: [{ id: 'mod-1', sha256: sha }],
     });
-    expect(out?.frozen_metadata).toMatchObject({
+    expect(outSummaryOnly?.frozen_metadata).toMatchObject({
       locked_environment_inputs: [
         {
           index: 1,
-          authoring_attachment_name: '附件1.txt',
-          environment_input_path: 'environment/input/附件1.txt',
+          authoring_attachment_name: '附件1.docx',
+          environment_input_path: 'environment/input/附件1.docx',
           material_id: 'mod-1',
+          format: 'docx',
+          source_sha256: sha,
           sha256: sha,
         },
       ],
     });
+
+    const outWithText1 = await runAlePreAuthoringLock({
+      project_id: 'p1',
+      project_key: 'ALE',
+      workflow_id: 'wf1',
+      materials: [{ id: 'mod-2', sha256: sha, text: '# 案卷正文\n\n|项目|金额|\n|---|---|\n|本金|1000|\n' }],
+    });
+    const outWithText2 = await runAlePreAuthoringLock({
+      project_id: 'p1',
+      project_key: 'ALE',
+      workflow_id: 'wf1',
+      materials: [{ id: 'mod-2', sha256: sha, text: '# 案卷正文\n\n|项目|金额|\n|---|---|\n|本金|1000|\n' }],
+    });
+    const locked1 = (outWithText1?.frozen_metadata as any).locked_environment_inputs[0];
+    const locked2 = (outWithText2?.frozen_metadata as any).locked_environment_inputs[0];
+    expect(locked1.sha256).not.toBe(sha);
+    expect(locked1.sha256).toBe(locked2.sha256);
+    expect(locked1.source_sha256).toBe(sha);
+    expect(locked1.bytes).toBeGreaterThan(1000);
   });
 
   test('auditAleRubricGateBalance：拦截 ≥4 项时 100% 全设 is_key_gate=true 的误杀配置，放行 70/30 分层', () => {
@@ -96,6 +121,19 @@ describe('ALE 定制步骤单元验证 (T2)', () => {
     expect(good.passed).toBe(true);
     expect(good.key_gates).toBe(4);
     expect(good.total).toBe(7);
+
+    const overWeighted = [
+      { id: 'C01', weight: 15, is_key_gate: true },
+      { id: 'C02', weight: 15, is_key_gate: true },
+      { id: 'C03', weight: 15, is_key_gate: true },
+      { id: 'C04', weight: 15, is_key_gate: true },
+      { id: 'C05', weight: 15, is_key_gate: true },
+      { id: 'C06', weight: 18, is_key_gate: true },
+      { id: 'C07', weight: 7, is_key_gate: false },
+    ];
+    const blockedOverweight = auditAleRubricGateBalance({ pass_threshold: 0.92, criteria: overWeighted });
+    expect(blockedOverweight.passed).toBe(false);
+    expect(blockedOverweight.warning_or_error).toMatch(/超过 80% 上限/);
   });
 
   test('sample_3 / sample_5 抽测档位：demo_required=0 自动不发 demo_run，超上限或必败时早停撤单', () => {
@@ -488,5 +526,139 @@ describe('ALE 定制步骤单元验证 (T2)', () => {
       fail_rate: 1,
     });
     expect(validateRepairEvaluationJson(evalJson).action_items.length).toBeGreaterThan(0);
+  });
+
+  test('verify-task CHK-05-DYNAMIC-QA：显式透传 --input-dir，漏声明 --input-dir 的 grade.py 在门禁即刻拦截', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'ale-verify-input-dir-'));
+    try {
+      const taskDir = join(tmp, 'FIN-CLI-001');
+      await mkdir(join(taskDir, 'environment', 'input'), { recursive: true });
+      await mkdir(join(taskDir, 'solution', 'artifacts', 'output'), { recursive: true });
+      await mkdir(join(taskDir, 'tests', 'reference', 'variants'), { recursive: true });
+
+      await writeFile(join(taskDir, 'environment', 'input', '附件1.txt'), '原始测试材料\n', 'utf8');
+      await writeFile(join(taskDir, 'solution', 'artifacts', 'output', 'result.txt'), 'OK\n', 'utf8');
+      await writeFile(
+        join(taskDir, 'instruction.md'),
+        '请根据 `/workspace/input/附件1.txt` 输出 `/workspace/output/result.txt`。\n',
+        'utf8',
+      );
+      await writeFile(
+        join(taskDir, 'task_card.json'),
+        JSON.stringify(
+          {
+            schema_version: 'ale.task_card.v1',
+            task_id: 'FIN-CLI-001',
+            version: '1.0.0',
+            domain: 'business_finance',
+            sub_domain: 'audit',
+            task_family: 'reconciliation',
+            canary: 'ALE-CANARY-FIN-CLI-001-12345678',
+            network: { allow_internet: false },
+            deliverables_contract: [{ path: 'output/result.txt', format: 'txt', required: true }],
+          },
+          null,
+          2,
+        ) + '\n',
+        'utf8',
+      );
+      await writeFile(
+        join(taskDir, 'environment', 'env.json'),
+        JSON.stringify(
+          {
+            environment_id: 'env-test',
+            visibility_isolation: { forbidden_in_agent_view: ['tests/', 'solution/'] },
+          },
+          null,
+          2,
+        ) + '\n',
+        'utf8',
+      );
+      await writeFile(join(taskDir, 'environment', 'reset.sh'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await writeFile(join(taskDir, 'solution', 'solve.sh'), '#!/usr/bin/env bash\nexit 0\n', 'utf8');
+      await chmod(join(taskDir, 'environment', 'reset.sh'), 0o755);
+      await chmod(join(taskDir, 'solution', 'solve.sh'), 0o755);
+
+      await writeFile(
+        join(taskDir, 'tests', 'rubric.json'),
+        JSON.stringify(
+          {
+            task_id: 'FIN-CLI-001',
+            scale: { normalization: 'weighted_mean', pass_threshold: 0.85, reference_target: { mode: 'deterministic' } },
+            criteria: [
+              {
+                criterion_id: 'C01_check',
+                prompt_basis: 'instruction.md',
+                source_locator: '附件1.txt',
+                observation_locator: 'output/result.txt',
+                condition: 'check_c01',
+                weight: 1,
+                tolerance: 'exact',
+                is_key_gate: true,
+                grader_mapping: 'check_c01',
+              },
+            ],
+          },
+          null,
+          2,
+        ) + '\n',
+        'utf8',
+      );
+      await writeFile(
+        join(taskDir, 'tests', 'reference', 'variants', 'manifest.json'),
+        JSON.stringify({ variants: [] }, null, 2) + '\n',
+        'utf8',
+      );
+
+      // 1. 漏声明 --input-dir 的 grade.py -> CHK-05-DYNAMIC-QA 立即拦截失败
+      const gradeMissingInputDir = [
+        '#!/usr/bin/env python3',
+        'import argparse, json',
+        'from pathlib import Path',
+        'def check_c01(): return True',
+        'p = argparse.ArgumentParser()',
+        'p.add_argument("--artifacts-dir", required=True)',
+        'p.add_argument("--output", required=True)',
+        'args = p.parse_args()',
+        'has_out = (Path(args.artifacts_dir) / "output" / "result.txt").is_file()',
+        'Path(args.output).write_text(json.dumps({"normalized_score": 1.0 if has_out else 0.0, "key_gates_passed": has_out, "success": has_out, "items": []}))',
+        '',
+      ].join('\n');
+      const gradePath = join(taskDir, 'tests', 'grade.py');
+      await writeFile(gradePath, gradeMissingInputDir, 'utf8');
+      await chmod(gradePath, 0o755);
+
+      const failRes = await verifyTaskDirectory(taskDir, { executeDynamic: true });
+      const dynFail = failRes.records.find((r) => r.check_id === 'CHK-05-DYNAMIC-QA');
+      expect(dynFail?.status).toBe('FAIL');
+      expect(dynFail?.observed).toContain('--input-dir');
+      expect(failRes.all_required_passed).toBe(false);
+
+      // 2. 正确声明 --input-dir 的 grade.py -> 收到真实 environment/input 目录且 CHK-05-DYNAMIC-QA 通过
+      const gradeWithInputDir = [
+        '#!/usr/bin/env python3',
+        'import argparse, json',
+        'from pathlib import Path',
+        'def check_c01(): return True',
+        'p = argparse.ArgumentParser()',
+        'p.add_argument("--artifacts-dir", required=True)',
+        'p.add_argument("--output", required=True)',
+        'p.add_argument("--input-dir", required=True)',
+        'args = p.parse_args()',
+        'in_ok = (Path(args.input_dir) / "附件1.txt").is_file()',
+        'has_out = in_ok and (Path(args.artifacts_dir) / "output" / "result.txt").is_file()',
+        'Path(args.output).write_text(json.dumps({"normalized_score": 1.0 if has_out else 0.0, "key_gates_passed": has_out, "success": has_out, "items": []}))',
+        '',
+      ].join('\n');
+      await writeFile(gradePath, gradeWithInputDir, 'utf8');
+      await chmod(gradePath, 0o755);
+
+      const passRes = await verifyTaskDirectory(taskDir, { executeDynamic: true });
+      const dynPass = passRes.records.find((r) => r.check_id === 'CHK-05-DYNAMIC-QA');
+      expect(dynPass?.status).toBe('PASS');
+      expect(passRes.all_required_passed).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   });
 });

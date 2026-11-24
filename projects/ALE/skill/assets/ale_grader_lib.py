@@ -2156,7 +2156,7 @@ class DocxExtractor:
         return None
 
     def extract_key_cell_text(self, keys: str | Sequence[str]) -> str | None:
-        """按行首主键提取第 2 列（首个非空值列）原始文本。"""
+        """按行首主键提取第 2 列（首个非空值列）原始文本；兼容首行为表头列名（如 ['指标', '金额', '报价判断']）的纵列结论。"""
         aliases = [keys] if isinstance(keys, str) else list(keys)
         norm_targets = {_norm_label(_strip_unit_paren(a)) for a in aliases if str(a).strip()}
         raw_targets = {_norm_label(a) for a in aliases if str(a).strip()}
@@ -2168,6 +2168,14 @@ class DocxExtractor:
                         for right_cell in row[col_i + 1 :]:
                             if right_cell.strip():
                                 return right_cell.strip()
+            if len(tbl) >= 2:
+                header = tbl[0]
+                for col_i, cell_txt in enumerate(header):
+                    if _norm_label(cell_txt) in raw_targets or _norm_label(_strip_unit_paren(cell_txt)) in norm_targets:
+                        col_vals = [r[col_i].strip() for r in tbl[1:] if col_i < len(r) and r[col_i].strip()]
+                        if col_vals:
+                            unique_vals = list(dict.fromkeys(col_vals))
+                            return unique_vals[0] if len(unique_vals) == 1 else "；".join(unique_vals)
         return None
 
     def extract_enum_choice(
@@ -2177,27 +2185,89 @@ class DocxExtractor:
     ) -> str | None:
         """
         安全提取固定枚举结论（自动剥离标点、书名号、引号及句末解释句，拒绝 `^` 行首截断误杀；
+        兼容公文复选框 `☒ 保留待复核 ☐ 确认已结清`、`已选：A；未选：B` 及两列勾选表；
         同时识别“不采纳 A，应采纳 B”中的否定前文，避免反转结论 M03 混水摸鱼）。
         """
+        def _clean(s: str) -> str:
+            return re.sub(r"[\s`'\"“”‘’《》【】\[\]()（），,。；;：:!！?？·—\-☒☑✓✔☐□]+", "", s).lower()
+
+        checked_re = re.compile(r"(?:[☒☑✓✔]|\[[xX✓✔]\])")
+        unchecked_re = re.compile(r"(?:[☐□]|\[\s*\])")
+
+        # 1. 优先识别两列/多列公文勾选表（例如 ['保留待复核', '☒'] 与 ['确认已结清', '☐']）
+        checked_table_hits: list[str] = []
+        unchecked_table_seen = False
+        for table in self.tables:
+            for row in table:
+                if len(row) < 2:
+                    continue
+                row_has_checked = any(bool(checked_re.search(c)) for c in row)
+                row_has_unchecked = any(bool(unchecked_re.search(c)) for c in row)
+                if row_has_checked and not row_has_unchecked:
+                    row_norm = _clean(" ".join(row))
+                    for code in allowed_codes:
+                        nc = _clean(code)
+                        if nc and nc in row_norm:
+                            checked_table_hits.append(code)
+                elif row_has_unchecked and not row_has_checked:
+                    row_norm = _clean(" ".join(row))
+                    if any(_clean(code) in row_norm for code in allowed_codes if _clean(code)):
+                        unchecked_table_seen = True
+        unique_tbl_hits = list(dict.fromkeys(checked_table_hits))
+        if len(unique_tbl_hits) == 1 and unchecked_table_seen:
+            return unique_tbl_hits[0]
+
         scope_texts: list[str] = []
         if keys is not None:
             cell_txt = self.extract_key_cell_text(keys)
             if cell_txt:
                 scope_texts.append(cell_txt)
             aliases = [keys] if isinstance(keys, str) else list(keys)
-            for p in self.paragraphs:
+            for idx, p in enumerate(self.paragraphs):
                 if any(a in p for a in aliases):
                     scope_texts.append(p)
+                    # 兼容“签批结论”独立做小标题段、紧邻下一段写复选框或结论词的公文排版
+                    if idx + 1 < len(self.paragraphs):
+                        scope_texts.append(self.paragraphs[idx + 1])
+                    if idx + 2 < len(self.paragraphs) and len(_clean(p)) <= 12:
+                        scope_texts.append(self.paragraphs[idx + 2])
         if not scope_texts:
             scope_texts = [self.full_text]
 
-        def _clean(s: str) -> str:
-            return re.sub(r"[\s`'\"“”‘’《》【】\[\]()（），,。；;：:!！?？·—\-]+", "", s).lower()
-
         neg_tokens = ("不", "非", "未", "拒绝", "排除", "否定", "错误", "偏离", "舍弃")
+        code_alt = "|".join(re.escape(c) for c in sorted(allowed_codes, key=len, reverse=True) if c)
 
         for raw_txt in scope_texts:
-            norm_txt = _clean(raw_txt)
+            # 2a. 行内复选框优先：先抓唯一带实心勾选符的选项（如 `☒ 保留待复核 ☐ 确认已结清`）
+            if code_alt and checked_re.search(raw_txt):
+                inline_checked = re.findall(
+                    rf"(?:[☒☑✓✔]|\[[xX✓✔]\])\s*(?:[「『\"'“”《》【】]?\s*)?({code_alt})",
+                    raw_txt,
+                )
+                inline_checked += re.findall(
+                    rf"({code_alt})\s*(?:[」』\"'“”《》【】]?\s*)?(?:[☒☑✓✔]|\[[xX✓✔]\])",
+                    raw_txt,
+                )
+                unique_checked = list(dict.fromkeys(inline_checked))
+                if len(unique_checked) == 1:
+                    return unique_checked[0]
+
+            # 2b. 剥离未勾选选项与“未选：...”片段后再做常规肯定/否定匹配
+            cleaned_raw = raw_txt
+            if code_alt:
+                cleaned_raw = re.sub(
+                    rf"(?:[☐□]|\[\s*\])\s*(?:[「『\"'“”《》【】]?\s*)?(?:{code_alt})",
+                    " ",
+                    cleaned_raw,
+                )
+                cleaned_raw = re.sub(
+                    rf"(?:{code_alt})\s*(?:[」』\"'“”《》【】]?\s*)?(?:[☐□]|\[\s*\])",
+                    " ",
+                    cleaned_raw,
+                )
+            cleaned_raw = re.sub(r"未选\s*[：:]\s*[^。；;\n]+", " ", cleaned_raw)
+
+            norm_txt = _clean(cleaned_raw)
             affirmed: list[str] = []
             for code in allowed_codes:
                 norm_code = _clean(code)

@@ -1,4 +1,4 @@
-<!-- 职责：展示与操控当前项目注册的专属定制步骤（如 ALE 反例硬筛、8 路全并发 8+1 / 3 / 5 轮标定、结构化 JSON 返修评价与秒级重评）；未注册项目零渲染。 -->
+<!-- 职责：展示与操控当前项目注册的专属定制步骤（如 ALE 反例硬筛、最高 12 路并发 8+1 / 3 / 5 轮标定、结构化 JSON 返修评价与秒级重评）；未注册项目零渲染。 -->
 <script setup lang="ts">
 import { api } from '../api/client';
 import { dateLabel } from '../utils/format';
@@ -71,18 +71,20 @@ const notice = shallowRef('');
 const steps = shallowRef<CustomStepView[]>([]);
 
 const calibrationPreset = shallowRef<'formal_8plus1' | 'sample_5' | 'sample_3'>('formal_8plus1');
-const parallelLimit = shallowRef<number>(8);
+const parallelLimit = shallowRef<number>(11);
 
 const editingRepairStep = shallowRef<string | null>(null);
 const repairJsonDraft = shallowRef('');
 
 const presetOptions = [
-  { title: '正式 8+1 标定（8 路并发，通过 1–3 次 + 示范轨迹）', value: 'formal_8plus1' },
+  { title: '正式 8+1 标定（默认 8 标定 + 3 示范同发，通过 1–3 次 + 示范轨迹）', value: 'formal_8plus1' },
   { title: '5 轮打版抽测（5 路并发，通过 1–2 次达标）', value: 'sample_5' },
   { title: '3 轮快速抽测（3 路并发，通过 1–2 次达标）', value: 'sample_3' },
 ];
 const parallelOptions = [
-  { title: '8 路全并发（8+1 默认一轮跑完）', value: 8 },
+  { title: '12 路并发（上限）', value: 12 },
+  { title: '11 路全并发（8 标定 + 3 示范一轮同发，默认）', value: 11 },
+  { title: '8 路并发（先标定后示范）', value: 8 },
   { title: '5 路并发', value: 5 },
   { title: '3 路并发', value: 3 },
   { title: '2 路并发', value: 2 },
@@ -90,7 +92,7 @@ const parallelOptions = [
 ];
 
 watch(calibrationPreset, (val) => {
-  parallelLimit.value = val === 'formal_8plus1' ? 8 : val === 'sample_5' ? 5 : 3;
+  parallelLimit.value = val === 'formal_8plus1' ? 11 : val === 'sample_5' ? 5 : 3;
 });
 
 const statusText: Record<string, string> = {
@@ -119,7 +121,7 @@ function statusColor(status: string) {
 
 function laneLabel(step: CustomStepView) {
   if (step.lane === 'internal') return '本地校验（0 Agent 槽）';
-  if (step.mode === 'queued_subruns') return `Agent 单槽子运行（最高 ${step.max_parallel_subruns ?? 8} 路并发）`;
+  if (step.mode === 'queued_subruns') return `Agent 单槽子运行（最高 ${step.max_parallel_subruns ?? 12} 路并发）`;
   return 'Agent 队列';
 }
 

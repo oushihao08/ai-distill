@@ -52,6 +52,6 @@ description: 创建和管理飞书多维表格、字段、记录和附件；执�
 
 ### 项目交付入口与模式
 
-用户要求“拼接材料PDF＋填写出题信息”时，优先复用项目业务入口而非自己拼字段/附件：当前业务题目用草稿/归档HTTP同步，显式 `attachment_format:"pdf",combined_material:true`；用户要求CLI时用项目 `feishu draft-sync[-batch]` / `sync[-batch]` 加 `--attachment-format pdf --combined-material`。已核验的冻结材料先合册再转换；超限按页分册。模式、CLI示例与恢复的唯一说明见[项目CLI](../../cli/README.md#豆包飞书交付)，HTTP契约见[发布模块](../../server/publishing/README.md#豆包飞书交付)。这些是源码能力，需运行服务加载对应能力标记。
+用户要求将业务题目交付到飞书（含拼接材料PDF/DOCX＋填写出题信息）时，统一复用公共交付实现 `server/publishing/feishu-delivery.ts`（`deliverQuestionToFeishu` / `createFeishuDeliverySession`，由服务端草稿/归档HTTP同步、`batch-dispatch` 与 `feishu local-sync` 共用，支持任意配置了目标或显式传入 `--base-token --table` 的项目），不要自己手拼字段与逐份串行上传：当前业务题目用草稿/归档HTTP同步，显式 `attachment_format:"pdf",combined_material:true`；用户要求CLI时用项目 `feishu draft-sync[-batch]` / `sync[-batch]` 加 `--attachment-format pdf --combined-material [--concurrency 4]`。已核验的冻结材料先合册再多核转换并缓存分册结果，远端附件一致时自动跳过转换与上传。模式、CLI示例与恢复的唯一说明见[项目CLI](../../cli/README.md#豆包飞书交付)，HTTP与共用函数契约见[发布模块](../../server/publishing/README.md#豆包飞书交付)。这些是源码能力，需运行服务加载对应能力标记。
 
 本工具的 file upload / record update 只负责通用传输，不能替代题目版本、材料包身份和完整回执。`feishu local-sync`只适用于用户明确要求本地快照交付，不读取数据库当前版本，也不自动合并多DOCX。批次前后做范围内全表对账；逐题交付按稳定ID搜索后回读命中行，避免重复拉取整表正文。

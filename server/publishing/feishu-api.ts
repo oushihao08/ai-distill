@@ -1,12 +1,15 @@
-/** 职责：豆包交付字段、目标结构和空行清理；通用飞书调用通过toolSkills的CLI执行，客户端使用后必须close。 */
+/** 职责：飞书多维表格交付字段、目标结构与空行清理；服务端与本地CLI直接复用进程内应用客户端（含token缓存与大文件分片上传），结束须close。 */
 import {mkdir,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {createCliClient} from '../../toolSkills/feishu-operations/scripts/process-client';
+import {createAppClient,FeishuError as SyncError,type FeishuClient} from '../../toolSkills/feishu-operations/scripts/client';
 export {FeishuError as SyncError} from '../../toolSkills/feishu-operations/scripts/client';
-import {FeishuError as SyncError} from '../../toolSkills/feishu-operations/scripts/client';
+export interface FeishuSessionClient extends FeishuClient {close():Promise<void>}
 export const FEISHU_FIELDS=[['题目ID',1],['飞书账号',11],['xpert uid',1],['专家来源',3],['一级行业',3],['L1职业簇',3],['任务名称',1],['任务类型',1],['prompt',1],['输入附件',17],['考点rubric',1],['作答思路',1],['标准答案-文本',1],['标准答案-附件',17],['题目是否完成',3],['系统同步ID',1]] as const;
 const FEISHU_IDENTITY_FIELD_ALIASES:Record<string,readonly string[]>={'飞书账号':['飞书账号','姓名'],'xpert uid':['xpert uid','ID']};
-export const feishuClient=createCliClient;
+export async function feishuClient(options:{timeoutMs?:number}={}):Promise<FeishuSessionClient>{
+ const client=await createAppClient({timeoutMs:options.timeoutMs??120_000});
+ return{...client,async close(){}};
+}
 
 
 /** 校验统一字段并隐藏内部关联；只补兼容版本缺失的系统同步ID，不改用户业务字段。 */

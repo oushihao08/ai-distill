@@ -5,33 +5,56 @@
  * 边界：纯本地确定性验证，不调用大模型，严禁访问其他项目目录。
  */
 import { readFile, rm } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import type { IsolatedRunContext, RecordedSubRun, RepairEvaluationJson } from '../../../server/custom-steps/contract';
 import { materializeAleTaskFromDraft } from '../scripts/delivery';
+import { resolveAleInputMaterials } from '../scripts/docx-material';
 
 export function auditAleRubricGateBalance(
   rubricSpec: any,
   allowAllKeyGates = false,
-): { passed: boolean; total: number; key_gates: number; warning_or_error: string | null } {
+): { passed: boolean; total: number; key_gates: number; key_gate_weight_ratio?: number; warning_or_error: string | null } {
   const criteria = Array.isArray(rubricSpec?.criteria) ? rubricSpec.criteria : [];
   const total = criteria.length;
   const keyGates = criteria.filter((c: any) => c?.is_key_gate === true).length;
+  const totalWeight = criteria.reduce((acc: number, c: any) => acc + (Number(c?.weight) > 0 ? Number(c.weight) : 0), 0);
+  const keyGateWeight = criteria.reduce(
+    (acc: number, c: any) => acc + (c?.is_key_gate === true && Number(c?.weight) > 0 ? Number(c.weight) : 0),
+    0,
+  );
+  const weightRatio = totalWeight > 0 ? keyGateWeight / totalWeight : 0;
 
   if (total >= 4 && keyGates === total && !allowAllKeyGates) {
     return {
       passed: false,
       total,
       key_gates: keyGates,
-      warning_or_error: `防误杀门控拦截：共 ${total} 条判据全部被设为 is_key_gate=true，任何边缘小瑕都会触发整题归零（极易 0/N 报废）；请按 70/30 分层保留至少 1 条非一票否决项，或显式传 allow_all_key_gates=true`,
+      key_gate_weight_ratio: Number(weightRatio.toFixed(4)),
+      warning_or_error: `防误杀门控拦截：共 ${total} 条判据全部被设为 is_key_gate=true，任何边缘小瑕都会触发整题归零（极易 0/N 报废）；请按 65/35–75/25 分层保留至少 2 条非一票否决项，或显式传 allow_all_key_gates=true`,
     };
   }
-  return { passed: true, total, key_gates: keyGates, warning_or_error: null };
+  if (total >= 5 && weightRatio > 0.8 && !allowAllKeyGates) {
+    return {
+      passed: false,
+      total,
+      key_gates: keyGates,
+      key_gate_weight_ratio: Number(weightRatio.toFixed(4)),
+      warning_or_error: `防连坐门控拦截：is_key_gate=true 条目合计权重占比达 ${(weightRatio * 100).toFixed(1)}%（${keyGates}/${total} 项），超过 80% 上限，极易引发多门独立相乘导致 +1 示范模型 0/6 死锁；请将核心门控总权重收拢至 65%–75%，旁支/复核项设为 is_key_gate=false`,
+    };
+  }
+  return {
+    passed: true,
+    total,
+    key_gates: keyGates,
+    key_gate_weight_ratio: Number(weightRatio.toFixed(4)),
+    warning_or_error: null,
+  };
 }
 
 export async function prepareStagedMaterialsForAleDraft(
   draft: Record<string, unknown>,
   attachments: IsolatedRunContext['attachments'],
-): Promise<Array<{ name: string; text: string }>> {
+): Promise<Array<{ name: string; bytes?: Uint8Array; text?: string }>> {
   const rawApproach = String(draft.answer_approach ?? '');
   const match = /<<<ALE_PACKAGE_JSON\s*([\s\S]*?)\s*ALE_PACKAGE_JSON>>>/.exec(rawApproach);
   const directPkg = (draft as any)?.rubric?.[0]?.metadata?.ale_package ?? (draft as any)?.ale_package;
@@ -40,43 +63,13 @@ export async function prepareStagedMaterialsForAleDraft(
     ? parsedPkg.task_card.inputs
     : [];
 
-  const stagedInputs: Array<{ name: string; text: string }> = [];
-  const matchedIndices = new Set<number>();
-
-  for (const decl of declaredInputs) {
-    const rel = String(decl?.path ?? '');
-    if (!rel.startsWith('environment/input/')) continue;
-    const fileName = basename(rel);
-    const idx = attachments.findIndex(
-      (att) =>
-        (att.model_sha256 && att.model_sha256 === decl.sha256 && typeof att.model_text === 'string') ||
-        (att.sha256 === decl.sha256 && typeof att.text === 'string'),
-    );
-    if (idx >= 0) {
-      const hit = attachments[idx]!;
-      stagedInputs.push({
-        name: fileName,
-        text: hit.model_sha256 === decl.sha256 ? hit.model_text! : hit.text,
-      });
-      matchedIndices.add(idx);
-    }
-  }
-
-  for (const [idx, att] of attachments.entries()) {
-    if (matchedIndices.has(idx)) continue;
-    stagedInputs.push({
-      name: `附件${idx + 1}.txt`,
-      text: att.model_text ?? att.text,
-    });
-  }
-
-  return stagedInputs;
+  return resolveAleInputMaterials(declaredInputs, attachments);
 }
 
 export function auditAleAntiSpoilerDesign(
   instructionText: string,
   variantsManifest: any,
-  options?: { allow_wide_schema?: boolean; allow_without_decoy_variant?: boolean },
+  options?: { allow_wide_schema?: boolean; allow_without_decoy_variant?: boolean; grade_py_source?: string },
 ): { passed: boolean; issues: string[] } {
   const issues: string[] = [];
   if (!options?.allow_wide_schema) {
@@ -99,6 +92,13 @@ export function auditAleAntiSpoilerDesign(
       );
     }
   }
+  if (typeof options?.grade_py_source === 'string' && options.grade_py_source.length > 0) {
+    if (/load_workbook\s*\([^)]*data_only\s*=\s*True/i.test(options.grade_py_source) && !options.grade_py_source.includes('ExcelEvaluator')) {
+      issues.push(
+        '跨模型公平门禁拦截：grade.py 单纯使用 openpyxl(data_only=True) 读取缓存值而未走 ExcelEvaluator AST 重算，会单边误杀无 LibreOffice 下 cached=None 的 +1 示范模型；请改用 ale_grader_lib.ExcelEvaluator',
+      );
+    }
+  }
   return { passed: issues.length === 0, issues };
 }
 
@@ -117,6 +117,7 @@ export async function executeAleVerifyGate(ctx: IsolatedRunContext): Promise<Rec
 
   const rubricSpec = JSON.parse(await readFile(join(materialized.task_dir, 'tests/rubric.json'), 'utf8'));
   const instructionText = await readFile(join(materialized.task_dir, 'instruction.md'), 'utf8');
+  const gradePySource = await readFile(join(materialized.task_dir, 'tests/grade.py'), 'utf8').catch(() => '');
   let variantsManifest: any = null;
   try {
     variantsManifest = JSON.parse(await readFile(join(materialized.task_dir, 'tests/reference/variants/manifest.json'), 'utf8'));
@@ -129,6 +130,7 @@ export async function executeAleVerifyGate(ctx: IsolatedRunContext): Promise<Rec
   const antiSpoiler = auditAleAntiSpoilerDesign(instructionText, variantsManifest, {
     allow_wide_schema: ctx.run_config.allow_wide_schema === true,
     allow_without_decoy_variant: ctx.run_config.allow_without_decoy_variant === true,
+    grade_py_source: gradePySource,
   });
 
   const failedCheckRecords = materialized.summary.records.filter((r) => r.status === 'FAIL');

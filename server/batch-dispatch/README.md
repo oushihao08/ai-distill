@@ -57,7 +57,7 @@ bun run ai-distill dispatch stop --batch <批次UUID>
 ## 调度与持久化
 
 - 本机 local 模式、未限定工作流的 all/local Worker 内运行。API 进程接收清单，已有 Worker 领取及提交事务后唤醒调度器，入队通知唤醒空闲消费者。1 秒一次的本机检查用来发现新批次和恢复漏掉的通知。
-- Agent 槽与本机其他业务共享。批次有效运行上限为本批上限与 Worker 配置两者的较小值，省略则跟随 Worker。等待上限默认同批次运行上限，同时受系统队列剩余空间约束。运行中调低上限可让在途任务收尾，领取新项时按新上限执行。独立交付池的进程上限由 BATCH_DELIVERY_CONCURRENCY 设置，默认 1。
+- Agent 槽与本机其他业务共享。批次有效运行上限为本批上限与 Worker 配置两者的较小值，省略则跟随 Worker。等待上限默认同批次运行上限，同时受系统队列剩余空间约束。运行中调低上限可让在途任务收尾，领取新项时按新上限执行。独立交付池的进程上限由 BATCH_DELIVERY_CONCURRENCY 设置，默认 4（清单 `limits.delivery` 未指定时默认 4）。
 - 对每个阶段汇总剩余任务的“权重 × 预计剩余分钟”。按阶段工作量占比乘有效槽位，再减已占名额，优先补缺口最大的可运行阶段；同阶段优先较高权重和较早就绪的任务。只有上游产物已核实的分项才可参与。材料不足或只剩串行依赖时，空闲槽位属于正常情况。
 - [store.ts](store.ts) 在本机 runtime/queue.sqlite3 保存清单、请求标识、事件、限制及回执。[scheduler.ts](scheduler.ts) 处理状态转换和补位；[worker.ts](worker.ts) 接入现有 Worker；[backend.ts](backend.ts) 复用业务入口和业务库版本核对；[routes.ts](routes.ts) 对外提供统一读写入口。单机只选一个调度者，业务任务继续使用既有领取与租约。
 - [scheduler.test.ts](scheduler.test.ts) 使用独立 SQLite 和合成业务检查状态、容量、接续与恢复；[postgres.test.ts](postgres.test.ts) 使用专用临时 PostgreSQL、HTTP、CLI 和业务事务核验来源。隔离集成使用合成模型结果与交付回执；生产模型耗时和真实飞书送达须凭实际批次记录确认。

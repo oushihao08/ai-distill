@@ -1,8 +1,8 @@
 /** 职责：将已核验材料DOCX转换为图像PDF；供飞书服务端与本地CLI共用，不访问HTTP API或数据库。 */
 import {execFile} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
-import {access,mkdir,readFile,writeFile} from 'node:fs/promises';
+import {access,mkdir,readFile,rename,rm,writeFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {materialDeliveryStems} from '../../shared/material-filenames';
@@ -89,16 +89,79 @@ export function materialCleanPdfBaseNames(files:ReadonlyArray<{filename?:string;
 export function isLegacyHashAttachmentList(value:unknown):boolean{
  return Array.isArray(value)&&value.length>0&&value.every((file:any)=>typeof file?.name==='string'&&/^材料-[0-9a-f]{16}(?:-页\d{4,}-\d{4,})?\.(?:docx|pdf)$/.test(file.name));
 }
+
+const DELIVERY_PDF_CACHE_VERSION='feishu-delivery-pdf-cache-v1';
+function sha256Hex(bytes:Uint8Array|string):string{
+ return createHash('sha256').update(bytes).digest('hex');
+}
+function deliveryPdfCachePath(files:ReadonlyArray<{bytes:Uint8Array}>,stems:ReadonlyArray<string>,workflowId:string,storageRoot:string):string{
+ const key=sha256Hex(JSON.stringify({
+  version:DELIVERY_PDF_CACHE_VERSION,
+  maxBytes:MATERIAL_PDF_MAX_BYTES,
+  items:files.map((file,index)=>({stem:stems[index]!,size:file.bytes.byteLength,sha256:sha256Hex(file.bytes)})),
+ })).slice(0,24);
+ return join(resolve(storageRoot),'feishu-material-pdfs',workflowId,`delivery-cache-${key}.json`);
+}
+
+type CachedPdfManifest={items:Array<{name:string;path:string;size:number;sha256:string}>};
+async function readVerifiedPdfCache(cachePath:string):Promise<Array<{name:string;bytes:Buffer}>|null>{
+ try{
+  const parsed=JSON.parse(await readFile(cachePath,'utf8')) as CachedPdfManifest;
+  if(!Array.isArray(parsed?.items)||!parsed.items.length)return null;
+  const loaded:Array<{name:string;bytes:Buffer}>=[];
+  for(const entry of parsed.items){
+   if(typeof entry?.name!=='string'||typeof entry?.path!=='string'||!Number.isSafeInteger(entry.size)||typeof entry.sha256!=='string')return null;
+   const bytes=await readFile(entry.path);
+   if(bytes.byteLength!==entry.size||bytes.byteLength<5||bytes.subarray(0,5).toString('utf8')!=='%PDF-'||sha256Hex(bytes)!==entry.sha256)return null;
+   loaded.push({name:entry.name,bytes});
+  }
+  return loaded;
+ }catch{
+  return null;
+ }
+}
+
+/** 快速探测同源PDF分册缓存的真实交付文件名；命中时调用方可据此判断远端附件是否一致，无需先启动LibreOffice/Python。 */
+export async function peekCachedMaterialPdfNames(files:ReadonlyArray<{bytes:Uint8Array;filename?:string;name?:string}>,workflowId:string,storageRoot:string):Promise<string[]|undefined>{
+ const stems=materialCleanPdfBaseNames(files);
+ const cachePath=deliveryPdfCachePath(files,stems,workflowId,storageRoot);
+ const cached=await readVerifiedPdfCache(cachePath);
+ return cached?.map(item=>item.name);
+}
+
 export async function materialPdfAttachments(files:Array<{bytes:Uint8Array;filename?:string;name?:string}>,workflowId:string,storageRoot:string):Promise<Array<{name:string;bytes:Buffer}>>{
- const pdfs=await convertMaterialDocxToImagePdf(files,workflowId,storageRoot),stems=materialCleanPdfBaseNames(files),result:Array<{name:string;bytes:Buffer}>=[];
+ const stems=materialCleanPdfBaseNames(files);
+ const cachePath=deliveryPdfCachePath(files,stems,workflowId,storageRoot);
+ const cached=await readVerifiedPdfCache(cachePath);
+ if(cached)return cached;
+ const pdfs=await convertMaterialDocxToImagePdf(files,workflowId,storageRoot),result:Array<{name:string;bytes:Buffer}>=[];
+ const cacheItems:CachedPdfManifest['items']=[];
+ const directory=join(resolve(storageRoot),'feishu-material-pdfs',workflowId,'delivery-sources');
+ await mkdir(directory,{recursive:true,mode:0o700});
  for(const [index,bytes] of pdfs.entries()){
   const name=`${stems[index]!}.pdf`;
-  if(bytes.length<=MATERIAL_PDF_MAX_BYTES){result.push({name,bytes});continue;}
-  const directory=join(resolve(storageRoot),'feishu-material-pdfs',workflowId,'delivery-sources');
-  await mkdir(directory,{recursive:true,mode:0o700});const source=join(directory,name);await writeFile(source,bytes,{mode:0o600});
+  const source=join(directory,`${index}-${name}`);
+  await writeFile(source,bytes,{mode:0o600});
+  if(bytes.length<=MATERIAL_PDF_MAX_BYTES){
+   result.push({name,bytes});
+   cacheItems.push({name,path:source,size:bytes.byteLength,sha256:sha256Hex(bytes)});
+   continue;
+  }
   const parts=await splitLargePdf(source,bytes,{balanced:true,maxBytes:MATERIAL_PDF_MAX_BYTES,maxPages:Number.MAX_SAFE_INTEGER,cacheRoot:join(resolve(storageRoot),'feishu-pdf-parts')});
   // 分片缓存仍按页码命名以便校验；交付名改为册序，不暴露补零页码范围。
-  for(const [partIndex,part] of parts.entries())result.push({name:materialVolumeName(stems[index]!,partIndex,parts.length),bytes:await readFile(part.path)});
+  for(const [partIndex,part] of parts.entries()){
+   const partBytes=await readFile(part.path);
+   const volumeName=materialVolumeName(stems[index]!,partIndex,parts.length);
+   result.push({name:volumeName,bytes:partBytes});
+   cacheItems.push({name:volumeName,path:part.path,size:partBytes.byteLength,sha256:sha256Hex(partBytes)});
+  }
+ }
+ const tempPath=`${cachePath}.${randomUUID()}.tmp`;
+ try{
+  await writeFile(tempPath,JSON.stringify({items:cacheItems},null,2),{mode:0o600,flag:'wx'});
+  await rename(tempPath,cachePath);
+ }catch{}finally{
+  await rm(tempPath,{force:true}).catch(()=>{});
  }
  return result;
 }

@@ -13,7 +13,7 @@
 - [源码导航](src/README.md)：布局、请求、类型及样式等基础模块。
 - `vite.config.ts`：构建插件、Vue API 与组件自动导入；开发服务器默认监听 `127.0.0.1:3800`，并将 `/api` 转发到后端 `127.0.0.1:3700`。
 - `uno.config.ts` 与 `src/theme.ts`：原子样式规则与共享主题。
-- `package.json` 与 `tsconfig.json`：前端工作区依赖／脚本及 TypeScript 配置；JSON 不支持注释，以本说明登记用途。
+- `package.json`、`pnpm-lock.yaml` 与 `tsconfig.json`：前端工作区依赖／锁文件／脚本及 TypeScript 配置；严格格式与锁文件不插入注释，以本说明登记用途。
 - 源码导入约定：`@/` 指向 `src/`，`@shared/` 指向仓库根目录 `shared/`，`@server/` 仅用于前端必要的服务端类型引用；同目录或相邻文件保留短相对路径。
 - `dist/`、`node_modules/`：构建与依赖生成目录，不手工维护、不放 README。
 

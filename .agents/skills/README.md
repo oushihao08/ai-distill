@@ -9,4 +9,5 @@
 | `materials-full-capacity-dispatch` | `../../toolSkills/materials-full-capacity-dispatch` | 已授权批量材料入库/脱敏/整理/加载/出题的实时容量补位 |
 | `phase8-materials-full-capacity` | `../../toolSkills/phase8-materials-full-capacity` | 高经第八期 132 个固定逻辑包的双通道满载推进 |
 | `feishu-operations` | `../../toolSkills/feishu-operations` | 飞书多维表格、字段、记录、附件操作与专家分配 |
+| `doubao-answer-review` | `../../toolSkills/doubao-answer-review` | 在豆包网页提交重出题复测、监控首答回收附件、核对耗时与 Agent loop 并独立评分 |
 | `ai-trace-review` | `../../toolSkills/ai-trace-review` | 题面/交付残留与任务重名核查及授权改名 |

@@ -18,6 +18,7 @@
 | `process.ts` | `processMaterials()`核对原件/缓存，生成私有页结构；只对可重试问题页做一次子集复识别并保留issues，无页级能力则标记不可复查，不整份重传。旧无调用的检查点清理入口已移除，不删除历史缓存。 |
 | `pdf.ts` | 当前共享Page/DocumentBlock和确定性`documentBlocksToText()`；`command()`封装Poppler；`extractPdf()`是旧Vision页级路径，非当前MinerU主入口。 |
 | `pdf-split.ts` | `splitLargePdf()`供旧目录同步、飞书材料PDF分册及材料库 `pdf-extraction/chunked-pdf.ts` 大PDF自动分片提取共用（可显式指定大小、页数和受管缓存根目录，旧调用默认值不变），按页/大小拆至受管缓存，不修改来源；有qpdf时按范围导出并清除未引用资源，避免共享资源被逐页重复携带，无qpdf仍用Poppler兼容路径。 |
+| `libreoffice.ts` | `createLibreOfficeEnvironment()` 为本机 LibreOffice 转换创建隔离字体环境（macOS 自动补入系统字体目录），供材料预处理与原件预览复用。 |
 | `pdf-extraction/` | MinerU API/CLI与结构转换，详见本目录README。 |
 | `config.ts` | `loadExtractionConfig()`读JSON兼容识别配置，仅用EXTRACTION_CONFIG_PATH选文件；不是当前MinerU逐字段环境配置合并器。 |
 | `vision.ts` | 旧智谱聊天视觉/实体客户端，保留调查与测试路径；独立GLM-OCR版面解析不复用此客户端。 |

@@ -12,12 +12,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inputDigest } from '../authoring/jobs';
 import { localQueue, withLocalExecution, withLocalQueueRoot } from '../execution-queue/runtime';
+import { MAX_ALLOWED_PARALLEL_SUBRUNS, type CustomStepDefinition } from './contract';
 import {
   assertBeforePublishCustomStepsReady,
   computeAuthoringSourceDigest,
   enqueueCustomStep,
   invalidateDownstreamCustomSteps,
   prepareCagedDirectories,
+  resolveParallelCap,
   runNextCustomStep,
 } from './jobs';
 import { CustomStepRegistry, defineProjectCustomSteps } from './registry';
@@ -522,5 +524,95 @@ describe('Custom Steps 沙盒、单槽位滑窗队列与零干扰回归 (T3)', (
     });
     await invalidateDownstreamCustomSteps(fake.pool, tempRoot, reg, 'ALE', workflowId, 4);
     expect(fake.runs.find((r) => r.sub_run_key === 'cal_run_99')?.status).toBe('skipped');
+  });
+
+  test('resolveParallelCap 与 formal_8plus1 11 路同发：不截断为 8 且严格受 MAX_ALLOWED_PARALLEL_SUBRUNS=12 约束', async () => {
+    const baseDef: CustomStepDefinition = {
+      project_key: 'ALE',
+      step_key: 'ale_calibrate_8plus1',
+      name: 'ALE 8+1 标定',
+      description: 'desc',
+      anchor: { ordinal: 4, placement: 'after', order: 2 },
+      mode: 'queued_subruns',
+      lane: 'agent',
+      max_parallel_subruns: 12,
+      planSubRuns: () => ({ action: 'wait', progress_label: 'wait' }),
+      executeRun: async () => ({ run_success: false }),
+    };
+
+    expect(resolveParallelCap(baseDef, { preset: 'formal_8plus1' })).toBe(12);
+    expect(resolveParallelCap({ ...baseDef, max_parallel_subruns: undefined }, { preset: 'formal_8plus1' })).toBe(12);
+    expect(resolveParallelCap({ ...baseDef, max_parallel_subruns: 11 }, { preset: 'formal_8plus1' })).toBe(11);
+    expect(resolveParallelCap(baseDef, { preset: 'formal_8plus1', max_parallel_subruns: 11 })).toBe(11);
+    expect(resolveParallelCap(baseDef, { preset: 'formal_8plus1', max_parallel_subruns: 99 })).toBe(
+      MAX_ALLOWED_PARALLEL_SUBRUNS,
+    );
+    expect(resolveParallelCap(baseDef, { preset: 'sample_5' })).toBe(5);
+    expect(resolveParallelCap(baseDef, { preset: 'sample_3' })).toBe(3);
+
+    // 端到端验证：formal_8plus1 首轮规划 8 路标定 + 3 路示范 = 11 路时一次全量入队，不被截断为 8
+    const prevAgentConc = process.env.AGENT_CONCURRENCY;
+    process.env.AGENT_CONCURRENCY = '12';
+    try {
+      const workflowId = crypto.randomUUID();
+      const projectId = crypto.randomUUID();
+      const authorAttempt = {
+        id: crypto.randomUUID(),
+        status: 'succeeded',
+        input: { digest: 'in-8p3' },
+        result: {
+          question: '请核算 8+3 并发题',
+          question_version: 'qv-8p3',
+          rubric: [{ id: 'C01' }],
+          rubric_version: 'rv-8p3',
+          attachment_ids: [],
+        },
+      };
+      const fake = createFakeCustomStepPool({
+        workflowId,
+        projectId,
+        parentName: 'ALE',
+        authorAttempt,
+      });
+
+      const elevenKeys = [
+        'cal_run_01',
+        'cal_run_02',
+        'cal_run_03',
+        'cal_run_04',
+        'cal_run_05',
+        'cal_run_06',
+        'cal_run_07',
+        'cal_run_08',
+        'demo_run_01',
+        'demo_run_02',
+        'demo_run_03',
+      ];
+      const reg = new CustomStepRegistry();
+      reg.registerProject(
+        'ALE',
+        defineProjectCustomSteps('ALE', [
+          {
+            ...baseDef,
+            planSubRuns: ({ sub_runs }) => {
+              const seen = new Set(sub_runs.map((r) => r.sub_run_key));
+              const next = elevenKeys.filter((k) => !seen.has(k)).map((sub_run_key) => ({ sub_run_key }));
+              return next.length
+                ? { action: 'enqueue', progress_label: '首轮 8+3 并发', next_sub_runs: next }
+                : { action: 'wait', progress_label: '等待中' };
+            },
+          },
+        ]),
+      );
+
+      const enqueued = await withLocalQueueRoot(tempRoot, () =>
+        enqueueCustomStep(fake.pool, tempRoot, reg, workflowId, 'ale_calibrate_8plus1', { preset: 'formal_8plus1' }),
+      );
+      expect(enqueued.enqueued_ids).toHaveLength(11);
+      expect(fake.runs.map((r) => r.sub_run_key)).toEqual(elevenKeys);
+    } finally {
+      if (prevAgentConc === undefined) delete process.env.AGENT_CONCURRENCY;
+      else process.env.AGENT_CONCURRENCY = prevAgentConc;
+    }
   });
 });

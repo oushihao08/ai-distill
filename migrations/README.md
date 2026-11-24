@@ -65,6 +65,8 @@ SQL 文件演进 `ai_distill` schema 的表、约束、索引和步骤布局。�
 
 `048_system_authoring_defaults.sql`为现有系统配置增加出题专用默认JSON字段，仅供新期复制，不回写既有数据。定向执行入口见运行脚本说明。
 
+`049_allow_verified_library_blob_path_repair.sql`允许在 SHA-256 与字节数严格匹配校验下修复 `library_blobs` 受管存储相对路径，不放宽正文或摘要不可变约束。
+
 `050_manual_revision_advice.sql`新增独立手动建议任务表、活动防重索引及advice归属保护；不改步骤ordinal、题目、作答、评分或自动推进。未应用时建议入口明确不可用，原出题可继续。须按目标环境核实迁移，不从隔离库验收推断业务库已应用。
 
 `052_active_phase_number_unique.sql`将主项目期号唯一性限制在未删除期次；已删除期次仍保留历史行，但不再阻止以相同期号重新创建。迁移只重建索引，不改项目或工作流记录。

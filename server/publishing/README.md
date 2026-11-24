@@ -11,12 +11,13 @@ Skill Dependency 的出题后本地直交另由 `GET /api/workflows/:id/skill-de
 
 | 文件 | 职责与入口 |
 | --- | --- |
-| `feishu.ts` | 豆包出题草稿上传及已归档题目的同步；校验冻结材料DOCX和远端记录（`draft` 与 `archived` 共用 600s 客户端超时；表结构校验 10 分钟进程内缓存与每表一次空行清理，导出 `clearFeishuDeliverySessionCache()`；远端查重与附件上传在获取 PG 事务及 `feishu-table-write` 咨询锁之前执行）。步骤 5/6/7 封存期间 `archived` 不再要求步骤 7 达标记录；归档同步成功后才允许把同版本草稿行升级为已完成。 |
-| `material-pdf.ts` | HTTP交付与本地CLI共用的材料DOCX到图像PDF转换及18MB分册入口；不读取数据库或调用业务API，依赖已有LibreOffice/Python及PDF工具。 |
+| `feishu-delivery.ts` | 飞书多维表格题目交付的唯一共用核心模块：导出 `createFeishuDeliverySession()`、`uploadFeishuAttachments()`（有界并发上传并严格保序）与 `deliverQuestionToFeishu()`（查重、远端附件一致时跳过PDF转换与上传、可选写锁临界区及逐字符回读核验），供 `feishu.ts`、`batch-dispatch` 与 `cli/feishu-local.ts` 共同复用。 |
+| `feishu.ts` | 工作流出题草稿上传及已归档题目同步（调用共用 `deliverQuestionToFeishu()`）；直接复用 `exportCurrentMaterialDocx()` 返回的已核验内存字节与本地快照索引，避免重复跨网拉取大JSON；进程内同表写队列配合跨进程有界等待 `feishu-table-write` 咨询锁避免并发交付互拒。 |
+| `material-pdf.ts` | HTTP交付与本地CLI共用的材料DOCX到图像PDF转换、15MB连续页分册与已校验分册落盘缓存（`peekCachedMaterialPdfNames()` / `materialPdfAttachments()`）；`scripts/runtime/docx-to-image-pdf.py` 多页栅格化按连续页块跨CPU多核并行执行。 |
 | `feishu-verification.ts` | 六字段固定投影、逐字符差异和材料身份校验的纯函数；新记录考点复用豆包普通数字投影，旧版标签仅用于同版旧值核验。 |
-| `feishu.test.ts`、`feishu-verification.test.ts` | 隔离替身验证同步分支及材料/文本规则，不访问真实服务。 |
-| `feishu-api.ts` | 豆包字段/选项、建表与隐藏系统关联；通用远端操作调用toolSkills的CLI，客户端须finally关闭。 |
-| `feishu-targets.ts` | 各期默认目标配置及一次性新表入口；复用步骤8配置，不失效已有结果。 |
+| `feishu.test.ts`、`feishu-delivery.test.ts`、`feishu-verification.test.ts` | 隔离验证共用交付引擎、并发保序上传、草稿升归档免转免传、同表写队列互斥、本地快照零跨网读取、真实多核PDF转换与缓存防篡改校验。 |
+| `feishu-api.ts` | 交付表字段/选项、建表与隐藏系统关联；直接复用进程内 `createAppClient()`（内置进程级 `tenant_access_token` 缓存与超 20MB 分片上传，无逐题子进程重启开销），结束调用 `close()`。 |
+| `feishu-targets.ts` | 期次默认目标配置及一次性新表入口；豆包法律、医疗与返修主项目保持各自冻结期次默认路由，其他主项目默认目标为 `null`（自动归档不误投），支持显式保存 `default_target` 或单次传 `target` 覆盖。 |
 | `tasks.ts` | `enqueuePublication()`冻结达标/项目/脚本身份并持久派发（steps 5/6/7 封存期间按 step 4 成功与直交摘要派发）；`runNextPublication()`由worker领取、跟踪心跳/取消、执行项目交付及失败结算。 |
 | `tasks.test.ts` | 临时SQLite、SQL/执行器替身与独立随机端口HTTP核对202回执、活动任务复用、失败不误报成功。 |
 | `project-delivery.test.ts` | 临时Bun子进程核对有界私有诊断，不运行项目模型。 |
@@ -72,9 +73,9 @@ HTTP归档入口只持久派发并返回任务ID（202），通过attempt接口/
 
 ## 豆包飞书交付
 
-传输入口复用[通用飞书工具Skill](../../toolSkills/feishu-operations/README.md)：API/worker通过createCliClient启动同一CLI的NDJSON会话，call/list及附件上传共用工具实现。保留原FEISHU应用身份；HTTP单次调用默认90秒，子进程默认95秒会话预算，草稿交付显式使用10分钟会话预算，上传/回读间按现有规则重建连接，finally关闭；目标配置/建表接口同样使用此工具。豆包字段、防重、空行备份清理、版本/正文/附件核对和逐目标回执仍在本模块。官方用户CLI通道独立可选，不改变后台身份；常驻进程需加载此源码后生效。
+交付核心逻辑收敛在共用模块 `feishu-delivery.ts`（`deliverQuestionToFeishu()`、`createFeishuDeliverySession()`、`uploadFeishuAttachments()`），由工作流同步 `feishu.ts`、`batch-dispatch` 与本地清单同步 `cli/feishu-local.ts` 共同复用；底层传输直接调用进程内 `createAppClient()`（保留原 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 应用身份，进程内缓存 `tenant_access_token` 并在单会话内并发上传附件、支持超 20MB 分片上传，避免逐题启停 CLI 子进程与临时文件复制）。字段定义、防重、空行备份清理、版本/正文/附件核对和逐目标回执仍在本模块统一维护。官方用户CLI通道独立可选，不改变后台身份；常驻进程需重载后加载最新源码。
 
-仅豆包法律主项目`315407cd-43db-49d1-8eb3-c2dff77af859`与医疗主项目`e23bfcec-5403-42df-ad92-ea071f6ab24a`启用，凭证由服务端环境`FEISHU_APP_ID`/`FEISHU_APP_SECRET`提供。归档worker在本地归档提交后读取该期的默认目标并同步；飞书失败单独记录，不撤销本地归档，不自动重跑模型。Work交付不进入此分支。
+豆包法律主项目`315407cd-43db-49d1-8eb3-c2dff77af859`、医疗主项目`e23bfcec-5403-42df-ad92-ea071f6ab24a`与第六期返修主项目`95e1e1d7-a567-4d48-90a6-3191821d93d6`自带冻结期次默认目标路由；其他主项目默认目标为 `null`（自动归档不会误投），可通过 `PUT /api/projects/:id/feishu-delivery` 保存显式 `default_target` 或在同步请求中传入显式 `target` 使用同一套飞书交付能力。归档worker在本地归档提交后读取该期的默认目标并同步；飞书失败单独记录，不撤销本地归档，不自动重跑模型。
 
 医疗主项目与法律主项目共用同一同步与生命周期回调，但期次默认目标分别冻结：法律按期名沿用`PHASE_DEFAULT_TARGETS`，医疗只对`MEDICAL_PHASE_DEFAULT_TARGETS`已登记的期次启用，未登记期次返回`not_applicable`，不按名称临时找表或建表。当前医疗登记「第一期」「第九期」→同一张`第九期-医疗`（`tblDxEX3XN2uYGxV`）：第一期按用户2026-11-10指定，并通过配置接口保存为显式默认目标（`source: configured`）；法律第八期的两个目标不受影响。2026-11-10 已把医疗第一期 6 道已出题题目以草稿形态上传该表（`题目是否完成`=未完成），逐题字段/附件回读核验通过，未改评分、达标或归档状态。
 
@@ -159,10 +160,9 @@ CLI等待仅确认本地归档attempt终态。`workflow delivery show`通过工�
 
 ### 交付效率与当前限制
 
-`feishu-records.ts`是服务端和本地快照CLI共用的稳定ID搜索入口：按题目ID或系统同步ID用records/search过滤，仅取身份字段并完整回读匹配行；不在每题同步中下载整表正文。显式table_id时不再额外读取Base全部表。批次前后的跨表全量对账仍由调用方执行，单题查重不能证明跨表唯一。
+1. **避免重复跨网拉取多MB材料索引**：`readCurrentRedactionForDocx()` 复用 `readQuestionMaterialsWithIndex()` 已从本地快照缓存校验读取的 `snapshot_manifest` 与 `parsed_index`；`exportCurrentMaterialDocx()` 直接随返回值附带已核验内存 `files` 并在全部附件与唯一 manifest 未变时跳过无变更数据库写往返，`feishu.ts` 不再二次回查材料索引与 artifact 表。
+2. **进程内会话、惰性转换与并发上传**：`feishu-api.ts` 使用进程内应用客户端缓存 `tenant_access_token`，不再逐文件重启 CLI 子进程；`deliverQuestionToFeishu()` 在远端已有同题记录且附件名已匹配（如命中 `peekCachedMaterialPdfNames()` 分册缓存或草稿升正式归档）时直接跳过 PDF 转换与媒体上传；需要上传多份分件/分册时通过 `uploadFeishuAttachments()` 默认 4 并发上传并按原索引保序。
+3. **PDF 分册缓存与多核栅格化**：`material-pdf.ts` 按输入 DOCX 字节摘要与分册上限持久化已校验分册清单缓存，同源重复交付或草稿升正式交付直接毫秒级命中；冷启动转换时 `scripts/runtime/docx-to-image-pdf.py` 在校验内嵌中文字体后按连续页块跨多核并行栅格化合并。
+4. **同表并发安全**：慢速 DOCX 导出、PDF 转换与飞书素材上传均在数据库事务外并发执行；最终记录写阶段经进程内同表队列与有界等待的 `feishu-table-write` 咨询锁串行进入，CLI `feishu draft-sync-batch` / `sync-batch` 与 `batch-dispatch` 交付池默认支持 4 并发而不互相争锁报错。
 
-草稿/归档HTTP均支持显式`combined_material:true`与`attachment_format:pdf|docx`，配置接口声明`capabilities.combined_material`。项目CLI单题/批次直接传递这些参数；PDF按冻结来源先合册再经同一转换器生成图像PDF，保留18MB连续页分册规则。CLI等待预算15分钟，批次冻结目标与实际附件格式；成功必须是回执succeeded且verification=passed。参数和操作步骤见CLI README，不用临时Python脚本实现另一套业务交付。
-
-仍有未消除的性能风险：远端同步事务持有数据库连接与事务级锁，过程中多次snapshot/assertCurrent复核。慢数据库、跨机器材料读取和首次PDF栅格化仍可能耗时；本轮没有改变该锁和版本保护语义，也没有新增后台交付队列。减少查重读取不等于已解决数据库连接或网络故障。转换结果已有缓存，复用仍检查来源摘要；更换模式不会自动把已交付记录批量重传。
-
-以上为源码及文档变更，未运行测试、真实PDF交付或重启常驻服务；业务验收须在运行实例加载新能力后以当前请求和远端回读证明。不得仅因编译/CLI帮助显示新参数而宣称交付性能已实测改善。
+注意：服务端 HTTP 与常驻 `worker` 需在获得授权重启后才会加载上述最新源码（CLI 本地命令立即加载新代码）；真实飞书送达耗时改善仍须在重载后凭实际批次请求和回读回执验收。

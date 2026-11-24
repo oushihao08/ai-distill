@@ -134,11 +134,25 @@ export async function preflightTask(taskDir: string, model: string): Promise<Pre
     }
   }
 
-  const expectsFj1Txt = instruction.includes('附件1.txt') || /check_frozen_input|['"]附件1\.txt['"]/.test(gradePy);
-  if (expectsFj1Txt && !inputFiles.includes('附件1.txt')) {
-    blockers.push(
-      `输入文件断链：instruction.md / grade.py 要求 附件1.txt，但 environment/input/ 实际只有 [${inputFiles.join(', ')}]`,
-    );
+  for (const expectedName of ['附件1.docx', '附件1.txt']) {
+    const escaped = expectedName.replace('.', '\\.');
+    const expectsFile =
+      instruction.includes(expectedName) ||
+      new RegExp(`['"]${escaped}['"]`).test(gradePy) ||
+      gradePy.includes(expectedName);
+    if (!expectsFile) continue;
+    if (!inputFiles.includes(expectedName)) {
+      blockers.push(
+        `输入文件断链：instruction.md / grade.py 要求 ${expectedName}，但 environment/input/ 实际只有 [${inputFiles.join(', ')}]`,
+      );
+      continue;
+    }
+    if (expectedName.endsWith('.docx')) {
+      const head = await readFile(join(root, 'environment', 'input', expectedName));
+      if (head.length < 4 || head[0] !== 0x50 || head[1] !== 0x4b || head[2] !== 0x03 || head[3] !== 0x04) {
+        blockers.push(`输入文件格式无效：${expectedName} 不是合法的 DOCX ZIP 二进制文件`);
+      }
+    }
   }
 
   const mentionsWorkspacePath = /\/workspace\/(?:input|output)/.test(instruction);
@@ -199,7 +213,17 @@ export function convertCodexEventsToTrajectory(rawNdjson: string): string {
     const type = String(ev.type ?? '');
     if (type === 'item.completed' && ev.item && typeof ev.item === 'object') {
       const item = ev.item as Record<string, any>;
-      if (item.type === 'command_execution' || item.type === 'mcp_tool_call' || item.type === 'web_search') {
+      if (
+        item.type === 'command_execution' ||
+        item.type === 'mcp_tool_call' ||
+        item.type === 'web_search' ||
+        item.type === 'file_change'
+      ) {
+        const callArgs =
+          item.command ??
+          item.arguments ??
+          item.query ??
+          (item.type === 'file_change' ? { changes: item.changes ?? [] } : item);
         stepEntries.push({
           role: 'assistant',
           type: 'model_response',
@@ -208,9 +232,25 @@ export function convertCodexEventsToTrajectory(rawNdjson: string): string {
             {
               id: item.id,
               name: item.type,
-              arguments: item.command ?? item.arguments ?? item.query ?? item,
+              arguments: callArgs,
             },
           ],
+        });
+        stepEntries.push({
+          role: 'tool',
+          type: 'tool_result',
+          tool_call_id: item.id,
+          name: item.type,
+          status: item.status ?? 'completed',
+          exit_code: typeof item.exit_code === 'number' ? item.exit_code : null,
+          output:
+            typeof item.aggregated_output === 'string'
+              ? item.aggregated_output
+              : item.result !== undefined
+                ? item.result
+                : item.changes !== undefined
+                  ? item.changes
+                  : '',
         });
       } else if (item.type === 'agent_message' && typeof item.text === 'string' && item.text.trim()) {
         stepEntries.push({
@@ -236,8 +276,14 @@ export function convertCodexEventsToTrajectory(rawNdjson: string): string {
   }
 
   if (finalUsage) {
-    const last = stepEntries[stepEntries.length - 1]!;
-    last.usage = {
+    let lastAssistant = stepEntries[stepEntries.length - 1]!;
+    for (let i = stepEntries.length - 1; i >= 0; i--) {
+      if (stepEntries[i]!.role === 'assistant') {
+        lastAssistant = stepEntries[i]!;
+        break;
+      }
+    }
+    lastAssistant.usage = {
       input_tokens: finalUsage.input_tokens,
       output_tokens: finalUsage.output_tokens,
       total_tokens:
@@ -246,8 +292,11 @@ export function convertCodexEventsToTrajectory(rawNdjson: string): string {
           : typeof finalUsage.input_tokens === 'number' && typeof finalUsage.output_tokens === 'number'
             ? finalUsage.input_tokens + finalUsage.output_tokens
             : undefined,
-      cached_input_tokens: finalUsage.cached_input_tokens,
-      reasoning_output_tokens: finalUsage.reasoning_output_tokens,
+      cached_input_tokens: typeof finalUsage.cached_input_tokens === 'number' ? finalUsage.cached_input_tokens : null,
+      cache_write_input_tokens:
+        typeof finalUsage.cache_write_input_tokens === 'number' ? finalUsage.cache_write_input_tokens : null,
+      reasoning_output_tokens:
+        typeof finalUsage.reasoning_output_tokens === 'number' ? finalUsage.reasoning_output_tokens : null,
     };
   }
 
@@ -441,6 +490,7 @@ async function executeOneIsolatedRun(params: {
       `- 题面中的 /workspace/output/... 对应可写交付目录 ./output/...（绝对路径：${wsOutput}）`,
       `- 临时辅助脚本或中间计算文件请写在 ./tmp/...（绝对路径：${wsTmp}），不要污染 ./output/。`,
       '- 环境预置只读通用工具：python3（已装 openpyxl、python-docx）及通用格式/公式重算预览脚本 ./tools/office_lint.py <file.xlsx|file.docx>（仅用于回显重算值与检查公式语法错误）。',
+      '- 当前离线沙盒无 LibreOffice / WPS / GUI 预览服务（请勿探测 soffice/wpscli/qlmanage/textutil/浏览器截图）；生成交付文件后请务必在结束前运行 ./tools/office_lint.py ./output/<文件名> 逐项复核公式引用坐标、重算值与表格结构（防止行号错移或明细列误写公式）。',
       '',
       '--- 任务说明（instruction.md）---',
       instruction,
@@ -465,6 +515,7 @@ async function executeOneIsolatedRun(params: {
       LANG: process.env.LANG ?? 'en_US.UTF-8',
       TMPDIR: wsTmp,
       PYTHONDONTWRITEBYTECODE: '1',
+      PYTHONPYCACHEPREFIX: wsTmp,
       PYTHONUTF8: '1',
       ...(process.env.CODEX_HOME ? { CODEX_HOME: process.env.CODEX_HOME } : {}),
       ...(process.env.HTTP_PROXY ? { HTTP_PROXY: process.env.HTTP_PROXY } : {}),
@@ -503,7 +554,7 @@ async function executeOneIsolatedRun(params: {
     const gradeProc = spawnSync(
       'python3',
       [join(root, 'tests/grade.py'), '--artifacts-dir', artifactsDir, '--output', gradePath, '--input-dir', wsInput],
-      { encoding: 'utf8', timeout: 120000 },
+      { encoding: 'utf8', timeout: 120000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } },
     );
 
     const gradeData = existsSync(gradePath)
@@ -519,6 +570,23 @@ async function executeOneIsolatedRun(params: {
           ? 'completed'
           : 'failed';
 
+    const rawUsageLine = execRes.rawStdout
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .reverse()
+      .map((l) => {
+        try {
+          const parsed = JSON.parse(l);
+          return parsed?.type === 'turn.completed' ? parsed.usage : null;
+        } catch {
+          return null;
+        }
+      })
+      .find(Boolean);
+    const envMetaPath = join(root, 'environment/env.json');
+    const envMeta = existsSync(envMetaPath) ? JSON.parse(await readFile(envMetaPath, 'utf8')) : {};
+
     await writeFile(
       join(runDir, 'run.json'),
       `${JSON.stringify(
@@ -526,15 +594,26 @@ async function executeOneIsolatedRun(params: {
           schema_version: 'ale.run.v1',
           task_id: preflight.task_id,
           task_version: preflight.task_version,
+          environment_id: String(envMeta?.environment_id ?? 'default'),
+          environment_version: String(envMeta?.version ?? '1.0.0'),
+          grader_version: String(gradeData?.grader_version ?? '1.0.0'),
           run_id: runId,
           run_role: role,
           model,
+          model_actual_version: model,
           codex_version: preflight.codex_version,
           harness: 'codex_cli_isolated_v1',
           is_oracle: false,
           parameters: {
             reasoning_effort: reasoningEffort,
             timeout_minutes: timeoutMinutes,
+            token_budget: null,
+          },
+          reasoning_exposure: {
+            exposed_plaintext_reasoning: false,
+            exposed_reasoning_token_count: typeof rawUsageLine?.reasoning_output_tokens === 'number',
+            statement:
+              'Codex/OpenAI 接口未暴露明文思维链文本，仅在 turn.completed.usage 中暴露 reasoning_output_tokens 计数，按第 5 节据实声明。',
           },
           started_at: startedAt,
           finished_at: finishedAt,
@@ -543,10 +622,20 @@ async function executeOneIsolatedRun(params: {
           tool_calls: metrics.tool_calls,
           usage: {
             input_tokens: metrics.input_tokens,
+            cached_input_tokens:
+              typeof rawUsageLine?.cached_input_tokens === 'number' ? rawUsageLine.cached_input_tokens : null,
+            cache_write_input_tokens:
+              typeof rawUsageLine?.cache_write_input_tokens === 'number' ? rawUsageLine.cache_write_input_tokens : null,
             output_tokens: metrics.output_tokens,
+            reasoning_output_tokens:
+              typeof rawUsageLine?.reasoning_output_tokens === 'number' ? rawUsageLine.reasoning_output_tokens : null,
             total_tokens: metrics.total_tokens,
+            inclusion_relation:
+              'cached_input_tokens 已包含在 input_tokens 内，reasoning_output_tokens 已包含在 output_tokens 内；total_tokens = input_tokens + output_tokens，不重复累计',
             source: 'raw_codex_events.jsonl -> turn.completed.usage',
           },
+          judge_usage: gradeData?.judge_usage ?? null,
+          infrastructure_failures_and_retries: [],
           raw_events_file: 'raw_codex_events.jsonl',
         },
         null,
@@ -648,7 +737,7 @@ export async function regradeSavedRuns(taskDir: string, model = 'gpt-6.1-sol', e
     const gradeProc = spawnSync(
       'python3',
       [join(root, 'tests/grade.py'), '--artifacts-dir', artifactsDir, '--output', gradePath, '--input-dir', inputDir],
-      { encoding: 'utf8', timeout: 120000 },
+      { encoding: 'utf8', timeout: 120000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } },
     );
     const gradeData = existsSync(gradePath)
       ? JSON.parse(await readFile(gradePath, 'utf8'))
@@ -781,7 +870,7 @@ export async function runCalibration(options: CalibrateOptions) {
       results.push(out);
 
       const passSoFar = results.filter((r) => r.success).length;
-      if (options.maxPass !== undefined && passSoFar > options.maxPass && cursor < runIds.length) {
+      if (options.maxPass !== undefined && passSoFar > options.maxPass) {
         earlyStopped = true;
         earlyStopController.abort();
       }

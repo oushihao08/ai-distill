@@ -110,7 +110,7 @@ export function channel(t: Task): Channel {
 export function validateLimits(raw: unknown): Manifest['limits'] {
   const limits = object(raw, ['agent', 'waiting', 'delivery'], 'limits');
   for (const [k, v] of Object.entries(limits)) bounded(v, 32, 'limits.' + k, true);
-  return { ...limits, delivery: limits.delivery ?? 1 };
+  return { ...limits, delivery: limits.delivery ?? 4 };
 }
 export function validateManifest(raw: unknown): Manifest {
   const m = object(raw, ['version', 'id', 'limits', 'tasks'], '批次');
