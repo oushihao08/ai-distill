@@ -11,6 +11,7 @@ import {loadLibraryPackage,readLoadedLibraryPackages,readLoadedLibrarySummary,re
 import {readLibraryPackages} from './service';
 import {readLegacyMaterialInventory,importLegacyMaterial,activateLegacyImports} from './legacy-import';
 import {createLibraryQuestion} from './questions';
+import {createDirectRawQuestion} from './direct-raw-question';
 import {readPhaseMaterialUseEvents,readPhaseMaterialUses,updateMaterialUse} from './uses';
 import {readProjectMaterialProcessingMode} from './processing-policy';
 import {materialProcessingSourceMode} from '../../shared/material-library';
@@ -94,6 +95,37 @@ export function registerProjectLibraryRoutes(app:Hono,pool:Pool,storageRoot:stri
   pool,uuid(c.req.param('id')),uuid(c.req.param('linkId')),versionHeader(c.req.header('If-Match')))));
  app.post('/api/projects/:id/loaded-materials/:linkId/questions',async c=>{
   const result=await createLibraryQuestion(pool,storageRoot,uuid(c.req.param('id')),uuid(c.req.param('linkId')),await jsonBody(c));
+  return c.json(result,result.reused?200:201);
+ });
+ app.post('/api/projects/:id/direct-raw-questions',async c=>{
+  const projectId=uuid(c.req.param('id'));
+  let form:FormData;try{form=await c.req.formData();}catch{throw new HTTPException(400,{message:'原件包上传须为 multipart/form-data'});}
+  const requestKey=form.get('request_key'),title=form.get('title');
+  if(typeof requestKey!=='string'||typeof title!=='string')throw new HTTPException(400,{message:'缺少 request_key 或题目标题'});
+  const uploads=form.getAll('files').filter((f):f is File=>f instanceof File);
+  if(!uploads.length||uploads.length>100)throw new HTTPException(400,{message:'请选择 1 至 100 份原件文件'});
+  let tags:string[]=[];
+  const rawTags=form.get('question_tags');
+  if(typeof rawTags==='string'&&rawTags.trim()){
+   try{const parsed=JSON.parse(rawTags);if(!Array.isArray(parsed)||parsed.some(t=>typeof t!=='string'))throw new Error('bad tags');tags=parsed;}
+   catch{throw new HTTPException(400,{message:'question_tags 格式无效'});}
+  }
+  const strField=(name:string)=>{const v=form.get(name);return typeof v==='string'&&v.trim()?v.trim():undefined;};
+  const levelVal=strField('target_level');
+  if(levelVal!==undefined&&!['L2','L3','L4','L5'].includes(levelVal))throw new HTTPException(400,{message:'题目难度等级无效'});
+  const files=await Promise.all(uploads.map(async file=>({original_name:file.name,bytes:new Uint8Array(await file.arrayBuffer())})));
+  const result=await createDirectRawQuestion(pool,storageRoot,projectId,{
+   request_key:requestKey,
+   title,
+   package_name:strField('package_name'),
+   scenario:strField('scenario'),
+   role_perspective:strField('role_perspective'),
+   authoring_direction:strField('authoring_direction'),
+   target_level:levelVal as 'L2'|'L3'|'L4'|'L5'|undefined,
+   question_tags:tags,
+   auto_author:form.get('auto_author')==='true',
+   files,
+  });
   return c.json(result,result.reused?200:201);
  });
 }

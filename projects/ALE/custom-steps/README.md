@@ -7,7 +7,7 @@
 
 | `step_key` | 锚点位置 | 运行模式与通道 | 职责与门控 |
 | --- | --- | --- | --- |
-| `ale_pre_authoring_lock` | `before` 步骤 `4`（`#1`） | `inline_before_gate`（`internal`，0 槽位） | 出题派发前校验来源材料非空，计算确定性 DOCX 二进制指纹并锁定挂载进 `environment/input/附件N.docx` 的精确文件名与 SHA-256 映射写入冻结元数据 `custom_before_gates` |
+| `ale_pre_authoring_lock` | `before` 步骤 `4`（`#1`） | `inline_before_gate`（`internal`，0 槽位） | 出题派发前校验来源材料非空：脱敏案卷模式计算确定性 DOCX 二进制指纹并锁定 `environment/input/附件N.docx`；原件直通模式（`raw_passthrough`）按原文件名与二进制 SHA-256 直接锁定 `environment/input/<原文件名>`，写入冻结元数据 `custom_before_gates` |
 | `ale_verify_gate` | `after` 步骤 `4`（`#1`） | `queued_single`（`internal`，0 Agent 槽） | 展开沙盒 `staged/tasks/<task_id>/` 预备包，实跑 `B01`/`B02`/`B03` 动态基线与 `M01`–`M09` 单因子反例，并执行 **Rubric 70/30 关键门控平衡审计**、**`instruction.md` 防剧透宽表拦截**与 **`M10` 表层诱饵反例（`shallow_decoy_trap`）检查**；阻断步骤 `8` 归档（不可跳过） |
 | `ale_calibrate_8plus1` | `after` 步骤 `4`（`#2`） | `queued_subruns`（`agent`，每次子运行占 1 个 Agent 槽，`max_parallel_subruns = 12`） | 隔离作答难度标定与示范轨迹采集：正式 `formal_8plus1` 默认启用 **`8 + 3`（8 路标定 + 首波 3 路示范 = 11 路）并发同跑**，支持显式退回两波模式及 `sample_3` / `sample_5` 抽测档位；具备超上限/必败/故障早停撤单、按波补发与离线秒级重评；阻断步骤 `8` 归档（支持显式 `pilot_skip_optional` 试包豁免） |
 

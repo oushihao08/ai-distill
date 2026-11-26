@@ -111,6 +111,7 @@ export function createApp(pool: Pool, storageRoot: string, assetExportRoot=proje
   'patch:/api/projects/:id/loaded-materials/:linkId':{operation:'project.material_package.update',fields:['redaction_id','position']},
   'delete:/api/projects/:id/loaded-materials/:linkId':{operation:'project.material_package.remove',fields:[]},
   'post:/api/projects/:id/loaded-materials/:linkId/questions':{operation:'project.library_question.create',fields:['request_key','redaction_id','title','scenario','role_perspective','target_level','authoring_direction','question_tags']},
+  'post:/api/projects/:id/direct-raw-questions':{operation:'project.direct_raw_question.create',fields:['request_key','title','package_name','scenario','role_perspective','target_level','authoring_direction','question_tags','auto_author']},
   'patch:/api/projects/:id':{operation:'project.update',fields:['name','description','material_root','local_skill_path','workspace_path']},
   'delete:/api/projects/:id':{operation:'project.delete',fields:[]},
   'post:/api/answer-models':{operation:'answer_model.register',fields:['provider','model','reasoning_effort','server_tools','max_tool_calls']},

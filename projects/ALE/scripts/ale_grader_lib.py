@@ -612,8 +612,25 @@ def _norm_label(text: Any) -> str:
     return s.lower()
 
 
+_SCI_SINGLE_UNIT_RE = (
+    r"(?:万元|元|人民币|RMB|CNY|USD|%|％|天|日|月|年"
+    r"|个|孔|支|管|项|例|人|次|板|瓶|份|株|代|细胞|事件|斑点|拷贝|微滴|测试|反应|倍"
+    r"|bp|kb|Mb|nt|Da|kDa|MDa|mol|mmol|μmol|umol|nmol|pmol|fmol"
+    r"|M|mM|μM|uM|nM|pM|fM|kg|g|mg|μg|ug|ng|pg|L|dL|mL|μL|uL|nL"
+    r"|h|hr|hrs|min|mins|sec|s|ms|°C|℃|K|folds?|tests?|vials?|cells?|events?|copies"
+    r"|CFU|SFU|PFU|IU|U|RU|LUFS|dB|dBTP|ppm|ppb|asinh|log2FC)"
+)
+_SCI_UNIT_EXPR_RE = (
+    rf"{_SCI_SINGLE_UNIT_RE}"
+    rf"(?:\s*[/／·⋅*×]\s*(?:\d+(?:\^\d+)?\s*)?{_SCI_SINGLE_UNIT_RE})*"
+)
+_SCI_TRAILING_UNIT_PAREN_RE = re.compile(rf"[（(]\s*{_SCI_UNIT_EXPR_RE}\s*[）)]\s*$")
+_FIN_UNIT_PAREN_RE = re.compile(r"[（(][^）)]*(?:元|万元|%|％|天|日|年|人民币|RMB|口径|单位)[^）)]*[）)]")
+
+
 def _strip_unit_paren(label: str) -> str:
-    return re.sub(r"[（(][^）)]*(?:元|万元|%|％|天|日|年|人民币|RMB|口径|单位)[^）)]*[）)]", "", label)
+    s = _FIN_UNIT_PAREN_RE.sub("", label)
+    return _SCI_TRAILING_UNIT_PAREN_RE.sub("", s)
 
 
 def _match_criteria(cell_val: Any, criteria: Any) -> bool:
@@ -2023,7 +2040,10 @@ class ExcelEvaluator:
 # ---------------------------------------------------------------------------
 
 _NS_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-_NUM_IN_CELL_RE = re.compile(r"(?<![A-Za-z0-9_])([+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[+-]?\d+(?:\.\d+)?)\s*(万元|元|%|％)?")
+_CELL_UNIT_OPT_RE = rf"(?:万元|元|%|％|{_SCI_UNIT_EXPR_RE})?"
+_NUM_IN_CELL_RE = re.compile(
+    rf"(?<![A-Za-z0-9_])([+-]?\d{{1,3}}(?:,\d{{3}})+(?:\.\d+)?|[+-]?\d+(?:\.\d+)?)\s*({_CELL_UNIT_OPT_RE})"
+)
 
 
 class DocxExtractor:
@@ -2093,14 +2113,12 @@ class DocxExtractor:
         # 剔除常见货币前缀与尾注括号（如 "¥1,234,567.89 元" 或 "1,234.50（含税）"）
         s_clean = re.sub(r"^(?:人民币|RMB|CNY|USD|¥|￥)\s*", "", s, flags=re.IGNORECASE)
         s_clean = re.sub(r"[（(][^）)]*[）)]\s*$", "", s_clean).strip()
-        m = re.match(r"^([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(万元|元|%|％)?$", s_clean)
+        m = re.match(rf"^([+-]?(?:\d{{1,3}}(?:,\d{{3}})+|\d+)(?:\.\d+)?)\s*({_CELL_UNIT_OPT_RE})$", s_clean)
         if not m:
             return None
         num = float(m.group(1).replace(",", ""))
-        unit = m.group(2) or ""
-        if unit == "%":
-            return num / 100.0
-        if unit == "％":
+        unit = (m.group(2) or "").strip()
+        if unit in ("%", "％"):
             return num / 100.0
         return num
 
@@ -2148,11 +2166,14 @@ class DocxExtractor:
                     idx = para.find(alias)
                     if idx >= 0:
                         tail = para[idx + len(alias) :]
-                        # 跳过紧邻序号，只提取冒号/等号/空格后的金额
-                        m = re.search(r"[:：=为即系\s]\s*(?:人民币|RMB|¥|￥)?\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(万元|元|%|％)?", tail)
+                        # 跳过紧邻序号，只提取冒号/等号/空格后的数值或金额
+                        m = re.search(
+                            rf"[:：=为即系\s]\s*(?:人民币|RMB|¥|￥)?\s*([+-]?(?:\d{{1,3}}(?:,\d{{3}})+|\d+)(?:\.\d+)?)\s*({_CELL_UNIT_OPT_RE})",
+                            tail,
+                        )
                         if m:
                             val = float(m.group(1).replace(",", ""))
-                            return val / 100.0 if (m.group(2) in ("%", "％")) else val
+                            return val / 100.0 if ((m.group(2) or "").strip() in ("%", "％")) else val
         return None
 
     def extract_key_cell_text(self, keys: str | Sequence[str]) -> str | None:

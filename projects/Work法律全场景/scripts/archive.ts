@@ -6,12 +6,13 @@
 import type {Pool} from 'pg';
 import {HTTPException} from 'hono/http-exception';
 import {createHash} from 'node:crypto';
-import {readFile,realpath} from 'node:fs/promises';
-import {isAbsolute,join,resolve} from 'node:path';
+import {lstat,readFile,realpath} from 'node:fs/promises';
+import {basename,dirname,isAbsolute,join,relative,resolve,sep} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {canonicalJson} from '../../../shared/workflow-config';
 import type {DeliveryInput,ProjectArchiveContext} from '../../../server/publishing/project-delivery';
 import {readProjectAgentDefaults} from '../../../server/agent/config';
-import {readCurrentRedactionForDocx,readOriginalFilesForDelivery} from '../../../server/materials/redacted-docx-export';
+import {questionResultDirectory,readCurrentRedactionForDocx,readOriginalFilesForDelivery} from '../../../server/materials/redacted-docx-export';
 import {readQuestionMaterials} from '../../../server/question-materials';
 import {getOrGenerateWorkSimulation} from './work-simulation';
 import {getAgentConcurrencyGate,readConcurrencySettings} from '../../../server/concurrency';
@@ -37,6 +38,32 @@ async function readMaterial(root:string,artifact:Material){
  if(hash(bytes)!==artifact.sha256)throw conflict('publication_material_hash_mismatch','Work材料内容指纹变化');
  try{const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);if(!text.trim())throw new Error('empty');return text;}
  catch{throw conflict('publication_material_text_invalid','Work材料不是有效的UTF-8文本');}
+}
+
+async function readArchivedOriginalFallback(pool:Pick<Pool,'query'>,workflowId:string,expected:{material_id:string;original_name:string;sha256:string}[]){
+ if(!expected.length)throw new Error('empty expected originals');
+ const wf=(await pool.query('SELECT w.title,w.source_key,p.name AS project_name,p.parent_name,p.phase_name FROM ai_distill.workflows w JOIN ai_distill.projects p ON p.id=w.project_id AND p.deleted_at IS NULL WHERE w.id=$1 AND w.deleted_at IS NULL',[workflowId])).rows[0];
+ if(!wf)throw new Error('workflow not found');
+ const rows=(await pool.query('SELECT id,original_name,sha256,size_bytes FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL',[workflowId])).rows;
+ const byId=new Map<string,any>(rows.map((m:any)=>[String(m.id),m]));
+ if(rows.length!==expected.length||byId.size!==rows.length)throw new Error('material count mismatch');
+ const exportsRoot=fileURLToPath(new URL('../../../assets/out/',import.meta.url));
+ const resultDir=await questionResultDirectory(exportsRoot,wf.parent_name||wf.project_name,wf.phase_name??'',wf.phase_name?(wf.source_key||wf.title):wf.title);
+ const questionDir=await realpath(dirname(resultDir));
+ const beneath=(root:string,target:string)=>{const rel=relative(root,target);return rel!==''&&rel!=='..'&&!rel.startsWith(`..${sep}`)&&!isAbsolute(rel);};
+ return Promise.all(expected.map(async file=>{
+  const material=byId.get(file.material_id);
+  if(!material||String(material.original_name)!==file.original_name||String(material.sha256)!==file.sha256)throw new Error('material manifest mismatch');
+  const normalizedName=basename(String(material.original_name)).normalize('NFKC').replace(/[\\/\u0000-\u001f<>:"|?*]/g,'_').replace(/^\.+|\.+$/g,'');
+  let safeName='';for(const ch of normalizedName){if(Buffer.byteLength(safeName+ch)>150)break;safeName+=ch;}safeName||='附件';
+  const target=resolve(questionDir,'原件',`${String(material.id).slice(0,8)}_${safeName}`);
+  if(!beneath(questionDir,target))throw new Error('unsafe archived original path');
+  const actual=await realpath(target),info=await lstat(target);
+  if(actual!==target||info.isSymbolicLink()||!info.isFile())throw new Error('invalid archived original file');
+  const bytes=await readFile(target);
+  if(bytes.byteLength!==Number(material.size_bytes)||hash(bytes)!==String(material.sha256))throw new Error('archived original hash mismatch');
+  return{name:basename(String(material.original_name)),sha256:String(material.sha256),bytes};
+ }));
 }
 
 interface Dependencies {prepareWork?:typeof getOrGenerateWorkSimulation;readStructuredMaterials?:(...args:Parameters<typeof readCurrentRedactionForDocx>)=>Promise<Awaited<ReturnType<typeof readCurrentRedactionForDocx>>|undefined>}
@@ -68,8 +95,10 @@ export async function prepare(input:DeliveryInput,context:ProjectArchiveContext,
    if(ids.length!==1)throw conflict('publication_original_attachment_mapping_unsupported','Work原文归档的多附件映射不明确');
    const manifest=(await pool.query('SELECT snapshot_manifest FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId])).rows[0]?.snapshot_manifest;
    const expected=Array.isArray(manifest?.files)?manifest.files.map((file:any)=>({material_id:String(file.material_id),original_name:String(file.original_name),sha256:String(file.source_sha256)})):[];
-   try{const originals=await readOriginalFilesForDelivery(pool,workflowId,root,expected);original_files=originals.map(file=>({name:file.name,sha256:file.sha256,content_base64:Buffer.from(file.bytes).toString('base64')}));}
-   catch{throw conflict('publication_original_source_invalid','Work原文材料与冻结文件清单不一致或无法读取');}
+   try{
+    const originals=await readOriginalFilesForDelivery(pool,workflowId,root,expected).catch(()=>readArchivedOriginalFallback(pool,workflowId,expected));
+    original_files=originals.map(file=>({name:file.name,sha256:file.sha256,content_base64:Buffer.from(file.bytes).toString('base64')}));
+   }catch{throw conflict('publication_original_source_invalid','Work原文材料与冻结文件清单不一致或无法读取');}
   }
   return{id,sha256:material.sha256,name:`材料-${String(index+1).padStart(3,'0')}.md`,text:await readMaterial(root,material),material_mode:materialMode,...(structured?.selected_materials?{selected_materials:true}:{}),...(documents?{documents}:{}),...(prepared_documents?{prepared_documents}:{}),...(original_files?{original_files}:{})};
  }));

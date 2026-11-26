@@ -232,6 +232,7 @@ export async function resolveAleInputMaterials(
 ): Promise<Array<{ name: string; bytes?: Uint8Array; text?: string }>> {
   const materials: Array<{ name: string; bytes?: Uint8Array; text?: string }> = [];
   const matchedByIndex = new Set<number>();
+  const matchedOriginalKeys = new Set<string>();
   const cachedDocxBytes = new Map<number, Uint8Array>();
 
   const getDocxBytes = async (idx: number): Promise<Uint8Array | null> => {
@@ -264,9 +265,10 @@ export async function resolveAleInputMaterials(
         if (sha256HexBytes(bytes) !== orig.sha256) {
           throw new Error(`原件 SHA-256 校验不匹配: ${orig.name}`);
         }
-        if (orig.sha256 === decl.sha256 || (attachments.length === 1 && orig.name === targetName)) {
+        if (orig.sha256 === decl.sha256 || (!decl.sha256 && orig.name === targetName) || (attachments.length === 1 && orig.name === targetName)) {
           materials.push({ name: targetName, bytes });
           matchedByIndex.add(idx);
+          matchedOriginalKeys.add(`${idx}:${orig.name}:${orig.sha256}`);
           matchedOriginal = true;
           break;
         }
@@ -318,9 +320,9 @@ export async function resolveAleInputMaterials(
   }
 
   for (const [idx, att] of attachments.entries()) {
-    if (matchedByIndex.has(idx)) continue;
     if (Array.isArray(att.original_files) && att.original_files.length) {
       for (const orig of att.original_files) {
+        if (matchedOriginalKeys.has(`${idx}:${orig.name}:${orig.sha256}`)) continue;
         const bytes = new Uint8Array(Buffer.from(orig.content_base64, 'base64'));
         if (sha256HexBytes(bytes) !== orig.sha256) {
           throw new Error(`原件 SHA-256 校验不匹配: ${orig.name}`);
@@ -329,6 +331,7 @@ export async function resolveAleInputMaterials(
       }
       continue;
     }
+    if (matchedByIndex.has(idx)) continue;
     const docxBytes = await getDocxBytes(idx);
     if (docxBytes) {
       materials.push({ name: `附件${idx + 1}.docx`, bytes: docxBytes });

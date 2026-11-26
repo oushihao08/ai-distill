@@ -45,7 +45,7 @@ Work 的 `input_files` 按题目冻结来源输出：脱敏模式继续由验证
 
 HTTP归档入口只持久派发并返回任务ID（202），通过attempt接口/CLI等待；不在HTTP请求内运行交付脚本。worker在项目交付（含无脚本空实现）完成后，仍可尝试生成来源模式对应的材料DOCX和单题Excel，通常位于 `assets/out/附件库/<主项目>/<期数>/<题目>/成果/`；完整项目 Excel 是 reporting 的独立操作。项目声明的准备或交付失败仍阻止归档；辅助材料DOCX或单题Excel失败只记录 `supplemental_exports.status=failed` 和安全日志，不改变已达标题目的归档资格。项目必需交付完成后重新核对达标依据，在同一业务事务提交原任务、当前步骤、可用辅助产物索引和归档事件。成果目录保存为 `delivery.output_path`，下载不依赖辅助工作簿存在；兼容旧的工作簿路径索引。输出文件仍不是数据库事务的一部分。单题 Excel 不代替五件套中的专业成果。
 
-`GET /api/workflows/:id/siriser-zip` 和 CLI `siriser download` 重新验证当前达标依据、题面/Rubric版本、已归档脚本摘要与包索引的一致性、路径及 ZIP 摘要；下载不重新计算当前交付脚本摘要，脚本变更应重新归档。它们只下载文件，不上传 Siriser。旧目录因期次改名仍按已保存归档路径定位，不搬动旧成果。
+`GET /api/workflows/:id/siriser-zip` 和 CLI `siriser download` 重新验证当前达标依据（步骤 5–7 封存期间按 `authorOnlySourceDigest` 校验最新成功出题版本）、题面/Rubric版本、已归档脚本摘要与包索引的一致性、路径及 ZIP 摘要；下载不重新计算当前交付脚本摘要，脚本变更应重新归档。它们只下载文件，不上传 Siriser。旧目录因期次改名仍按已保存归档路径定位，不搬动旧成果。
 
 独立 Work `delivery.ts` 保留旧 API 载荷的只读结构补全路径：使用同工作流、同脱敏 attempt 的现有 HTTP 索引，核对正文与结构摘要后补齐；新载荷已有结构时不再查询。该兼容路径不直连数据库、不修改归档资格。
 

@@ -114,6 +114,7 @@ export interface InlineBeforeGateContext {
   workflow_id: string;
   materials: ReadonlyArray<{ id: string; sha256: string; text?: string; source_names?: string[]; prepared_documents?: ReadonlyArray<any> }>;
   model_materials?: ReadonlyArray<{ id: string; sha256: string; text?: string; source_names?: string[]; prepared_documents?: ReadonlyArray<any> }>;
+  raw_files?: ReadonlyArray<{ material_id: string; name: string; sha256: string; size_bytes: number }>;
   authoring_direction?: string | null;
 }
 
@@ -201,6 +202,7 @@ export interface IsolatedRunContext {
     model_sha256?: string;
     model_text?: string;
     prepared_documents?: ReadonlyArray<any>;
+    original_files?: ReadonlyArray<{ name: string; sha256: string; content_base64: string }>;
   }>;
   run_config: Record<string, unknown>;
   run_input: Record<string, unknown>;

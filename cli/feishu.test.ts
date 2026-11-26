@@ -6,6 +6,8 @@ import {tmpdir} from 'node:os';
 import {ApiClient} from './client';
 import {runCommand} from './commands';
 import {syncFeishuBatch} from './feishu';
+import {clearFeishuAuthTokenCache} from '../toolSkills/feishu-operations/scripts/client';
+import {feishuTextFields} from '../server/publishing/feishu-verification';
 const id1='11111111-1111-4111-8111-111111111111',id2='22222222-2222-4222-8222-222222222222',id3='33333333-3333-4333-8333-333333333333',id4='44444444-4444-4444-8444-444444444444';
 test('批量汇总与每题差异回执一致，遇失败即停止后续派发，旧成功不冒记核对通过',async()=>{
  const root=await mkdtemp(join(tmpdir(),'feishu-cli-'));const ids=[id1,id2,id3,id4];let index=0;
@@ -71,4 +73,70 @@ test('feishu config set 与 feishu table create 超时预算严格符合 ApiClie
  expect(created.data.target.table_id).toBe('tbl123456789');
  const configured=await runCommand(['feishu','config','set','--project',id1,'--base-token','base1234567890','--table','tbl123456789','--attachment-format','pdf'],client);
  expect(configured.data.attachment_format).toBe('pdf');
+});
+
+test('合册 DOCX 草稿断连时经 reconcileFeishuDraft 只读远端对账恢复，附件名不符时拒绝误认',async()=>{
+ clearFeishuAuthTokenCache();
+ const root=await mkdtemp(join(tmpdir(),'feishu-draft-reconcile-'));
+ const sampleQuestion={
+  question_version:'qv-1',
+  rubric_version:'rv-1',
+  task_name:'合册草稿测试',
+  task_type:'法律意见',
+  question:'请审查合同。',
+  rubric:[{id:'R1',max_score:1,criterion:'核对违约金',rule:'完整给分'}],
+  answer_approach:'逐条核对。',
+  reference_answer:'标准审查意见。',
+ };
+ let remoteAttachmentName='材料.docx';
+ const expectedFields=feishuTextFields(id1,sampleQuestion,'未完成');
+ const server=Bun.serve({
+  hostname:'127.0.0.1',
+  port:0,
+  async fetch(req){
+   const url=new URL(req.url);
+   if(url.pathname.endsWith('/tenant_access_token/internal'))return Response.json({code:0,tenant_access_token:'tok_rec',expire:7200});
+   if(url.pathname.endsWith('/records/search')){
+    return Response.json({code:0,data:{items:[{record_id:'recDraft1',fields:{...expectedFields,'输入附件':[{name:remoteAttachmentName,file_token:'ftok_1'}]}}],has_more:false}});
+   }
+   if(url.pathname.endsWith('/records/recDraft1')){
+    return Response.json({code:0,data:{record:{record_id:'recDraft1',fields:{...expectedFields,'输入附件':[{name:remoteAttachmentName,file_token:'ftok_1'}]}}}}) ;
+   }
+   return Response.json({code:0,data:{items:[],has_more:false}});
+  },
+ });
+
+ const prevId=process.env.FEISHU_APP_ID,prevSec=process.env.FEISHU_APP_SECRET,prevBase=process.env.FEISHU_API_BASE_URL;
+ process.env.FEISHU_APP_ID='cli_rec_test';
+ process.env.FEISHU_APP_SECRET='sec_rec_test';
+ process.env.FEISHU_API_BASE_URL=`http://127.0.0.1:${server.port}/open-apis`;
+ try{
+  const client=new ApiClient(undefined,async(input)=>{
+   const url=String(input);
+   if(url.endsWith('/feishu-delivery'))return Response.json({capabilities:{target_override:true,draft_sync:true,attachment_format:true,combined_material:true},default_target:{base_token:'base1234567890',table_id:'tbl123456789'}});
+   if(url.endsWith('/feishu-draft-sync'))throw new Error('simulated network drop after remote write');
+   if(url.includes(`/workflows/${id1}`))return Response.json({workflow:{id:id1,project_id:'project-1',workflow_kind:'question'},steps:[{ordinal:4,status:'succeeded',result:sampleQuestion}]});
+   return Response.json({workflows:[{id:id1,workflow_kind:'question'}],workflow_status:{[id1]:{steps:[{ordinal:4,status:'succeeded'}]}}});
+  });
+
+  // 1. 远端字段与附件名均为预期合册 材料.docx 时，对账成功恢复 verified=1
+  const okRes=await syncFeishuBatch(client,'project-1',[id1],join(root,'ok.json'),{base_token:'base1234567890',table_id:'tbl123456789'},undefined,'draft','docx',true,1);
+  expect(okRes.outcome).toBe('complete');
+  expect(okRes.data.verified).toBe(1);
+  expect(okRes.data.items[0].receipt).toMatchObject({status:'succeeded',reconciled:true,record_id:'recDraft1',verification:{status:'passed',attachment_tokens:['ftok_1']}});
+
+  // 2. 远端附件名不匹配（例如分件名而非合册 材料.docx）时，拒绝误判成功，保持 unknown
+  remoteAttachmentName='分件合同.docx';
+  const badRes=await syncFeishuBatch(client,'project-1',[id1],join(root,'bad.json'),{base_token:'base1234567890',table_id:'tbl123456789'},undefined,'draft','docx',true,1);
+  expect(badRes.outcome).toBe('partial');
+  expect(badRes.data.verified).toBe(0);
+  expect(badRes.data.items[0].status).toBe('unknown');
+ }finally{
+  clearFeishuAuthTokenCache();
+  await server.stop(true);
+  if(prevId===undefined)delete process.env.FEISHU_APP_ID;else process.env.FEISHU_APP_ID=prevId;
+  if(prevSec===undefined)delete process.env.FEISHU_APP_SECRET;else process.env.FEISHU_APP_SECRET=prevSec;
+  if(prevBase===undefined)delete process.env.FEISHU_API_BASE_URL;else process.env.FEISHU_API_BASE_URL=prevBase;
+  await rm(root,{recursive:true,force:true});
+ }
 });

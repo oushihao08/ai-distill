@@ -1126,4 +1126,294 @@ describe('网页Agent派发参数', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test('batch show 与 batch skip 支持原子更新、范围校验及 .lock 并发锁保护', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cli-batch-skip-'));
+    try {
+      const third = '00000000-0000-4000-8000-000000000005';
+      const outsider = '00000000-0000-4000-8000-000000000099';
+      const batchFile = join(root, 'batch.json');
+      const { client } = fixture(() => ({
+        items: [
+          { id: question, workflow_kind: 'question' },
+          { id: second, workflow_kind: 'question' },
+          { id: third, workflow_kind: 'question' },
+        ],
+        has_more: false,
+      }));
+
+      await runCommand(['batch', 'create', '--project', project, '--ids', `${question},${second},${third}`, '--size', '2', '--to', 'author_question', '--out', batchFile], client);
+      const shown = await runCommand(['batch', 'show', '--file', batchFile], client);
+      expect(shown.data.batches.map((g: any) => g.remaining_workflow_ids)).toEqual([[question, second], [third]]);
+
+      const skipped = await runCommand(['batch', 'skip', '--file', batchFile, '--ids', second, '--reason', '人工暂缓'], client);
+      expect(skipped.data.batches.map((g: any) => g.remaining_workflow_ids)).toEqual([[question], [third]]);
+      expect(skipped.data.skipped[second].reason).toBe('人工暂缓');
+
+      await expect(runCommand(['batch', 'skip', '--file', batchFile, '--ids', outsider, '--reason', '越界'], client)).rejects.toThrow('必须属于本轮固定范围');
+
+      const lockPath = `${batchFile}.lock`;
+      await writeFile(lockPath, 'foreign-owner');
+      await expect(runCommand(['batch', 'skip', '--file', batchFile, '--ids', third, '--reason', '锁冲突'], client)).rejects.toThrow('无法更新批次清单');
+      expect(await readFile(lockPath, 'utf8')).toBe('foreign-owner');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('offline export/status/import 覆盖 prepare 翻页早停、4并发 --ids 与交回重放闭环', async () => {
+    const { mkdir, readdir } = await import('node:fs/promises');
+    const root = await mkdtemp(join(tmpdir(), 'cli-offline-e2e-'));
+    const storageRoot = join(root, 'storage');
+    const workbench = join(root, 'workbench');
+    const prevStorage = process.env.STORAGE_DIR;
+    process.env.STORAGE_DIR = storageRoot;
+    try {
+      const rReady = '00000000-0000-4000-8000-000000000101';
+      const rPick1 = '00000000-0000-4000-8000-000000000102';
+      const rPick2 = '00000000-0000-4000-8000-000000000103';
+      const rSkipPage3 = '00000000-0000-4000-8000-000000000104';
+      const pkg1 = '00000000-0000-4000-8000-000000000201';
+      const pkg2 = '00000000-0000-4000-8000-000000000202';
+      const rev1 = '00000000-0000-4000-8000-000000000301';
+      const rev2 = '00000000-0000-4000-8000-000000000302';
+      const jobExport1 = '00000000-0000-4000-8000-000000000401';
+      const jobExport2 = '00000000-0000-4000-8000-000000000402';
+      const jobResume1 = '00000000-0000-4000-8000-000000000403';
+
+      let loadedPagesFetched = 0;
+      const fakeZipFile = join(root, 'seed-round1.zip');
+      await writeFile(fakeZipFile, 'PK\x03\x04fakezip');
+
+      const writeExportedState = async (taskKey: string) => {
+        const taskFolder = join(storageRoot, 'web-offline', taskKey, 'round-1');
+        await mkdir(taskFolder, { recursive: true });
+        await writeFile(join(taskFolder, 'prompt.md'), '请输出 JSON 材料整理结果');
+        await writeFile(
+          join(storageRoot, 'web-offline', taskKey, 'task.json'),
+          JSON.stringify({
+            task: taskKey,
+            provider: 'deepseek',
+            label: 'material_preparation',
+            status: 'exported',
+            round: 1,
+            zip_path: fakeZipFile,
+            updated_at: new Date(Date.now() + 1000).toISOString(),
+          }),
+        );
+      };
+
+      const client = new ApiClient(undefined, async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === `/api/projects/${project}/loaded-materials`) {
+          const page = Number(url.searchParams.get('page'));
+          loadedPagesFetched++;
+          if (page === 1) {
+            return Response.json({
+              items: [
+                { package_id: pkg1, package_name: '已整理包', selected_revision_id: rev1, selected_redaction_id: rReady },
+                { package_id: pkg1, package_name: '待整理包一', selected_revision_id: rev1, selected_redaction_id: rPick1 },
+              ],
+              has_more: true,
+            });
+          }
+          if (page === 2) {
+            return Response.json({
+              items: [
+                { package_id: pkg2, package_name: '待整理包二', selected_revision_id: rev2, selected_redaction_id: rPick2 },
+                { package_id: pkg2, package_name: '多余候选包', selected_revision_id: rev2, selected_redaction_id: rSkipPage3 },
+              ],
+              has_more: true,
+            });
+          }
+          throw new Error('不应拉取第 3 页（须在集齐 count=2 后提前停止）');
+        }
+        if (url.pathname.endsWith('/preparations')) {
+          const red = url.searchParams.get('redaction_id');
+          expect(url.searchParams.get('summary_only')).toBe('true');
+          return Response.json({ items: red === rReady ? [{ id: attempt }] : [] });
+        }
+        if (init?.method === 'POST' && url.pathname === `/api/material-library/revisions/${rev1}/prepare`) {
+          const body = JSON.parse(String(init.body));
+          await writeExportedState(body.web_settings.task);
+          return Response.json({ id: jobExport1 });
+        }
+        if (init?.method === 'POST' && url.pathname === `/api/material-library/revisions/${rev2}/prepare`) {
+          const body = JSON.parse(String(init.body));
+          await writeExportedState(body.web_settings.task);
+          return Response.json({ id: jobExport2 });
+        }
+        if (init?.method === 'POST' && url.pathname === `/api/material-library/jobs/${jobExport1}/prepare-resume`) {
+          return Response.json({ id: jobResume1 });
+        }
+        if (url.pathname === `/api/material-library/jobs/${jobExport1}` || url.pathname === `/api/material-library/jobs/${jobExport2}`) {
+          return Response.json({ id: url.pathname.split('/').at(-1), status: 'failed', error_code: 'web_offline_pending', error_message: '等待离线交回' });
+        }
+        if (url.pathname === `/api/material-library/jobs/${jobResume1}`) {
+          return Response.json({ id: jobResume1, status: 'succeeded' });
+        }
+        if (url.pathname.includes('/redactions/') && url.pathname.endsWith('/preview')) {
+          return Response.json({ package_id: pkg1, revision_id: rev1 });
+        }
+        if (url.pathname === `/api/material-library/packages/${pkg1}`) {
+          return Response.json({ id: pkg1, name: '指定ID包' });
+        }
+        return Response.json({});
+      });
+
+      const exported = await runCommand(['offline', 'export', '--stage', 'prepare', '--project', project, '--count', '2', '--out', workbench], client);
+      expect(loadedPagesFetched).toBe(2);
+      expect(exported.data.exported).toBe(2);
+      expect(exported.data.results.map((r: any) => r.status)).toEqual(['待交回', '待交回']);
+      expect((await readdir(workbench)).filter((f: string) => f.endsWith('.tmp'))).toEqual([]);
+
+      const statusBefore = await runCommand(['offline', 'status', '--out', workbench], client);
+      expect(statusBefore.data.summary).toEqual({ 待交回: 2, 已入库: 0, 失败: 0 });
+
+      // 为第 1 项在解压同名目录放入有效 JSON 回复并执行 offline import
+      const firstZipRel = statusBefore.data.items[0].zip as string;
+      const replyDir = join(workbench, firstZipRel.replace(/\.zip$/, ''), 'reply');
+      await mkdir(replyDir, { recursive: true });
+      await writeFile(join(replyDir, 'reply-1.md'), '```json\n{"overview":"摘要","documents":[],"combinations":[]}\n```');
+
+      const imported = await runCommand(['offline', 'import', '--out', workbench], client);
+      expect(imported.data.results[0].status).toBe('已入库');
+      expect(imported.data.results[1].status).toBe('待交回');
+
+      const statusAfter = await runCommand(['offline', 'status', '--out', workbench], client);
+      expect(statusAfter.data.summary).toEqual({ 待交回: 1, 已入库: 1, 失败: 0 });
+
+      // 验证 --ids 走 4 并发轻量元数据查询分支
+      const workbenchIds = join(root, 'workbench-ids');
+      const byIds = await runCommand(['offline', 'export', '--stage', 'prepare', '--ids', rPick1, '--out', workbenchIds], client);
+      expect(byIds.data.exported).toBe(1);
+      expect(byIds.data.results[0].title).toBe('指定ID包');
+    } finally {
+      if (prevStorage === undefined) delete process.env.STORAGE_DIR;
+      else process.env.STORAGE_DIR = prevStorage;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('export failed 与 export review 校验版本/SHA256 绑定、幂等复用并不覆盖篡改目录', async () => {
+    const { createHash, randomUUID } = await import('node:crypto');
+    const { rmdir } = await import('node:fs/promises');
+    const { resolve } = await import('node:path');
+    const exportProj = randomUUID();
+    const wfRepair = randomUUID();
+    const wfAccepted = randomUUID();
+    const authorAttemptId = randomUUID();
+    const decRepairId = randomUUID();
+    const decAcceptedId = randomUUID();
+    const modelId = randomUUID();
+    const ansAttemptId = randomUUID();
+    const scoreAttemptId = randomUUID();
+    const artQuestion = randomUUID();
+    const artAnswer = randomUUID();
+    const artScore = randomUUID();
+
+    const answerBytes = new TextEncoder().encode('模型作答完整内容');
+    const answerSha = createHash('sha256').update(answerBytes).digest('hex');
+    const scoreJsonBytes = new TextEncoder().encode('{"score":35}');
+    const questionBytes = new TextEncoder().encode('题面完整文本');
+
+    const exportBaseRoot = resolve(import.meta.dir, '../assets/未达标题目');
+    const projectExportDir = join(exportBaseRoot, exportProj);
+
+    const buildWorkflowPayload = (wfId: string, decisionVal: 'repair' | 'accepted', decAttemptId: string) => ({
+      workflow: { id: wfId, project_id: exportProj, source_key: `测试题_${wfId.slice(0, 6)}` },
+      steps: [
+        { ordinal: 4, status: 'succeeded', result: { question_id: 'Q-1', question_version: 'qv1', rubric_version: 'rv1' } },
+        {
+          ordinal: 6,
+          status: 'succeeded',
+          result: {
+            models: [
+              {
+                model_id: modelId,
+                name: 'Doubao-Pro',
+                answer_attempt_id: ansAttemptId,
+                score_attempt_id: scoreAttemptId,
+                score_status: 'succeeded',
+                valid: true,
+                score: 65,
+                max_score: 100,
+                binding: { answer_sha256: answerSha },
+              },
+            ],
+          },
+        },
+        {
+          ordinal: 7,
+          status: 'succeeded',
+          result: {
+            decision: decisionVal,
+            model_scores: { [modelId]: { score: 65, max_score: 100, percentage: 65, threshold: 50, status: decisionVal === 'repair' ? 'failed' : 'passed' } },
+          },
+        },
+      ],
+      attempts: [
+        { id: authorAttemptId, ordinal: 4, status: 'succeeded' },
+        { id: decAttemptId, ordinal: 7, status: 'succeeded' },
+      ],
+      artifacts: [
+        { id: artQuestion, kind: 'authored_question', attempt_id: authorAttemptId, question_version: 'qv1' },
+        { id: artAnswer, kind: 'model_answer', attempt_id: ansAttemptId, question_version: 'qv1' },
+        { id: artScore, kind: 'score_report', attempt_id: scoreAttemptId, question_version: 'qv1' },
+      ],
+    });
+
+    const client = new ApiClient(undefined, async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === `/api/projects/${exportProj}/workflow-ids`) {
+        expect(url.searchParams.get('kind')).toBe('question');
+        return Response.json({ items: [{ id: wfRepair, workflow_kind: 'question' }, { id: wfAccepted, workflow_kind: 'question' }], has_more: false });
+      }
+      if (url.pathname === `/api/workflows/${wfRepair}`) return Response.json(buildWorkflowPayload(wfRepair, 'repair', decRepairId));
+      if (url.pathname === `/api/workflows/${wfAccepted}`) return Response.json(buildWorkflowPayload(wfAccepted, 'accepted', decAcceptedId));
+      if (url.pathname === `/api/attempts/${authorAttemptId}`) return Response.json({ id: authorAttemptId, status: 'succeeded', result: { question_version: 'qv1', rubric_version: 'rv1' } });
+      if (url.pathname === `/api/attempts/${scoreAttemptId}`) {
+        return Response.json({
+          id: scoreAttemptId,
+          status: 'succeeded',
+          result: {
+            raw_text: '逐项评分详情',
+            validation: { valid: true },
+            binding: { answer_attempt_id: ansAttemptId, question_version: 'qv1', rubric_version: 'rv1', answer_sha256: answerSha },
+          },
+        });
+      }
+      if (url.pathname === `/api/artifacts/${artQuestion}/download`) return new Response(questionBytes);
+      if (url.pathname === `/api/artifacts/${artAnswer}/download`) return new Response(answerBytes);
+      if (url.pathname === `/api/artifacts/${artScore}/download`) return new Response(scoreJsonBytes);
+      return Response.json({});
+    });
+
+    try {
+      const failedRes = await runCommand(['export', 'failed', '--project', exportProj, '--all'], client);
+      expect(failedRes.outcome).toBe('complete');
+      expect(failedRes.results.map((r: any) => [r.workflow_id, r.status])).toEqual([
+        [wfRepair, 'exported'],
+        [wfAccepted, 'skipped'],
+      ]);
+      const exportedPath = failedRes.results[0].path as string;
+      const manifest = JSON.parse(await readFile(join(exportedPath, '清单.json'), 'utf8'));
+      expect(manifest.decision).toBe('repair');
+      expect(await readFile(join(exportedPath, `模型-${modelId}`, '作答.txt'), 'utf8')).toBe('模型作答完整内容');
+
+      // 重复导出同一未变判定返回 already_exported
+      const repeatRes = await runCommand(['export', 'failed', '--project', exportProj, '--ids', wfRepair], client);
+      expect(repeatRes.results[0].status).toBe('already_exported');
+
+      // export review 支持导出 accepted 题并写入复核用途标记
+      const reviewRes = await runCommand(['export', 'review', '--project', exportProj, '--ids', wfAccepted], client);
+      expect(reviewRes.outcome).toBe('complete');
+      expect(reviewRes.results[0].status).toBe('exported');
+      const reviewManifest = JSON.parse(await readFile(join(reviewRes.results[0].path, '清单.json'), 'utf8'));
+      expect(reviewManifest.export_purpose).toBe('指定题目作答质量复核');
+    } finally {
+      await rm(projectExportDir, { recursive: true, force: true });
+      await rmdir(exportBaseRoot).catch(() => {});
+    }
+  });
 });

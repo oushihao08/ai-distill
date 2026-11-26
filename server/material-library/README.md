@@ -93,6 +93,7 @@ HTTP入口为`GET /api/material-library/redactions/:id/name-revision-source?proj
 | `original-preview.ts` | PDF/TXT等原件直接查看，DOCX由隔离LibreOffice生成只读PDF副本；串行转换、60秒时限、按源摘要和渲染版本缓存 |
 | `load-eligibility.ts` | 按完整提取结构快速估算合并DOCX页数并记录版本级加载资格；不生成DOCX/PDF，所有期次加载写入口复核 |
 | `projects.ts`、`questions.ts` | 项目加载与选版/移除；按期次所选模式从脱敏结果或 MinerU 提取版本建立完整题目私有快照 |
+| `direct-raw-question.ts` | `POST /api/projects/:id/direct-raw-questions` 期次内原件包免云端提取、免脱敏直接建题（可选一键派发出题）：原子安装原件对象、登记本地导览正文、校验主项目永久占用并冻结 `origin.raw_passthrough=true` 的 `original` 题目快照，不影响同期次 `aliases` 配置 |
 | `projects-routes.ts`、`uses.ts` | 本期材料候选分页、加载引用/恢复、题目创建入口及本期使用状态/单条事件读取 |
 | `atomic-import.ts` | 独立上传任务、暂存文件及整包提取后的原子发布；成功前不建立正式包/版本，复用现有执行队列和槽位 |
 | `routes.ts` | `/api/material-library` 的资料、版本、任务、配置、预览和使用关系接口 |

@@ -28,7 +28,7 @@ import {webAuthoringExecutor} from '../web-executors/authoring';
 import {readRuleFile,readProjectPrompt,resolveEffectiveProjectSkill,scanProjectPrompt,verifyRuleSnapshot,type ProjectPromptSnapshot} from '../rule-files';
 import {freezeStageHooks,recoverInterruptedStageHooks,executeWithStageHooks,prepareCommittedStageHooks,runCommittedStageHooks,StageHookError,type FrozenStageHooks} from '../lifecycle/scripts';
 import {canonicalJson,validateWorkflowConfig,type ScoringPolicy} from '../../shared/workflow-config';
-import {readCurrentRedactionForDocx} from '../materials/redacted-docx-export';
+import {readCurrentRedactionForDocx,readOriginalFilesForDelivery} from '../materials/redacted-docx-export';
 import {hookAdditionText} from '../workflow-hooks';
 import {AUTHORING_FIXED_PROMPT,DEFAULT_STEP_PROMPTS} from '../../shared/step-prompts';
 
@@ -123,6 +123,21 @@ export const inputDigest = (input: Omit<FrozenInput, 'digest'>) => hash(JSON.str
     project_prompt: input.project_prompt ? { workspace_path: input.project_prompt.workspace_path, skill_path: input.project_prompt.skill_path, source_digest: input.project_prompt.source_digest, files: input.project_prompt.files.map(file => ({ path: file.path, sha256: file.sha256, size_bytes: file.size_bytes })) } : null,
     ...inputDigestSuffix(input),
 }));
+
+async function readRawPassthroughMeta(db:Pick<Pool,'query'>,workflowId:string){
+ const row=(await db.query('SELECT snapshot_manifest FROM ai_distill.question_library_sources WHERE workflow_id=$1',[workflowId]).catch(()=>({rows:[]}))).rows[0];
+ const manifest=row?.snapshot_manifest;
+ if(manifest?.origin?.raw_passthrough!==true||!Array.isArray(manifest.files)||!manifest.files.length)return undefined;
+ const matRows=(await db.query('SELECT id,original_name,sha256,size_bytes FROM ai_distill.materials WHERE workflow_id=$1 AND deleted_at IS NULL',[workflowId])).rows;
+ const byId=new Map<string,any>(matRows.map((r:any)=>[String(r.id),r]));
+ const expected=manifest.files.map((f:any)=>({material_id:String(f.material_id),original_name:String(f.original_name),sha256:String(f.source_sha256)}));
+ const gateRawFiles=expected.map(item=>{
+  const mat=byId.get(item.material_id);
+  if(!mat||String(mat.original_name)!==item.original_name||String(mat.sha256)!==item.sha256)throw new HTTPException(409,{message:'原件直通快照与题目原件记录不一致'});
+  return{material_id:item.material_id,name:item.original_name,sha256:item.sha256,size_bytes:Number(mat.size_bytes)};
+ });
+ return{expected,gateRawFiles};
+}
 
 async function basePrerequisites(db:PoolClient,id:string){
  const workflow=(await db.query(workflowSql,[id])).rows[0];
@@ -278,7 +293,8 @@ export async function enqueueAuthoring(pool:Pool,id:string,options?:AuthoringDis
   const preparedDocs=structuredDocx&&'prepared_documents'in structuredDocx&&Array.isArray(structuredDocx.prepared_documents)?structuredDocx.prepared_documents:undefined;
   const gateMaterials=loadedMaterials?loadedMaterials.attachments.map(att=>({id:att.id,sha256:att.sha256,text:att.content,source_names:att.source_names,...(preparedDocs?{prepared_documents:preparedDocs}:{})})) : source.materials;
   const gateModelMaterials=loadedMaterials?.model_attachments?loadedMaterials.model_attachments.map(att=>({id:att.id,sha256:att.sha256,text:att.content,source_names:att.source_names,...(preparedDocs?{prepared_documents:preparedDocs}:{})})) : ('model_materials'in source?source.model_materials:undefined);
-  const baseBeforeGates=await runBeforeAnchorGates(customStepRegistry,projectKey,4,{project_id:String(source.workflow.project_id),workflow_id:id,materials:gateMaterials,model_materials:gateModelMaterials,authoring_direction:typeof source.workflow.authoring_direction==='string'?source.workflow.authoring_direction:null});
+  const rawMeta=source.origin.kind==='library_v1'&&source.origin.material_mode==='original'?await readRawPassthroughMeta(db,id):undefined;
+  const baseBeforeGates=await runBeforeAnchorGates(customStepRegistry,projectKey,4,{project_id:String(source.workflow.project_id),workflow_id:id,materials:gateMaterials,model_materials:gateModelMaterials,...(rawMeta?{raw_files:rawMeta.gateRawFiles}:{}),authoring_direction:typeof source.workflow.authoring_direction==='string'?source.workflow.authoring_direction:null});
   const latestRepairEvaluation=options?.skip_repair_evaluation===true?null:await readLatestCustomRepairEvaluation(db,customStepRegistry,projectKey,id);
   const customBeforeGates=baseBeforeGates||latestRepairEvaluation?{...(baseBeforeGates??{}),...(latestRepairEvaluation?{repair_evaluation:latestRepairEvaluation as unknown as Record<string,unknown>}:{})}:undefined;
   const frozen:Omit<FrozenInput,'digest'>={...(advice?{revision_advice:advice}:{}),...(config.workflow?.content_contract?{content_contract:config.workflow.content_contract}:{}),...(hooks?{hooks}:{}),...(customBeforeGates?{custom_before_gates:customBeforeGates}:{}),...(scoringPolicy?{scoring_policy:scoringPolicy}:{}),system_authoring_prompt:AUTHORING_FIXED_PROMPT,project_name:source.workflow.project_name,answer_capabilities:answerCapabilities,authoring_contract:FRESH_AUTHORING_CONTRACT,title:source.workflow.title,...(designContext(source.workflow)?{design_context:designContext(source.workflow)}:{}),...(source.workflow.authoring_direction?{authoring_direction:source.workflow.authoring_direction}:{}),...(materialScope?{material_scope:materialScope}:{}),question_id:questionId(source.workflow),source_files:'source_files'in source?source.source_files:sourceFiles(source.workflow),project_prompt:source.project_prompt,...materialIdentity({material_origin:source.origin}),materials:source.materials,...('model_materials'in source&&source.model_materials?{model_materials:source.model_materials}:{})};
@@ -458,6 +474,12 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
         if (!binding)
             throw Object.assign(new Error('stale input'), { reason_code: 'authoring_input_binding_changed' });
         const materials = await readMaterials(pool, root, job, binding.loaded_materials);
+        const rawMeta = job.input.material_origin?.kind === 'library_v1' && job.input.material_origin.material_mode === 'original'
+            ? await readRawPassthroughMeta(pool, job.workflow_id)
+            : undefined;
+        const rawFiles = rawMeta
+            ? (await readOriginalFilesForDelivery(pool, job.workflow_id, root, rawMeta.expected)).map(f => ({ name: f.name, sha256: f.sha256, bytes: f.bytes }))
+            : undefined;
         const projectContextFiles = await readProjectContext(job);
         if (job.config?.provider === 'web') {
             try {
@@ -501,6 +523,7 @@ export async function runNextAuthoring(pool: Pool, root: string, author: Authore
                     question_id: job.input.question_id ?? job.input.title,
                     source_files: job.input.source_files ?? [],
                     materials,
+                    ...(rawFiles ? { raw_files: rawFiles } : {}),
                     ...(legacyRulesInput ? {
                         rules: legacyRulesInput
                     } : {

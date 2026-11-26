@@ -20,6 +20,7 @@ declare module 'vue' {
     CodexConfig: typeof import('./components/CodexConfig.vue')['default']
     Column: typeof import('./layout/Column.vue')['default']
     DirectoryImportForm: typeof import('./components/DirectoryImportForm.vue')['default']
+    DirectRawQuestionDialog: typeof import('./components/DirectRawQuestionDialog.vue')['default']
     DispatchBatches: typeof import('./components/DispatchBatches.vue')['default']
     LegacyMaterialOrigin: typeof import('./components/LegacyMaterialOrigin.vue')['default']
     LibraryFileReader: typeof import('./components/LibraryFileReader.vue')['default']

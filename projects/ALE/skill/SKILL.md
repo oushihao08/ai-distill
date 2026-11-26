@@ -47,7 +47,7 @@ ALE 技术规范固定边界 > 本次指定 domain/sub_domain 与运行模式 > 
    - 仅将绑定核心主轴耦合链的 3–5 个主干判据（合计权重 `65%–75%`）设为 `is_key_gate: true`，旁支核对与说明项设为 `is_key_gate: false`（组内比例连续计分，`pass_threshold = 0.85`）。
 5. **自然交办、真实 `.docx` 输入契约 ＋ 强制复用 `ale_grader_lib.py`（禁手搓解析器）**
    - 以真实业务交办函行文，禁用“模拟/假定/本题考察/无需生成文件”与 `(****)` 掩码裸露；
-   - **在 `ai-distill` 工作台出题时，执行环境 `/workspace/input/`（即 `environment/input/`）的默认实体卷宗统一为确定性 Word 文件 `附件1.docx`**（含全部文书标题与原生 Word 表格，严禁在 `instruction.md`、`task_card.json`、`solve.sh`、`grade.py` 中写死 `附件1.txt`），且输入路径与二进制 SHA-256 必须严格采用前置关卡 `<前置关卡冻结输入锁定>`（`ale_pre_authoring_lock`）给出的 `locked_environment_inputs` 值；
+   - **在 `ai-distill` 工作台出题时，输入路径与二进制 SHA-256 必须 100% 采用 `<前置关卡冻结输入锁定>`（`ale_pre_authoring_lock`）给出的 `locked_environment_inputs`**：脱敏案卷模式下默认封装为确定性 Word 文件 `environment/input/附件1.docx`（严禁写死 `附件1.txt`）；**原件直通模式（`input_mode = "raw_passthrough"`，如生信/数科/工程 `.xlsx`/`.csv`/`.pdf` 多文件包）下，作者必须用脚本全量读取 `input/raw/` 下的全部原生文件计算真值，并在 `instruction.md`、`task_card.json.inputs`、`solve.sh`、`grade.py` 中严格按 `locked_environment_inputs` 的原文件名（`environment/input/<原文件名>`）与二进制 SHA-256 对齐**；
    - `delivery.ts` 自动注入私有 `tests/ale_grader_lib.py`（沙盒内副本见 `skill/assets/ale_grader_lib.py`）与公开 `environment/tools/office_lint.py`。`grade.py` 直接导入 `ExcelEvaluator, DocxExtractor, GradeReporter, SubCheck, approx_equal, parse_grade_cli_args, verify_frozen_inputs`，控制在 60–120 行内。
 
 ---
@@ -58,7 +58,7 @@ ALE 技术规范固定边界 > 本次指定 domain/sub_domain 与运行模式 > 
 
 | 阶段 | 当前要解决的核心问题 | 按需读取参考 |
 | --- | --- | --- |
-| **1. 材料筛查、领域选型与立意** | 核验材料唯一闭环性与 2–3 处深水证据锚点、确定 `domain/sub_domain`、排除换皮同构、生成专属 `canary` | ① [00-材料筛选与深层线索整理](references/00-材料筛选与深层线索整理.md)<br>② [01-领域规划与防同构立意](references/01-领域规划与防同构立意.md)<br>③ [跨领域高价值场景与原生产物核查库](assets/跨领域高价值场景与原生产物核查库.md)（按 `domain` 定点查对应行） |
+| **1. 材料筛查、领域选型与立意** | 核验材料唯一闭环性与 2–3 处深水证据锚点、确定 `domain/sub_domain`、排除换皮同构、生成专属 `canary` | ① [00-材料筛选与深层线索整理](references/00-材料筛选与深层线索整理.md)<br>② [01-领域规划与防同构立意](references/01-领域规划与防同构立意.md)<br>③ [跨领域高价值场景与原生产物核查库](assets/跨领域高价值场景与原生产物核查库.md)（按 `domain` 定点查对应行；若属 `life_science`，必读垂类总控 [guide.md](domains/life_science/guide.md) 并按子方向查阅 [scenarios.md](domains/life_science/scenarios.md)） |
 | **2. 穿透求解与黄金难度设计** | 通读原始材料试办求解、构建多跳依赖链、做依赖删除核验与 `1–3/8` 双边难度预校准、起草零剧透 `instruction.md` | ① [02-高负荷任务设计与黄金难度校准](references/02-高负荷任务设计与黄金难度校准.md)<br>② [专业交办表达与防同构组件库](assets/专业交办表达与防同构组件库.md) |
 | **3. 可复现环境与原生产物构建** | 编写固定依赖环境（`Dockerfile`/`env.json`/`reset.sh`）、落实五阶段物理隔离、用脚本实算出真实 `solution/artifacts/` 原生产物 | [03-环境隔离与原生产物验证](references/03-环境隔离与原生产物验证.md) |
 | **4. 编写七要素 Rubric 与反例验证** | 编写 `rubric.json` 与基于 [`ale_grader_lib.py`](assets/ale_grader_lib.py) 的精简 `grade.py`，在干净环境实测参考基线、`no-op`、`M10` 表层诱饵反例、单因子反例与等价解 | [04-可执行评分与单因子反例测试](references/04-可执行评分与单因子反例测试.md) |

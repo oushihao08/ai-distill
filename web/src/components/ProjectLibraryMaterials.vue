@@ -5,6 +5,7 @@
 -->
 <script setup lang="ts">
 import {api,apiPostIntent} from '../api/client';
+import DirectRawQuestionDialog from './DirectRawQuestionDialog.vue';
 import {redactionProcessingMode,type MaterialProcessingMode} from '@shared/material-library';
 import type {CreateLibraryQuestionRequest,MaterialLibraryPackageSummary,MaterialUseRecord} from '@shared/material-library';
 
@@ -40,6 +41,7 @@ function loadEligibilityLabel(value:{load_eligible?:boolean|null;load_estimated_
  return value.load_eligible===false?`≤10页提醒：合并 DOCX 估算约 ${value.load_estimated_docx_pages} 页（仍可加载）`:value.load_eligible===true?`合并 DOCX 估算约 ${value.load_estimated_docx_pages} 页`:'页数待评估，加载时快速计算';
 }
 const questionDialog=shallowRef(false),questionLink=shallowRef<LoadedPackage|null>(null);
+const directRawDialog=shallowRef(false);
 const previewLink=shallowRef<LoadedPackage|null>(null);
 const questionForm=reactive({title:'',scenario:'',role_perspective:'',authoring_direction:'',target_level:'' as ''|'L2'|'L3'|'L4'|'L5',question_tags:[] as string[]});
 function levelFromPackageName(name:string):''|'L2'|'L3'|'L4'|'L5'{const level=/(?:^|[-_\s])(L[2-5])(?=$|[-_\s])/i.exec(name)?.[1]?.toUpperCase();return level==='L2'||level==='L3'||level==='L4'||level==='L5'?level:'';}
@@ -153,13 +155,18 @@ async function createQuestion(){
  catch(cause){error.value=cause instanceof Error?cause.message:'从材料包创建题目失败';}
  finally{busy.value=false;}
 }
+async function onDirectRawCreated(payload:{id:string;autoAuthored:boolean;title:string}){
+ notice.value=payload.autoAuthored?`已从原件包创建「${payload.title}」并加入出题队列`:`已从原件包创建题目「${payload.title}」`;
+ emit('refresh');
+ await refresh();
+}
 watch(()=>props.materialProcessingMode,()=>{loadedVersionIds.clear();for(const key of Object.keys(redactionsByPackage))delete redactionsByPackage[key];void refresh();});
 watch(()=>props.projectId,()=>{phasePage.value=1;summary.value=undefined;loaded.value=[];materialUses.value=[];tableExpanded.value=false;void refresh();},{immediate:true});
 onBeforeUnmount(()=>{disposed=true;refreshVersion++;refreshController?.abort();if(searchTimer)clearTimeout(searchTimer);});
 </script>
 
 <template><section class="surface-card p-16"><Column :gap="14">
- <Row x="between" wrap y="center" :gap="8"><Column :gap="4"><h2 class="section-title">本期材料</h2></Column><Row :gap="8"><v-btn size="small" variant="tonal" @click="toggleTable">{{ tableExpanded?'收起材料表':'展开材料表' }}</v-btn><v-btn size="small" variant="outlined" :loading="busy" @click="refresh">刷新</v-btn><v-btn size="small" color="primary" @click="openLoadDialog">加载材料包</v-btn></Row></Row>
+ <Row x="between" wrap y="center" :gap="8"><Column :gap="4"><h2 class="section-title">本期材料</h2></Column><Row wrap :gap="8"><v-btn size="small" variant="tonal" @click="toggleTable">{{ tableExpanded?'收起材料表':'展开材料表' }}</v-btn><v-btn size="small" variant="outlined" :loading="busy" @click="refresh">刷新</v-btn><v-btn size="small" color="secondary" variant="tonal" @click="directRawDialog=true">原件包直接出题</v-btn><v-btn size="small" color="primary" @click="openLoadDialog">加载材料包</v-btn></Row></Row>
  <v-alert v-if="error" type="error" density="compact" role="alert">{{ error }}</v-alert><v-alert v-if="notice" type="success" density="compact" role="status">{{ notice }}</v-alert>
  <Row v-if="summary" wrap y="center" :gap="8" class="text-sm"><v-chip size="small" variant="tonal">材料包 {{ summary.count }}</v-chip><v-chip size="small" color="secondary" variant="tonal">可用（匹配本期） {{ summary.usable }}</v-chip><v-chip size="small" color="primary" variant="tonal">使用中 {{ summary.inUse }}</v-chip><v-chip size="small" color="success" variant="tonal">已提交 {{ summary.submitted }}</v-chip></Row>
  <p v-else-if="!error" class="text-sm text-muted">正在读取材料汇总…</p>
@@ -193,4 +200,5 @@ onBeforeUnmount(()=>{disposed=true;refreshVersion++;refreshController?.abort();i
   <v-alert v-if="error" type="error" density="compact">{{ error }}</v-alert><Row x="end" :gap="8"><v-btn :disabled="busy" @click="questionDialog=false">取消</v-btn><v-btn type="submit" color="primary" :loading="busy" :disabled="busy||!questionForm.title.trim()">创建题目</v-btn></Row>
  </Column></v-form></v-dialog>
  <v-dialog :model-value="Boolean(previewLink)" max-width="1100" scrollable @update:model-value="open=>{if(!open)previewLink=null}"><LibraryMaterialPreview v-if="previewLink?.selected_revision_id&&previewLink.selected_redaction_id" :key="previewLink.selected_redaction_id" :revision-id="previewLink.selected_revision_id" :redaction-id="previewLink.selected_redaction_id" @close="previewLink=null"/></v-dialog>
+ <DirectRawQuestionDialog v-model="directRawDialog" :project-id="projectId" :question-tags="questionTags" @created="onDirectRawCreated"/>
 </Column></section></template>

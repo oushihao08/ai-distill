@@ -8,6 +8,33 @@ import { sha256Hex } from '../scripts/contracts';
 import { buildDeterministicAleMaterialDocx } from '../scripts/docx-material';
 
 export async function runAlePreAuthoringLock(ctx: InlineBeforeGateContext): Promise<InlineBeforeGateOutput> {
+  if (ctx.raw_files?.length) {
+    const lockedRawInputs = ctx.raw_files.map((rf, idx) => {
+      if (!rf.name || !rf.sha256 || !/^[a-f0-9]{64}$/i.test(rf.sha256)) {
+        throw new Error(`ALE 出题前检查未通过：第 ${idx + 1} 份原件缺少有效文件名或 SHA-256 指纹`);
+      }
+      const ext = rf.name.split('.').at(-1)?.toLowerCase() ?? 'bin';
+      return {
+        index: idx + 1,
+        authoring_raw_path: `input/raw/${rf.name}`,
+        environment_input_path: `environment/input/${rf.name}`,
+        material_id: rf.material_id,
+        format: ext,
+        source_sha256: rf.sha256,
+        sha256: rf.sha256,
+        bytes: rf.size_bytes,
+        source_names: [rf.name],
+      };
+    });
+    return {
+      frozen_metadata: {
+        input_mode: 'raw_passthrough',
+        locked_environment_inputs: lockedRawInputs,
+        locked_at: new Date().toISOString(),
+      },
+    };
+  }
+
   const effectiveMaterials = ctx.model_materials?.length ? ctx.model_materials : ctx.materials;
   if (!effectiveMaterials.length) {
     throw new Error('ALE 出题前检查未通过：当前题目未绑定任何有效来源材料');

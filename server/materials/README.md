@@ -14,6 +14,7 @@
 | 文件 | 职责和边界 |
 | --- | --- |
 | `document.ts` | `ProjectDocumentExtractor.extract()`按格式分流并核对源SHA；`extractPages()`以Poppler生成问题页PDF子集后调用同一provider并映回原页码；`collectExtractedPageIssues()`统一汇总页级识别问题、`empty_page` 与 `unreadable`（供 `process.ts` 和 `material-library/runner.ts` 复用）；`normalizeExtractedPageStructure()`补齐默认段落结构并校验/同步文字投影。PDF必须注入冻结provider，DOCX使用MinerU结构化接口，PNG/JPG/JPEG原图直传MinerU API并输出单页结构；TXT/MD本地UTF8。 |
+| `raw-package-inspector.ts` | 为期次原件包免提取/免脱敏直接建题提供纯本地格式校验与结构化全包导览（支持 `.xlsx`/`.csv`/`.tsv`/`.pdf`/`.docx`/`.json`/`.parquet`/`.fasta`/`.pdb`/`.step` 等），输出全量表名/列名/维度、中小型表格全行及大表首尾样例导览，不调用外部 OCR。 |
 | `jobs.ts` | 旧步骤2入队、冻结MinerU配置/转换版本、按执行端领取/缓存/发布；更新步骤1处理状态，非全局库队列。 |
 | `process.ts` | `processMaterials()`核对原件/缓存，生成私有页结构；只对可重试问题页做一次子集复识别并保留issues，无页级能力则标记不可复查，不整份重传。旧无调用的检查点清理入口已移除，不删除历史缓存。 |
 | `pdf.ts` | 当前共享Page/DocumentBlock和确定性`documentBlocksToText()`；`command()`封装Poppler；`extractPdf()`是旧Vision页级路径，非当前MinerU主入口。 |

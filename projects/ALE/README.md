@@ -34,6 +34,10 @@ ALE/
 │   │   ├── 03-环境隔离与原生产物验证.md            # 容器/VM可复现构建、五阶段隔离、五大类原生产物实质检查与故障显式报错
 │   │   ├── 04-可执行评分与单因子反例测试.md        # rubric.json七要素、is_key_gate、grade.py实态断言与9类单因子反例≤0.20门控
 │   │   └── 05-轨迹完整性防Hack与题包契约.md        # 第7节目录契约、8次标定+opus-5/gpt-5.6-sol轨迹、Token/轮次复算与防hack审计
+│   ├── domains/
+│   │   └── life_science/                              # 生物科学垂类专属规则与场景模块（按 domain 定点加载）
+│   │       ├── guide.md                               # life_science 材料准入、紧凑汇总底稿红线与跨条款概念耦合校准总控
+│   │       └── scenarios.md                           # life_science 6大子方向32项科研工作流与8类实验数据冲突速查矩阵
 │   └── assets/
 │       ├── ale_grader_lib.py                          # 出题沙盒内可直接导入自检的标准公共判分底座库（与 scripts/ 同源）
 │       ├── 跨领域高价值场景与原生产物核查库.md      # 7大核心domain+综合领域共36个sub_domain实务工作流、脏数据形态与反捷径检查库

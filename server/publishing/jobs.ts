@@ -51,11 +51,19 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  JOIN ai_distill.steps s ON s.workflow_id=w.id AND s.ordinal=8 AND s.status='succeeded'
  WHERE w.id=$1 AND w.deleted_at IS NULL`,[workflowId])).rows[0];
  if(!row||!projectStepPolicies.archiveDownload.execute(resolveStepProjectKey({parent_name:row.parent_name}),{parent_name:row.parent_name}))throw new HTTPException(404,{message:'该题尚无Work五件套归档'});
- const models=await readWorkflowModelSet(db,row.project_id,workflowId);
- const policy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[row.project_id])).rows[0]?.config;
- const snapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(models,policy),answerModelSetDigest(models));
- const digest=acceptanceSourceDigest(snapshot);
- if(decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw new HTTPException(409,{message:'归档已不对应当前达标版本，请重新归档'});
+ let digest:string,currentQuestionVersion:string|undefined,currentRubricVersion:string|undefined;
+ if(isEvaluationPipelineSealed()){
+  const step4=(await db.query('SELECT status FROM ai_distill.steps WHERE workflow_id=$1 AND ordinal=4',[workflowId])).rows[0];
+  const author=(await db.query("SELECT id,status,input,result FROM ai_distill.step_attempts WHERE workflow_id=$1 AND ordinal=4 ORDER BY attempt DESC LIMIT 1",[workflowId])).rows[0];
+  if(step4?.status!=='succeeded'||author?.status!=='succeeded')throw new HTTPException(409,{message:'归档已不对应当前出题版本，请重新归档'});
+  digest=authorOnlySourceDigest(author);currentQuestionVersion=author.result?.question_version;currentRubricVersion=author.result?.rubric_version;
+ }else{
+  const models=await readWorkflowModelSet(db,row.project_id,workflowId);
+  const policy=(await db.query('SELECT config FROM ai_distill.project_step_configs WHERE project_id=$1 AND ordinal=7',[row.project_id])).rows[0]?.config;
+  const snapshot=await readAcceptanceSnapshot(db,workflowId,buildConfiguredAcceptanceConfig(models,policy),answerModelSetDigest(models));
+  digest=acceptanceSourceDigest(snapshot);currentQuestionVersion=snapshot.question?.result?.question_version;currentRubricVersion=snapshot.question?.result?.rubric_version;
+  if(decideAcceptance(buildAcceptanceInput(snapshot)).decision!=='accepted')throw new HTTPException(409,{message:'归档已不对应当前达标版本，请重新归档'});
+ }
  // 展示期名可变，已归档成果仍由保存的输出路径定位，不能因首批筹备→第一期而搬动或重建。
  const archivedWorkbook=row.result?.archive_workbook?.archive_path;
  const archivedOutput=row.result?.delivery?.output_path;
@@ -70,7 +78,7 @@ export async function readSiriserArchive(pool:Pool,workflowId:string,assetRoot:s
  }else directory=await questionResultDirectory(assetRoot,row.parent_name,row.phase_name??'',row.phase_name?(row.source_key||row.title):row.title);
  try{
   const state=JSON.parse(await readFile(join(directory,'Siriser五件套.json'),'utf8'));
-  if(state.workflow_id!==workflowId||typeof state.zip_relative_path!=='string'||state.zip_relative_path.split('/').some((part:string)=>!part||part==='.'||part==='..')||!state.zip_relative_path.startsWith('Siriser五件套/'))throw new Error('invalid package binding');
+  if(state.workflow_id!==workflowId||state.source_digest!==digest||(currentQuestionVersion&&state.question_version!==currentQuestionVersion)||(currentRubricVersion&&state.rubric_version!==currentRubricVersion)||typeof state.zip_relative_path!=='string'||state.zip_relative_path.split('/').some((part:string)=>!part||part==='.'||part==='..')||!state.zip_relative_path.startsWith('Siriser五件套/'))throw new Error('invalid package binding');
   const base=await realpath(directory),path=await realpath(resolve(directory,state.zip_relative_path));
   if(!path.startsWith(`${base}/`))throw new Error('unsafe package path');
   const info=await stat(path);if(!info.isFile()||info.size>200*1024*1024)throw new Error('invalid package file');

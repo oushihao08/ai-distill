@@ -12,9 +12,9 @@ export const MAX_GLM_FOLDER_BATCH = 400 * 1024 * 1024;
 /** HTTP封装余量不计入业务文件总量；库级导入和版本上传采用200MiB。 */
 export const MAX_UPLOAD_REQUEST_BYTES = MAX_GLM_FOLDER_BATCH + 1024 * 1024;
 export const MAX_DEFAULT_REQUEST_BYTES = MAX_BATCH + 1024 * 1024;
-/** 只放宽材料库导入及版本multipart上传；其余请求沿用原预算。 */
+/** 只放宽材料库导入、版本multipart上传及期次原件包直接建题上传；其余请求沿用原预算。 */
 export function requestBodyLimit(path:string,method:string):number{
- return method==='POST'&&/^\/api\/material-library\/(?:imports|packages\/[^/]+\/revisions)$/.test(path)?MAX_UPLOAD_REQUEST_BYTES:MAX_DEFAULT_REQUEST_BYTES;
+ return method==='POST'&&/^\/api\/(?:material-library\/(?:imports|packages\/[^/]+\/revisions)|projects\/[^/]+\/direct-raw-questions)$/.test(path)?MAX_UPLOAD_REQUEST_BYTES:MAX_DEFAULT_REQUEST_BYTES;
 }
 export function uuid(value: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) throw new HTTPException(400, { message: '无效的记录ID' });

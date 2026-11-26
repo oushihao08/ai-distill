@@ -30,7 +30,7 @@ import {
 } from '../execution-queue/runtime';
 import { resolveStepProjectKey } from '../lifecycle/steps';
 import { classifyLogError, logEvent, withLogContext } from '../logging';
-import { readCurrentRedactionForDocx } from '../materials/redacted-docx-export';
+import { readCurrentRedactionForDocx, readOriginalFilesForDelivery } from '../materials/redacted-docx-export';
 import { readQuestionMaterials } from '../question-materials';
 import { assertWorkflowNotArchived } from '../workflow-archive-guard';
 import {
@@ -842,6 +842,43 @@ export async function runNextCustomStep(
       structuredDocx && 'prepared_documents' in structuredDocx && Array.isArray(structuredDocx.prepared_documents)
         ? structuredDocx.prepared_documents
         : undefined;
+    let originalFiles: Array<{ name: string; sha256: string; content_base64: string }> | undefined;
+    if (
+      loadedMaterials.origin.kind === 'library_v1' &&
+      loadedMaterials.origin.material_mode === 'original' &&
+      !(structuredDocx && 'selected_materials' in structuredDocx && structuredDocx.selected_materials)
+    ) {
+      const snapRow = (
+        await pool
+          .query('SELECT snapshot_manifest FROM ai_distill.question_library_sources WHERE workflow_id=$1', [
+            String(claimed.workflow_id),
+          ])
+          .catch(() => ({ rows: [] }))
+      ).rows[0];
+      const manifest = snapRow?.snapshot_manifest;
+      const expected = Array.isArray(manifest?.files)
+        ? manifest.files.map((f: any) => ({
+            material_id: String(f.material_id),
+            original_name: String(f.original_name),
+            sha256: String(f.source_sha256),
+          }))
+        : [];
+      if (expected.length) {
+        const rawLoaded = await readOriginalFilesForDelivery(
+          pool,
+          String(claimed.workflow_id),
+          storageRoot,
+          expected,
+        ).catch(() => undefined);
+        if (rawLoaded?.length) {
+          originalFiles = rawLoaded.map((f) => ({
+            name: f.name,
+            sha256: f.sha256,
+            content_base64: Buffer.from(f.bytes).toString('base64'),
+          }));
+        }
+      }
+    }
     const modelAtts = loadedMaterials.model_attachments?.length
       ? loadedMaterials.model_attachments
       : loadedMaterials.attachments;
@@ -853,6 +890,7 @@ export async function runNextCustomStep(
       model_sha256: modelAtts[idx]?.sha256,
       model_text: modelAtts[idx]?.content,
       ...(preparedDocuments ? { prepared_documents: preparedDocuments } : {}),
+      ...(idx === 0 && originalFiles ? { original_files: originalFiles } : {}),
     }));
 
     const out = await withLogContext(
